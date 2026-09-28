@@ -5,14 +5,14 @@
       "name": "ruoyi-ai",
       "repository": "https://github.com/ageerle/ruoyi-ai.git",
       "commit": "7c7e64311e6ab7ac42ef6d89b87a0c662b620a35",
-      "import": "tracked files snapshot, excluding Git metadata"
+      "import": "tracked files snapshot, excluding Git metadata; local configuration values sanitized"
     },
     {
       "path": "services/ai",
       "name": "ragent",
       "repository": "https://github.com/nageoffer/ragent.git",
       "commit": "aefd979634cf72f6c531caf25317faab165e3d99",
-      "import": "tracked files snapshot, excluding Git metadata"
+      "import": "tracked source snapshot, excluding Git metadata and local editor settings; frontend/.env replaced by .env.example; local configuration values sanitized"
     }
   ]
 }

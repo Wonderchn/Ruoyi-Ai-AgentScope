@@ -73,3 +73,53 @@ jobs:
           name: release-manifest-${{ matrix.image }}
           path: release-manifest/${{ matrix.image }}.txt
           if-no-files-found: error
+
+  manifest:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-manifest-*
+          path: image-digests
+          merge-multiple: true
+      - name: Bind both image digests to one source commit
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          files = sorted(Path('image-digests').glob('*.txt'))
+          if len(files) != 2:
+              raise SystemExit(f'Expected two image digests, got {len(files)}')
+          images = {}
+          for file in files:
+              reference, source = file.read_text(encoding='utf-8').splitlines()
+              if source != 'source=' + os.environ['SOURCE_SHA']:
+                  raise SystemExit(f'Source commit mismatch in {file}')
+              if '@sha256:' not in reference:
+                  raise SystemExit(f'Missing immutable digest in {file}')
+              images[file.stem] = reference
+          manifest = {
+              'sourceRepository': os.environ['REPOSITORY'],
+              'sourceCommit': os.environ['SOURCE_SHA'],
+              'images': images,
+              'schemaCompatibility': 'not-yet-versioned',
+              'contractCompatibility': 'not-yet-versioned',
+          }
+          Path('release-manifest.json').write_text(
+              json.dumps(manifest, indent=2) + '\n', encoding='utf-8'
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: release-manifest.json
+          if-no-files-found: error

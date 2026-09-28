@@ -48,6 +48,7 @@ nbdist/
 *.xml.versionsBackup
 *.swp
 data/
+!ruoyi-modules/ruoyi-aiflow/src/main/java/org/ruoyi/workflow/workflow/data/
 logs/
 
 !*/build/*.java
