@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Locally approved Codex task",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["taskId", "title", "goal", "specPath", "specSha256", "baseSha", "allowedPaths", "validation", "approval"],
+  "properties": {
+    "taskId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,62}$" },
+    "title": { "type": "string", "minLength": 8, "maxLength": 160 },
+    "goal": { "type": "string", "minLength": 20 },
+    "specPath": { "type": "string", "minLength": 1 },
+    "specSha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+    "baseSha": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
+    "allowedPaths": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "validation": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["platform", "ai", "frontend"] } },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "approvedBy", "approvedAt"],
+      "properties": {
+        "status": { "enum": ["pending", "approved"] },
+        "approvedBy": { "type": "string" },
+        "approvedAt": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "approved" } } },
+          "then": {
+            "properties": {
+              "approvedBy": { "minLength": 1 },
+              "approvedAt": { "format": "date-time", "minLength": 1 }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

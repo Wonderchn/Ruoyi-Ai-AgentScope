@@ -22,7 +22,7 @@ cd services/ai/frontend && npm ci && npm run lint && npm run build
 
 ## 无头开发
 
-本机任务使用 `.agent/tasks/<task-id>.json`，按 `.agent/task.schema.json` 校验。批准范围、基线 SHA、允许路径和验收命令均记录在任务文件；运行后保存报告，验证通过再发布 Draft PR。自动修改只进入任务分支，不能直接合并或部署。
+本机任务使用 `.agent/tasks/<task-id>.json`，按 `.agent/task.schema.json` 校验。批准范围、基线 SHA、允许路径和验收命令均记录在任务文件；运行报告按 `.agent/run-result.schema.json` 校验，验证通过再发布 Draft PR。自动修改只进入任务分支，不能直接合并或部署。
 
 ```powershell
 pwsh -File scripts/agent/Invoke-AgentTask.ps1 -TaskFile .agent/tasks/example.json -RepositoryRoot .

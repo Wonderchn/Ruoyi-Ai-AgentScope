@@ -1,0 +1,133 @@
+name: Publish Docker Images
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to rebuild
+        required: true
+        type: string
+
+concurrency:
+  group: publish-images-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: ${{ github.repository_owner }}
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+
+jobs:
+  publish:
+    name: Publish ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ruoyi-ai-backend
+            source: local
+            context: .
+            dockerfile: docs/docker/ruoyi-ai/Dockerfile.backend
+          - image: ruoyi-ai-mysql
+            source: local
+            context: .
+            dockerfile: docs/docker/ruoyi-ai/Dockerfile.mysql
+          - image: ruoyi-ai-admin
+            source: admin
+            context: build/ruoyi-admin
+            dockerfile: build/ruoyi-admin/apps/web-antd/Dockerfile
+          - image: ruoyi-ai-web
+            source: web
+            context: build/ruoyi-web
+            dockerfile: build/ruoyi-web/Dockerfile.frontend
+
+    steps:
+      - name: Checkout backend repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 1
+
+      - name: Checkout admin repository
+        if: matrix.source == 'admin'
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository_owner }}/ruoyi-admin
+          ref: ${{ env.RELEASE_TAG }}
+          path: build/ruoyi-admin
+          fetch-depth: 1
+
+      - name: Checkout web repository
+        if: matrix.source == 'web'
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository_owner }}/ruoyi-web
+          ref: ${{ env.RELEASE_TAG }}
+          path: build/ruoyi-web
+          fetch-depth: 1
+
+      - name: Configure frontend dependency builds
+        if: matrix.source == 'admin' || matrix.source == 'web'
+        shell: bash
+        run: |
+          python3 - "${{ matrix.dockerfile }}" <<'PY'
+          from pathlib import Path
+          import sys
+
+          dockerfile = Path(sys.argv[1])
+          content = dockerfile.read_text()
+          marker = "pnpm install --frozen-lockfile"
+          replacement = (
+              "pnpm install --frozen-lockfile "
+              "--config.dangerously-allow-all-builds=true"
+          )
+          if marker not in content:
+              raise SystemExit(f"pnpm install command not found in {dockerfile}")
+          dockerfile.write_text(content.replace(marker, replacement, 1))
+          PY
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image }}
+          tags: |
+            type=raw,value=${{ env.RELEASE_TAG }}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.RELEASE_TAG }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          provenance: true
+          sbom: true
