@@ -1,0 +1,15 @@
+{
+  "taskId": "example-task",
+  "title": "Example task awaiting approval",
+  "goal": "Replace this example with a narrowly scoped engineering task and acceptance evidence.",
+  "specPath": "docs/architecture/README.md",
+  "specSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "baseSha": "0000000000000000000000000000000000000000",
+  "allowedPaths": ["services/ai/rag/"],
+  "validation": ["ai"],
+  "approval": {
+    "status": "pending",
+    "approvedBy": "",
+    "approvedAt": ""
+  }
+}

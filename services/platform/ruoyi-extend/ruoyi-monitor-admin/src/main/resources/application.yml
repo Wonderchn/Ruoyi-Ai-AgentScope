@@ -1,0 +1,51 @@
+server:
+  port: 9090
+spring:
+  application:
+    name: ruoyi-monitor-admin
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+
+logging:
+  config: classpath:logback-plus.xml
+
+--- # 监控中心服务端配置
+spring:
+  security:
+    user:
+      name: ${MONITOR_USERNAME:ruoyi}
+      password: ${PROJECT_SERVICES_PLATFORM_RUOYI_EXTEND_RUOYI_MONITOR_ADMIN_SRC_MAIN_RESOURCES_APPLICATION_YML_PASSWORD_17}
+  boot:
+    admin:
+      ui:
+        title: ruoyi-ai服务监控中心
+      context-path: /admin
+  # 忽略无用警告
+  thymeleaf:
+    check-template-location: false
+
+--- # Actuator 监控端点的配置项
+management:
+  endpoints:
+    web:
+      exposure:
+        include: '*'
+  endpoint:
+    health:
+      show-details: ALWAYS
+    logfile:
+      external-file: ./logs/ruoyi-monitor-admin.log
+
+--- # 监控配置
+spring.boot.admin.client:
+  # 增加客户端开关
+  enabled: true
+  # 设置 Spring Boot Admin Server 地址
+  url: http://localhost:9090/admin
+  instance:
+    service-host-type: IP
+    metadata:
+      username: ${spring.boot.admin.client.username}
+      userpassword: ${PROJECT_SERVICES_PLATFORM_RUOYI_EXTEND_RUOYI_MONITOR_ADMIN_SRC_MAIN_RESOURCES_APPLICATION_YML_USERPASSWORD_49}
+  username: ${MONITOR_USERNAME:ruoyi}
+  password: ${PROJECT_SERVICES_PLATFORM_RUOYI_EXTEND_RUOYI_MONITOR_ADMIN_SRC_MAIN_RESOURCES_APPLICATION_YML_PASSWORD_51}

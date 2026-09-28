@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  platform:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: services/platform/pom.xml
+      - name: Build and test platform
+        working-directory: services/platform
+        run: mvn -B -ntp -Pdev clean verify
+      - name: Verify at least one platform test ran
+        run: python3 scripts/ci/check-surefire.py services/platform
+      - name: Ensure build left sources unchanged
+        run: git diff --exit-code
+
+  ai:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: services/ai/pom.xml
+      - name: Build and test AI service
+        working-directory: services/ai
+        run: mvn -B -ntp -Pci clean verify
+      - name: Verify at least one AI test ran
+        run: python3 scripts/ci/check-surefire.py services/ai
+      - name: Ensure build left sources unchanged
+        run: git diff --exit-code
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: services/ai/frontend/package-lock.json
+      - name: Install locked dependencies
+        working-directory: services/ai/frontend
+        run: npm ci
+      - name: Lint
+        working-directory: services/ai/frontend
+        run: npm run lint
+      - name: Build
+        working-directory: services/ai/frontend
+        run: npm run build
+
+  policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate source metadata and public configuration
+        run: python3 scripts/ci/check-public-source.py
+
+  ci-required:
+    if: always()
+    needs: [platform, ai, frontend, policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every check
+        env:
+          PLATFORM: ${{ needs.platform.result }}
+          AI: ${{ needs.ai.result }}
+          FRONTEND: ${{ needs.frontend.result }}
+          POLICY: ${{ needs.policy.result }}
+        run: |
+          for result in "$PLATFORM" "$AI" "$FRONTEND" "$POLICY"; do
+            if [ "$result" != success ]; then
+              echo "A required job did not succeed: $result" >&2
+              exit 1
+            fi
+          done

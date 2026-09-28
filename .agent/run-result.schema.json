@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Validated local Codex run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["taskId", "branch", "baseSha", "taskSha256", "specSha256", "status", "reason", "changedPaths", "validationPassed", "codexExitCode", "finishedAt"],
+  "properties": {
+    "taskId": { "type": "string" },
+    "branch": { "type": "string" },
+    "baseSha": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
+    "taskSha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+    "specSha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+    "status": { "enum": ["passed", "failed"] },
+    "reason": { "type": "string" },
+    "changedPaths": { "type": "array", "items": { "type": "string" } },
+    "validationPassed": { "type": "array", "items": { "type": "string" } },
+    "codexExitCode": { "type": ["integer", "null"] },
+    "finishedAt": { "type": "string", "format": "date-time" }
+  }
+}
