@@ -35,6 +35,37 @@ function Test-AllowedPaths([string[]] $Paths) {
     }
 }
 
+function Get-TaskWritableDirs {
+    $dirs = [System.Collections.Generic.List[string]]::new()
+    foreach ($allowedPath in $task.allowedPaths) {
+        $scope = [string]$allowedPath
+        if ($scope -match '(^/|\.\.|\\|:)' -or $scope -match '(^|/)\.git(/|$)') {
+            throw "Invalid allowed path: $scope"
+        }
+        $candidate = [IO.Path]::GetFullPath((Join-Path $repo $scope))
+        while (-not (Test-Path -LiteralPath $candidate -PathType Container)) {
+            $parent = Split-Path -Parent $candidate
+            if ($parent -eq $candidate -or [string]::IsNullOrWhiteSpace($parent)) {
+                throw "No writable parent for allowed path: $scope"
+            }
+            $candidate = $parent
+        }
+        $resolved = (Resolve-Path -LiteralPath $candidate).Path
+        if ($resolved -ne $repo -and -not $resolved.StartsWith($repo + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Allowed path resolves outside repository: $scope"
+        }
+        $walk = $resolved
+        while ($walk -ne $repo) {
+            if (((Get-Item -LiteralPath $walk).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Allowed path traverses a reparse point: $scope"
+            }
+            $walk = Split-Path -Parent $walk
+        }
+        if ($resolved -ne $repo -and -not $dirs.Contains($resolved)) { $dirs.Add($resolved) }
+    }
+    return @($dirs)
+}
+
 $repo = (Resolve-Path -LiteralPath $RepositoryRoot).Path
 $taskPath = (Resolve-Path -LiteralPath $TaskFile).Path
 if (-not (Test-Json -LiteralPath $taskPath -SchemaFile (Join-Path $repo '.agent/task.schema.json'))) {
@@ -54,6 +85,7 @@ if ($specHash -ne [string]$task.specSha256) { throw 'Task Spec changed since app
 $head = [string](Invoke-Git -GitArgs @('rev-parse', 'HEAD'))
 if ($head -ne [string]$task.baseSha) { throw "Checkout HEAD $head does not match approved baseSha." }
 if (@(Invoke-Git -GitArgs @('status', '--porcelain')).Count -gt 0) { throw 'Checkout must be clean before the task starts.' }
+$writableDirs = @(Get-TaskWritableDirs)
 $branch = 'agent/' + $task.taskId
 $branchExists = & git -C $repo show-ref --verify --quiet ('refs/heads/' + $branch)
 if ($LASTEXITCODE -eq 0) { throw "Branch $branch exists; use a fresh checkout or explicit recovery." }
@@ -64,7 +96,9 @@ New-Item -ItemType Directory -Path $runDir -Force | Out-Null
 $promptFile = Join-Path $runDir 'prompt.md'
 $resultFile = Join-Path $runDir 'result.json'
 $finalFile = Join-Path $runDir 'agent-final.json'
+$writableDirsFile = Join-Path $runDir 'writable-dirs.json'
 $schemaFile = Join-Path $repo '.agent/result.schema.json'
+[IO.File]::WriteAllText($writableDirsFile, (ConvertTo-Json -InputObject $writableDirs -Compress), [Text.UTF8Encoding]::new($false))
 $promptTemplate = [IO.File]::ReadAllText((Join-Path $repo '.agent/prompts/implement.md'))
 $prompt = $promptTemplate + "`n`nTask:`n" + ($task | ConvertTo-Json -Depth 12) + "`n`nApproved Spec:`n" + [IO.File]::ReadAllText($specPath)
 [IO.File]::WriteAllText($promptFile, $prompt, [Text.UTF8Encoding]::new($false))
@@ -74,7 +108,7 @@ $startInfo.FileName = (Get-Command pwsh).Source
 $startInfo.UseShellExecute = $false
 $startInfo.RedirectStandardOutput = $true
 $startInfo.RedirectStandardError = $true
-foreach ($arg in @('-NoProfile', '-File', (Join-Path $repo 'scripts/agent/Run-Codex.ps1'), '-RepositoryRoot', $repo, '-PromptFile', $promptFile, '-SchemaFile', $schemaFile, '-FinalMessageFile', $finalFile)) {
+foreach ($arg in @('-NoProfile', '-File', (Join-Path $repo 'scripts/agent/Run-Codex.ps1'), '-RepositoryRoot', $repo, '-PromptFile', $promptFile, '-SchemaFile', $schemaFile, '-FinalMessageFile', $finalFile, '-WritableDirsFile', $writableDirsFile)) {
     $startInfo.ArgumentList.Add([string]$arg)
 }
 $process = [Diagnostics.Process]::Start($startInfo)
