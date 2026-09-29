@@ -27,10 +27,43 @@ import { writeFileSync } from 'node:fs';
 const PORT = Number(process.env.PORT ?? 18131);
 const LOG = process.env.LOG ?? 'server-requests.jsonl';
 
+/**
+ * Sequence omitted on the first connection of each test run. Tests that assert gap repair
+ * must give each run its own `?run=<id>` so the "first connection" counter is not shared
+ * (otherwise a later test silently stops seeing the hole and the assertion goes vacuous).
+ */
+const OMIT_ONCE = process.env.OMIT_ONCE === undefined ? 2 : Number(process.env.OMIT_ONCE);
+
 /** Headers whose values must never be written to disk. */
 const REDACTED_HEADERS = new Set(['authorization', 'cookie', 'proxy-authorization', 'x-api-key']);
 
+/** Query parameters whose *values* must never be written to disk. */
+const REDACTED_QUERY_PARAMS = new Set([
+  'token',
+  'access_token',
+  'id_token',
+  'api_key',
+  'apikey',
+  'key',
+  'secret',
+  'password',
+  'authorization',
+  'auth',
+]);
+
 const requests = [];
+
+/** Replace sensitive query values with a length marker, keeping the parameter name. */
+function redactUrl(rawUrl) {
+  const parsed = new URL(rawUrl, `http://127.0.0.1:${PORT}`);
+  for (const name of [...parsed.searchParams.keys()]) {
+    if (REDACTED_QUERY_PARAMS.has(name.toLowerCase())) {
+      const value = parsed.searchParams.get(name) ?? '';
+      parsed.searchParams.set(name, `<redacted:${value.length} chars>`);
+    }
+  }
+  return `${parsed.pathname}${parsed.search}`;
+}
 
 /** Build a spec-shaped SSE frame. */
 function frame({ id, event, data, comment }) {
@@ -55,7 +88,7 @@ function runFrame(seq, type, payload = {}) {
   };
 }
 
-/** The canonical run used by S1: seq 1..6, terminal last. */
+/** The canonical run used by S1: seq 1..6 — contiguous, terminal last (per the contract). */
 function liveRunFrames() {
   return [
     runFrame(1, 'run.accepted', { status: 'QUEUED' }),
@@ -68,9 +101,13 @@ function liveRunFrames() {
 }
 
 /**
- * Serves frames after `afterSeq`, optionally dropping one seq **only on the first
- * connection** so that a resuming client can actually close the hole (a server that never
- * serves the missing frame makes gap repair unverifiable).
+ * Serves frames after the requested cursor, optionally omitting one seq on the first
+ * connection of a run.
+ *
+ * The replay path is faithful to the contract: a request with a cursor returns **every**
+ * frame after that cursor, including any seq a previous connection withheld. A server that
+ * permanently omitted a seq would make the repair unverifiable (and would violate the
+ * contract's "visible seqs are contiguous" rule).
  */
 function serveRun(req, res, frames, { omitOnce } = {}) {
   const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
@@ -80,11 +117,23 @@ function serveRun(req, res, frames, { omitOnce } = {}) {
     ? Number(afterSeqParam)
     : (typeof lastEventId === 'string' && lastEventId !== '' ? Number(lastEventId) : undefined);
 
-  const connectionIndex = countConnections(req, url.pathname);
-  const omit = omitOnce && connectionIndex === 1 ? omitOnce : undefined;
+  // Counter scope: the scenario path plus the test's own run id (falling back to the SSE
+  // header, then to a shared key for hand-run curl sessions).
+  const runKey = url.searchParams.get('run') ?? (typeof lastEventId === 'string' ? `lei:${lastEventId}` : 'default');
+  const counterKey = `${url.pathname}#${runKey}`;
+  const connectionIndex = (connectionCounts.get(counterKey) ?? 0) + 1;
+  connectionCounts.set(counterKey, connectionIndex);
+
+  const omit = omitOnce !== undefined && connectionIndex === 1 ? omitOnce : undefined;
 
   let selected = frames.filter((f) => cursor === undefined || f.seq > cursor);
   if (omit !== undefined) selected = selected.filter((f) => f.seq !== omit);
+
+  const omitted = omit !== undefined && selected.length !== frames.filter((f) => cursor === undefined || f.seq > cursor).length;
+  console.log(
+    `[${url.pathname}] run=${runKey} connection=${connectionIndex} cursor=${cursor ?? 'none'} `
+    + `sent=${selected.map((f) => f.seq).join(',') || 'none'}${omitted ? ` omitted=${omit}` : ''}`,
+  );
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
@@ -108,18 +157,12 @@ function serveRun(req, res, frames, { omitOnce } = {}) {
 }
 
 const connectionCounts = new Map();
-function countConnections(req, path) {
-  const key = `${path}?cursor=${req.headers['last-event-id'] ?? ''}`;
-  const n = (connectionCounts.get(key) ?? 0) + 1;
-  connectionCounts.set(key, n);
-  return n;
-}
 
 const scenarios = {
   S1(req, res) {
-    // Drop seq 2 on the first connection: a resuming client must bring the cursor back to
-    // 1, receive 2..6 minus what it already applied, and end on the terminal frame.
-    serveRun(req, res, liveRunFrames(), { omitOnce: 2 });
+    // Drop one seq on the first connection of each run id: a resuming client must bring the
+    // cursor back, receive the missing frame plus the rest, and only then accept the terminal.
+    serveRun(req, res, liveRunFrames(), { omitOnce: OMIT_ONCE });
   },
   S3(req, res) {
     const frames = [
@@ -177,7 +220,9 @@ const server = http.createServer((req, res) => {
   requests.push({
     scenario,
     method: req.method,
-    url: req.url,
+    // The query string is recorded with sensitive parameter values masked, because this
+    // tool exists to prove whether a token leaked into the URL — it must not then persist it.
+    url: redactUrl(req.url),
     // Credentials are recorded as presence flags, never as values.
     headers: Object.fromEntries(
       Object.entries(req.headers).map(([name, value]) => [
@@ -197,7 +242,11 @@ const server = http.createServer((req, res) => {
   handler(req, res);
 });
 
+// Start each server run with a clean log so evidence is never mixed across runs.
+writeFileSync(LOG, '');
+
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`fake-sse listening on http://127.0.0.1:${PORT} (scenarios: ${Object.keys(scenarios).join(', ')})`);
-  console.log(`request log: ${LOG} (credential headers are redacted)`);
+  console.log(`request log: ${LOG} — credential headers and sensitive query values are redacted`);
+  console.log(`S1 omits seq ${OMIT_ONCE} on the first connection of each ?run=<id> (set OMIT_ONCE to change)`);
 });

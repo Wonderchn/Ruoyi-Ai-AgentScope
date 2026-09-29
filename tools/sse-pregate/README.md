@@ -13,7 +13,7 @@ P2 要交付"可恢复 RAG 流式：断线重连与事件回放"，前提是前�
 
 | 场景 | 用途 |
 |---|---|
-| `S1` | 一次完整运行（`run.accepted` → `output_delta` → `usage` → `run.terminal`），**首次连接故意漏掉一个 seq**；**按 `afterSeq` 过滤**，因此可用于验证缺口补齐 |
+| `S1` | 一次完整运行（`run.accepted` → `output_delta` → `usage` → `run.terminal`，**seq 连续**），**每个 run id 的首次连接故意漏掉一个 seq**；**按 `afterSeq` 过滤**，因此可用于验证缺口补齐 |
 | `S3` | 规范合法的**多行 `data:`**（必须按 `\n` 连接，不能只留最后一行） |
 | `S4` | 只有心跳、连接保持打开的流 |
 | `S5` | 流中途被强制断开（没有终态事件） |
@@ -23,15 +23,20 @@ P2 要交付"可恢复 RAG 流式：断线重连与事件回放"，前提是前�
 
 ```bash
 node tools/sse-pregate/fake-sse-server.mjs          # 终端 1，默认 127.0.0.1:18131
-curl -N http://127.0.0.1:18131/S1                   # 首连：id 1,3,4,5,6（漏掉 2）
-curl -N 'http://127.0.0.1:18131/S1?afterSeq=1'      # 续传：id 2,3,4,5,6（补齐 2）
-curl -N -H 'Last-Event-ID: 3' http://127.0.0.1:18131/S1   # 用 SSE 标准头做游标
+
+# 每次测试用独立 run id：S1 的"首连漏一帧"按 run id 计数，互不干扰
+curl -N 'http://127.0.0.1:18131/S1?run=t1'                  # 首连：id 1,3,4,5,6（漏 2）
+curl -N 'http://127.0.0.1:18131/S1?run=t1&afterSeq=1'       # 续传：id 2,3,4,5,6（补齐 2）
+curl -N -H 'Last-Event-ID: 3' 'http://127.0.0.1:18131/S1?run=t2'   # 用 SSE 标准头做游标
 curl -i http://127.0.0.1:18131/S6                   # 410 + 快照
 ```
 
-路径同时接受 `/S1` 与 `/S1/runs/{runId}/events`，因此既能用 curl 手测，也能直接对接按契约构造路径的客户端。
+要点：
 
-服务端把每个请求写入 `server-requests.jsonl`：**凭据类头（`authorization`/`cookie`/`proxy-authorization`/`x-api-key`）会被脱敏**为长度标记，只保留"是否发送过"这一事实，磁盘上不会出现明文 token。
+- **`?run=<id>` 必须每次测试唯一**。连接计数键是 `路径#run`，所以不同 run id 都会各自经历"首连漏帧"；若共用同一个 run id，第二个测试就看不到缺口，断言会变成假阳性。也可用 `OMIT_ONCE=<n>` 改漏掉的序号，或设 `OMIT_ONCE=0` 关闭漏帧。
+- **回放必须覆盖区间内每一帧**：带游标的请求会返回该游标之后的**全部**帧，包括上一连接暂缓的那一帧。这是"终态必须等缺口补齐"能成立的前提（假服务不会永久吞掉某帧）。
+- 路径同时接受 `/S1` 与 `/S1/runs/{runId}/events`，既能用 curl 手测，也能直接对接按契约构造路径的客户端。
+- 服务端每个请求都会打印一行（`run=` / `connection=` / `cursor=` / `sent=` / `omitted=`），并写入 `server-requests.jsonl`：**凭据类头与敏感查询参数值都会被脱敏**（替换为长度标记），只保留"是否发送过"这一事实。启动时会清空该日志，避免跨次运行混证据。
 
 ## 已用此工具得到的结论（2026-09-29）
 
@@ -52,7 +57,20 @@ curl -i http://127.0.0.1:18131/S6                   # 410 + 快照
 
 依据该结论，后续 PR 新增了 `services/ruoyi-web/src/utils/sse/`（契约合规的 run/SSE 客户端）并附单元测试；本工具用于对该客户端做 **HTTP 层**的补充验证。
 
-**端到端已验**：用真客户端对 S1 实测，首连收到 1 后检测到缺口 → 以 `afterSeq=1` 续传 → 回补 2..6 → 以终态结束，游标停在 6；服务端日志确认两次请求（`/S1/runs/r-1/events` 与 `?afterSeq=1`）。
+**端到端已验**（2026-09-29，两轮修复后）：用真客户端对 `S1?run=<id>` 实测（两个不同 run id 各自独立）：
+
+```text
+MSG seq=1 type=run.accepted
+RECONNECT reason=gap afterSeq=1        <- 缺口被发现并记录，终态被暂缓
+MSG seq=2 type=run.step_started
+MSG seq=3 type=run.output_delta
+MSG seq=4 type=run.output_delta
+MSG seq=5 type=run.usage
+MSG seq=6 type=run.terminal
+END NORMALLY; applied=6   delivered=[1,2,3,4,5,6]   hole_logged=true
+```
+
+服务端日志确认每轮两次请求（`afterSeq=0` 与 `afterSeq=1`），凭据为脱敏值。
 
 ## 何时用它
 
