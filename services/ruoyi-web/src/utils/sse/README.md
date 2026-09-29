@@ -23,8 +23,15 @@
 
 | 文件 | 职责 |
 |---|---|
-| `SseSyntax.ts` | 纯 SSE 语法层（无 `fetch`、无定时器）：按 WHATWG SSE 规则解析 `data:` / `event:` / `id:` / `retry:` / `:` 注释帧，支持增量分片 |
-| `RunStreamClient.ts` | 传输与状态层：请求构造、游标、看门狗、去重、重连、错误映射 |
+| `SseSyntax.ts` | 纯 SSE 语法层（无 `fetch`、无定时器）：按 WHATWG 规则解析 `data:` / `event:` / `id:` / `retry:` / `:` 注释帧，支持增量分片 |
+| `RunStreamClient.ts` | 传输与状态层：请求构造、游标、缺口补齐、看门狗、去重、重连、错误映射 |
+
+`SseSyntax.ts` 严格遵循规范的几条要点（都有对应测试）：
+
+- 多行 `data:` 以 `\n` 连接，去掉末尾一个 `\n`；
+- **数据缓冲为空的帧不派发**：只有 `event:` 没有 `data:` 的帧不会变成事件；
+- **流结束时未以空行结束的帧被丢弃**：被截断的 `event: run.terminal` 不会被当成已完成；
+- CRLF 是一个行尾；**跨网络块被拆开的 CRLF 不会拆成两个行尾**；块尾单独的 CR 会等到下一块再判定。
 
 ## 用法
 
@@ -36,17 +43,30 @@ const stream = openRunStream(
   { stallTimeoutMs: 45_000, onDebug: import.meta.env.DEV ? console.debug : undefined },
 );
 
-for await (const message of stream.messages) {
-  if (message.isComment) continue;            // 心跳，不渲染
-  if (message.type === 'run.output_delta') append((message.parsed?.payload as any)?.text ?? '');
-  if (message.type === 'run.terminal') break; // 只有终态才算结束
+try {
+  for await (const message of stream.messages) {
+    if (message.isComment) continue;            // 心跳，不渲染
+    if (message.type === 'run.output_delta') append((message.parsed?.payload as any)?.text ?? '');
+    if (message.type === 'run.terminal') break; // 只有终态才算结束
+  }
+}
+catch (error) {
+  if (error instanceof RunEventStreamIncompleteError) {
+    // 从未收到终态且重连已耗尽：任务的真实结果未知，必须提示"状态未知/待核对"，
+    // 不能当成正常完成。
+  }
+  if (error instanceof CursorExpiredError) {
+    // 游标超出保留期：展示 error.snapshot，不要盲目重连。
+  }
 }
 ```
 
 契约要点（与设计文档一致）：
 
-- **游标**：`openRunStream` 记录已应用的最高 `seq`，重连时以 `afterSeq` 续传；重复帧按 `seq` 丢弃。
-- **终态**：只有 `run.terminal`（或 envelope 的 `type`）结束运行。连接断开是重连信号，**不是**成功。
+- **方法**：默认 `GET /runs/{runId}/events`（契约定义该端点为只读订阅）；需要请求体时才显式传 `method: 'POST'`。
+- **游标**：记录最高已交付 `seq`，重连以 `afterSeq` 续传；`seen` 去重回放重叠帧。
+- **缺口补齐**：本连接内若发现"更早的序号缺失"，**不交付该帧、不推进游标**，而是从最后一个连续 `seq` 重放补齐；缺口补齐**不消耗**错误重试预算（另有 `maxResumeCycles` 上限）。缺失期间收到的终态帧是权威的，会被交付并结束运行。
+- **终态**：只有 `run.terminal`（或 envelope 的 `type`）算结束。**重连耗尽仍未见到终态时抛 `RunEventStreamIncompleteError`**，绝不静默正常结束。
 - **过期游标**：HTTP 410 抛 `CursorExpiredError`，携带 `lastSeq` 与已持久化快照，**不重连**（需重新鉴权/展示快照）。
 - **凭据**：只通过 `authorization` 头传递，永不进 URL。
 - **看门狗**：静默超过 `stallTimeoutMs` 抛 `RunStreamStalledError`；心跳会重置预算。
@@ -61,7 +81,7 @@ node --import ./tests/ts-loader.mjs --test tests/SseSyntax.test.ts tests/RunStre
 npx tsc -p tsconfig.tests.json --noEmit   # 类型检查（含 tests）
 ```
 
-当前：35 个用例通过（SSE 语法 15 + 客户端 20）。
+当前：**45 个用例通过**（SSE 语法 21 + 客户端 24）。`tsconfig.tests.json` 是自洽配置（自带 `lib` 与 `types: ["node"]`），只覆盖 `src/utils/sse/**` 与 `tests/**`，因此不依赖 DOM 库推断，也不需要它去检查整个 `src`。
 
 ## 尚未接线
 

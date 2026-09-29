@@ -63,11 +63,11 @@ describe('sseSyntax: frame parsing', () => {
     assert.deepEqual(parseSseText('retry:\n\n'), []);
   });
 
-  it('dispatches an event-type-only frame with an empty payload', () => {
-    const events = parseSseText('event: run.terminal\n\n');
+  it('dispatches a frame whose data buffer is empty (spec: data present, empty value)', () => {
+    const events = parseSseText('event: run.output_delta\ndata\n\n');
     assert.equal(events.length, 1);
-    assert.equal(events[0].type, 'run.terminal');
-    assert.equal(events[0].data, '');
+    assert.equal(events[0].type, 'run.output_delta');
+    assert.equal(events[0].data, '', 'a bare data: line means an empty payload');
   });
 
   it('ignores frames with no data, no type and no id', () => {
@@ -81,12 +81,55 @@ describe('sseSyntax: frame parsing', () => {
     assert.equal(parseSseText('data: c\r\ndata: d\r\n\r\n')[0].data, 'c\nd');
   });
 
-  it('dispatches a trailing unterminated frame at end of stream', () => {
+  it('discards an unterminated frame at end of stream (spec: pending data is dropped)', () => {
     const parser = new SseFrameParser();
     assert.deepEqual(parser.push('data: no-terminator'), []);
+    assert.deepEqual(parser.end(), [], 'an event without a final blank line must not dispatch');
+  });
+
+  it('does not dispatch a truncated terminal frame at end of stream', () => {
+    const parser = new SseFrameParser();
+    // Connection cut off after the data line but before the terminating blank line.
+    assert.deepEqual(parser.push('event: run.terminal\ndata: {"seq":9,"status":"SUCCEEDED"}'), []);
+    assert.deepEqual(parser.end(), []);
+  });
+
+  it('does not dispatch a frame that has an event name but no data', () => {
+    assert.deepEqual(parseSseText('event: run.terminal\n\n'), []);
+    assert.deepEqual(parseSseText('id: 4\nevent: run.terminal\n\n').filter((e) => !e.isComment), []);
+  });
+
+  it('still reports a pending comment at end of stream', () => {
+    const parser = new SseFrameParser();
+    parser.push(': still here');
     const tail = parser.end();
     assert.equal(tail.length, 1);
-    assert.equal(tail[0].data, 'no-terminator');
+    assert.equal(tail[0].isComment, true);
+    assert.equal(tail[0].data, 'still here');
+  });
+
+  it('treats a CR at the end of a chunk as unresolved until the next chunk', () => {
+    const parser = new SseFrameParser();
+    // "data: a\r" could be a lone CR terminator or the first half of CRLF.
+    assert.deepEqual(parser.push('data: a\r'), []);
+    // The next chunk starts with LF: the pair is one terminator, not two.
+    assert.deepEqual(parser.push('\n'), []);
+    const events = parser.push('\n');
+    assert.equal(events.length, 1);
+    assert.equal(events[0].data, 'a');
+  });
+
+  it('does not create a phantom empty frame when CRLF is split across chunks', () => {
+    const parser = new SseFrameParser();
+    const events = [...parser.push('data: x\r'), ...parser.push('\n\r'), ...parser.push('\n')];
+    assert.equal(events.length, 1, 'CRLF split across three chunks is still one blank line');
+    assert.equal(events[0].data, 'x');
+  });
+
+  it('terminates on a lone CR that is followed by more data', () => {
+    const events = parseSseText('data: a\rdata: b\r\r');
+    assert.equal(events.length, 1);
+    assert.equal(events[0].data, 'a\nb');
   });
 
   it('reassembles frames split across chunk boundaries', () => {
@@ -105,8 +148,8 @@ describe('sseSyntax: frame parsing', () => {
     assert.equal(parser.push('data: \uFEFFsecond\n\n')[0].data, '\uFEFFsecond');
   });
 
-  it('emits several events from one chunk and honours a final empty line', () => {
+  it('emits several events from one chunk and drops a trailing unfinished one', () => {
     const events = parseSseText('data: 1\n\ndata: 2\n\ndata: 3\n');
-    assert.deepEqual(events.map((e) => e.data), ['1', '2', '3']);
+    assert.deepEqual(events.map((e) => e.data), ['1', '2'], 'the third frame has no blank line');
   });
 });

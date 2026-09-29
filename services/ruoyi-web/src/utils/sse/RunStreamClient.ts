@@ -55,6 +55,24 @@ export class RunStreamStalledError extends Error {
   }
 }
 
+/** Thrown when a run stream ended without ever carrying a terminal event. */
+export class RunEventStreamIncompleteError extends Error {
+  readonly lastSeq: number | undefined;
+  readonly connections: number;
+  readonly reason: 'retries-exhausted' | 'resume-limit';
+
+  constructor(lastSeq: number | undefined, connections: number, reason: 'retries-exhausted' | 'resume-limit') {
+    super(
+      `run event stream ended without a terminal event after ${connections} connection(s)`
+      + ` (last applied seq: ${lastSeq ?? 'none'}, reason: ${reason})`,
+    );
+    this.name = 'RunEventStreamIncompleteError';
+    this.lastSeq = lastSeq;
+    this.connections = connections;
+    this.reason = reason;
+  }
+}
+
 /** Thrown when the HTTP response was not a usable event stream. */
 export class RunStreamHttpError extends Error {
   readonly status: number;
@@ -198,7 +216,9 @@ export async function createRunEventStream(
   // would drop `authorization` and silently de-authenticate the stream.
   if (request.lastEventId) headers['Last-Event-ID'] = request.lastEventId;
 
-  const method = request.method ?? 'POST';
+  // The run/SSE contract defines this endpoint as a read, so GET is the default.
+  // POST stays available for deployments that need a request body.
+  const method = request.method ?? 'GET';
   const init: RequestInit = { method, headers, signal: options.signal };
   if (method === 'POST' && request.body !== undefined) {
     headers['content-type'] = 'application/json';
@@ -234,7 +254,6 @@ export async function createRunEventStream(
   }
 
   const stallTimeoutMs = options.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS;
-  console.error('FACTORY options.stallTimeoutMs=' + options.stallTimeoutMs + ' resolved=' + stallTimeoutMs + ' keys=' + Object.keys(options).join(','));
   const parser = new SseFrameParser();
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8');
@@ -390,15 +409,24 @@ export async function createRunEventStream(
 }
 
 export interface ReconnectingRunStreamOptions extends RunStreamOptions {
-  /** Maximum reconnect attempts. `Infinity` keeps retrying until aborted. */
+  /** Maximum consecutive failed connections before giving up. `Infinity` retries forever. */
   maxRetries?: number;
+  /**
+   * Maximum *successful* connections used to repair sequence gaps. A gap resume is not a
+   * failure, so it does not consume `maxRetries`; this bound stops a pathological server
+   * from looping forever.
+   */
+  maxResumeCycles?: number;
   /** Base backoff; doubles per attempt, capped by `maxBackoffMs`. */
   baseDelayMs?: number;
   maxBackoffMs?: number;
   /** Client-provided backoff for tests; defaults to `setTimeout`. */
   sleep?: (ms: number) => Promise<void>;
-  /** Called before each reconnect with the cursor that will be requested. */
-  onReconnect?: (info: { attempt: number; afterSeq: number | undefined; delayMs: number }) => void;
+  /**
+   * Called before each new connection. `reason` distinguishes a sequence-gap repair from
+   * an error retry, because the two have different budgets.
+   */
+  onReconnect?: (info: { attempt: number; afterSeq: number | undefined; delayMs: number; reason: 'gap' | 'error' | 'incomplete' }) => void;
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => {
@@ -406,7 +434,14 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => {
 });
 
 export interface RunEventStream {
-  /** Reconnecting stream. Ends after the terminal frame, an abort, or exhausted retries. */
+  /**
+   * Reconnecting stream.
+   *
+   * Ends normally only after a terminal frame. If the run never reaches a terminal state
+   * and reconnection is exhausted, the iterator **throws**
+   * {@link RunEventStreamIncompleteError} — a caller must never mistake "we stopped
+   * trying" for "the run finished".
+   */
   messages: AsyncGenerator<SseMessage, void, undefined>;
   /** Highest applied cursor so far (envelope seq preferred). */
   appliedCursor: () => number | undefined;
@@ -436,6 +471,7 @@ export function openRunStream(
   options: ReconnectingRunStreamOptions = {},
 ): RunEventStream {
   const maxRetries = options.maxRetries ?? 5;
+  const maxResumeCycles = options.maxResumeCycles ?? 20;
   const baseDelayMs = options.baseDelayMs ?? 500;
   const maxBackoffMs = options.maxBackoffMs ?? 15_000;
   const sleep = options.sleep ?? defaultSleep;
@@ -445,8 +481,25 @@ export function openRunStream(
 
   async function* iterate(): AsyncGenerator<SseMessage, void, undefined> {
     let attempt = 0;
+    let resumeCycles = 0;
+    let connections = 0;
+
     for (;;) {
+      // `sawTerminal`  – the run reached its terminal event (normal end)
+      // `repairFrom`   – a sequence gap was observed; replay from this cursor
       let sawTerminal = false;
+      let repairFrom: number | undefined;
+      let lastError: unknown;
+
+      // Highest contiguous sequence the client holds. It starts from the resume cursor
+      // when the caller supplied one; otherwise the first frame of this connection
+      // establishes the baseline (the server decides where a fresh subscription starts —
+      // a live subscription may legitimately begin at an arbitrary seq).
+      let contiguous = typeof applied === 'number' ? applied : undefined;
+      const delivered = new Set<number>();
+      let owed = 0;
+
+      connections += 1;
       try {
         const connection = await createRunEventStream({ ...request, afterSeq: applied }, options);
         try {
@@ -455,14 +508,57 @@ export function openRunStream(
               yield message;
               continue;
             }
-            if (message.cursor !== undefined) {
-              if (seen.has(message.cursor)) continue; // replay overlap → drop
-              seen.add(message.cursor);
-              if (typeof message.cursor === 'number') applied = message.cursor;
+
+            const terminal = isTerminalMessage(message);
+
+            if (typeof message.cursor === 'number') {
+              const seq = message.cursor;
+
+              if (seen.has(seq)) continue; // overlap with an earlier connection
+
+              // Baseline for this connection: the resume cursor when supplied, otherwise
+              // the first frame seen here (a live subscription may start at any seq).
+              const base = contiguous ?? seq - 1;
+
+              // A hole below this seq means an earlier frame was missed. The only sound
+              // response is to stop and replay from the last contiguous seq: the server
+              // replays from there, the overlap is dropped by `seen`, and the hole closes.
+              // A terminal event is authoritative, so it is delivered even with a hole
+              // (the gap is recorded instead of blocking the end of the run).
+              if (!terminal && seq > base + 1) {
+                repairFrom = base;
+                contiguous = base;
+                break;
+              }
+
+              seen.add(seq);
+              delivered.add(seq);
+
+              // Advance the contiguous watermark over frames already in hand.
+              let watermark = base;
+              for (;;) {
+                const next = watermark + 1;
+                if (!delivered.has(next)) break;
+                watermark = next;
+                delivered.delete(next);
+              }
+              contiguous = watermark;
+
+              // The applied cursor is the highest sequence actually delivered. A terminal
+              // frame is authoritative, so it moves the cursor even when a hole is still
+              // open; the hole itself is never "filled in" by guessing.
+              const highest = Math.max(watermark, seq);
+              if (applied === undefined || highest > applied) applied = highest;
+
+              if (seq > watermark && !terminal) owed += 1;
             }
+
             yield message;
-            if (isTerminalMessage(message)) {
+            if (terminal) {
               sawTerminal = true;
+              if (owed > 0) {
+                options.onDebug?.(`terminal received with ${owed} sequence hole(s) still open`);
+              }
               break;
             }
           }
@@ -471,20 +567,37 @@ export function openRunStream(
           // Release the connection even when the consumer breaks out early.
           await connection.return();
         }
-
-        if (sawTerminal) return;
-        // Stream ended without a terminal frame: treat as an interruption and resume.
       }
       catch (error) {
         if (options.signal?.aborted) throw error;
         if (error instanceof CursorExpiredError) throw error;
         if (error instanceof RunStreamHttpError && error.status >= 400 && error.status < 500) throw error;
+        lastError = error;
       }
 
-      if (attempt >= maxRetries) return;
+      if (sawTerminal) return;
+
+      if (repairFrom !== undefined) {
+        // Gap repair is not a failure, so it does not consume the error retry budget.
+        resumeCycles += 1;
+        if (resumeCycles > maxResumeCycles) {
+          throw new RunEventStreamIncompleteError(applied, connections, 'resume-limit');
+        }
+        attempt = 0;
+        options.onReconnect?.({ attempt: 0, afterSeq: repairFrom, delayMs: 0, reason: 'gap' });
+        continue;
+      }
+
+      if (attempt >= maxRetries) {
+        // Exhausted without ever seeing a terminal event. The run's outcome is unknown, so
+        // this must not look like a normal completion.
+        throw new RunEventStreamIncompleteError(applied, connections, 'retries-exhausted');
+      }
+
       const delayMs = Math.min(maxBackoffMs, baseDelayMs * 2 ** attempt);
       attempt += 1;
-      options.onReconnect?.({ attempt, afterSeq: applied, delayMs });
+      options.onReconnect?.({ attempt, afterSeq: applied, delayMs, reason: 'error' });
+      if (lastError !== undefined) options.onDebug?.(`reconnecting after error: ${String(lastError)}`);
       await sleep(delayMs);
       if (options.signal?.aborted) return;
     }

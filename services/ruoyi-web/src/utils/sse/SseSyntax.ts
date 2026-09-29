@@ -5,11 +5,19 @@
  * environment access, so the contract-critical behaviour (event names, ids, multi-line
  * `data:` joining, comments) can be unit tested without a browser or a network.
  *
- * Field semantics follow the WHATWG HTML "Server-Sent Events" parsing rules:
- * - a line starting with `:` is a comment and is ignored;
+ * Field semantics follow the WHATWG HTML "Interpreting an event stream" rules:
+ * - a line starting with `:` is a comment and is ignored (surfaced separately here so a
+ *   caller can use it as a heartbeat);
  * - `data:` lines are collected and joined with `\n`; one trailing `\n` is removed;
  * - `event:` sets the event type, `id:` sets the last event id, `retry:` sets the
- *   reconnection delay in milliseconds.
+ *   reconnection delay in milliseconds;
+ * - a frame whose data buffer is empty does NOT dispatch an event;
+ * - a CRLF pair is one line ending; a single CR is only a line ending when it is not
+ *   followed by LF, which means a CR at the very end of a chunk must wait for the next
+ *   chunk before the line can be split;
+ * - **at end of stream any pending data is discarded: an event that was not terminated
+ *   by a blank line is NOT dispatched** (a truncated frame must never be treated as a
+ *   completed terminal event).
  */
 
 /** One dispatched SSE event. `data` is the joined payload with no trailing newline. */
@@ -32,17 +40,12 @@ const CR = 0x0D;
 const LF = 0x0A;
 const SPACE = 0x20;
 
-/**
- * A lookup table is used instead of `switch`/`startsWith` because this parser runs per
- * line on a hot stream and the field set is fixed by the spec.
- */
 const enum Field {
   Data = 0,
   Event = 1,
   Id = 2,
   Retry = 3,
-  Comment = 4,
-  Unknown = 5,
+  Unknown = 4,
 }
 
 function classify(name: string): Field {
@@ -60,13 +63,14 @@ function isDigit(code: number): boolean {
 /**
  * Incremental SSE frame parser.
  *
- * Feed it raw text chunks with {@link push}; it returns the events completed by that
- * chunk and buffers any partial frame. Call {@link end} when the byte stream closes so a
- * trailing unterminated frame is still dispatched (the spec dispatches on EOF).
+ * Feed raw text chunks with {@link push}; it returns the frames completed by that chunk
+ * and buffers any partial frame. Call {@link end} when the byte stream closes: per spec
+ * an unterminated frame is dropped, but trailing comment-only frames are still reported.
  */
 export class SseFrameParser {
   #buffer = '';
   #dataLines: string[] = [];
+  #comments: string[] = [];
   #type = '';
   #id: string | undefined;
   #lastEventId: string | undefined;
@@ -90,32 +94,77 @@ export class SseFrameParser {
 
     for (let i = 0; i < this.#buffer.length; i++) {
       const code = this.#buffer.charCodeAt(i);
-      if (code !== LF && code !== CR) continue;
 
-      // CRLF counts as a single terminator; a lone CR also terminates.
-      let next = i + 1;
-      if (code === CR && this.#buffer.charCodeAt(next) === LF) next++;
+      if (code === LF) {
+        // A preceding CR already consumed this pair, so a bare LF terminates the line.
+        this.#handleLine(this.#buffer.slice(start, i), events);
+        start = i + 1;
+        continue;
+      }
 
-      this.#handleLine(this.#buffer.slice(start, i), events);
-      start = next;
-      i = next - 1;
-      if (this.#buffer.length === start) break;
+      if (code === CR) {
+        const next = i + 1;
+        if (next === this.#buffer.length) {
+          // The CR may be the first half of a CRLF that arrives in the next chunk.
+          // Stop here and leave it buffered; an unterminated CR is re-examined later.
+          break;
+        }
+        if (this.#buffer.charCodeAt(next) === LF) {
+          this.#handleLine(this.#buffer.slice(start, i), events);
+          start = next + 1;
+          i = next;
+          continue;
+        }
+        // A lone CR (not followed by LF) terminates the line by itself.
+        this.#handleLine(this.#buffer.slice(start, i), events);
+        start = next;
+      }
     }
 
     this.#buffer = this.#buffer.slice(start);
     return events;
   }
 
-  /** Flush at end of stream: dispatches a trailing unterminated frame, per spec. */
+  /**
+   * End of stream.
+   *
+   * Per spec: "Once the end of the file is reached, any pending data must be discarded.
+   * (If the file ends in the middle of an event, before the final empty line, the
+   * incomplete event is not dispatched.)" — so no data event is produced here.
+   *
+   * Two kinds of trailing bytes are still worth reporting:
+   * - a trailing CR is a valid line ending even at EOF, so the line before it is processed
+   *   (which also means a comment that ended with CR is reported);
+   * - a comment line that never got its terminator is reported, because comments carry
+   *   liveness information and never run state.
+   */
   end(): SseEvent[] {
     const events: SseEvent[] = [];
-    if (this.#buffer.length > 0) {
-      const line = this.#buffer;
-      this.#buffer = '';
-      this.#handleLine(line, events);
+    const pendingCR = this.#buffer.length > 0 && this.#buffer.charCodeAt(this.#buffer.length - 1) === CR;
+
+    if (pendingCR) {
+      // Treat the trailing CR as a terminator.
+      this.#handleLine(this.#buffer.slice(0, -1), events);
     }
-    this.#dispatch(events);
+    else if (this.#buffer.length > 0 && this.#buffer.startsWith(':')) {
+      this.#comments.push(this.#commentValue(this.#buffer));
+    }
+
+    // Everything not terminated by a blank line is dropped.
+    this.#buffer = '';
+    this.#dataLines = [];
+    this.#type = '';
+    this.#id = undefined;
+    events.push(...this.#takeComments());
     return events;
+  }
+
+  /** Value of a comment line (everything after the leading colon, minus one space). */
+  #commentValue(line: string): string {
+    const colon = line.indexOf(':');
+    let value = colon === -1 ? '' : line.slice(colon + 1);
+    if (value.charCodeAt(0) === SPACE) value = value.slice(1);
+    return value;
   }
 
   #handleLine(line: string, events: SseEvent[]): void {
@@ -131,7 +180,7 @@ export class SseFrameParser {
 
     if (name.length === 0) {
       // A line that is just ":" (or ": text") is a comment/heartbeat.
-      this.#pushComment(value, events);
+      this.#comments.push(value);
       return;
     }
 
@@ -143,7 +192,7 @@ export class SseFrameParser {
         this.#type = value;
         break;
       case Field.Id:
-        // The spec ignores an id containing NUL; we treat it as "no id".
+        // The spec ignores an id containing NUL.
         if (!value.includes('\u0000')) this.#id = value;
         break;
       case Field.Retry:
@@ -164,49 +213,46 @@ export class SseFrameParser {
     }
   }
 
-  #pushComment(value: string, events: SseEvent[]): void {
-    events.push({
+  #takeComments(): SseEvent[] {
+    if (this.#comments.length === 0) return [];
+    const comments = this.#comments;
+    this.#comments = [];
+    return comments.map((data) => ({
       type: '',
-      data: value,
+      data,
       id: this.#id,
       lastEventId: this.#lastEventId,
       retryMs: this.#retryMs,
       isComment: true,
-    });
+    }));
   }
 
   #dispatch(events: SseEvent[]): void {
-    const hasData = this.#dataLines.length > 0;
-    const type = this.#type;
+    // Comments are reported before the frame they appeared in (they only carry
+    // liveness information, not run state).
+    events.push(...this.#takeComments());
 
-    if (!hasData && type === '' && this.#id === undefined) return;
+    const type = this.#type;
+    const hasData = this.#dataLines.length > 0;
+
+    // The event being dispatched now reports the id seen *before* this frame; the frame's
+    // own id becomes the cursor for subsequent events (the buffer is not reset by spec).
+    const previousId = this.#lastEventId;
+    if (this.#id !== undefined) this.#lastEventId = this.#id;
 
     if (hasData) {
       events.push({
         type,
         data: this.#dataLines.join('\n'),
         id: this.#id,
-        lastEventId: this.#lastEventId,
+        lastEventId: previousId,
         retryMs: this.#retryMs,
         isComment: false,
       });
     }
-    else if (type !== '') {
-      // An `event:`-only frame still dispatches, with an empty payload.
-      events.push({
-        type,
-        data: '',
-        id: this.#id,
-        lastEventId: this.#lastEventId,
-        retryMs: this.#retryMs,
-        isComment: false,
-      });
-    }
+    // Per spec, a frame with an empty data buffer dispatches nothing — an `event:` field
+    // without `data:` must not turn into an event.
 
-    // Per spec the id persists for subsequent events even if this frame had none, while
-    // the *frame* id applies only to the event just dispatched. Conflating the two would
-    // make a later frame report an id it never carried.
-    if (this.#id !== undefined) this.#lastEventId = this.#id;
     this.#id = undefined;
     this.#dataLines = [];
     this.#type = '';

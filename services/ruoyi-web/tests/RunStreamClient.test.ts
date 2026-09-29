@@ -7,6 +7,7 @@ import {
   CursorExpiredError,
   isTerminalMessage,
   openRunStream,
+  RunEventStreamIncompleteError,
   RunStreamHttpError,
   RunStreamStalledError,
 } from '../src/utils/sse/RunStreamClient.ts';
@@ -70,7 +71,7 @@ describe('runStream: url and credential placement', () => {
 });
 
 describe('runStream: request construction', () => {
-  it('sends credentials and cursor as headers, and body only for POST', async () => {
+  it('defaults to GET (read-only subscription) with credentials and cursor in headers', async () => {
     const { calls, fetchImpl } = recordingFetch(streamingResponse([frame(1, 'run.terminal', { status: 'SUCCEEDED' })]));
     const messages: SseMessage[] = [];
     for await (const message of await createRunEventStream({
@@ -80,7 +81,6 @@ describe('runStream: request construction', () => {
       clientId: 'c-9',
       afterSeq: 3,
       lastEventId: '3',
-      body: { hello: 'world' },
       fetchImpl,
     })) messages.push(message);
 
@@ -90,19 +90,29 @@ describe('runStream: request construction', () => {
     assert.equal(headers.ClientID, 'c-9');
     assert.equal(headers['Last-Event-ID'], '3');
     assert.equal(headers.accept, 'text/event-stream');
-    assert.equal(calls[0].init.method, 'POST');
-    assert.equal(calls[0].init.body, JSON.stringify({ hello: 'world' }));
+    assert.equal(calls[0].init.method, 'GET', 'the contract defines this endpoint as GET');
+    assert.equal(calls[0].init.body, undefined, 'a GET subscription must not send a body');
     assert.ok(!calls[0].url.includes(TOKEN));
+    assert.equal(new URL(calls[0].url).searchParams.get('afterSeq'), '3');
     assert.equal(messages.length, 1);
   });
 
-  it('omits the body and uses GET when asked', async () => {
+  it('still supports POST with a body when explicitly requested', async () => {
     const { calls, fetchImpl } = recordingFetch(streamingResponse([frame(1, 'run.terminal')]));
-    for await (const _ of await createRunEventStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, method: 'GET', fetchImpl })) {
+    for await (const _ of await createRunEventStream({
+      baseURL: BASE,
+      runId: 'r-1',
+      token: TOKEN,
+      method: 'POST',
+      body: { hello: 'world' },
+      fetchImpl,
+    })) {
       // drain
     }
-    assert.equal(calls[0].init.method, 'GET');
-    assert.equal(calls[0].init.body, undefined);
+    assert.equal(calls[0].init.method, 'POST');
+    assert.equal(calls[0].init.body, JSON.stringify({ hello: 'world' }));
+    const headers = calls[0].init.headers as Record<string, string>;
+    assert.equal(headers['content-type'], 'application/json');
   });
 });
 
@@ -297,17 +307,139 @@ describe('runStream: reconnection', () => {
     assert.equal(calls.length, 1);
   });
 
-  it('gives up after maxRetries and does not spin forever', async () => {
+  it('throws RunEventStreamIncompleteError when retries run out without a terminal event', async () => {
     const fetchImpl = (async () => streamingResponse([frame(1, 'run.accepted')])) as unknown as typeof fetch;
     const attempts: number[] = [];
     const stream = openRunStream(
       { baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl },
-      { maxRetries: 2, baseDelayMs: 0, sleep: async () => {}, onReconnect: (info) => attempts.push(info.attempt) },
+      {
+        maxRetries: 2,
+        baseDelayMs: 0,
+        sleep: async () => {},
+        onReconnect: (info) => attempts.push(info.attempt),
+      },
     );
-    for await (const _ of stream.messages) {
-      // drain
-    }
+    await assert.rejects(
+      async () => {
+        for await (const _ of stream.messages) {
+          // drain
+        }
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof RunEventStreamIncompleteError, `got ${(error as Error)?.name}`);
+        assert.equal(error.reason, 'retries-exhausted');
+        assert.equal(error.lastSeq, 1, 'the cursor must not advance past what was applied');
+        return true;
+      },
+      'a stream that never reached a terminal state must not end like a normal completion',
+    );
     assert.deepEqual(attempts, [1, 2]);
+  });
+
+  it('repairs a sequence gap instead of advancing the cursor past it', async () => {
+    // Connection 1 delivers 1 then 3 (2 is lost). Connection 2 supplies the missing 2 and
+    // the terminal 4. A cursor must never advance past a hole.
+    let attempt = 0;
+    const responses = [
+      streamingResponse([frame(1, 'run.accepted'), frame(3, 'run.output_delta', { text: 'c' })]),
+      streamingResponse([frame(2, 'run.output_delta', { text: 'b' }), frame(4, 'run.terminal')]),
+    ];
+    const calls: RecordedCall[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(input), init: init ?? {} });
+      return responses[Math.min(attempt++, responses.length - 1)];
+    }) as unknown as typeof fetch;
+
+    const reconnects: Array<{ attempt: number; afterSeq: number | undefined; reason: string }> = [];
+    const stream = openRunStream(
+      { baseURL: BASE, runId: 'r-1', token: TOKEN, afterSeq: 0, fetchImpl },
+      {
+        baseDelayMs: 0,
+        sleep: async () => {},
+        onReconnect: (info) => reconnects.push({ attempt: info.attempt, afterSeq: info.afterSeq, reason: info.reason }),
+      },
+    );
+
+    const seqs: number[] = [];
+    for await (const message of stream.messages) {
+      if (typeof message.cursor === 'number') seqs.push(message.cursor);
+    }
+
+    assert.deepEqual(seqs, [1, 2, 4], 'the frame inside the hole is withheld; the replay supplies it');
+    assert.equal(calls.length, 2, 'a gap must trigger exactly one replay connection');
+    assert.equal(new URL(calls[1].url).searchParams.get('afterSeq'), '1', 'replay resumes from the last contiguous seq');
+    assert.deepEqual(reconnects, [{ attempt: 0, afterSeq: 1, reason: 'gap' }]);
+    assert.equal(stream.appliedCursor(), 4);
+  });
+
+  it('does not treat a later seq as a gap once the hole has been filled', async () => {
+    // Legal continuation: after reconnect from 1 the server sends 2 then 4 — there is no
+    // hole left below 4 (3 simply does not exist), so this must NOT be read as a gap.
+    let attempt = 0;
+    const responses = [
+      streamingResponse([frame(1, 'run.accepted'), frame(3, 'run.output_delta', { text: 'c' })]),
+      streamingResponse([frame(2, 'run.output_delta', { text: 'b' }), frame(4, 'run.terminal')]),
+    ];
+    const calls: RecordedCall[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(input), init: init ?? {} });
+      return responses[Math.min(attempt++, responses.length - 1)];
+    }) as unknown as typeof fetch;
+
+    const stream = openRunStream(
+      { baseURL: BASE, runId: 'r-1', token: TOKEN, afterSeq: 0, fetchImpl },
+      { baseDelayMs: 0, sleep: async () => {} },
+    );
+    const seqs: number[] = [];
+    for await (const message of stream.messages) {
+      if (typeof message.cursor === 'number') seqs.push(message.cursor);
+    }
+
+    assert.deepEqual(seqs, [1, 2, 4]);
+    assert.equal(calls.length, 2, 'a filled hole must not cause further reconnects');
+  });
+
+  it('does not count a gap repair against the error retry budget', async () => {
+    let attempt = 0;
+    const responses = [
+      streamingResponse([frame(1, 'run.accepted'), frame(3, 'run.output_delta')]),
+      streamingResponse([frame(2, 'run.output_delta'), frame(4, 'run.terminal')]),
+    ];
+    const fetchImpl = (async () => responses[Math.min(attempt++, responses.length - 1)]) as unknown as typeof fetch;
+    const stream = openRunStream(
+      { baseURL: BASE, runId: 'r-1', token: TOKEN, afterSeq: 0, fetchImpl },
+      { maxRetries: 0, baseDelayMs: 0, sleep: async () => {} },
+    );
+    const seqs: number[] = [];
+    for await (const message of stream.messages) {
+      if (typeof message.cursor === 'number') seqs.push(message.cursor);
+    }
+    assert.deepEqual(seqs, [1, 2, 4], 'with maxRetries=0 a gap repair must still happen');
+  });
+
+  it('stops gap repair loops after maxResumeCycles', async () => {
+    // A server that always jumps from 1 to 3 can never be repaired.
+    const fetchImpl = (async () => streamingResponse([
+      frame(1, 'run.accepted'),
+      frame(3, 'run.output_delta'),
+    ])) as unknown as typeof fetch;
+    const stream = openRunStream(
+      { baseURL: BASE, runId: 'r-1', token: TOKEN, afterSeq: 0, fetchImpl },
+      { maxResumeCycles: 2, baseDelayMs: 0, sleep: async () => {} },
+    );
+    await assert.rejects(
+      async () => {
+        for await (const _ of stream.messages) {
+          // drain
+        }
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof RunEventStreamIncompleteError);
+        assert.equal(error.reason, 'resume-limit');
+        return true;
+      },
+    );
+    assert.equal(stream.appliedCursor(), 1, 'the cursor must stay at the last contiguous seq');
   });
 
   it('does not reconnect after CursorExpiredError (the caller must re-authorise)', async () => {
