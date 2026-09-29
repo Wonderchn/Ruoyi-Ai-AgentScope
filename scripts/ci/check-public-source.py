@@ -9,7 +9,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 TOKEN = re.compile(
-    rb"(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|"
+    rb"(?:(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|"
     rb"github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|"
     rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)"
 )
@@ -25,8 +25,24 @@ def tracked_files() -> list[Path]:
 
 def main() -> int:
     lock = json.loads((ROOT / "docs/upstreams.lock.json").read_text(encoding="utf-8"))
-    if len(lock.get("sources", [])) != 2:
-        print("Expected two pinned upstream sources", file=sys.stderr)
+    sources = lock.get("sources")
+    expected_paths = {
+        "ruoyi-ai": "services/platform",
+        "ragent": "services/ai",
+        "ruoyi-web": "services/ruoyi-web",
+    }
+    if (
+        not isinstance(sources, list)
+        or len(sources) != len(expected_paths)
+        or any(not isinstance(source, dict) for source in sources)
+        or {source.get("name"): source.get("path") for source in sources} != expected_paths
+        or any(
+            not isinstance(source.get("commit"), str)
+            or not re.fullmatch(r"[0-9a-f]{40}", source["commit"])
+            for source in sources
+        )
+    ):
+        print("Expected three named upstream sources with pinned commits", file=sys.stderr)
         return 1
     bad: list[str] = []
     for path in tracked_files():
