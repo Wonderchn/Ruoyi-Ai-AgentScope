@@ -22,10 +22,11 @@ cd services/ai/frontend && npm ci && npm run lint && npm run build
 
 ## 无头开发
 
-本机任务使用 `.agent/tasks/<task-id>.json`，按 `.agent/task.schema.json` 校验。批准范围、基线 SHA、允许路径和验收命令均记录在任务文件；运行报告按 `.agent/run-result.schema.json` 校验，验证通过再发布 Draft PR。自动修改只进入任务分支，不能直接合并或部署。
+本机任务使用 `.agent/tasks/<task-id>.json`，按 `.agent/task.schema.json` 校验。批准范围、基线 SHA、允许路径和验收命令均记录在任务文件；运行报告按 `.agent/run-result.schema.json` 校验，验证通过再发布 Draft PR。默认入口在仓库旁创建每任务独立 Git worktree，原来的 `main` 检出保持不动；自动修改只进入任务分支，不能直接合并或部署。
 
 ```powershell
-pwsh -File scripts/agent/Invoke-AgentTask.ps1 -TaskFile .agent/tasks/example.json -RepositoryRoot .
+pwsh -File scripts/agent/Start-IsolatedTask.ps1 -TaskFile .agent/tasks/example.json -RepositoryRoot .
+# 以下命令在输出的任务 worktree 内执行
 pwsh -File scripts/agent/Publish-AgentPr.ps1 -TaskFile .agent/tasks/example.json -RepositoryRoot . -ResultFile .agent/runs/example/result.json -Draft
 ```
 
