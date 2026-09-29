@@ -1,11 +1,12 @@
 # Ruoyi-Ai-AgentScope
 
-面向多租户的 AI 平台工程。`services/platform` 来自 ruoyi-ai，承载业务平台；`services/ai` 来自 ragent，承载 RAG 与 Agent。当前提交是工程化基线，**两服务尚未完成统一身份、租户隔离和业务接入，不能用于客户生产环境**。
+面向多租户的 AI 平台工程。`services/platform` 来自 ruoyi-ai，承载业务平台；`services/ai` 来自 ragent，承载 RAG 与 Agent；`services/ruoyi-web` 是若依用户前端的固定源码快照，供后续统一入口设计使用。当前提交是工程化基线，**两服务和前端尚未完成统一身份、租户隔离和业务接入，不能用于客户生产环境**。
 
 ## 目录和构建
 
 - `services/platform`：独立 Maven 构建根，Java 17，Spring Boot 3。
 - `services/ai`：独立 Maven 构建根，Java 17，Spring Boot 4；`frontend` 是原 ragent React 前端，供后续迁移参考。
+- `services/ruoyi-web`：若依用户前端独立构建根，Vue 3、Node.js >=22.13.0、pnpm 11.0.9；当前仅为上游源码快照，未接入 platform 或 ai。构建前按 `.env.example` 在本机提供环境配置，勿提交真实值。
 - `infra/docker`：分别构建 platform 和 ai 的镜像。
 - `.github/workflows/ci.yml`：PR 验证；`release.yml`：main 验证通过后向 GHCR 发布镜像，生成绑定两份镜像 digest 的 release manifest，再在无注册表凭据的干净 runner 上按 digest 拉取并核对来源提交。
 - `scripts/agent`：本机无头 Codex 执行和 Draft PR 发布。
@@ -16,6 +17,7 @@
 cd services/platform && mvn -B -ntp -Pdev clean verify
 cd services/ai && mvn -B -ntp -Pci clean verify
 cd services/ai/frontend && npm ci && npm run lint && npm run build
+cd services/ruoyi-web && pnpm install --frozen-lockfile && pnpm build
 ```
 
 某些原上游测试需要外部组件或模型服务；CI 专用范围和外部测试清单见 `docs/runbooks/external-tests.md`。应用配置所需环境变量见 `docs/configuration.md`，不得在仓库中提交真实凭据。
@@ -38,4 +40,4 @@ pwsh -File scripts/agent/Publish-AgentPr.ps1 -TaskFile .agent/tasks/example.json
 
 ## 上游与许可
 
-具体来源 SHA 见 `docs/upstreams.lock.json`，保留 `services/platform/LICENSE`、`services/ai/LICENSE` 及相关 NOTICE。未来从上游升级时，固定新旧 SHA，并独立提交升级 PR。许可证和第三方依赖使用前需核对具体分发范围。
+具体来源 SHA 见 `docs/upstreams.lock.json`，保留 `services/platform/LICENSE`、`services/ai/LICENSE`、`services/ruoyi-web/license` 及相关 NOTICE。`ruoyi-web` 原跟踪的 `.env.development`、`.env.production` 以占位 `.env.example` 替代，避免把上游环境值直接带入本项目。未来从上游升级时，固定新旧 SHA，并独立提交升级 PR。许可证和第三方依赖使用前需核对具体分发范围。
