@@ -19,6 +19,35 @@ function Get-ChangedPaths {
     return @($tracked + $untracked | Where-Object { $_ } | Sort-Object -Unique)
 }
 
+function Get-IgnoredPaths {
+    $raw = [string](& git -C $repo ls-files --others --ignored --exclude-standard -z)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect ignored paths.' }
+    $runPrefix = '.agent/runs/' + $task.taskId + '/'
+    return @($raw.Split([char]0) | Where-Object { $_ -and -not $_.StartsWith($runPrefix, [StringComparison]::Ordinal) } | Sort-Object -Unique)
+}
+
+function Assert-NoReparsePaths([string[]] $Paths) {
+    foreach ($path in $Paths) {
+        $full = [IO.Path]::GetFullPath((Join-Path $repo $path))
+        if (-not $full.StartsWith($repo + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Task path resolves outside repository: $path"
+        }
+        $walk = $full
+        while ($walk -ne $repo) {
+            $item = Get-Item -LiteralPath $walk -Force -ErrorAction SilentlyContinue
+            if ($null -ne $item -and (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                throw "Task path traverses a reparse point: $path"
+            }
+            $walk = Split-Path -Parent $walk
+        }
+    }
+}
+
+function Assert-RunOutputPaths {
+    $prefix = '.agent/runs/' + $task.taskId
+    Assert-NoReparsePaths @($prefix, "$prefix/agent-final.json", "$prefix/codex.jsonl", "$prefix/codex.stderr.log", "$prefix/result.json", "$prefix/validated.patch")
+}
+
 function Test-AllowedPaths([string[]] $Paths) {
     foreach ($path in $Paths) {
         $normalized = $path.Replace('\', '/')
@@ -67,6 +96,7 @@ function Get-TaskWritableDirs {
 }
 
 $repo = (Resolve-Path -LiteralPath $RepositoryRoot).Path
+Import-Module (Join-Path $repo 'scripts/agent/TaskPatch.psm1') -Force
 $taskPath = (Resolve-Path -LiteralPath $TaskFile).Path
 if (-not (Test-Json -LiteralPath $taskPath -SchemaFile (Join-Path $repo '.agent/task.schema.json'))) {
     throw 'Task file does not match .agent/task.schema.json.'
@@ -102,6 +132,17 @@ $schemaFile = Join-Path $repo '.agent/result.schema.json'
 $promptTemplate = [IO.File]::ReadAllText((Join-Path $repo '.agent/prompts/implement.md'))
 $prompt = $promptTemplate + "`n`nTask:`n" + ($task | ConvertTo-Json -Depth 12) + "`n`nApproved Spec:`n" + [IO.File]::ReadAllText($specPath)
 [IO.File]::WriteAllText($promptFile, $prompt, [Text.UTF8Encoding]::new($false))
+$ignoredBefore = @(Get-IgnoredPaths)
+$approvedIgnored = [System.Collections.Generic.List[string]]::new()
+foreach ($approvedFile in @($taskPath, $specPath)) {
+    if ($approvedFile.StartsWith($repo + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        $approvedIgnored.Add([IO.Path]::GetRelativePath($repo, $approvedFile).Replace('\', '/'))
+    }
+}
+$staleIgnored = @($ignoredBefore | Where-Object { $approvedIgnored -cnotcontains $_ })
+if ($staleIgnored.Count -gt 0) {
+    throw "Task checkout contains $($staleIgnored.Count) unapproved ignored paths; start in a fresh worktree: $(($staleIgnored | Select-Object -First 10) -join ', ')"
+}
 
 $startInfo = [Diagnostics.ProcessStartInfo]::new()
 $startInfo.FileName = (Get-Command pwsh).Source
@@ -116,17 +157,25 @@ $stdout = $process.StandardOutput.ReadToEndAsync()
 $stderr = $process.StandardError.ReadToEndAsync()
 $finished = $process.WaitForExit($TimeoutMinutes * 60000)
 if (-not $finished) { $process.Kill($true); $process.WaitForExit() }
+Assert-RunOutputPaths
 [IO.File]::WriteAllText((Join-Path $runDir 'codex.jsonl'), $stdout.GetAwaiter().GetResult(), [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText((Join-Path $runDir 'codex.stderr.log'), $stderr.GetAwaiter().GetResult(), [Text.UTF8Encoding]::new($false))
 $changed = @(Get-ChangedPaths)
 $status = 'failed'
 $validation = [System.Collections.Generic.List[string]]::new()
 $reason = ''
+$patchSha256 = $null
 try {
     if (-not $finished) { throw 'Codex timed out.' }
     if ($process.ExitCode -ne 0) { throw "Codex exited with code $($process.ExitCode)." }
     if ($changed.Count -eq 0) { throw 'Codex made no changes.' }
     Test-AllowedPaths $changed
+    Assert-NoReparsePaths $changed
+    $ignoredAfter = @(Get-IgnoredPaths)
+    $newIgnored = @($ignoredAfter | Where-Object { $ignoredBefore -cnotcontains $_ })
+    if ($newIgnored.Count -gt 0) {
+        throw "Agent created $($newIgnored.Count) ignored paths outside its run log: $(($newIgnored | Select-Object -First 10) -join ', ')"
+    }
     if ((Get-FileHash -LiteralPath $taskPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $taskHash) { throw 'Task approval file changed during execution.' }
     if ((Get-FileHash -LiteralPath $specPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $specHash) { throw 'Approved Spec changed during execution.' }
     foreach ($check in $task.validation) {
@@ -155,6 +204,16 @@ try {
         $validation.Add([string]$check)
     }
     Test-AllowedPaths @(Get-ChangedPaths)
+    Assert-NoReparsePaths @(Get-ChangedPaths)
+    & git -C $repo add -A
+    if ($LASTEXITCODE -ne 0) { throw 'Could not stage the validated task patch.' }
+    $unstagedPaths = @(& git -C $repo diff --name-only)
+    if ($LASTEXITCODE -ne 0 -or $unstagedPaths.Count -gt 0) { throw 'Task files changed while staging the validated patch.' }
+    $stagedPaths = @(& git -C $repo diff --cached --name-only $head)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the staged task patch.' }
+    Test-AllowedPaths $stagedPaths
+    Assert-RunOutputPaths
+    $patchSha256 = Get-TaskPatchSha256 -RepositoryRoot $repo -BaseSha $head -OutputFile (Join-Path $runDir 'validated.patch') -Cached
     $status = 'passed'
 } catch {
     $reason = $_.Exception.Message
@@ -165,6 +224,7 @@ $result = [ordered]@{
     baseSha = $head
     taskSha256 = $taskHash
     specSha256 = $specHash
+    patchSha256 = $patchSha256
     status = $status
     reason = $reason
     changedPaths = @(Get-ChangedPaths)
@@ -172,6 +232,7 @@ $result = [ordered]@{
     codexExitCode = if ($finished) { $process.ExitCode } else { $null }
     finishedAt = (Get-Date).ToUniversalTime().ToString('o')
 }
+Assert-RunOutputPaths
 [IO.File]::WriteAllText($resultFile, ($result | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 Write-Output "Task $($task.taskId): $status; report=$resultFile"
 if ($status -ne 'passed') { throw $reason }

@@ -7,7 +7,7 @@
 - `services/platform`：独立 Maven 构建根，Java 17，Spring Boot 3。
 - `services/ai`：独立 Maven 构建根，Java 17，Spring Boot 4；`frontend` 是原 ragent React 前端，供后续迁移参考。
 - `infra/docker`：分别构建 platform 和 ai 的镜像。
-- `.github/workflows/ci.yml`：PR 验证；`release.yml`：main 验证通过后向 GHCR 发布镜像，并生成绑定两份镜像 digest 的 release manifest。
+- `.github/workflows/ci.yml`：PR 验证；`release.yml`：main 验证通过后向 GHCR 发布镜像，生成绑定两份镜像 digest 的 release manifest，再在无注册表凭据的干净 runner 上按 digest 拉取并核对来源提交。
 - `scripts/agent`：本机无头 Codex 执行和 Draft PR 发布。
 
 本地预备 Java 17、Maven、Node.js、npm；构建分别运行：
@@ -22,14 +22,19 @@ cd services/ai/frontend && npm ci && npm run lint && npm run build
 
 ## 无头开发
 
-本机任务使用 `.agent/tasks/<task-id>.json`，按 `.agent/task.schema.json` 校验。批准范围、基线 SHA、允许路径和验收命令均记录在任务文件；运行报告按 `.agent/run-result.schema.json` 校验，验证通过再发布 Draft PR。自动修改只进入任务分支，不能直接合并或部署。
+本机任务使用 `.agent/tasks/<task-id>.json`，按 `.agent/task.schema.json` 校验。批准范围、基线 SHA、允许路径和验收命令均记录在任务文件；运行报告按 `.agent/run-result.schema.json` 校验，验证通过再发布 Draft PR。默认入口在仓库旁创建每任务独立 Git worktree，原来的 `main` 检出保持不动；自动修改只进入任务分支，不能直接合并或部署。
 
 ```powershell
-pwsh -File scripts/agent/Invoke-AgentTask.ps1 -TaskFile .agent/tasks/example.json -RepositoryRoot .
+pwsh -File scripts/agent/Start-IsolatedTask.ps1 -TaskFile .agent/tasks/example.json -RepositoryRoot .
+# 以下命令在输出的任务 worktree 内执行
 pwsh -File scripts/agent/Publish-AgentPr.ps1 -TaskFile .agent/tasks/example.json -RepositoryRoot . -ResultFile .agent/runs/example/result.json -Draft
 ```
 
 本机需先完成 `codex login` 与 GitHub CLI `gh auth login`。任务文件的 `approved` 字段只是记录；发布脚本还会检查批准人、Spec hash 与允许路径。首期由操作者创建并审核任务文件，任何来自 issue、PR 或模型输出的文本都不能自行授权。
+
+通过验证的运行结果包含已暂存补丁的 SHA-256。发布时会再次核对补丁、允许路径和凭据模式；提交带有任务与结果摘要。若推送或创建 PR 中断，可用同一任务、Spec 和结果文件重跑发布脚本：仅当本地提交与验证结果一致、远端分支没有分歧时继续，并复用已有 PR。已关闭或合并的 PR 不会被重复创建。
+
+执行包装器要求检出中除批准任务文件、Spec 和当前运行日志外没有其他 Git 忽略文件，并拒绝代理新建的忽略文件以及变更路径中的符号链接、Windows junction；构建产物由包装器在代理退出后运行验证时生成。任务运行日志目录中的输出也会检查重解析点，避免代理把报告写入重定向路径。
 
 ## 上游与许可
 
