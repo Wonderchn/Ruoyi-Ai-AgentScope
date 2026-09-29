@@ -15,6 +15,9 @@ pwsh -File scripts/agent/Start-IsolatedTask.ps1 -TaskFile ".agent/tasks/$taskId.
 pwsh -File scripts/agent/Publish-AgentPr.ps1 -TaskFile ".agent/tasks/$taskId.json" -RepositoryRoot . -ResultFile ".agent/runs/$taskId/result.json" -Draft
 ```
 
-如果任务失败或中断，保留现有工作树，不要再次启动相同任务。在工作树中查看 `git status --short`、`git diff`、`.agent/runs/<task-id>/result.json` 的 `reason` 和 `validationPassed`，以及同目录的 `codex.stderr.log`、`codex.jsonl` 和 `agent-final.json`。中断较早时可能没有 `result.json`；此时结合启动命令的错误输出与已生成的日志排查。
+如果任务失败或中断，保留现有工作树，不要再次启动相同任务。在工作树中查看 `git status --short`、`git diff`、`.agent/runs/<task-id>/result.json` 的 `reason` 和 `validationPassed`，以及同目录的 `codex.stderr.log`、`codex.jsonl` 和 `agent-final.json`。
+
+- `codex.stderr.log` 可以为空，`agent-final.json` 也可能不存在。核对本次 `codex.jsonl`、实际文件和进程记录；不能只凭缺少 `file_change` 事件或空 stderr 判定没有产出。
+- 中断较早时可能没有 `result.json`；此时结合启动命令的错误输出与已生成的日志排查。无 `result.json` 的分支尚未经过执行期中断实测，不得将缺失结果视为通过。
 
 Draft PR 供人工审查；合并和部署仍是各自独立的受审操作。
