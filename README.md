@@ -31,6 +31,8 @@ pwsh -File scripts/agent/Publish-AgentPr.ps1 -TaskFile .agent/tasks/example.json
 
 本机需先完成 `codex login` 与 GitHub CLI `gh auth login`。任务文件的 `approved` 字段只是记录；发布脚本还会检查批准人、Spec hash 与允许路径。首期由操作者创建并审核任务文件，任何来自 issue、PR 或模型输出的文本都不能自行授权。
 
+通过验证的运行结果包含已暂存补丁的 SHA-256。发布时会再次核对补丁、允许路径和凭据模式；提交带有任务与结果摘要。若推送或创建 PR 中断，可用同一任务、Spec 和结果文件重跑发布脚本：仅当本地提交与验证结果一致、远端分支没有分歧时继续，并复用已有 PR。已关闭或合并的 PR 不会被重复创建。
+
 ## 上游与许可
 
 具体来源 SHA 见 `docs/upstreams.lock.json`，保留 `services/platform/LICENSE`、`services/ai/LICENSE` 及相关 NOTICE。未来从上游升级时，固定新旧 SHA，并独立提交升级 PR。许可证和第三方依赖使用前需核对具体分发范围。
