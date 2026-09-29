@@ -34,6 +34,8 @@ pwsh -File scripts/agent/Publish-AgentPr.ps1 -TaskFile .agent/tasks/example.json
 
 通过验证的运行结果包含已暂存补丁的 SHA-256。发布时会再次核对补丁、允许路径和凭据模式；提交带有任务与结果摘要。若推送或创建 PR 中断，可用同一任务、Spec 和结果文件重跑发布脚本：仅当本地提交与验证结果一致、远端分支没有分歧时继续，并复用已有 PR。已关闭或合并的 PR 不会被重复创建。
 
+执行包装器要求检出中除批准任务文件、Spec 和当前运行日志外没有其他 Git 忽略文件，并拒绝代理新建的忽略文件以及变更路径中的符号链接、Windows junction；构建产物由包装器在代理退出后运行验证时生成。任务运行日志目录中的输出也会检查重解析点，避免代理把报告写入重定向路径。
+
 ## 上游与许可
 
 具体来源 SHA 见 `docs/upstreams.lock.json`，保留 `services/platform/LICENSE`、`services/ai/LICENSE` 及相关 NOTICE。未来从上游升级时，固定新旧 SHA，并独立提交升级 PR。许可证和第三方依赖使用前需核对具体分发范围。
