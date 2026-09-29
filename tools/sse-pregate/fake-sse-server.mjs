@@ -28,9 +28,11 @@ const PORT = Number(process.env.PORT ?? 18131);
 const LOG = process.env.LOG ?? 'server-requests.jsonl';
 
 /**
- * Sequence omitted on the first connection of each test run. Tests that assert gap repair
+ * Sequence omitted on the first connection of each session. Tests that assert gap repair
  * must give each run its own `?run=<id>` so the "first connection" counter is not shared
  * (otherwise a later test silently stops seeing the hole and the assertion goes vacuous).
+ * Header-only requests (no `?run=`) all share one `default` session per path, which is
+ * what makes a bare `Last-Event-ID` resume work: it is a second connection, not a first.
  */
 const OMIT_ONCE = process.env.OMIT_ONCE === undefined ? 2 : Number(process.env.OMIT_ONCE);
 
@@ -117,9 +119,11 @@ function serveRun(req, res, frames, { omitOnce } = {}) {
     ? Number(afterSeqParam)
     : (typeof lastEventId === 'string' && lastEventId !== '' ? Number(lastEventId) : undefined);
 
-  // Counter scope: the scenario path plus the test's own run id (falling back to the SSE
-  // header, then to a shared key for hand-run curl sessions).
-  const runKey = url.searchParams.get('run') ?? (typeof lastEventId === 'string' ? `lei:${lastEventId}` : 'default');
+  // Session identity is independent of the cursor: `?run=<id>` names the test session and
+  // every other request on the path shares that path's `default` session. Keying the
+  // counter by `Last-Event-ID` would count a header-only resume as a brand-new session
+  // and re-open the very hole the resume was trying to close.
+  const runKey = url.searchParams.get('run') || 'default';
   const counterKey = `${url.pathname}#${runKey}`;
   const connectionIndex = (connectionCounts.get(counterKey) ?? 0) + 1;
   connectionCounts.set(counterKey, connectionIndex);
@@ -248,5 +252,5 @@ writeFileSync(LOG, '');
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`fake-sse listening on http://127.0.0.1:${PORT} (scenarios: ${Object.keys(scenarios).join(', ')})`);
   console.log(`request log: ${LOG} — credential headers and sensitive query values are redacted`);
-  console.log(`S1 omits seq ${OMIT_ONCE} on the first connection of each ?run=<id> (set OMIT_ONCE to change)`);
+  console.log(`S1 omits seq ${OMIT_ONCE} on the first connection of each session (?run=<id>, else the path's shared 'default')`);
 });
