@@ -123,3 +123,48 @@ jobs:
           name: release-manifest
           path: release-manifest.json
           if-no-files-found: error
+
+  verify-pull:
+    needs: manifest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-manifest
+      - name: Pull both published digests without registry credentials
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          DOCKER_CONFIG: ${{ runner.temp }}/anonymous-docker
+        run: |
+          set -euo pipefail
+          mkdir -p "$DOCKER_CONFIG"
+          python3 - <<'PY' > image-refs.txt
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          manifest = json.loads(Path('release-manifest.json').read_text(encoding='utf-8'))
+          if manifest['sourceCommit'] != os.environ['SOURCE_SHA']:
+              raise SystemExit('Release manifest source commit mismatch')
+          if manifest['sourceRepository'] != os.environ['SOURCE_REPOSITORY']:
+              raise SystemExit('Release manifest repository mismatch')
+          expected = {'ruoyi-ai-agentscope-ai', 'ruoyi-ai-agentscope-platform'}
+          if set(manifest['images']) != expected:
+              raise SystemExit('Release manifest does not contain exactly the two expected images')
+          for name in sorted(expected):
+              reference = manifest['images'][name]
+              if not re.fullmatch(rf'ghcr\.io/wonderchn/{name}@sha256:[0-9a-f]{{64}}', reference):
+                  raise SystemExit(f'Invalid immutable image reference for {name}')
+              print(reference)
+          PY
+          while IFS= read -r reference; do
+            docker pull --platform linux/amd64 "$reference"
+            revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$reference")
+            test "$revision" = "$SOURCE_SHA"
+          done < image-refs.txt

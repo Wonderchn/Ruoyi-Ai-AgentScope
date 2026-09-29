@@ -7,7 +7,7 @@
 - `services/platform`：独立 Maven 构建根，Java 17，Spring Boot 3。
 - `services/ai`：独立 Maven 构建根，Java 17，Spring Boot 4；`frontend` 是原 ragent React 前端，供后续迁移参考。
 - `infra/docker`：分别构建 platform 和 ai 的镜像。
-- `.github/workflows/ci.yml`：PR 验证；`release.yml`：main 验证通过后向 GHCR 发布镜像，并生成绑定两份镜像 digest 的 release manifest。
+- `.github/workflows/ci.yml`：PR 验证；`release.yml`：main 验证通过后向 GHCR 发布镜像，生成绑定两份镜像 digest 的 release manifest，再在无注册表凭据的干净 runner 上按 digest 拉取并核对来源提交。
 - `scripts/agent`：本机无头 Codex 执行和 Draft PR 发布。
 
 本地预备 Java 17、Maven、Node.js、npm；构建分别运行：
