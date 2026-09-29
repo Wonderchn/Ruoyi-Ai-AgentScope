@@ -21,6 +21,13 @@ git status --short
 - 检查运行目录的 `prompt.md`、`codex.jsonl`、`codex.stderr.log`、`agent-final.json` 和 `result.json`。以结果中的 `status`、`reason`、`codexExitCode`、`changedPaths`、`validationPassed` 判断阶段。`agent-final.json` 是模型答复，不是验证通过证明。
 - 包装器在子进程结束后才写 Codex 输出日志；包装器崩溃或机器重启可能留下缺失、不完整或旧的文件。核对时间与本次执行；缺少结果不能视为成功，验证的终端输出也不保证保存在 Codex 日志里。
 
+执行期中断时还要结合工作树和进程记录判读：
+
+- `codex.stderr.log` 可能是 0 字节，`agent-final.json` 也可能不存在；这都不能排除中断。核对本次 `codex.jsonl` 是否有 `turn.completed`，并与进程退出时间、`result.json` 对照；日志可能不完整，不能单凭一个事件判定成功。
+- 模型用 shell 命令写文件时，`codex.jsonl` 可能没有 `file_change` 事件。以 `git status --short`、文件内容和哈希确认实际产物，不能用事件缺失推断没有改动。
+- `validationPassed=[]` 不能单独证明验证已执行或未执行。结合 `reason`、包装器输出和验证副产物判断阶段；非零 `codexExitCode` 也可能来自外部终止或超时，不能直接归因于 Codex 自身缺陷。
+- 若要判断是否留下半写文件，在中断前后记录同一路径的字节数和 SHA-256 并比较。本次合成演练在文件完整写出后终止，前后哈希一致；半写场景尚未验证。
+
 ## 2. 恢复本地执行与验证
 
 `Invoke-AgentTask.ps1` 遇到已有任务分支、脏工作区或不匹配的 HEAD 会拒绝启动；它不能直接接着旧运行执行。先在原任务分支审查并保留已完成工作。需要重新执行时，由维护者准备位于批准 `baseSha` 的独立、干净检出，其中尚无同名本地任务分支，并确保相同任务、Spec 及所需工具可用，再启动：
@@ -30,7 +37,7 @@ pwsh -NoProfile -File scripts/agent/Invoke-AgentTask.ps1 `
   -TaskFile $taskFile -RepositoryRoot . -TimeoutMinutes 30
 ```
 
-这是从批准任务重新执行，不是自动恢复；不要删除旧分支或丢弃旧差异来绕过保护。只有确认旧进程退出后才启动新执行。单独重跑验证可用于诊断，但不会更新或生成可信的通过结果；缺失或失败的结果不得手改为 `passed`。
+这是从批准任务重新执行，不是自动恢复；不要删除旧分支或丢弃旧差异来绕过保护。也可以从干净的批准基线调用 `Start-IsolatedTask.ps1` 创建新的专用工作树和任务分支；原任务的工作树与失败结果仍须保留。只有确认旧进程退出后才启动新执行。单独重跑验证可用于诊断，但不会更新或生成可信的通过结果；缺失或失败的结果不得手改为 `passed`。
 
 按任务 `validation` 顺序重跑全部配置项，任何命令非零退出即停止该项：
 
