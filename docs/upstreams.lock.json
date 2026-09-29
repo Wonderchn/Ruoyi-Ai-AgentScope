@@ -19,7 +19,7 @@
       "name": "ruoyi-web",
       "repository": "https://github.com/ageerle/ruoyi-web.git",
       "commit": "834fd3dedeb297681e74425040b19821ea332319",
-      "import": "tracked source snapshot, excluding Git metadata; .env.development and .env.production replaced by .env.example with placeholders"
+      "import": "tracked source snapshot, excluding Git metadata; .env.development and .env.production replaced by .env.example with placeholders; three docker-compose-all.yaml passwords replaced by required environment references"
     }
   ]
 }

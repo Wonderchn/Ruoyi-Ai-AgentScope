@@ -40,4 +40,4 @@ pwsh -File scripts/agent/Publish-AgentPr.ps1 -TaskFile .agent/tasks/example.json
 
 ## 上游与许可
 
-具体来源 SHA 见 `docs/upstreams.lock.json`，保留 `services/platform/LICENSE`、`services/ai/LICENSE`、`services/ruoyi-web/license` 及相关 NOTICE。`ruoyi-web` 原跟踪的 `.env.development`、`.env.production` 以占位 `.env.example` 替代，避免把上游环境值直接带入本项目。未来从上游升级时，固定新旧 SHA，并独立提交升级 PR。许可证和第三方依赖使用前需核对具体分发范围。
+具体来源 SHA 见 `docs/upstreams.lock.json`，保留 `services/platform/LICENSE`、`services/ai/LICENSE`、`services/ruoyi-web/license` 及相关 NOTICE。`ruoyi-web` 原跟踪的 `.env.development`、`.env.production` 以占位 `.env.example` 替代；`docker-compose-all.yaml` 三处上游硬编码密码改为必填环境变量，避免把上游环境值直接带入本项目。未来从上游升级时，固定新旧 SHA，并独立提交升级 PR。许可证和第三方依赖使用前需核对具体分发范围。
