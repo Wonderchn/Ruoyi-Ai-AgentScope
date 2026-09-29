@@ -67,6 +67,7 @@ function Get-TaskWritableDirs {
 }
 
 $repo = (Resolve-Path -LiteralPath $RepositoryRoot).Path
+Import-Module (Join-Path $repo 'scripts/agent/TaskPatch.psm1') -Force
 $taskPath = (Resolve-Path -LiteralPath $TaskFile).Path
 if (-not (Test-Json -LiteralPath $taskPath -SchemaFile (Join-Path $repo '.agent/task.schema.json'))) {
     throw 'Task file does not match .agent/task.schema.json.'
@@ -122,6 +123,7 @@ $changed = @(Get-ChangedPaths)
 $status = 'failed'
 $validation = [System.Collections.Generic.List[string]]::new()
 $reason = ''
+$patchSha256 = $null
 try {
     if (-not $finished) { throw 'Codex timed out.' }
     if ($process.ExitCode -ne 0) { throw "Codex exited with code $($process.ExitCode)." }
@@ -155,6 +157,14 @@ try {
         $validation.Add([string]$check)
     }
     Test-AllowedPaths @(Get-ChangedPaths)
+    & git -C $repo add -A
+    if ($LASTEXITCODE -ne 0) { throw 'Could not stage the validated task patch.' }
+    $unstagedPaths = @(& git -C $repo diff --name-only)
+    if ($LASTEXITCODE -ne 0 -or $unstagedPaths.Count -gt 0) { throw 'Task files changed while staging the validated patch.' }
+    $stagedPaths = @(& git -C $repo diff --cached --name-only $head)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the staged task patch.' }
+    Test-AllowedPaths $stagedPaths
+    $patchSha256 = Get-TaskPatchSha256 -RepositoryRoot $repo -BaseSha $head -OutputFile (Join-Path $runDir 'validated.patch') -Cached
     $status = 'passed'
 } catch {
     $reason = $_.Exception.Message
@@ -165,6 +175,7 @@ $result = [ordered]@{
     baseSha = $head
     taskSha256 = $taskHash
     specSha256 = $specHash
+    patchSha256 = $patchSha256
     status = $status
     reason = $reason
     changedPaths = @(Get-ChangedPaths)
