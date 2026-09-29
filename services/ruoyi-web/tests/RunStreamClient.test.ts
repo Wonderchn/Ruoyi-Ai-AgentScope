@@ -8,6 +8,7 @@ import {
   isTerminalMessage,
   openRunStream,
   RunEventStreamIncompleteError,
+  RunEventStreamProtocolError,
   RunStreamHttpError,
   RunStreamStalledError,
 } from '../src/utils/sse/RunStreamClient.ts';
@@ -531,5 +532,218 @@ describe('runStream: reconnection', () => {
     }
     assert.deepEqual(seqs, [1, 2, 3]);
     assert.equal(attempt, 2);
+  });
+});
+
+describe('runStream: envelope contract gate', () => {
+  /**
+   * Full-control frame builder: every envelope field is explicit so tests can omit or
+   * corrupt exactly one contract element at a time.
+   */
+  function envelopeFrame(
+    seq: number | undefined,
+    type: string,
+    opts: { runId?: string; schemaVersion?: number; id?: string; event?: string; payload?: Record<string, unknown> } = {},
+  ): string {
+    const envelope: Record<string, unknown> = {
+      schemaVersion: opts.schemaVersion ?? 1,
+      runId: opts.runId ?? 'r-1',
+      ...(seq !== undefined ? { seq } : {}),
+      type,
+      payload: opts.payload ?? {},
+    };
+    const lines: string[] = [];
+    if (opts.id !== undefined) lines.push(`id: ${opts.id}`);
+    lines.push(`event: ${opts.event ?? type}`);
+    lines.push(`data: ${JSON.stringify(envelope)}`);
+    return `${lines.join('\n')}\n\n`;
+  }
+
+  it('rejects a terminal without a numeric seq instead of ending the subscription', async () => {
+    // The regression from the review: `id: 3` + `event: run.terminal` + an envelope with no
+    // seq used to be delivered as a normal completion with the cursor still at 0.
+    const { fetchImpl, calls } = recordingFetch(streamingResponse([
+      frame(1, 'run.accepted'),
+      envelopeFrame(undefined, 'run.terminal', { id: '3', payload: { status: 'SUCCEEDED' } }),
+    ]));
+    const stream = openRunStream(
+      { baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl },
+      { maxRetries: 3, baseDelayMs: 0, sleep: async () => {} },
+    );
+    const delivered: SseMessage[] = [];
+    await assert.rejects(
+      async () => {
+        for await (const message of stream.messages) delivered.push(message);
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof RunEventStreamProtocolError, `got ${(error as Error)?.name}`);
+        assert.equal(error.reason, 'seq');
+        return true;
+      },
+      'a terminal without a usable cursor must fail as a protocol error, never complete the subscription',
+    );
+    assert.deepEqual(delivered.map((m) => m.cursor), [1], 'only the frames before the breach are delivered');
+    assert.equal(stream.appliedCursor(), 1);
+    assert.equal(calls.length, 1, 'a contract breach is deterministic and must not be retried');
+  });
+
+  it('rejects a terminal whose runId does not match the subscription', async () => {
+    const { fetchImpl, calls } = recordingFetch(streamingResponse([
+      envelopeFrame(1, 'run.terminal', { runId: 'r-other', payload: { status: 'SUCCEEDED' } }),
+    ]));
+    const stream = openRunStream(
+      { baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl },
+      { maxRetries: 3, baseDelayMs: 0, sleep: async () => {} },
+    );
+    const delivered: SseMessage[] = [];
+    await assert.rejects(
+      async () => {
+        for await (const message of stream.messages) delivered.push(message);
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof RunEventStreamProtocolError, `got ${(error as Error)?.name}`);
+        assert.equal(error.reason, 'run-id');
+        assert.match((error as Error).message, /for r-1, frame names r-other/, 'the error names both runs');
+        return true;
+      },
+      'a foreign-run terminal must never be accepted as proof of completeness',
+    );
+    assert.deepEqual(delivered, [], 'the foreign frame is never delivered');
+    assert.equal(stream.appliedCursor(), 0);
+    assert.equal(calls.length, 1, 'a contract breach is deterministic and must not be retried');
+  });
+
+  it('rejects an envelope whose schemaVersion it cannot interpret', async () => {
+    const { fetchImpl } = recordingFetch(streamingResponse([envelopeFrame(1, 'run.accepted', { schemaVersion: 2 })]));
+    const stream = openRunStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl }, { sleep: async () => {} });
+    await assert.rejects(
+      async () => {
+        for await (const _ of stream.messages) {
+          // drain
+        }
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof RunEventStreamProtocolError, `got ${(error as Error)?.name}`);
+        assert.equal(error.reason, 'schema-version');
+        return true;
+      },
+    );
+  });
+
+  it('rejects an SSE id that disagrees with the envelope seq', async () => {
+    const { fetchImpl } = recordingFetch(streamingResponse([envelopeFrame(1, 'run.accepted', { id: '9' })]));
+    const stream = openRunStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl }, { sleep: async () => {} });
+    await assert.rejects(
+      async () => {
+        for await (const _ of stream.messages) {
+          // drain
+        }
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof RunEventStreamProtocolError, `got ${(error as Error)?.name}`);
+        assert.equal(error.reason, 'sse-id');
+        return true;
+      },
+    );
+  });
+
+  it('rejects a business frame that carries no JSON envelope', async () => {
+    const { fetchImpl } = recordingFetch(streamingResponse(['event: run.output_delta\ndata: not-json\n\n']));
+    const stream = openRunStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl }, { sleep: async () => {} });
+    await assert.rejects(
+      async () => {
+        for await (const _ of stream.messages) {
+          // drain
+        }
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof RunEventStreamProtocolError, `got ${(error as Error)?.name}`);
+        assert.equal(error.reason, 'not-json');
+        return true;
+      },
+    );
+  });
+
+  it('still accepts a valid envelope that carries no SSE id', async () => {
+    // The cursor comes from the envelope seq; a missing `id:` alone is not a violation.
+    const { fetchImpl } = recordingFetch(streamingResponse([envelopeFrame(1, 'run.terminal', { payload: { status: 'SUCCEEDED' } })]));
+    const stream = openRunStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl }, { sleep: async () => {} });
+    const seqs: number[] = [];
+    for await (const message of stream.messages) {
+      if (typeof message.cursor === 'number') seqs.push(message.cursor);
+    }
+    assert.deepEqual(seqs, [1]);
+    assert.equal(stream.appliedCursor(), 1);
+  });
+
+  it('rejects a frame whose SSE event name disagrees with the envelope type', async () => {
+    // The regression from the review: `event: run.terminal` with an envelope claiming
+    // `run.output_delta` used to be delivered and end the subscription, because
+    // isTerminalMessage ORs the two markers and the gate never compared them.
+    const { fetchImpl, calls } = recordingFetch(streamingResponse([
+      frame(1, 'run.accepted'),
+      envelopeFrame(2, 'run.output_delta', { id: '2', event: 'run.terminal' }),
+    ]));
+    const stream = openRunStream(
+      { baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl },
+      { maxRetries: 3, baseDelayMs: 0, sleep: async () => {} },
+    );
+    const delivered: SseMessage[] = [];
+    await assert.rejects(
+      async () => {
+        for await (const message of stream.messages) delivered.push(message);
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof RunEventStreamProtocolError, `got ${(error as Error)?.name}`);
+        assert.equal(error.reason, 'type');
+        assert.match((error as Error).message, /run\.terminal.*run\.output_delta/, 'the error names both markers');
+        return true;
+      },
+      'disagreeing type markers must fail as a protocol error, never complete the subscription',
+    );
+    assert.deepEqual(delivered.map((m) => m.cursor), [1], 'only the frames before the breach are delivered');
+    assert.equal(stream.appliedCursor(), 1);
+    assert.equal(calls.length, 1, 'a contract breach is deterministic and must not be retried');
+  });
+
+  it('rejects the reverse mismatch: a terminal envelope behind a non-terminal event name', async () => {
+    // `event: run.output_delta` carrying an envelope typed run.terminal used to end the
+    // subscription as a "terminal" on the strength of the envelope marker alone.
+    const { fetchImpl, calls } = recordingFetch(streamingResponse([
+      envelopeFrame(1, 'run.terminal', { event: 'run.output_delta', payload: { status: 'SUCCEEDED' } }),
+    ]));
+    const stream = openRunStream(
+      { baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl },
+      { maxRetries: 3, baseDelayMs: 0, sleep: async () => {} },
+    );
+    const delivered: SseMessage[] = [];
+    await assert.rejects(
+      async () => {
+        for await (const message of stream.messages) delivered.push(message);
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof RunEventStreamProtocolError, `got ${(error as Error)?.name}`);
+        assert.equal(error.reason, 'type');
+        return true;
+      },
+      'a terminal envelope behind another event name must not be delivered or end the run',
+    );
+    assert.deepEqual(delivered, [], 'the inconsistent frame is never delivered');
+    assert.equal(stream.appliedCursor(), 0);
+    assert.equal(calls.length, 1, 'a contract breach is deterministic and must not be retried');
+  });
+
+  it('accepts frames whose type markers agree and classifies the terminal from the verified type', async () => {
+    const { fetchImpl } = recordingFetch(streamingResponse([
+      envelopeFrame(1, 'run.output_delta', { id: '1' }),
+      envelopeFrame(2, 'run.terminal', { id: '2', payload: { status: 'SUCCEEDED' } }),
+    ]));
+    const stream = openRunStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl }, { sleep: async () => {} });
+    const seqs: number[] = [];
+    for await (const message of stream.messages) {
+      if (typeof message.cursor === 'number') seqs.push(message.cursor);
+    }
+    assert.deepEqual(seqs, [1, 2], 'agreeing markers deliver normally and the terminal ends the run');
+    assert.equal(stream.appliedCursor(), 2);
   });
 });

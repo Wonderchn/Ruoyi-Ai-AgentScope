@@ -73,6 +73,25 @@ export class RunEventStreamIncompleteError extends Error {
   }
 }
 
+/** Why a frame was rejected by the envelope contract gate. */
+export type RunEventProtocolViolation = 'not-json' | 'schema-version' | 'run-id' | 'seq' | 'sse-id' | 'type';
+
+/**
+ * Thrown when a frame violates the versioned run/SSE envelope contract: the payload is
+ * not the agreed envelope, names another run, or carries no usable cursor. This is a
+ * server-side contract breach, so it is never retried and — critically — a terminal
+ * frame that fails it never ends the subscription as if the run were complete.
+ */
+export class RunEventStreamProtocolError extends Error {
+  readonly reason: RunEventProtocolViolation;
+
+  constructor(reason: RunEventProtocolViolation, detail: string) {
+    super(`run event stream violates the envelope contract (${reason}): ${detail}`);
+    this.name = 'RunEventStreamProtocolError';
+    this.reason = reason;
+  }
+}
+
 /** Thrown when the HTTP response was not a usable event stream. */
 export class RunStreamHttpError extends Error {
   readonly status: number;
@@ -173,6 +192,68 @@ function toMessage(event: SseEvent): SseMessage {
     isComment: event.isComment,
     receivedAt: Date.now(),
   };
+}
+
+/** The envelope shape the state machine may accept: run identity, cursor and type verified. */
+export type VerifiedRunEventEnvelope = RunEventEnvelope & { runId: string; seq: number; type: string };
+
+/** The only envelope `schemaVersion` this client knows how to interpret. */
+const SUPPORTED_SCHEMA_VERSION = 1;
+
+/**
+ * Contract gate for every business frame, applied before the state machine accepts it.
+ *
+ * A frame proves nothing about the run while its envelope is unverifiable, so all of the
+ * following must hold before a frame is delivered — a terminal frame in particular never
+ * gets to vouch for a complete subscription on its own:
+ * - `schemaVersion` is the one this client speaks (a newer version has semantics this
+ *   client must not guess at);
+ * - `runId` names exactly the run that was subscribed to — a foreign-run frame must never
+ *   be merged into this stream, let alone end it;
+ * - `seq` is a safe positive integer, because it doubles as the persistence cursor;
+ * - the SSE `id:` agrees with `seq` when the frame carries one (contract: `id: <seq>`).
+ *   A frame with no `id:` at all is tolerated: the cursor comes from the envelope `seq`.
+ * - the SSE `event:` name and the envelope `type` are both present and identical. They
+ *   are two markers of the same event (contract: `event: <type>`), and terminality is
+ *   classified from this verified type — a disagreeing marker could otherwise smuggle a
+ *   terminal past the other, or hide one behind it.
+ *
+ * Throws {@link RunEventStreamProtocolError} on the first violation.
+ */
+function validateRunEventEnvelope(message: SseMessage, expectedRunId: string): VerifiedRunEventEnvelope {
+  const envelope = message.parsed;
+  if (envelope === null) {
+    throw new RunEventStreamProtocolError('not-json', `event '${message.type || '(default)'}' has no JSON envelope`);
+  }
+  if (envelope.schemaVersion !== SUPPORTED_SCHEMA_VERSION) {
+    throw new RunEventStreamProtocolError(
+      'schema-version',
+      `expected schemaVersion ${SUPPORTED_SCHEMA_VERSION}, got ${String(envelope.schemaVersion)}`,
+    );
+  }
+  if (typeof envelope.runId !== 'string' || envelope.runId === '') {
+    throw new RunEventStreamProtocolError('run-id', 'the envelope does not name a run');
+  }
+  if (envelope.runId !== expectedRunId) {
+    throw new RunEventStreamProtocolError('run-id', `subscription is for ${expectedRunId}, frame names ${envelope.runId}`);
+  }
+  const seq = envelope.seq;
+  if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 1) {
+    throw new RunEventStreamProtocolError('seq', `expected a safe positive integer, got ${String(seq)}`);
+  }
+  if (message.id !== undefined && message.id !== String(seq)) {
+    throw new RunEventStreamProtocolError('sse-id', `SSE id '${message.id}' does not match seq ${seq}`);
+  }
+  if (typeof envelope.type !== 'string' || envelope.type === '' || message.type === '') {
+    throw new RunEventStreamProtocolError(
+      'type',
+      'the frame must carry both the SSE event name and a non-empty envelope type',
+    );
+  }
+  if (envelope.type !== message.type) {
+    throw new RunEventStreamProtocolError('type', `SSE event '${message.type}' but envelope type '${envelope.type}'`);
+  }
+  return envelope as VerifiedRunEventEnvelope;
 }
 
 /**
@@ -456,11 +537,17 @@ export interface RunEventStream {
 }
 
 /**
- * Is a frame terminal for this run?
+ * Raw terminal classification for one frame: it ORs the two type markers (the SSE
+ * `event:` name and the envelope `type`) and trusts whichever is present.
  *
  * The contract treats a closed stream as *not* proof of completion: only `run.terminal`
  * (or an equivalent terminal type) ends the run. A dropped connection is therefore a
  * reconnect, never a silent success.
+ *
+ * Because it ORs the markers, it must only drive contract decisions on frames whose
+ * envelope already passed {@link validateRunEventEnvelope}, which requires the two
+ * markers to be present and identical; {@link openRunStream} therefore classifies
+ * terminality from the verified envelope `type` after the gate instead of calling this.
  */
 export function isTerminalMessage(message: SseMessage): boolean {
   if (message.isComment) return false;
@@ -470,9 +557,16 @@ export function isTerminalMessage(message: SseMessage): boolean {
 }
 
 /**
- * Wraps a single-connection stream with cursor persistence, de-duplication and bounded
- * reconnection. Duplicate frames (a replay overlapping what the caller already applied)
- * are dropped so consumers never render the same `seq` twice.
+ * Wraps a single-connection stream with envelope validation, cursor persistence,
+ * de-duplication and bounded reconnection. Duplicate frames (a replay overlapping what
+ * the caller already applied) are dropped so consumers never render the same `seq` twice.
+ *
+ * Every business frame must present a verifiable envelope (`schemaVersion`, the
+ * subscribed `runId`, a safe positive integer `seq`, an SSE `id` that agrees with it, and
+ * an SSE `event:` name identical to the envelope `type`) before it is accepted; a
+ * violation throws {@link RunEventStreamProtocolError} instead of being retried — and a
+ * terminal frame is never accepted as proof of completion while its envelope fails that
+ * gate.
  */
 export function openRunStream(
   request: Omit<RunStreamRequest, 'afterSeq'> & { afterSeq?: number },
@@ -522,44 +616,49 @@ export function openRunStream(
               continue;
             }
 
-            const terminal = isTerminalMessage(message);
+            // Envelope gate first: a frame without a verified run identity and cursor is
+            // protocol garbage, and a terminal that fails here must end as an explicit
+            // protocol error — never as a delivered frame that completes the subscription.
+            const envelope = validateRunEventEnvelope(message, request.runId);
+            // Terminality is judged from the verified type only: the gate proved the SSE
+            // event name and the envelope type are both present and identical, so a
+            // disagreeing marker can neither smuggle a terminal past the other nor hide
+            // one behind it.
+            const terminal = envelope.type === 'run.terminal';
+            const seq = envelope.seq;
 
-            if (typeof message.cursor === 'number') {
-              const seq = message.cursor;
+            if (seen.has(seq)) continue; // overlap with an earlier connection
 
-              if (seen.has(seq)) continue; // overlap with an earlier connection
-
-              if (seq > contiguous + 1) {
-                // A hole below this frame. Stop reading and replay from the last contiguous
-                // seq: the server re-sends everything after that cursor, so the withheld
-                // frame (pending.seq) comes back and passes the contiguity check on replay.
-                // A terminal frame is withheld too — it only proves the server finished,
-                // not that this subscription saw every visible event.
-                pending = { seq, terminal };
-                repairFrom = contiguous;
-                options.onDebug?.(
-                  `sequence hole before seq=${seq}${terminal ? ' (terminal withheld)' : ''}; `
-                  + `replaying from afterSeq=${contiguous}`,
-                );
-                break;
-              }
-
-              seen.add(seq);
-              delivered.add(seq);
-
-              // Advance the contiguous watermark over frames already in hand.
-              let watermark = contiguous;
-              for (;;) {
-                const next = watermark + 1;
-                if (!delivered.has(next)) break;
-                watermark = next;
-                delivered.delete(next);
-              }
-              contiguous = watermark;
-
-              if (watermark > applied) applied = watermark;
-              if (seq > watermark) options.onDebug?.(`seq=${seq} delivered ahead of the watermark (hole open)`);
+            if (seq > contiguous + 1) {
+              // A hole below this frame. Stop reading and replay from the last contiguous
+              // seq: the server re-sends everything after that cursor, so the withheld
+              // frame (pending.seq) comes back and passes the contiguity check on replay.
+              // A terminal frame is withheld too — it only proves the server finished,
+              // not that this subscription saw every visible event.
+              pending = { seq, terminal };
+              repairFrom = contiguous;
+              options.onDebug?.(
+                `sequence hole before seq=${seq}${terminal ? ' (terminal withheld)' : ''}; `
+                + `replaying from afterSeq=${contiguous}`,
+              );
+              break;
             }
+
+            seen.add(seq);
+            delivered.add(seq);
+
+            // Advance the contiguous watermark over frames already in hand.
+            let watermark = contiguous;
+            for (;;) {
+              const next = watermark + 1;
+              if (!delivered.has(next)) break;
+              watermark = next;
+              delivered.delete(next);
+            }
+            contiguous = watermark;
+
+            if (watermark > applied) applied = watermark;
+            if (seq > watermark) options.onDebug?.(`seq=${seq} delivered ahead of the watermark (hole open)`);
 
             yield message;
             if (terminal) {
@@ -577,6 +676,9 @@ export function openRunStream(
       catch (error) {
         if (options.signal?.aborted) throw error;
         if (error instanceof CursorExpiredError) throw error;
+        // A contract breach is deterministic: replaying would return the same broken
+        // frames, so retrying only delays an error the caller must see.
+        if (error instanceof RunEventStreamProtocolError) throw error;
         if (error instanceof RunStreamHttpError && error.status >= 400 && error.status < 500) throw error;
         lastError = error;
       }

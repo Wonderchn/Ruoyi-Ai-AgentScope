@@ -55,6 +55,11 @@ catch (error) {
     // 从未收到终态且重连已耗尽：任务的真实结果未知，必须提示"状态未知/待核对"，
     // 不能当成正常完成。
   }
+  if (error instanceof RunEventStreamProtocolError) {
+    // 信封违反契约（schemaVersion 未知 / runId 不是本 run / seq 非法 / SSE id 与 seq 不符 /
+    // SSE event: 与信封 type 不一致或不全 / 非 JSON 信封）：这是服务端契约破坏，
+    // 重放不会好转，不要重试，直接上报。
+  }
   if (error instanceof CursorExpiredError) {
     // 游标超出保留期：展示 error.snapshot，不要盲目重连。
   }
@@ -67,6 +72,7 @@ catch (error) {
 - **缺省游标**：`afterSeq` 缺省 = `0`（契约：从可见事件起点回放）。因此**首个可见事件不是 `seq=1` 时视为空洞并回补**，不接受稀疏起点。
 - **可见序号连续**：契约保证同一 run 的可见 `seq` 从 1 起连续（合并小批、丢弃增量都不得跳号）。客户端据此把"缺号"判定为丢帧。
 - **缺口补齐**：发现空洞时**暂缓该帧（包括终态）、不推进游标**，按最后连续 `seq` 回放补齐；重叠帧由 `seen` 去重。暂缓的帧不在 `seen` 里，因此回放会重新送达并通过连续性检查——**不会静默丢弃**。缺口补齐不消耗错误重试预算（另有 `maxResumeCycles` 上限）。
+- **信封门禁**：任何业务帧（**尤其终态**）必须先通过信封校验才会被接受：`schemaVersion` 必须是本客户端支持的 `1`、`runId` 必须等于订阅的 run、`seq` 必须是安全正整数、SSE `id:` 存在时必须等于 `seq`、SSE `event:` 与信封 `type` 必须同时存在且一致（终态判定只用验证过的 `type`）。任一违反抛 `RunEventStreamProtocolError`（带 `reason`），**不重试、不伪装订阅完成**——没有合法游标、属于别的 run、或类型标记互相矛盾的终态绝不构成完整性证明。信封合法但没带 `id:` 的帧可以接受（游标来自信封 `seq`）。
 - **终态 = 订阅完整**：`run.terminal` 只有在它之前的可见事件全部交付后才交给页面。若在限定次数内补不齐，抛 `RunEventStreamIncompleteError`，页面应显示"运行可能已结束，但本条订阅不完整"，并可改用 `GET /runs/{runId}` 的快照核对。**绝不以"收到终态"替代"事件已补齐"。**
 - **游标语义**：`appliedCursor()` 是**已连续交付**的游标，空洞不会抬高它，可直接用于恢复。
 - **过期游标**：HTTP 410 抛 `CursorExpiredError`，携带 `lastSeq` 与已持久化快照，**不重连**（需重新鉴权/展示快照）。
@@ -83,7 +89,7 @@ node --import ./tests/ts-loader.mjs --test tests/SseSyntax.test.ts tests/RunStre
 npx tsc -p tsconfig.tests.json --noEmit   # 类型检查（含 tests）
 ```
 
-当前：**45 个用例通过**（SSE 语法 21 + 客户端 24）。`tsconfig.tests.json` 是自洽配置（自带 `lib` 与 `types: ["node"]`），只覆盖 `src/utils/sse/**` 与 `tests/**`，因此不依赖 DOM 库推断，也不需要它去检查整个 `src`。
+当前：**54 个用例通过**（SSE 语法 21 + 客户端 33）。`tsconfig.tests.json` 是自洽配置（自带 `lib` 与 `types: ["node"]`），只覆盖 `src/utils/sse/**` 与 `tests/**`，因此不依赖 DOM 库推断，也不需要它去检查整个 `src`。
 
 ## 尚未接线
 
