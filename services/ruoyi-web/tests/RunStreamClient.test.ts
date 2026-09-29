@@ -241,6 +241,9 @@ describe('runStream: failure semantics', () => {
 
 describe('runStream: reconnection', () => {
   it('treats a closed stream without a terminal frame as an interruption and resumes', async () => {
+    // A live subscription starts at 1 and is cut after 2; the resume replays from the last
+    // contiguous seq and continues contiguously (the contract guarantees visible seqs are
+    // contiguous, so the reconnect supplies 3 and the terminal).
     let attempt = 0;
     const responses = [
       streamingResponse([frame(1, 'run.accepted'), frame(2, 'run.output_delta', { text: 'a' })]),
@@ -269,8 +272,8 @@ describe('runStream: reconnection', () => {
     let attempt = 0;
     const responses = [
       streamingResponse([frame(1, 'run.accepted'), frame(2, 'run.output_delta', { text: 'a' })]),
-      // Overlapping replay: 2 again, then the frames we actually missed.
-      streamingResponse([frame(2, 'run.output_delta', { text: 'a' }), frame(3, 'run.terminal')]),
+      // Overlapping replay: 2 again (already delivered → dropped), then the missing 3..4.
+      streamingResponse([frame(2, 'run.output_delta', { text: 'a' }), frame(3, 'run.step_completed'), frame(4, 'run.terminal')]),
     ];
     const fetchImpl = (async () => responses[Math.min(attempt++, responses.length - 1)]) as unknown as typeof fetch;
 
@@ -282,7 +285,7 @@ describe('runStream: reconnection', () => {
     for await (const message of stream.messages) {
       if (typeof message.cursor === 'number') seqs.push(message.cursor);
     }
-    assert.deepEqual(seqs, [1, 2, 3]);
+    assert.deepEqual(seqs, [1, 2, 3, 4], 'the replayed overlap is dropped, the new frames are delivered once');
   });
 
   it('deduplicates when it starts from an explicit cursor', async () => {
@@ -336,13 +339,17 @@ describe('runStream: reconnection', () => {
     assert.deepEqual(attempts, [1, 2]);
   });
 
-  it('repairs a sequence gap instead of advancing the cursor past it', async () => {
-    // Connection 1 delivers 1 then 3 (2 is lost). Connection 2 supplies the missing 2 and
-    // the terminal 4. A cursor must never advance past a hole.
+  it('withholds a terminal until the hole below it is replayed, then delivers every frame once', async () => {
+    // Connection 1: 1 then 3(terminal) — 2 is lost. The terminal must NOT be delivered and
+    // the cursor must NOT move past the hole. Connection 2 replays from afterSeq=1, so it
+    // re-sends 2, 3 and the terminal.
     let attempt = 0;
     const responses = [
-      streamingResponse([frame(1, 'run.accepted'), frame(3, 'run.output_delta', { text: 'c' })]),
-      streamingResponse([frame(2, 'run.output_delta', { text: 'b' }), frame(4, 'run.terminal')]),
+      streamingResponse([frame(1, 'run.accepted'), frame(3, 'run.terminal', { status: 'SUCCEEDED' })]),
+      streamingResponse([
+        frame(2, 'run.output_delta', { text: 'b' }),
+        frame(3, 'run.terminal', { status: 'SUCCEEDED' }),
+      ]),
     ];
     const calls: RecordedCall[] = [];
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -351,12 +358,14 @@ describe('runStream: reconnection', () => {
     }) as unknown as typeof fetch;
 
     const reconnects: Array<{ attempt: number; afterSeq: number | undefined; reason: string }> = [];
+    const debug: string[] = [];
     const stream = openRunStream(
       { baseURL: BASE, runId: 'r-1', token: TOKEN, afterSeq: 0, fetchImpl },
       {
         baseDelayMs: 0,
         sleep: async () => {},
-        onReconnect: (info) => reconnects.push({ attempt: info.attempt, afterSeq: info.afterSeq, reason: info.reason }),
+        onReconnect: (i) => reconnects.push({ attempt: i.attempt, afterSeq: i.afterSeq, reason: i.reason }),
+        onDebug: (m) => debug.push(m),
       },
     );
 
@@ -365,20 +374,58 @@ describe('runStream: reconnection', () => {
       if (typeof message.cursor === 'number') seqs.push(message.cursor);
     }
 
-    assert.deepEqual(seqs, [1, 2, 4], 'the frame inside the hole is withheld; the replay supplies it');
-    assert.equal(calls.length, 2, 'a gap must trigger exactly one replay connection');
+    assert.deepEqual(seqs, [1, 2, 3], 'the withheld frame is replayed and every seq is delivered exactly once');
+    assert.equal(calls.length, 2);
     assert.equal(new URL(calls[1].url).searchParams.get('afterSeq'), '1', 'replay resumes from the last contiguous seq');
     assert.deepEqual(reconnects, [{ attempt: 0, afterSeq: 1, reason: 'gap' }]);
-    assert.equal(stream.appliedCursor(), 4);
+    assert.equal(stream.appliedCursor(), 3);
+    assert.ok(
+      debug.some((m) => m.includes('terminal withheld') && m.includes('afterSeq=1')),
+      `the withheld terminal must be recorded for diagnostics; got ${JSON.stringify(debug)}`,
+    );
   });
 
-  it('does not treat a later seq as a gap once the hole has been filled', async () => {
-    // Legal continuation: after reconnect from 1 the server sends 2 then 4 — there is no
-    // hole left below 4 (3 simply does not exist), so this must NOT be read as a gap.
+  it('fails the subscription when a gap cannot be repaired', async () => {
+    // The server keeps replaying without the missing seq: the subscription never becomes
+    // complete, so the terminal must never be accepted.
+    const fetchImpl = (async () => streamingResponse([
+      frame(1, 'run.accepted'),
+      frame(3, 'run.terminal', { status: 'SUCCEEDED' }),
+    ])) as unknown as typeof fetch;
+    const stream = openRunStream(
+      { baseURL: BASE, runId: 'r-1', token: TOKEN, afterSeq: 0, fetchImpl },
+      { maxResumeCycles: 2, baseDelayMs: 0, sleep: async () => {} },
+    );
+
+    const seqs: number[] = [];
+    await assert.rejects(
+      async () => {
+        for await (const message of stream.messages) {
+          if (typeof message.cursor === 'number') seqs.push(message.cursor);
+        }
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof RunEventStreamIncompleteError, `got ${(error as Error)?.name}`);
+        assert.equal(error.reason, 'resume-limit');
+        return true;
+      },
+      'an unrepairable gap must not end as a completed subscription',
+    );
+    assert.deepEqual(seqs, [1], 'the terminal is never delivered while the hole is open');
+    assert.equal(stream.appliedCursor(), 1, 'the cursor stops at the last contiguous seq');
+  });
+
+  it('treats a non-1 first frame as a hole (default cursor is 0)', async () => {
+    // Without an explicit afterSeq the contract says replay from 0, so a stream that opens
+    // with seq=3 (terminal) must be repaired rather than accepted.
     let attempt = 0;
     const responses = [
-      streamingResponse([frame(1, 'run.accepted'), frame(3, 'run.output_delta', { text: 'c' })]),
-      streamingResponse([frame(2, 'run.output_delta', { text: 'b' }), frame(4, 'run.terminal')]),
+      streamingResponse([frame(3, 'run.terminal', { status: 'SUCCEEDED' })]),
+      streamingResponse([
+        frame(1, 'run.accepted'),
+        frame(2, 'run.output_delta'),
+        frame(3, 'run.terminal', { status: 'SUCCEEDED' }),
+      ]),
     ];
     const calls: RecordedCall[] = [];
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -387,34 +434,18 @@ describe('runStream: reconnection', () => {
     }) as unknown as typeof fetch;
 
     const stream = openRunStream(
-      { baseURL: BASE, runId: 'r-1', token: TOKEN, afterSeq: 0, fetchImpl },
+      { baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl },
       { baseDelayMs: 0, sleep: async () => {} },
     );
+
     const seqs: number[] = [];
     for await (const message of stream.messages) {
       if (typeof message.cursor === 'number') seqs.push(message.cursor);
     }
 
-    assert.deepEqual(seqs, [1, 2, 4]);
-    assert.equal(calls.length, 2, 'a filled hole must not cause further reconnects');
-  });
-
-  it('does not count a gap repair against the error retry budget', async () => {
-    let attempt = 0;
-    const responses = [
-      streamingResponse([frame(1, 'run.accepted'), frame(3, 'run.output_delta')]),
-      streamingResponse([frame(2, 'run.output_delta'), frame(4, 'run.terminal')]),
-    ];
-    const fetchImpl = (async () => responses[Math.min(attempt++, responses.length - 1)]) as unknown as typeof fetch;
-    const stream = openRunStream(
-      { baseURL: BASE, runId: 'r-1', token: TOKEN, afterSeq: 0, fetchImpl },
-      { maxRetries: 0, baseDelayMs: 0, sleep: async () => {} },
-    );
-    const seqs: number[] = [];
-    for await (const message of stream.messages) {
-      if (typeof message.cursor === 'number') seqs.push(message.cursor);
-    }
-    assert.deepEqual(seqs, [1, 2, 4], 'with maxRetries=0 a gap repair must still happen');
+    assert.deepEqual(seqs, [1, 2, 3], 'the missing prefix is replayed before the terminal');
+    assert.equal(new URL(calls[0].url).searchParams.get('afterSeq'), '0', 'the first request uses the default cursor 0');
+    assert.equal(new URL(calls[1].url).searchParams.get('afterSeq'), '0', 'repair replays from 0');
   });
 
   it('stops gap repair loops after maxResumeCycles', async () => {

@@ -92,7 +92,11 @@ export interface RunStreamRequest {
   /** User token; sent as `authorization: Bearer <token>`, never in the URL. */
   token: string;
   clientId?: string;
-  /** Resume cursor: the highest `seq` already applied by the caller. */
+  /**
+   * Resume cursor: the highest `seq` already delivered by the caller. Defaults to `0`,
+   * which is the contract's "replay from the start of the visible events" (a non-1 first
+   * frame is therefore treated as a hole, never as a legitimate live start).
+   */
   afterSeq?: number;
   /** Explicit SSE resumption header; `afterSeq` is appended to the query when set. */
   lastEventId?: string;
@@ -443,7 +447,11 @@ export interface RunEventStream {
    * trying" for "the run finished".
    */
   messages: AsyncGenerator<SseMessage, void, undefined>;
-  /** Highest applied cursor so far (envelope seq preferred). */
+  /**
+   * Highest **contiguously delivered** cursor. It only advances when every visible `seq`
+   * up to that point has been handed to the consumer, so it is safe to use as a resume
+   * cursor: a hole never raises it.
+   */
   appliedCursor: () => number | undefined;
 }
 
@@ -476,8 +484,11 @@ export function openRunStream(
   const maxBackoffMs = options.maxBackoffMs ?? 15_000;
   const sleep = options.sleep ?? defaultSleep;
   const seen = new Set<string | number>();
-  let applied = request.afterSeq;
-  if (applied !== undefined) seen.add(applied);
+  // The contract defines the default cursor as 0 ("replay from the start of the visible
+  // events"). Starting from the first frame instead would silently accept a sparse stream.
+  const startCursor = request.afterSeq ?? 0;
+  let applied = startCursor;
+  seen.add(startCursor);
 
   async function* iterate(): AsyncGenerator<SseMessage, void, undefined> {
     let attempt = 0;
@@ -485,19 +496,21 @@ export function openRunStream(
     let connections = 0;
 
     for (;;) {
-      // `sawTerminal`  – the run reached its terminal event (normal end)
-      // `repairFrom`   – a sequence gap was observed; replay from this cursor
+      // `sawTerminal`  – the terminal frame was delivered *after* the stream was complete
+      // `repairFrom`   – a sequence hole was observed; replay from this cursor
+      // `pending`      – a withheld repair request (a frame that arrived above a hole)
       let sawTerminal = false;
       let repairFrom: number | undefined;
+      let pending: { seq: number; terminal: boolean } | undefined;
       let lastError: unknown;
 
-      // Highest contiguous sequence the client holds. It starts from the resume cursor
-      // when the caller supplied one; otherwise the first frame of this connection
-      // establishes the baseline (the server decides where a fresh subscription starts —
-      // a live subscription may legitimately begin at an arbitrary seq).
-      let contiguous = typeof applied === 'number' ? applied : undefined;
+      // Highest contiguous sequence the client holds. It starts from the *delivered*
+      // cursor (not from the constant start cursor): on a reconnect everything up to
+      // `applied` has already been handed to the consumer, so the stream legitimately
+      // resumes at `applied + 1`. `startCursor` only defines where a fresh subscription
+      // begins, which is why a first frame that is not `startCursor + 1` is a hole.
+      let contiguous = applied;
       const delivered = new Set<number>();
-      let owed = 0;
 
       connections += 1;
       try {
@@ -516,18 +529,18 @@ export function openRunStream(
 
               if (seen.has(seq)) continue; // overlap with an earlier connection
 
-              // Baseline for this connection: the resume cursor when supplied, otherwise
-              // the first frame seen here (a live subscription may start at any seq).
-              const base = contiguous ?? seq - 1;
-
-              // A hole below this seq means an earlier frame was missed. The only sound
-              // response is to stop and replay from the last contiguous seq: the server
-              // replays from there, the overlap is dropped by `seen`, and the hole closes.
-              // A terminal event is authoritative, so it is delivered even with a hole
-              // (the gap is recorded instead of blocking the end of the run).
-              if (!terminal && seq > base + 1) {
-                repairFrom = base;
-                contiguous = base;
+              if (seq > contiguous + 1) {
+                // A hole below this frame. Stop reading and replay from the last contiguous
+                // seq: the server re-sends everything after that cursor, so the withheld
+                // frame (pending.seq) comes back and passes the contiguity check on replay.
+                // A terminal frame is withheld too — it only proves the server finished,
+                // not that this subscription saw every visible event.
+                pending = { seq, terminal };
+                repairFrom = contiguous;
+                options.onDebug?.(
+                  `sequence hole before seq=${seq}${terminal ? ' (terminal withheld)' : ''}; `
+                  + `replaying from afterSeq=${contiguous}`,
+                );
                 break;
               }
 
@@ -535,7 +548,7 @@ export function openRunStream(
               delivered.add(seq);
 
               // Advance the contiguous watermark over frames already in hand.
-              let watermark = base;
+              let watermark = contiguous;
               for (;;) {
                 const next = watermark + 1;
                 if (!delivered.has(next)) break;
@@ -544,21 +557,14 @@ export function openRunStream(
               }
               contiguous = watermark;
 
-              // The applied cursor is the highest sequence actually delivered. A terminal
-              // frame is authoritative, so it moves the cursor even when a hole is still
-              // open; the hole itself is never "filled in" by guessing.
-              const highest = Math.max(watermark, seq);
-              if (applied === undefined || highest > applied) applied = highest;
-
-              if (seq > watermark && !terminal) owed += 1;
+              if (watermark > applied) applied = watermark;
+              if (seq > watermark) options.onDebug?.(`seq=${seq} delivered ahead of the watermark (hole open)`);
             }
 
             yield message;
             if (terminal) {
+              // Reaching here means no hole is open below this terminal.
               sawTerminal = true;
-              if (owed > 0) {
-                options.onDebug?.(`terminal received with ${owed} sequence hole(s) still open`);
-              }
               break;
             }
           }
@@ -581,6 +587,10 @@ export function openRunStream(
         // Gap repair is not a failure, so it does not consume the error retry budget.
         resumeCycles += 1;
         if (resumeCycles > maxResumeCycles) {
+          options.onDebug?.(
+            `gap repair exhausted after ${resumeCycles - 1} cycle(s); withheld seq=${
+              pending?.seq ?? 'unknown'} - subscription is NOT complete`,
+          );
           throw new RunEventStreamIncompleteError(applied, connections, 'resume-limit');
         }
         attempt = 0;
