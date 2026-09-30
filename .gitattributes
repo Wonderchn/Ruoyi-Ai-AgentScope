@@ -7,3 +7,4 @@
 *.jpg binary
 *.jpeg binary
 *.pdf binary
+*.sql text eol=lf

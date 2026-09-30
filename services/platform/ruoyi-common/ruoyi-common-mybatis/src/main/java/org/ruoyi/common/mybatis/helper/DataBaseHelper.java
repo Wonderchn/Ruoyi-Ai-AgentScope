@@ -53,7 +53,10 @@ public class DataBaseHelper {
      * - Oracle 使用 instr 函数
      * - PostgreSQL 使用 strpos 函数
      * - SQL Server 使用 charindex 函数
-     * - 其他默认使用 MySQL 的 find_in_set 函数
+     * - MySQL 使用 find_in_set 函数
+     * <p>
+     * 未列出的方言抛异常而不是回落 MySQL：回落会让非 MySQL 库拿到 MySQL 语法，
+     * 只在运行期以"函数不存在"的形式暴露，难以定位到方言层。
      *
      * @param var1 要查找的值（支持任意类型，内部会转换成字符串）
      * @param var2 存储逗号分隔值的数据库列名
@@ -69,7 +72,7 @@ public class DataBaseHelper {
             // charindex(',100,' , ',0,100,101,') <> 0
             case SQL_SERVER -> "charindex(',%s,' , ','+%s+',') <> 0".formatted(var, var2);
             // find_in_set(100 , '0,100,101')
-            default -> "find_in_set('%s' , %s) <> 0".formatted(var, var2);
+            case MY_SQL -> "find_in_set('%s' , %s) <> 0".formatted(var, var2);
         };
     }
 
