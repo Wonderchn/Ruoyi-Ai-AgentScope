@@ -1,0 +1,19 @@
+# P0.4 最小 platform 测试应用专用配置。
+# 用 --spring.config.name=p04platform 启动时，产品配置文件不会被读取。
+server:
+  port: 18082
+
+spring:
+  application:
+    name: p04-platform-test
+  main:
+    banner-mode: off
+
+p04:
+  kid: p04-platform-k1
+  # service-credential 只经进程环境 P04_SERVICE_CREDENTIAL 注入，不写在文件里
+
+logging:
+  level:
+    root: info
+    org.ruoyi.aiintegration: info
