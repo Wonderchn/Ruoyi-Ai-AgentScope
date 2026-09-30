@@ -5,8 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.ruoyi.common.json.config.JacksonConfig;
+import org.ruoyi.common.json.config.PlatformObjectMapperConfig;
 import org.ruoyi.system.domain.bo.SysTenantBo;
-import org.ruoyi.workflow.config.BeanConfig;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.http.HttpMessageConvertersAutoConfiguration;
 import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
@@ -47,8 +47,7 @@ class TenantRequestJacksonTest {
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
         .withConfiguration(AutoConfigurations.of(JacksonConfig.class, JacksonAutoConfiguration.class,
-            HttpMessageConvertersAutoConfiguration.class))
-        .withUserConfiguration(BeanConfig.class);
+            PlatformObjectMapperConfig.class, HttpMessageConvertersAutoConfiguration.class));
 
     @Test
     void readsTenantRequestWithApplicationDateFormat() {

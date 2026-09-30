@@ -37,18 +37,6 @@ public class BeanConfig {
         return restTemplate;
     }
 
-    @Bean
-    @Primary
-    public ObjectMapper objectMapper(Jackson2ObjectMapperBuilder builder) {
-        log.info("Configuration:create objectMapper");
-        // 使用容器中的构建器，保留全局日期格式、Module 和 Customizer 配置。
-        ObjectMapper objectMapper = builder.createXmlMapper(false).build();
-        objectMapper.registerModules(LocalDateTimeUtil.getSimpleModule(), new JavaTimeModule(), new Jdk8Module());
-        //设置null值不参与序列化(字段不被显示)
-        objectMapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
-        return objectMapper;
-    }
-
     @Bean(name = "mainExecutor")
     @Primary
     public AsyncTaskExecutor mainExecutor() {
