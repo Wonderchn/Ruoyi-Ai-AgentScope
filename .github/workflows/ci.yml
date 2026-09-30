@@ -77,6 +77,18 @@ jobs:
         working-directory: services/ai/frontend
         run: npm run build
 
+  db:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Rebuild the platform domain from the repository PostgreSQL files
+        run: bash scripts/ci/verify-platform-migrations.sh
+      - name: Ensure the check left the sources unchanged
+        run: git diff --exit-code
+
   policy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -89,7 +101,7 @@ jobs:
 
   ci-required:
     if: always()
-    needs: [platform, ai, frontend, policy]
+    needs: [platform, ai, frontend, policy, db]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -99,8 +111,9 @@ jobs:
           AI: ${{ needs.ai.result }}
           FRONTEND: ${{ needs.frontend.result }}
           POLICY: ${{ needs.policy.result }}
+          DB: ${{ needs.db.result }}
         run: |
-          for result in "$PLATFORM" "$AI" "$FRONTEND" "$POLICY"; do
+          for result in "$PLATFORM" "$AI" "$FRONTEND" "$POLICY" "$DB"; do
             if [ "$result" != success ]; then
               echo "A required job did not succeed: $result" >&2
               exit 1
