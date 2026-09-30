@@ -19,6 +19,7 @@ package com.nageoffer.ai.ragent.framework.security;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -36,6 +37,7 @@ import java.util.Map;
         "com.nageoffer.ai.ragent.rag.runtime",
         "com.nageoffer.ai.ragent.framework.security"
 })
+@ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class P04AiExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(P04AiExceptionHandler.class);

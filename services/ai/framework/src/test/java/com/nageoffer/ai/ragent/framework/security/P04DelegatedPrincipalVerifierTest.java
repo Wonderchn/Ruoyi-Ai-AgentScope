@@ -246,14 +246,43 @@ class P04DelegatedPrincipalVerifierTest {
     }
 
     @Test
-    @DisplayName("身份字段名清单覆盖 body/header 伪造身份所需的名字")
-    void identityClaimNamesCoverForgerySurface() {
-        List<String> names = DelegationVerifier.identityClaimNames();
-        assertTrue(names.contains("tid"));
-        assertTrue(names.contains("tenantId"));
-        assertTrue(names.contains("userId"));
-        assertTrue(names.contains("mid"));
-        assertTrue(names.contains("membershipId"));
+    @DisplayName("TTL 上限 60 秒：恰好 60 通过，61 秒被拒（阻断修复 Spec §3.3）")
+    void ttlCeilingIsEnforced() {
+        String exactly60 = token(KID, "platform", "ai", "sub-u1", UUID.randomUUID().toString(), true,
+                NOW, NOW, NOW.plusSeconds(60), "T1", "M1", 1, trusted);
+        assertEquals("T1", verifier.verify(exactly60).tenantId());
+
+        String over61 = token(KID, "platform", "ai", "sub-u1", UUID.randomUUID().toString(), true,
+                NOW, NOW, NOW.plusSeconds(61), "T1", "M1", 1, trusted);
+        assertEquals(P04AiErrorCode.DELEGATION_INVALID, codeOf(() -> verifier.verify(over61)));
+    }
+
+    @Test
+    @DisplayName("缺 iat 被拒（§3.3 必需 claim）")
+    void missingIssuedAtIsRejected() {
+        String noIssuedAt = Jwts.builder()
+                .header().keyId(KID).type("JWT").and()
+                .issuer("platform")
+                .audience().add("ai").and()
+                .subject("sub-u1")
+                .id(UUID.randomUUID().toString())
+                .notBefore(Date.from(NOW))
+                .expiration(Date.from(NOW.plusSeconds(60)))
+                .claim("tid", "T1")
+                .claim("mid", "M1")
+                .claim("pv", 1)
+                .claim("scope", List.of("rag.chat.submit"))
+                .signWith(trusted.getPrivate(), Jwts.SIG.RS256)
+                .compact();
+        assertEquals(P04AiErrorCode.DELEGATION_INVALID, codeOf(() -> verifier.verify(noIssuedAt)));
+    }
+
+    @Test
+    @DisplayName("iat 来自未来（超出 skew）被拒（§3.3）")
+    void issuedAtInTheFutureIsRejected() {
+        String futureIat = token(KID, "platform", "ai", "sub-u1", UUID.randomUUID().toString(), true,
+                NOW.plusSeconds(120), NOW.plusSeconds(120), NOW.plusSeconds(180), "T1", "M1", 1, trusted);
+        assertEquals(P04AiErrorCode.DELEGATION_INVALID, codeOf(() -> verifier.verify(futureIat)));
     }
 
     private static String base64Url(byte[] bytes) {

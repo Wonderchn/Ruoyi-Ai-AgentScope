@@ -21,6 +21,7 @@ import com.nageoffer.ai.ragent.framework.security.AiRequestIdFilter;
 import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
 import com.nageoffer.ai.ragent.framework.security.P04AiErrorCode;
 import com.nageoffer.ai.ragent.framework.security.P04AiException;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -38,15 +39,13 @@ import java.util.Map;
  * {@code runId}/{@code requestId}/{@code replayed}。失败由 {@code P04AiExceptionHandler} 映射成
  * {@code HTTP status == body.code}。
  *
- * <p>请求体以原始字符串接收：需要先按需检测伪造身份字段（判 403）再绑定 DTO，
- * 直接用 DTO 绑定会把"携带身份字段"错报成 400。
+ * <p>请求体以原始字符串接收，交由 {@code RequestHasher.parse} 统一做严格校验与
+ * "请求体自带身份字段"判定；直接用 DTO 绑定会把 403 错报成 400。
  */
 @RestController
 @RequestMapping("/internal/ai/v1")
+@ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class RunAcceptanceController {
-
-    /** 伪造身份头：出现即 403，绝不回落到默认租户。 */
-    private static final String[] FORGED_IDENTITY_HEADERS = {"X-Tenant-Id", "X-User-Id", "X-Mid"};
 
     private final RunAcceptanceService service;
 
@@ -79,13 +78,9 @@ public class RunAcceptanceController {
                 .body(ApiEnvelope.ok(data));
     }
 
-    /** 伪造身份头清单（供隔离/审计断言引用）。 */
-    public static String[] forgedIdentityHeaders() {
-        return FORGED_IDENTITY_HEADERS.clone();
-    }
-
+    /** 头"存在即拒绝"：空值也算存在（A2 修复），不得被当作未携带而放过。 */
     private static boolean present(String value) {
-        return value != null && !value.isBlank();
+        return value != null;
     }
 
     private static String bearer(String authorization) {

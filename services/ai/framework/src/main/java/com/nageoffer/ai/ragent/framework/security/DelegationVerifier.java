@@ -24,6 +24,7 @@ import io.jsonwebtoken.JwtParser;
 import io.jsonwebtoken.Jwts;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -56,11 +57,13 @@ import java.util.Set;
  * </ul>
  */
 @Component
+@ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class DelegationVerifier {
 
     private static final Logger log = LoggerFactory.getLogger(DelegationVerifier.class);
 
-    private static final List<String> IDENTITY_CLAIMS = List.of("tid", "tenantId", "userId", "mid", "membershipId", "sub");
+    /** 委托凭证 TTL 上限（秒），与 Spec §7.2「TTL 60 秒」一致（阻断修复 Spec §3.3）。 */
+    public static final long TTL_CEILING_SECONDS = 60;
 
     private final P04SecurityProperties properties;
     private final Clock clock;
@@ -109,12 +112,15 @@ public class DelegationVerifier {
             throw new P04AiException(P04AiErrorCode.DELEGATION_INVALID);
         }
 
+        // 时间与一次性标识契约（§3.3）：sub/jti/iat/exp 必须存在
         Claims claims = jws.getPayload();
         if (claims.getSubject() == null || claims.getSubject().isBlank()
                 || claims.getId() == null || claims.getId().isBlank()
-                || claims.getExpiration() == null) {
+                || claims.getExpiration() == null
+                || claims.getIssuedAt() == null) {
             throw new P04AiException(P04AiErrorCode.DELEGATION_INVALID);
         }
+        requireSaneValidityWindow(claims);
 
         return new DelegationClaims(claims.getIssuer(), claims.getSubject(),
                 claims.get("tid", String.class), claims.get("mid", String.class),
@@ -136,9 +142,24 @@ public class DelegationVerifier {
                 claims.membershipId(), claims.policyVersion(), claims.scopes(), claims.jti());
     }
 
-    /** 请求体/请求头中禁止出现的身份字段名（N05 判 403）。 */
-    public static List<String> identityClaimNames() {
-        return IDENTITY_CLAIMS;
+    /** 请求体/请求头中禁止出现的身份字段名由 {@code RequestHasher.identityFields()} 单一维护。 */
+
+    /**
+     * 时间契约（阻断修复 Spec §3.3）：{@code exp} 必须晚于 {@code iat}；TTL 不得超过冻结上限
+     * 60 秒（<b>不含</b> skew——TTL 是令牌自身属性，与时钟偏差无关）；{@code iat} 不得来自未来
+     * （超出 skew）。{@code exp}/{@code nbf} 的时钟判定由 jjwt 依 skew 完成。
+     *
+     * @throws P04AiException 401 {@code DELEGATION_INVALID}
+     */
+    private void requireSaneValidityWindow(Claims claims) {
+        long issuedAt = claims.getIssuedAt().toInstant().getEpochSecond();
+        long expiresAt = claims.getExpiration().toInstant().getEpochSecond();
+        long skew = properties.getDelegation().getClockSkewSeconds();
+        if (expiresAt <= issuedAt
+                || expiresAt - issuedAt > TTL_CEILING_SECONDS
+                || issuedAt > clock.instant().getEpochSecond() + skew) {
+            throw new P04AiException(P04AiErrorCode.DELEGATION_INVALID);
+        }
     }
 
     private static Set<String> toScopes(Claims claims) {

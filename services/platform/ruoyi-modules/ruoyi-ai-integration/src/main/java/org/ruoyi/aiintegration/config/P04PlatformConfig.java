@@ -19,6 +19,7 @@ package org.ruoyi.aiintegration.config;
 
 import org.ruoyi.aiintegration.delegation.DelegationSigningKeys;
 import org.ruoyi.aiintegration.web.RequestIdFilter;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -34,6 +35,7 @@ import java.time.Clock;
  */
 @Configuration
 @EnableConfigurationProperties(P04PlatformProperties.class)
+@ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class P04PlatformConfig {
 
     @Bean

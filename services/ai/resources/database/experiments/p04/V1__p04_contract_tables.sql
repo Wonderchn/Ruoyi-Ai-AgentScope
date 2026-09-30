@@ -63,12 +63,9 @@ CREATE TABLE IF NOT EXISTS p04_replay_guard (
     PRIMARY KEY (issuer, jti)
 );
 
--- 拒绝审计：与业务账本分离，不含凭证与请求体
-CREATE TABLE IF NOT EXISTS p04_rejection_audit (
-    id         VARCHAR(32) NOT NULL PRIMARY KEY,
-    request_id VARCHAR(64),
-    error_code VARCHAR(64) NOT NULL,
-    created_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+-- 说明（阻断修复 Spec §3.4）：原 p04_rejection_audit 表已删除。
+-- F7 只是"允许"拒绝审计而从未要求；留一张从不写入的表会给出错误印象，
+-- 而补写入又会引入未经验证的失败语义。P1 若确需审计，另立单元定义目的、
+-- 字段、留存与失败策略后再建，并单独验证。
 
 CREATE INDEX IF NOT EXISTS idx_run_tenant ON ai_run (tenant_id, membership_id);

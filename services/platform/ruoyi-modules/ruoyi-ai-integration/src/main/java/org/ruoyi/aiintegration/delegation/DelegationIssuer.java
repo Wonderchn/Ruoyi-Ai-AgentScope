@@ -17,19 +17,14 @@
 
 package org.ruoyi.aiintegration.delegation;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.jsonwebtoken.Jwts;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
-import java.security.PrivateKey;
 import java.time.Clock;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
-import java.util.Base64;
 import java.util.Date;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -39,9 +34,14 @@ import java.util.UUID;
  * {@code typ}/{@code alg}、issuer/audience 白名单；<b>不得</b>自创加密结构。
  * 每次签发都产生新的 {@code jti}（F2：重试要换 jti，业务幂等靠 Idempotency-Key）。
  *
- * <p>{@link DelegationVariant} 除 {@code NONE} 外的取值只用于构造负例。
+ * <p><b>只签发合法委托</b>（阻断修复 Spec §2.3）：负例变体（错 aud/iss、过期、
+ * 未来 nbf、缺声明、未知 kid、外来私钥、{@code alg=none}）的构造能力<b>已移入测试源集</b>，
+ * 以免 P1 开启委托功能时连带开启"任意身份 + 负例凭证"铸造面。
+ *
+ * <p>TTL 在签发侧即被限制在 [1, 60] 秒，与 AI 侧验签的 TTL 上限保持一致。
  */
 @Component
+@ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class DelegationIssuer {
 
     /** 受信签发方。 */
@@ -53,13 +53,17 @@ public class DelegationIssuer {
     /** 动作/功能 scope；AI 校验时必须命中。 */
     public static final String SCOPE_RAG_CHAT_SUBMIT = "rag.chat.submit";
 
+    /** TTL 下界（秒）。 */
+    public static final int MIN_TTL_SECONDS = 1;
+
+    /** TTL 上界（秒），与 Spec §7.2「TTL 60 秒」一致。 */
+    public static final int MAX_TTL_SECONDS = 60;
+
     private final DelegationSigningKeys keys;
-    private final ObjectMapper objectMapper;
     private final Clock clock;
 
-    public DelegationIssuer(DelegationSigningKeys keys, ObjectMapper objectMapper, Clock clock) {
+    public DelegationIssuer(DelegationSigningKeys keys, Clock clock) {
         this.keys = keys;
-        this.objectMapper = objectMapper;
         this.clock = clock;
     }
 
@@ -73,125 +77,51 @@ public class DelegationIssuer {
     }
 
     /**
-     * @param variant      负例变体；{@code null} 视为 {@link DelegationVariant#NONE}
-     * @param tenantId     租户；负例可省略
-     * @param subject      主体（人）；负例可省略
-     * @param membershipId 成员身份；负例可省略
-     * @param scopes       功能 scope 集合
-     * @param policyVersion platform 策略版本；负例可省略
-     * @param ttlSeconds   有效期秒数；{@code null} 用默认 60
+     * 签发一份合法委托。所有身份声明都必须齐备——缺声明的负例只能由测试侧铸造。
+     *
+     * @throws IllegalArgumentException 身份声明缺失或 TTL 越界
      */
-    public Issued issue(DelegationVariant variant, String tenantId, String subject, String membershipId,
-                        List<String> scopes, Integer policyVersion, Integer ttlSeconds) {
-        DelegationVariant v = variant == null ? DelegationVariant.NONE : variant;
+    public Issued issue(String tenantId, String subject, String membershipId, List<String> scopes,
+                        Integer policyVersion, Integer ttlSeconds) {
+        requireText(tenantId, "tenantId");
+        requireText(subject, "subject");
+        requireText(membershipId, "membershipId");
+        if (policyVersion == null) {
+            throw new IllegalArgumentException("policyVersion is required");
+        }
+        if (scopes == null || scopes.isEmpty()) {
+            throw new IllegalArgumentException("scopes must not be empty");
+        }
+
+        int ttl = ttlSeconds == null ? MAX_TTL_SECONDS : ttlSeconds;
+        if (ttl < MIN_TTL_SECONDS || ttl > MAX_TTL_SECONDS) {
+            throw new IllegalArgumentException("ttlSeconds must be within [" + MIN_TTL_SECONDS + ","
+                    + MAX_TTL_SECONDS + "]");
+        }
+
         Instant now = clock.instant();
-        long ttl = ttlSeconds == null ? 60L : ttlSeconds;
         String jti = UUID.randomUUID().toString();
-
-        Instant issuedAt = now;
-        Instant notBefore = now;
-        Instant expiresAt = now.plusSeconds(ttl);
-        switch (v) {
-            case EXPIRED -> {
-                issuedAt = now.minus(1, ChronoUnit.HOURS);
-                notBefore = issuedAt;
-                expiresAt = now.minus(60, ChronoUnit.SECONDS);
-            }
-            case NOT_YET_VALID -> {
-                notBefore = now.plus(5, ChronoUnit.MINUTES);
-                expiresAt = now.plus(10, ChronoUnit.MINUTES);
-            }
-            default -> {
-                // 其余变体沿用默认时间窗
-            }
-        }
-
-        if (v == DelegationVariant.ALG_NONE) {
-            return new Issued(algNoneToken(v, tenantId, subject, membershipId, scopes, policyVersion,
-                    jti, issuedAt, notBefore, expiresAt), jti, keys.kid());
-        }
-
-        String issuer = v == DelegationVariant.WRONG_ISSUER ? "not-platform" : ISSUER;
-        String audience = v == DelegationVariant.WRONG_AUDIENCE ? "other-service" : AUDIENCE;
-        String kid = v == DelegationVariant.UNKNOWN_KID ? "p04-unknown-kid" : keys.kid();
-        PrivateKey signingKey = v == DelegationVariant.FOREIGN_KEY ? keys.untrustedPrivateKey() : keys.privateKey();
-
-        var builder = Jwts.builder()
-                .header().keyId(kid).type("JWT").and()
-                .issuer(issuer)
-                .audience().add(audience).and()
-                .issuedAt(Date.from(issuedAt))
-                .notBefore(Date.from(notBefore));
-
-        if (v != DelegationVariant.MISSING_SUBJECT && subject != null) {
-            builder.subject(subject);
-        }
-        if (v != DelegationVariant.MISSING_TENANT && tenantId != null) {
-            builder.claim("tid", tenantId);
-        }
-        if (v != DelegationVariant.MISSING_MEMBERSHIP && membershipId != null) {
-            builder.claim("mid", membershipId);
-        }
-        if (v != DelegationVariant.MISSING_POLICY_VERSION && policyVersion != null) {
-            builder.claim("pv", policyVersion);
-        }
-        if (scopes != null && !scopes.isEmpty()) {
-            builder.claim("scope", scopes);
-        }
-        if (v != DelegationVariant.MISSING_JTI) {
-            builder.id(jti);
-        }
-        if (v != DelegationVariant.MISSING_EXPIRATION) {
-            builder.expiration(Date.from(expiresAt));
-        }
-
-        return new Issued(builder.signWith(signingKey, Jwts.SIG.RS256).compact(), jti, kid);
+        String token = Jwts.builder()
+                .header().keyId(keys.kid()).type("JWT").and()
+                .issuer(ISSUER)
+                .audience().add(AUDIENCE).and()
+                .subject(subject)
+                .id(jti)
+                .issuedAt(Date.from(now))
+                .notBefore(Date.from(now))
+                .expiration(Date.from(now.plusSeconds(ttl)))
+                .claim("tid", tenantId)
+                .claim("mid", membershipId)
+                .claim("pv", policyVersion)
+                .claim("scope", scopes)
+                .signWith(keys.privateKey(), Jwts.SIG.RS256)
+                .compact();
+        return new Issued(token, jti, keys.kid());
     }
 
-    /**
-     * 手工构造 {@code alg=none} 的无签名 JWS：header.payload. （签名段为空）。
-     * 这是协议层必须拒绝的形态，jjwt 不提供构造入口，故在此显式拼装。
-     */
-    private String algNoneToken(DelegationVariant v, String tenantId, String subject, String membershipId,
-                                List<String> scopes, Integer policyVersion, String jti,
-                                Instant issuedAt, Instant notBefore, Instant expiresAt) {
-        Map<String, Object> header = new LinkedHashMap<>();
-        header.put("alg", "none");
-        header.put("typ", "JWT");
-        header.put("kid", keys.kid());
-
-        Map<String, Object> claims = new LinkedHashMap<>();
-        claims.put("iss", ISSUER);
-        claims.put("aud", AUDIENCE);
-        if (subject != null) {
-            claims.put("sub", subject);
+    private static void requireText(String value, String name) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(name + " is required");
         }
-        if (tenantId != null) {
-            claims.put("tid", tenantId);
-        }
-        if (membershipId != null) {
-            claims.put("mid", membershipId);
-        }
-        if (policyVersion != null) {
-            claims.put("pv", policyVersion);
-        }
-        if (scopes != null && !scopes.isEmpty()) {
-            claims.put("scope", scopes);
-        }
-        claims.put("jti", jti);
-        claims.put("iat", issuedAt.getEpochSecond());
-        claims.put("nbf", notBefore.getEpochSecond());
-        claims.put("exp", expiresAt.getEpochSecond());
-
-        try {
-            return base64Url(objectMapper.writeValueAsBytes(header))
-                    + "." + base64Url(objectMapper.writeValueAsBytes(claims)) + ".";
-        } catch (Exception e) {
-            throw new IllegalStateException("failed to craft alg=none token", e);
-        }
-    }
-
-    private static String base64Url(byte[] bytes) {
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 }

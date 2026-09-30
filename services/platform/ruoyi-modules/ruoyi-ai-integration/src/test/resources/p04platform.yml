@@ -10,6 +10,8 @@ spring:
     banner-mode: off
 
 p04:
+  # 显式开启实验装配（阻断修复 Spec §2）：默认关闭。
+  enabled: true
   kid: p04-platform-k1
   # service-credential 只经进程环境 P04_SERVICE_CREDENTIAL 注入，不写在文件里
 

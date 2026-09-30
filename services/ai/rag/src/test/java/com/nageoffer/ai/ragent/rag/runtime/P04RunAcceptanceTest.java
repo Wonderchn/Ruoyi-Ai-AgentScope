@@ -383,4 +383,85 @@ class P04RunAcceptanceTest {
         assertNotEquals(t1.runId(), t2.runId());
         assertEquals(2, store.runs);
     }
+
+    // ---------- 阻断修复 Spec §3.1：B2 最小反例回归 ----------
+
+    private P04AiErrorCode codeOfBody(String body) {
+        return codeOf(() -> service.accept(token("T1", "M1", 1, "rag.chat"), "b2-key", body));
+    }
+
+    @Test
+    @DisplayName("§3.1 schemaVersion 非 1 或缺席 → 400")
+    void schemaVersionMustBeExactlyOne() {
+        assertEquals(P04AiErrorCode.BAD_REQUEST,
+                codeOfBody(LEGAL_BODY.replace("\"schemaVersion\":1", "\"schemaVersion\":2")));
+        assertEquals(P04AiErrorCode.BAD_REQUEST,
+                codeOfBody("{\"action\":\"rag.chat\",\"input\":{\"text\":\"x\"},\"resourceRefs\":[\"KB-A\"]}"));
+    }
+
+    @Test
+    @DisplayName("§3.1 action 非 rag.chat 或缺席 → 400（不得进入受理）")
+    void actionMustBeExactlyRagChat() {
+        assertEquals(P04AiErrorCode.BAD_REQUEST,
+                codeOfBody(LEGAL_BODY.replace("\"action\":\"rag.chat\"", "\"action\":\"admin.delete\"")));
+        assertEquals(P04AiErrorCode.BAD_REQUEST,
+                codeOfBody("{\"schemaVersion\":1,\"input\":{\"text\":\"x\"},\"resourceRefs\":[\"KB-A\"]}"));
+        assertEquals(0, store.runs);
+    }
+
+    @Test
+    @DisplayName("§3.1 input.text 非字符串或缺席 → 400（不得静默兜底）")
+    void inputTextMustBeString() {
+        assertEquals(P04AiErrorCode.BAD_REQUEST,
+                codeOfBody(LEGAL_BODY.replace("\"text\":\"synthetic-p04\"", "\"text\":123")));
+        assertEquals(P04AiErrorCode.BAD_REQUEST,
+                codeOfBody("{\"schemaVersion\":1,\"action\":\"rag.chat\",\"input\":{},\"resourceRefs\":[\"KB-A\"]}"));
+    }
+
+    @Test
+    @DisplayName("§3.1 input 内未知字段 → 400")
+    void unknownNestedFieldIsRejected() {
+        assertEquals(P04AiErrorCode.BAD_REQUEST,
+                codeOfBody(LEGAL_BODY.replace("\"text\":\"synthetic-p04\"",
+                        "\"text\":\"synthetic-p04\",\"tenant\":\"T2\"")));
+    }
+
+    @Test
+    @DisplayName("§3.1 resourceRefs 缺席 / 非数组 / 含空字符串元素 → 400")
+    void resourceRefsShapeIsStrict() {
+        assertEquals(P04AiErrorCode.BAD_REQUEST,
+                codeOfBody("{\"schemaVersion\":1,\"action\":\"rag.chat\",\"input\":{\"text\":\"x\"}}"));
+        assertEquals(P04AiErrorCode.BAD_REQUEST,
+                codeOfBody(LEGAL_BODY.replace("[\"KB-A\"]", "\"KB-A\"")));
+        assertEquals(P04AiErrorCode.BAD_REQUEST,
+                codeOfBody(LEGAL_BODY.replace("[\"KB-A\"]", "[\"\"]")));
+    }
+
+    @Test
+    @DisplayName("§3.1 resourceRefs 为空数组 → 404（不存在无资源动作）")
+    void emptyResourceRefsIsNotFound() {
+        assertEquals(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN,
+                codeOfBody(LEGAL_BODY.replace("[\"KB-A\"]", "[]")));
+        assertEquals(0, store.runs);
+    }
+
+    @Test
+    @DisplayName("§3.1 重复键 → 400（严格解析，不静默保留最后一个）")
+    void duplicateKeysAreRejected() {
+        String duplicated = "{\"schemaVersion\":1,\"action\":\"rag.chat\","
+                + "\"input\":{\"text\":\"synthetic-p04\",\"text\":\"synthetic-p04\"},"
+                + "\"resourceRefs\":[\"KB-A\"]}";
+        assertEquals(P04AiErrorCode.BAD_REQUEST, codeOfBody(duplicated));
+    }
+
+    @Test
+    @DisplayName("身份字段清单由 RequestHasher 单一维护")
+    void identityFieldListIsMaintainedInOnePlace() {
+        List<String> names = RequestHasher.identityFields();
+        assertTrue(names.contains("tid"));
+        assertTrue(names.contains("tenantId"));
+        assertTrue(names.contains("userId"));
+        assertTrue(names.contains("mid"));
+        assertTrue(names.contains("membershipId"));
+    }
 }

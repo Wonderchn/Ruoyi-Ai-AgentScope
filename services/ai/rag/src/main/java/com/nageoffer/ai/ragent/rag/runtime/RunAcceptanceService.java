@@ -25,6 +25,7 @@ import com.nageoffer.ai.ragent.framework.security.DelegationVerifier;
 import com.nageoffer.ai.ragent.framework.security.P04AiErrorCode;
 import com.nageoffer.ai.ragent.framework.security.P04AiException;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -49,13 +50,11 @@ import java.util.UUID;
  * <p>不实现在实验中明确排除的东西：Worker、事件回放、MQ 投递、真实额度竞争与结算（属 P2）。
  */
 @Service
+@ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class RunAcceptanceService {
 
     /** 受理事件类型。 */
     public static final String EVENT_RUN_ACCEPTED = "run.accepted";
-
-    /** 合法请求的 schema 版本。 */
-    public static final int SCHEMA_VERSION = 1;
 
     private final DelegationVerifier verifier;
     private final AuthorizationChecker authorizationClient;
@@ -84,11 +83,8 @@ public class RunAcceptanceService {
     public Outcome accept(String bearerToken, String idempotencyKey, String rawBody) {
         DelegationVerifier.DelegationClaims claims = verifier.verify(bearerToken);
 
+        // parse 内部已按 §3.1 对"请求体自带身份字段"判 403，此处不再重复判定
         JsonNode body = hasher.parse(rawBody);
-        if (hasher.declaresIdentity(body)) {
-            // 公共/内部入口遇到伪造身份一律 403，绝不允许"省略身份后回落默认租户"
-            throw new P04AiException(P04AiErrorCode.TENANT_CONTEXT_MISSING);
-        }
         DelegatedPrincipal principal = verifier.requireTenantContext(claims);
 
         if (idempotencyKey == null || idempotencyKey.isBlank()) {

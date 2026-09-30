@@ -1,4 +1,5 @@
-# P0.4 最小 AI 测试应用专用配置。
+# P0.4 关闭态专用配置：刻意不含任何 p04.* 配置，用来复现"真实应用没有实验配置"的情形。
+# 由 --spring.config.name=p04ai-off 加载。注意：它只改配置文件名，不激活同名 profile。
 # 以 --spring.config.name=p04ai 启动时，产品的 application.yaml 完全不会被读取。
 server:
   port: 19090
@@ -42,23 +43,6 @@ spring:
       - com.baomidou.mybatisplus.autoconfigure.DdlAutoConfiguration
       - com.baomidou.mybatisplus.autoconfigure.IdentifierGeneratorAutoConfiguration
       - cn.dev33.satoken.dao.SaTokenDaoForRedisTemplate
-
-p04:
-  # 显式开启实验装配（阻断修复 Spec §2）：默认关闭，真实应用不会装配这些组件。
-  # 注意：--spring.config.name=p04ai 只改配置文件名，并不激活名为 p04ai 的 profile。
-  enabled: true
-  delegation:
-    # platform 运行期生成的公钥；由验收脚本写入后传给本进程
-    public-key-path: ${P04_DELEGATION_PUBLIC_KEY_PATH}
-    issuer: platform
-    audience: ai
-    kid: p04-platform-k1
-    clock-skew-seconds: 30
-  platform:
-    authorization-url: ${P04_PLATFORM_AUTHORIZATION_URL}
-    # 只经进程环境注入，不写在文件里
-    service-credential: ${P04_SERVICE_CREDENTIAL}
-    timeout-millis: 2000
 
 logging:
   level:

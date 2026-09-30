@@ -21,6 +21,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
@@ -41,6 +42,7 @@ import java.time.Duration;
  * </ul>
  */
 @Component
+@ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class PlatformAuthorizationClient implements AuthorizationChecker {
 
     private static final Logger log = LoggerFactory.getLogger(PlatformAuthorizationClient.class);

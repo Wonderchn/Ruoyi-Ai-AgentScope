@@ -17,10 +17,8 @@
 
 package org.ruoyi.aiintegration;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jws;
-import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.JwtParser;
 import io.jsonwebtoken.Jwts;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,33 +27,34 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.ruoyi.aiintegration.delegation.DelegationIssuer;
 import org.ruoyi.aiintegration.delegation.DelegationSigningKeys;
-import org.ruoyi.aiintegration.delegation.DelegationVariant;
 
+import java.security.KeyFactory;
+import java.security.PublicKey;
+import java.security.spec.X509EncodedKeySpec;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Base64;
 import java.util.Date;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 委托签发器的无外部服务单测（Spec §7.1 第一层 / §8.6 Unit 模式的必跑类之一）。
+ * 主源集<b>合法</b>签发器的单测（Spec §8.6 Unit 模式必跑类之一）。
  *
- * <p>用可控时钟断言 TTL 与 nbf/exp 边界，不用 sleep 等过期。测试类必须带 {@code dev} 标签：
- * platform 的 surefire 以 {@code groups=${profiles.active}} 过滤，{@code -Pdev} 下只跑该标签，
- * 否则会出现 “Tests run: 0” 却 BUILD SUCCESS 的假绿。
+ * <p>负例变体的铸造已按阻断修复 Spec §2.3 移入测试源集，其断言见
+ * {@code org.ruoyi.aiintegration.p04.P04NegativeDelegationMinterTest}；本类只覆盖
+ * 合法路径与 TTL 边界。测试类带 {@code dev} 标签。
  */
 @Tag("dev")
 class P04DelegationIssuerTest {
 
     private static final Instant FIXED = Instant.parse("2026-09-30T00:00:00Z");
-    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private DelegationSigningKeys keys;
     private DelegationIssuer issuer;
@@ -63,11 +62,10 @@ class P04DelegationIssuerTest {
     @BeforeEach
     void setUp() {
         keys = DelegationSigningKeys.generate("p04-platform-k1");
-        issuer = new DelegationIssuer(keys, MAPPER, Clock.fixed(FIXED, ZoneOffset.UTC));
+        issuer = new DelegationIssuer(keys, Clock.fixed(FIXED, ZoneOffset.UTC));
     }
 
-    /** 解析器时钟固定在签发时刻之后 10 秒，避免固定时钟落在真实"现在"之前造成误判。 */
-    private JwtParser parser(java.security.PublicKey key) {
+    private JwtParser parser(PublicKey key) {
         return Jwts.parser()
                 .verifyWith(key)
                 .requireIssuer(DelegationIssuer.ISSUER)
@@ -77,12 +75,14 @@ class P04DelegationIssuerTest {
                 .build();
     }
 
+    private DelegationIssuer.Issued legal() {
+        return issuer.issue("T1", "sub-u1", "M1", List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null);
+    }
+
     @Test
     @DisplayName("合法委托可验签并携带全部必需声明")
-    void legalDelegationVerifiesWithExpectedClaims() {
-        DelegationIssuer.Issued issued = issuer.issue(DelegationVariant.NONE, "T1", "sub-u1", "M1",
-                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null);
-
+    void legalDelegationCarriesExpectedClaims() {
+        DelegationIssuer.Issued issued = legal();
         Jws<Claims> jws = parser(keys.publicKey()).parseSignedClaims(issued.token());
         Claims claims = jws.getPayload();
 
@@ -96,121 +96,56 @@ class P04DelegationIssuerTest {
         assertEquals("M1", claims.get("mid", String.class));
         assertEquals(1, claims.get("pv", Integer.class));
         assertEquals(issued.jti(), claims.getId());
-        assertNotNull(claims.getExpiration());
-        assertNotNull(claims.getNotBefore());
         assertNotNull(claims.getIssuedAt());
+        assertNotNull(claims.getNotBefore());
+        assertNotNull(claims.getExpiration());
     }
 
     @Test
     @DisplayName("每次签发都产生新的 jti（F2：重试必须换 jti）")
     void eachIssueGetsFreshJti() {
-        DelegationIssuer.Issued first = issuer.issue(DelegationVariant.NONE, "T1", "sub-u1", "M1",
-                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null);
-        DelegationIssuer.Issued second = issuer.issue(DelegationVariant.NONE, "T1", "sub-u1", "M1",
-                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null);
-
+        DelegationIssuer.Issued first = legal();
+        DelegationIssuer.Issued second = legal();
         assertNotEquals(first.jti(), second.jti());
         assertNotEquals(first.token(), second.token());
     }
 
     @Test
-    @DisplayName("TTL 精确等于请求的秒数")
-    void ttlIsHonoured() {
-        DelegationIssuer.Issued issued = issuer.issue(DelegationVariant.NONE, "T1", "sub-u1", "M1",
-                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, 120);
+    @DisplayName("TTL 默认 60 秒，显式 30 秒被遵守")
+    void ttlDefaultsAndExplicitValue() {
+        Claims defaulted = parser(keys.publicKey()).parseSignedClaims(legal().token()).getPayload();
+        assertEquals(60L, defaulted.getExpiration().toInstant().getEpochSecond()
+                - defaulted.getIssuedAt().toInstant().getEpochSecond());
 
-        Claims claims = parser(keys.publicKey()).parseSignedClaims(issued.token()).getPayload();
-        long delta = claims.getExpiration().toInstant().getEpochSecond()
-                - claims.getIssuedAt().toInstant().getEpochSecond();
-        assertEquals(120L, delta);
+        DelegationIssuer.Issued shortLived = issuer.issue("T1", "sub-u1", "M1",
+                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, 30);
+        Claims claims = parser(keys.publicKey()).parseSignedClaims(shortLived.token()).getPayload();
+        assertEquals(30L, claims.getExpiration().toInstant().getEpochSecond()
+                - claims.getIssuedAt().toInstant().getEpochSecond());
     }
 
     @Test
-    @DisplayName("过期凭证被拒绝")
-    void expiredIsRejected() {
-        DelegationIssuer.Issued issued = issuer.issue(DelegationVariant.EXPIRED, "T1", "sub-u1", "M1",
-                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null);
-        assertThrows(JwtException.class, () -> parser(keys.publicKey()).parseSignedClaims(issued.token()));
+    @DisplayName("TTL 越界在签发侧即被拒绝（0 与 61）")
+    void ttlOutOfRangeIsRefused() {
+        assertThrows(IllegalArgumentException.class, () -> issuer.issue("T1", "sub-u1", "M1",
+                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, 0));
+        assertThrows(IllegalArgumentException.class, () -> issuer.issue("T1", "sub-u1", "M1",
+                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, DelegationIssuer.MAX_TTL_SECONDS + 1));
     }
 
     @Test
-    @DisplayName("尚未生效（nbf 在未来）的凭证被拒绝")
-    void notYetValidIsRejected() {
-        DelegationIssuer.Issued issued = issuer.issue(DelegationVariant.NOT_YET_VALID, "T1", "sub-u1", "M1",
-                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null);
-        assertThrows(JwtException.class, () -> parser(keys.publicKey()).parseSignedClaims(issued.token()));
-    }
-
-    @Test
-    @DisplayName("错误 audience 的凭证被拒绝")
-    void wrongAudienceIsRejected() {
-        DelegationIssuer.Issued issued = issuer.issue(DelegationVariant.WRONG_AUDIENCE, "T1", "sub-u1", "M1",
-                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null);
-        assertThrows(JwtException.class, () -> parser(keys.publicKey()).parseSignedClaims(issued.token()));
-    }
-
-    @Test
-    @DisplayName("外来私钥签发的凭证签名校验失败")
-    void foreignKeySignatureIsRejected() {
-        DelegationIssuer.Issued issued = issuer.issue(DelegationVariant.FOREIGN_KEY, "T1", "sub-u1", "M1",
-                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null);
-        assertThrows(JwtException.class, () -> parser(keys.publicKey()).parseSignedClaims(issued.token()));
-    }
-
-    @Test
-    @DisplayName("alg=none 的无签名 JWS 被解析器拒绝")
-    void algNoneIsRejected() {
-        DelegationIssuer.Issued issued = issuer.issue(DelegationVariant.ALG_NONE, "T1", "sub-u1", "M1",
-                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null);
-        assertTrue(issued.token().endsWith("."), "alg=none 令牌的签名段必须为空");
-        assertThrows(JwtException.class, () -> parser(keys.publicKey()).parseSignedClaims(issued.token()));
-    }
-
-    @Test
-    @DisplayName("未知 kid 可见于头部（由校验方按白名单拒绝，而不是靠签名失败兜底）")
-    void unknownKidIsVisibleInHeader() {
-        DelegationIssuer.Issued issued = issuer.issue(DelegationVariant.UNKNOWN_KID, "T1", "sub-u1", "M1",
-                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null);
-        Jws<Claims> jws = parser(keys.publicKey()).parseSignedClaims(issued.token());
-        assertEquals("p04-unknown-kid", jws.getHeader().getKeyId());
-    }
-
-    @Test
-    @DisplayName("缺租户/成员/策略版本声明时对应 claim 为空")
-    void missingIdentityClaimsAreAbsent() {
-        Claims noTenant = parser(keys.publicKey()).parseSignedClaims(
-                issuer.issue(DelegationVariant.MISSING_TENANT, "T1", "sub-u1", "M1",
-                        List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null).token()).getPayload();
-        assertNull(noTenant.get("tid", String.class));
-
-        Claims noMembership = parser(keys.publicKey()).parseSignedClaims(
-                issuer.issue(DelegationVariant.MISSING_MEMBERSHIP, "T1", "sub-u1", "M1",
-                        List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null).token()).getPayload();
-        assertNull(noMembership.get("mid", String.class));
-
-        Claims noPolicyVersion = parser(keys.publicKey()).parseSignedClaims(
-                issuer.issue(DelegationVariant.MISSING_POLICY_VERSION, "T1", "sub-u1", "M1",
-                        List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null).token()).getPayload();
-        assertNull(noPolicyVersion.get("pv", Integer.class));
-    }
-
-    @Test
-    @DisplayName("缺 jti / 缺 sub / 缺 exp 声明时对应字段为空")
-    void missingTokenClaimsAreAbsent() {
-        Claims noJti = parser(keys.publicKey()).parseSignedClaims(
-                issuer.issue(DelegationVariant.MISSING_JTI, "T1", "sub-u1", "M1",
-                        List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null).token()).getPayload();
-        assertNull(noJti.getId());
-
-        Claims noSubject = parser(keys.publicKey()).parseSignedClaims(
-                issuer.issue(DelegationVariant.MISSING_SUBJECT, "T1", "sub-u1", "M1",
-                        List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null).token()).getPayload();
-        assertNull(noSubject.getSubject());
-
-        Claims noExpiration = parser(keys.publicKey()).parseSignedClaims(
-                issuer.issue(DelegationVariant.MISSING_EXPIRATION, "T1", "sub-u1", "M1",
-                        List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null).token()).getPayload();
-        assertNull(noExpiration.getExpiration());
+    @DisplayName("身份声明缺失在签发侧即被拒绝（负例只能由测试侧铸造）")
+    void missingIdentityIsRefusedByIssuer() {
+        assertThrows(IllegalArgumentException.class, () -> issuer.issue(null, "sub-u1", "M1",
+                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null));
+        assertThrows(IllegalArgumentException.class, () -> issuer.issue("T1", " ", "M1",
+                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null));
+        assertThrows(IllegalArgumentException.class, () -> issuer.issue("T1", "sub-u1", null,
+                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null));
+        assertThrows(IllegalArgumentException.class, () -> issuer.issue("T1", "sub-u1", "M1",
+                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), null, null));
+        assertThrows(IllegalArgumentException.class, () -> issuer.issue("T1", "sub-u1", "M1",
+                List.of(), 1, null));
     }
 
     @Test
@@ -222,13 +157,10 @@ class P04DelegationIssuerTest {
         String base64 = pem.replace("-----BEGIN PUBLIC KEY-----", "")
                 .replace("-----END PUBLIC KEY-----", "")
                 .replaceAll("\\s", "");
-        byte[] der = java.util.Base64.getDecoder().decode(base64);
-        java.security.PublicKey imported = java.security.KeyFactory.getInstance("RSA")
-                .generatePublic(new java.security.spec.X509EncodedKeySpec(der));
+        PublicKey imported = KeyFactory.getInstance("RSA")
+                .generatePublic(new X509EncodedKeySpec(Base64.getDecoder().decode(base64)));
 
-        DelegationIssuer.Issued issued = issuer.issue(DelegationVariant.NONE, "T1", "sub-u1", "M1",
-                List.of(DelegationIssuer.SCOPE_RAG_CHAT_SUBMIT), 1, null);
-        Claims claims = parser(imported).parseSignedClaims(issued.token()).getPayload();
+        Claims claims = parser(imported).parseSignedClaims(legal().token()).getPayload();
         assertEquals("T1", claims.get("tid", String.class));
     }
 }

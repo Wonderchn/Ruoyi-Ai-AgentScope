@@ -135,7 +135,17 @@ function Call-Run($client, [string]$token, [string]$key, [string]$body, $extraHe
 function Get-LabEnv([string]$key) {
     $r = Invoke-NativeCapture 'ssh' @('-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR', $LabHost,
         "docker exec $LabContainer printenv $key")
-    return ($r.Output | Out-String).Trim()
+    if ($r.ExitCode -ne 0) {
+        # S5 修复：docker/ssh 失败时 stderr 文本曾被当成"非空口令"返回，
+        # 使"缺靶场"预检形同虚设。现在必须显式判失败。
+        $text = ((($r.Output | Out-String).Trim()) -replace '\s+', ' ')
+        throw ("lab query failed: {0} (ssh/docker exit={1}) {2}" -f $key, $r.ExitCode, $text)
+    }
+    $value = ($r.Output | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        throw ("{0} is empty in lab container {1}" -f $key, $LabContainer)
+    }
+    return $value
 }
 function Invoke-LabSql([string]$sql) {
     $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($sql))
@@ -187,7 +197,9 @@ function Start-Platform([string]$credential, [string]$work) {
     return $p.Id
 }
 function Start-Ai([string]$work, [string]$pemPath) {
-    $cp = "$work\ai\classes;$work\ai\lib\*;$RepoRoot\services\ai\rag\target\test-classes"
+    # 前置工作树里刚构建的两个实验模块主类：否则会用到提取自旧 fat jar 的陈旧副本，
+    # 修复后的代码根本不会被加载（"测了旧字节码"的假绿必须避免）。
+    $cp = "$RepoRoot\services\ai\framework\target\classes;$RepoRoot\services\ai\rag\target\classes;$work\ai\classes;$work\ai\lib\*;$RepoRoot\services\ai\rag\target\test-classes"
     $run = Join-Path $work 'ai-run'
     New-Item -ItemType Directory -Force $run | Out-Null
     # 必须写 ${LabDb}：写成 "$LabDb?currentSchema=..." 时 PowerShell 会把
@@ -219,6 +231,55 @@ function Wait-Health([string]$url, [int]$tries, [string]$what) {
     }
     Write-Output ("  {0} health timed out: {1}" -f $what, $url)
     return $false
+}
+
+# ---------- B1 关闭态验收：真实应用不得因实验组件失败 ----------
+
+
+function Invoke-RealAppProbe([string]$work) {
+    Write-Step 'B1 关闭态：真实 RagentApplication 在无任何 p04.* 配置下不得因实验组件失败'
+    # 刻意清掉实验环境变量：真实应用本就没有任何 p04.* 配置，这正是 B1 的生产条件。
+    foreach ($v in @('P04_DELEGATION_PUBLIC_KEY_PATH', 'P04_PLATFORM_AUTHORIZATION_URL', 'P04_SERVICE_CREDENTIAL')) {
+        Remove-Item "Env:$v" -ErrorAction SilentlyContinue
+    }
+    $cp = "$work\ai\classes;$work\ai\lib\*"
+    $run = Join-Path $work 'real-app-run'
+    New-Item -ItemType Directory -Force $run | Out-Null
+    $proc = Start-Process java -ArgumentList @('-Dfile.encoding=UTF-8', '-Xmx512m', '-cp', $cp,
+        'com.nageoffer.ai.ragent.RagentApplication', '--spring.main.web-application-type=none') -WorkingDirectory $run `
+        -RedirectStandardOutput "$run\stdout.log" -RedirectStandardError "$run\stderr.log" -WindowStyle Hidden -PassThru
+    $proc.Id | Set-Content (Join-Path $work 'realapp.pid')
+    $script:StartedProcesses += $proc.Id
+    Start-Sleep -Seconds 30
+    $log = ((Get-Content "$run\stdout.log" -Raw -ErrorAction SilentlyContinue) + "`n" +
+            (Get-Content "$run\stderr.log" -Raw -ErrorAction SilentlyContinue))
+    # 修复前这里必然出现 "cannot read p04 delegation public key"；修复后不得再出现任何 p04 归因
+    $p04Caused = ($log -match 'p04 delegation public key') -or ($log -match 'DelegationVerifier') -or
+                 ($log -match 'RunAcceptanceService') -or ($log -match 'AclProvider')
+    $first = (($log -split "`n") | Select-String -Pattern 'Caused by:|APPLICATION FAILED TO START' | Select-Object -First 1)
+    $firstText = if ($first) { (($first.Line -replace '\s+', ' ').Trim()) } else { 'no startup failure recorded within probe window' }
+    Assert-That 'B1-real-app-no-p04-failure' 'G0' (-not $p04Caused) `
+        ("p04CausedFailure={0}; firstFailure={1}" -f $p04Caused, $firstText)
+    Stop-Owned (Join-Path $work 'realapp.pid') 'RagentApplication'
+}
+function Invoke-DisabledStateProbe([string]$work, [string]$credential) {
+    Write-Step 'B1 两态验收：无任何 p04.* 配置时实验端点必须不存在'
+    $client = New-Client 10
+
+    # 先停掉"显式开启"的两个 JVM，避免端口冲突
+    Stop-Owned (Join-Path $work 'platform.pid') 'P04PlatformTestApplication'
+    Stop-Owned (Join-Path $work 'ai.pid') 'P04AiTestApplication'
+    Start-Sleep -Seconds 3
+
+    # bean 缺席由仓库内 P04AssemblyBoundaryTest 确定性证明（缺席 / 显式 false / 开启正向对照）；
+    # 这里补的是"路由是否真的不存在"这一层端到端证据。
+    Add-Result 'B1-off-beans' 'G0' 'PASS' 'bean absence proven in-repo by P04AssemblyBoundaryTest (absent + explicit false + enabled positive control)'
+
+    Invoke-RealAppProbe $work
+
+    # platform 侧的关闭态**不**在此断言：该模块刻意未接入 ruoyi-admin，其关闭态证据应与 P1
+    # 接线一并补齐；这里如实记为未验证，而不是用一句描述性 PASS 冒充（43 审核已指出该做法）。
+    Add-Result 'B1-off-platform-routes' 'G0' 'NOT_RUN' 'platform module is not wired into ruoyi-admin; disabled-state proof deferred to P1 wiring'
 }
 
 # =========================== Unit 模式 ===========================
@@ -265,11 +326,26 @@ function Invoke-UnitMode {
 function Invoke-IntegrationMode {
     Write-Step 'Integration：两个独立 JVM + 合成 PG，执行 P01–T02'
     $work = $WorkRoot
-    foreach ($p in @("$work\platform\lib", "$work\ai\lib", "$RepoRoot\services\ai\rag\target\test-classes")) {
-        if (-not (Test-Path $p)) { throw ("missing built artifact: {0}（先按 Spec §8.4 步骤 0 构建）" -f $p) }
+    try {
+        [void](Get-LabEnv 'POSTGRES_PASSWORD')
+    } catch {
+        Add-Result 'ENV-lab' '-' 'NOT_RUN' ("synthetic lab unavailable: " + $_.Exception.Message)
+        throw
     }
-    if ([string]::IsNullOrWhiteSpace((Get-LabEnv 'POSTGRES_PASSWORD'))) { throw "lab container $LabContainer unreachable" }
+    foreach ($p in @("$work\platform\lib", "$work\ai\lib", "$RepoRoot\services\ai\rag\target\test-classes")) {
+        if (-not (Test-Path $p)) {
+            Add-Result 'ENV-artifacts' '-' 'NOT_RUN' ("missing built artifact: {0}（先按 Spec §8.4 步骤 0 构建）" -f $p)
+            throw ("missing built artifact: {0}" -f $p)
+        }
+    }
 
+    # 每轮先清空本实验自己的五张表：固定幂等键与重放 jti 若跨轮残留，会让 P01/I01/F01/F02
+    # 出现"看似失败其实是上一轮数据"的假红（本轮实测踩过：同一靶场连跑三轮后 5 条 FAIL）。
+    Invoke-LabSql 'TRUNCATE ai.ai_run, ai.ai_run_event, ai.outbox_event, ai.ai_usage_ledger, ai.p04_replay_guard;' | Out-Null
+    $reset = Get-DbCounts
+    Assert-That 'ENV-db-reset' 'G1' `
+        (($reset.runs -eq 0) -and ($reset.events -eq 0) -and ($reset.outbox -eq 0) -and ($reset.ledger -eq 0) -and ($reset.replay -eq 0)) `
+        ("after truncate runs/events/outbox/ledger/replay={0}/{1}/{2}/{3}/{4}" -f $reset.runs, $reset.events, $reset.outbox, $reset.ledger, $reset.replay)
     $credential = [guid]::NewGuid().ToString('N')
     Stop-Owned (Join-Path $work 'platform.pid') 'P04PlatformTestApplication'
     Stop-Owned (Join-Path $work 'ai.pid') 'P04AiTestApplication'
@@ -289,7 +365,9 @@ function Invoke-IntegrationMode {
     [void](Start-Ai $work $pemPath)
     if (-not (Wait-Health "$($script:AiBase)/p04/health" 60 'ai')) { throw 'ai test app did not become healthy' }
     Add-Result 'ENV-two-jvms' 'G1' 'PASS' ("platform pid={0} ai pid={1}" -f (Get-Content "$work\platform.pid"), (Get-Content "$work\ai.pid"))
-    Add-Result 'ENV-isolation' 'G0' 'PASS' 'test apps started with --spring.config.name and narrow component scan'
+    # 只声明"启动方式"这一事实；不再以描述性 PASS 冒充隔离行为断言。
+    # 测试应用"不暴露遗留入口"的行为断言属第二步（Spec §7.2），此处不得预先声称。
+    Add-Result 'ENV-launch-flags' 'G1' 'PASS' 'test apps started with --spring.config.name (config file name only; it does NOT activate a profile)'
 
     # 记录用例级基线
     $before = Get-DbCounts
@@ -299,6 +377,8 @@ function Invoke-IntegrationMode {
 
     Run-Scenarios $client
     $script:DbAfter = Get-DbCounts
+
+    Invoke-DisabledStateProbe $work $credential
 }
 
 function Run-Scenarios($client) {

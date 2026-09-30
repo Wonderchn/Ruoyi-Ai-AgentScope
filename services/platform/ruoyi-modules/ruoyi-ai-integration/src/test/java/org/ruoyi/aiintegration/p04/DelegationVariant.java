@@ -15,18 +15,18 @@
  * limitations under the License.
  */
 
-package org.ruoyi.aiintegration.delegation;
+package org.ruoyi.aiintegration.p04;
 
 /**
- * 负例凭证的构造变体。
+ * <b>测试专用</b>的负例凭证变体（阻断修复 Spec §2.3）。
  *
- * <p>只有 {@link #NONE} 是合法凭证；其余变体由<b>测试专用</b>的签发适配器构造，
- * 用于 P0.4 的 G2 拒绝断言（Spec §7.4 的 N01/N02/N06）。这些变体只存在于最小测试应用
- * 暴露的私有端口上，生产接线属 P1。
+ * <p>原本位于主源集；移入测试源集是刻意的：否则 P1 开启委托功能时，会连同
+ * "任意身份 + 负例凭证"的铸造能力一起开启。只有 {@link #NONE} 是合法委托，
+ * 且合法路径由主源集 {@code DelegationIssuer} 产出，不在此处自造。
  */
 public enum DelegationVariant {
 
-    /** 合法委托。 */
+    /** 合法委托（走主源集签发器）。 */
     NONE,
 
     /** {@code aud} 不是本服务。 */
@@ -35,7 +35,7 @@ public enum DelegationVariant {
     /** {@code iss} 不是受信签发方。 */
     WRONG_ISSUER,
 
-    /** 已过期（{@code exp} 在过去）。 */
+    /** 已过期。 */
     EXPIRED,
 
     /** 尚未生效（{@code nbf} 在未来）。 */
@@ -53,11 +53,17 @@ public enum DelegationVariant {
     /** 缺少主体声明。 */
     MISSING_SUBJECT,
 
-    /** 缺少 jti（一次性标识）。 */
+    /** 缺少 jti。 */
     MISSING_JTI,
 
     /** 缺少过期时间。 */
     MISSING_EXPIRATION,
+
+    /** 缺少签发时间。 */
+    MISSING_ISSUED_AT,
+
+    /** TTL 超过冻结上限（60 秒）。 */
+    TTL_OVER_CEILING,
 
     /** 用受信私钥签发，但 kid 不在受信集合内。 */
     UNKNOWN_KID,
@@ -65,6 +71,6 @@ public enum DelegationVariant {
     /** 用另一把不受信私钥签发（签名校验必须失败）。 */
     FOREIGN_KEY,
 
-    /** 手工构造 {@code alg=none} 的无签名 JWS（解析器必须拒绝）。 */
+    /** 手工构造 {@code alg=none} 的无签名 JWS。 */
     ALG_NONE
 }

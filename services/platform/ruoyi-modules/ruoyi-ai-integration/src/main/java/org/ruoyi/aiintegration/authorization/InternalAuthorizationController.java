@@ -24,12 +24,14 @@ import org.ruoyi.aiintegration.web.P04Exception;
 import org.ruoyi.aiintegration.web.RequestId;
 import org.ruoyi.aiintegration.config.P04PlatformProperties;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -42,6 +44,7 @@ import java.util.Set;
  */
 @RestController
 @RequestMapping("/internal/platform/v1")
+@ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class InternalAuthorizationController {
 
     /** AI → platform 的服务凭证头。 */
@@ -119,11 +122,21 @@ public class InternalAuthorizationController {
                 request.resourceRef()));
     }
 
+    private static final Map<String, Set<String>> REQUIRED_SCOPES =
+            Map.of("rag.chat", Set.of("rag.chat.submit"));
+
+    /**
+     * 动作 → 必需功能 scope。
+     *
+     * <p>B2 修复：<b>未知动作默认拒绝</b>。此前对未知动作返回空集，而
+     * {@code containsAll(空集)} 恒真，等于默认放行；不得依赖 AI 侧校验兜住。
+     */
     private static Set<String> requiredScopes(String action) {
-        if ("rag.chat".equals(action)) {
-            return Set.of("rag.chat.submit");
+        Set<String> required = REQUIRED_SCOPES.get(action);
+        if (required == null) {
+            throw new P04Exception(P04ErrorCode.FORBIDDEN);
         }
-        return Set.of();
+        return required;
     }
 
     private void requireServiceCredential(String credential) {
@@ -141,10 +154,5 @@ public class InternalAuthorizationController {
         return java.security.MessageDigest.isEqual(
                 a.getBytes(java.nio.charset.StandardCharsets.UTF_8),
                 b.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-    }
-
-    /** 便于证据关联：当前请求的 requestId。 */
-    public static String currentRequestId() {
-        return RequestId.currentOrEmpty();
     }
 }

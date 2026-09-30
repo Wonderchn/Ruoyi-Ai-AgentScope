@@ -15,8 +15,10 @@
  * limitations under the License.
  */
 
-package org.ruoyi.aiintegration.delegation;
+package org.ruoyi.aiintegration.p04;
 
+import org.ruoyi.aiintegration.delegation.DelegationIssuer;
+import org.ruoyi.aiintegration.delegation.DelegationSigningKeys;
 import org.ruoyi.aiintegration.web.ApiResponse;
 import org.ruoyi.aiintegration.web.P04ErrorCode;
 import org.ruoyi.aiintegration.web.P04Exception;
@@ -30,29 +32,26 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * 测试专用的委托签发与公钥分发端点。
+ * <b>测试专用</b>的委托签发与公钥分发端点（阻断修复 Spec §2.3）。
  *
- * <p>这两个端点只服务于 P0.4 的合成靶场（私有端口、非生产接线）：签发端点按合成身份与
- * {@link DelegationVariant} 产出正/负例凭证，公钥端点把受信公钥交给 AI 侧（AI 只持公钥）。
- * 生产的签发路径是登录流程，属 P1。
+ * <p>此前与签发核心同在主源集，且带 {@code variant} 参数——那等于把"任意身份 + 负例凭证"
+ * 的铸造能力一起带进生产代码路径。现在它只在测试源集存在：合法签发仍走主源集的
+ * {@link DelegationIssuer}，负例由 {@link NegativeDelegationMinter} 构造。
  */
 @RestController
 @RequestMapping("/internal/platform/v1")
-public class InternalDelegationController {
+public class P04DelegationTestController {
 
-    private final DelegationIssuer issuer;
+    private final NegativeDelegationMinter minter;
     private final DelegationSigningKeys keys;
 
-    public InternalDelegationController(DelegationIssuer issuer, DelegationSigningKeys keys) {
-        this.issuer = issuer;
+    public P04DelegationTestController(NegativeDelegationMinter minter, DelegationSigningKeys keys) {
+        this.minter = minter;
         this.keys = keys;
     }
 
-    /**
-     * @param variant 负例变体名；缺省为 {@code NONE}（合法凭证）
-     */
     public record IssueRequest(String tenantId, String subject, String membershipId, List<String> scopes,
-                              Integer policyVersion, Integer ttlSeconds, String variant) {
+                               Integer policyVersion, Integer ttlSeconds, String variant) {
     }
 
     public record IssueResponse(String token, String jti, String kid) {
@@ -64,9 +63,9 @@ public class InternalDelegationController {
     @PostMapping("/delegations")
     public ApiResponse<IssueResponse> issue(@RequestBody IssueRequest request) {
         DelegationVariant variant = parseVariant(request.variant());
-        DelegationIssuer.Issued issued = issuer.issue(variant, request.tenantId(), request.subject(),
+        NegativeDelegationMinter.Minted minted = minter.mint(variant, request.tenantId(), request.subject(),
                 request.membershipId(), request.scopes(), request.policyVersion(), request.ttlSeconds());
-        return ApiResponse.ok(new IssueResponse(issued.token(), issued.jti(), issued.kid()));
+        return ApiResponse.ok(new IssueResponse(minted.token(), minted.jti(), minted.kid()));
     }
 
     @GetMapping("/keys/public")

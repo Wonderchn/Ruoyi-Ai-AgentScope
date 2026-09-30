@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.framework.security;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -34,6 +35,7 @@ import java.time.Duration;
  */
 @Configuration
 @EnableConfigurationProperties(P04SecurityProperties.class)
+@ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class P04SecurityConfig {
 
     @Bean

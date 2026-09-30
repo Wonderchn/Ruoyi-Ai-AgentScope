@@ -19,6 +19,7 @@ package org.ruoyi.aiintegration.web;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -33,6 +34,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  * <p>作用范围限制在本模块包内（{@code basePackages}），避免影响其它模块的既有行为。
  */
 @RestControllerAdvice(basePackages = "org.ruoyi.aiintegration")
+@ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class P04ExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(P04ExceptionHandler.class);

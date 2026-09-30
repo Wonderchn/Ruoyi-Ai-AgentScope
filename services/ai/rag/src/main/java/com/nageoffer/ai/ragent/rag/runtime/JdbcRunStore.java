@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.rag.runtime;
 
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -37,6 +38,7 @@ import java.util.Optional;
  * 幂等靠 {@code uk_run_idempotency} 唯一约束裁决，而不是"先查后插"。
  */
 @Repository
+@ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class JdbcRunStore implements RunStore {
 
     private final JdbcTemplate jdbcTemplate;
