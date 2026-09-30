@@ -72,15 +72,16 @@ spring:
       # 严格模式 匹配不到数据源则报错
       strict: true
       datasource:
-        # 主库数据源
+        # 主库数据源：platform 域 schema
+        # currentSchema 必须同时包含域 schema 与 extensions，否则会解析不到 vector 类型与
+        # < 等价的操作符；JDBC 的 currentSchema 会覆盖 PostgreSQL 角色级 search_path。
+        # host/库名/账号/口令由环境注入，仓库内不保存任何真实凭据。
         master:
           type: ${spring.datasource.type}
-          driverClassName: com.mysql.cj.jdbc.Driver
-          # jdbc 所有参数配置参考 https://lionli.blog.csdn.net/article/details/122018562
-          # rewriteBatchedStatements=true 批处理优化 大幅提升批量插入更新删除性能(对数据库有性能损耗 使用批量操作应考虑性能问题)
-          url: jdbc:mysql://127.0.0.1:3306/ruoyi-ai?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=true&serverTimezone=GMT%2B8&autoReconnect=true&rewriteBatchedStatements=true&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true
-          username: root
-          password: ${PROJECT_SERVICES_PLATFORM_RUOYI_ADMIN_SRC_MAIN_RESOURCES_APPLICATION_DEV_YML_PASSWORD_83}
+          driverClassName: org.postgresql.Driver
+          url: jdbc:postgresql://${PLATFORM_DB_HOST:127.0.0.1}:${PLATFORM_DB_PORT:5432}/${PLATFORM_DB_NAME:ruoyi_agent}?currentSchema=${PLATFORM_DB_SCHEMA:platform,extensions}&reWriteBatchedInserts=true&charSet=UTF-8
+          username: ${PLATFORM_DB_USERNAME:migrate_platform}
+          password: ${PLATFORM_DB_PASSWORD}
 #        agent:
 #          url: jdbc:mysql://127.0.0.1:3306/test?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=true&serverTimezone=GMT%2B8&autoReconnect=true&rewriteBatchedStatements=true&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true
 #          # url: jdbc:mysql://localhost:3306/agent_db
@@ -115,13 +116,13 @@ sys:
 spring.data:
   redis:
     # 地址
-    host: localhost
+    host: ${REDIS_HOST:localhost}
     # 端口，默认为6379
-    port: 6379
+    port: ${REDIS_PORT:6379}
     # 数据库索引
     database: 0
     # redis 密码必须配置
-#    password: 123456
+    password: ${REDIS_PASSWORD}
     # 连接超时时间
     timeout: 10s
     # 是否开启ssl
