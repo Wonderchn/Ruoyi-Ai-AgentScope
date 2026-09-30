@@ -65,17 +65,6 @@
             <artifactId>ruoyi-system</artifactId>
         </dependency>
 
-        <!-- 代码生成 -->
-        <dependency>
-            <groupId>org.ruoyi</groupId>
-            <artifactId>ruoyi-generator</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.ruoyi</groupId>
-            <artifactId>ruoyi-chat</artifactId>
-        </dependency>
-
         <!--  工作流模块  -->
         <dependency>
             <groupId>org.ruoyi</groupId>
