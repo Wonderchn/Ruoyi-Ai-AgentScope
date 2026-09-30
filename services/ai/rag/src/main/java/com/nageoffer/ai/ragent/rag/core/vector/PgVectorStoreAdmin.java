@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.rag.core.vector;
 
 import com.nageoffer.ai.ragent.rag.config.RAGDefaultProperties;
+import com.nageoffer.ai.ragent.framework.exception.ServiceException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -30,36 +31,50 @@ import org.springframework.stereotype.Component;
 @ConditionalOnProperty(name = "rag.vector.type", havingValue = "pg")
 public class PgVectorStoreAdmin implements VectorStoreAdmin {
 
-
+    // Validate the index on the table this connection actually resolves, not a name
+    // anywhere in the database. Only migrations own DDL; application accounts use DML.
+    private static final String VECTOR_INDEX_QUERY = """
+            SELECT EXISTS (
+              SELECT 1 FROM pg_index i
+              JOIN pg_class t ON t.oid = i.indrelid
+              JOIN pg_namespace ns ON ns.oid = t.relnamespace
+              JOIN pg_class idx ON idx.oid = i.indexrelid
+              JOIN pg_am am ON am.oid = idx.relam
+              JOIN pg_opclass opc ON opc.oid = i.indclass[0]
+              JOIN pg_namespace opns ON opns.oid = opc.opcnamespace
+              JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = i.indkey[0]
+              WHERE t.oid = to_regclass('t_knowledge_vector') AND ns.nspname = 'ai'
+                AND am.amname = 'hnsw' AND opc.opcname = 'vector_cosine_ops'
+                AND opns.nspname = 'extensions' AND a.attname = 'embedding'
+                AND a.atttypmod = ? AND i.indnkeyatts = 1
+                AND i.indisvalid AND i.indisready
+                AND i.indpred IS NULL AND i.indexprs IS NULL
+            )
+            """;
     private final JdbcTemplate jdbcTemplate;
     private final RAGDefaultProperties ragDefaultProperties;
 
     @Override
     public void ensureVectorSpace(VectorSpaceSpec spec) {
-        String indexName = "idx_kv_embedding_hnsw";
-
-        // noinspection SqlDialectInspection,SqlNoDataSourceInspection
-        Integer count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM pg_indexes WHERE indexname = ?", Integer.class, indexName);
-
-        if (count != null && count > 0) {
-            log.debug("HNSW索引已存在: {}", indexName);
-            return;
+        if (!hasVectorIndex()) {
+            throw new ServiceException("AI 域缺少有效的 HNSW cosine 向量索引，请先执行 AI 数据库迁移；运行账号不执行 DDL");
         }
-
-        int dimension = ragDefaultProperties.getDimension();
-        log.info("创建pgvector HNSW索引，维度: {}", dimension);
-        jdbcTemplate.execute(String.format("CREATE INDEX IF NOT EXISTS %s ON t_knowledge_vector USING hnsw (embedding vector_cosine_ops)", indexName));
+        log.debug("AI 域迁移预建的 HNSW 向量索引已就绪");
     }
 
     @Override
     public boolean vectorSpaceExists(VectorSpaceId spaceId) {
         try {
             // noinspection SqlDialectInspection,SqlNoDataSourceInspection
-            jdbcTemplate.queryForObject("SELECT COUNT(*) FROM t_knowledge_vector LIMIT 1", Integer.class);
-            return true;
+            return hasVectorIndex();
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private boolean hasVectorIndex() {
+        return Boolean.TRUE.equals(jdbcTemplate.queryForObject(
+                VECTOR_INDEX_QUERY, Boolean.class, ragDefaultProperties.getDimension()));
     }
 
     @Override

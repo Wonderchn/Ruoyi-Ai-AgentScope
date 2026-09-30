@@ -15,9 +15,9 @@ spring:
   datasource:
     driver-class-name: org.postgresql.Driver
     type: com.zaxxer.hikari.HikariDataSource
-    username: postgres
-    password: ${PROJECT_SERVICES_AI_BOOTSTRAP_SRC_MAIN_RESOURCES_APPLICATION_YAML_PASSWORD_19}
-    url: jdbc:postgresql://127.0.0.1:5432/ragent?client_encoding=UTF8
+    username: ${AI_DB_USER:ai_app}
+    password: ${AI_DB_PASSWORD}
+    url: ${AI_DB_URL:jdbc:postgresql://127.0.0.1:5432/ruoyi_agent?client_encoding=UTF8&currentSchema=ai,extensions}
     hikari:
       connection-timeout: 5000
       idle-timeout: 600000
