@@ -17,12 +17,6 @@
 
     <dependencies>
 
-        <!-- Mysql驱动包 -->
-        <dependency>
-            <groupId>com.mysql</groupId>
-            <artifactId>mysql-connector-j</artifactId>
-        </dependency>
-
 <!--        &lt;!&ndash; mp支持的数据库均支持 只需要增加对应的jdbc依赖即可 &ndash;&gt;-->
 <!--        &lt;!&ndash; Oracle &ndash;&gt;-->
 <!--        <dependency>-->
@@ -34,16 +28,17 @@
 <!--            <groupId>com.oracle.database.nls</groupId>-->
 <!--            <artifactId>orai18n</artifactId>-->
 <!--        </dependency>-->
-<!--        &lt;!&ndash; PostgreSql &ndash;&gt;-->
-<!--        <dependency>-->
-<!--            <groupId>org.postgresql</groupId>-->
-<!--            <artifactId>postgresql</artifactId>-->
-<!--        </dependency>-->
 <!--        &lt;!&ndash; SqlServer &ndash;&gt;-->
 <!--        <dependency>-->
 <!--            <groupId>com.microsoft.sqlserver</groupId>-->
 <!--            <artifactId>mssql-jdbc</artifactId>-->
 <!--        </dependency>-->
+
+        <!-- platform 运行在 PostgreSQL 上，版本由 Spring Boot BOM 管理 -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.ruoyi</groupId>
@@ -70,29 +65,11 @@
             <artifactId>ruoyi-system</artifactId>
         </dependency>
 
-        <!-- 代码生成-->
-        <dependency>
-            <groupId>org.ruoyi</groupId>
-            <artifactId>ruoyi-generator</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.ruoyi</groupId>
-            <artifactId>ruoyi-chat</artifactId>
-        </dependency>
-
         <!--  工作流模块  -->
         <dependency>
             <groupId>org.ruoyi</groupId>
             <artifactId>ruoyi-workflow</artifactId>
         </dependency>
-
-        <!--  AI流程编排模块  -->
-        <dependency>
-            <groupId>org.ruoyi</groupId>
-            <artifactId>ruoyi-aiflow</artifactId>
-        </dependency>
-
 
         <dependency>
             <groupId>de.codecentric</groupId>

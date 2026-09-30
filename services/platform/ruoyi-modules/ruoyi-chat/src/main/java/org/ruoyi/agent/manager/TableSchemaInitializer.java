@@ -1,6 +1,7 @@
 package org.ruoyi.agent.manager;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.event.ContextRefreshedEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
@@ -13,7 +14,9 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 @Component
-// @ConditionalOnProperty(name = "agent.mysql.enabled", havingValue = "true")
+// 默认不装配：该钩子在每次启动读取表结构元数据，是旧 Agent 链路残留的 MySQL 依赖。
+// 需要时显式设 agent.mysql.enabled=true 才恢复。
+@ConditionalOnProperty(name = "agent.mysql.enabled", havingValue = "true")
 public class TableSchemaInitializer {
 
     @Autowired(required = false)
