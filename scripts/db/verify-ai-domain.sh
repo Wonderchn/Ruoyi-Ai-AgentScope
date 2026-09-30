@@ -37,7 +37,7 @@ docker run -d --name "$CONTAINER" --memory "${PG_MEM:-768m}" --cpus "${PG_CPUS:-
   -v "$WORK:/check:ro" "$PG_IMAGE" >/dev/null
 cleanup() {
   docker rm -f "$CONTAINER-kill" >/dev/null 2>&1 || true
-  if [ "${KEEP_CONTAINER:-0}" != 1 ] || [ "${COMPLETE:-0}" != 1 ]; then docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; fi
+  if [ "${KEEP_CONTAINER:-0}" != 1 ] || [ "${COMPLETE:-0}" != 1 ]; then docker rm -fv "$CONTAINER" >/dev/null 2>&1 || true; fi
   if [ "${KEEP_WORK:-0}" != 1 ]; then rm -rf -- "$WORK"; fi
 }
 trap cleanup EXIT
