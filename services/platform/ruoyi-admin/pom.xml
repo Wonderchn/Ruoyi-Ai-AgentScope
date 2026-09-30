@@ -82,13 +82,6 @@
             <artifactId>ruoyi-workflow</artifactId>
         </dependency>
 
-        <!--  AI流程编排模块  -->
-        <dependency>
-            <groupId>org.ruoyi</groupId>
-            <artifactId>ruoyi-aiflow</artifactId>
-        </dependency>
-
-
         <dependency>
             <groupId>de.codecentric</groupId>
             <artifactId>spring-boot-admin-starter-client</artifactId>
