@@ -37,19 +37,6 @@ public class BeanConfig {
         return restTemplate;
     }
 
-    @Bean(name = "mainExecutor")
-    @Primary
-    public AsyncTaskExecutor mainExecutor() {
-        int processorsNum = Runtime.getRuntime().availableProcessors();
-        log.info("mainExecutor,processorsNum:{}", processorsNum);
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        // 核心线程数不得超过最大线程数
-        int maxPoolSize = 100;
-        executor.setCorePoolSize(Math.min(processorsNum * 2, maxPoolSize));
-        executor.setMaxPoolSize(maxPoolSize);
-        return executor;
-    }
-
     @Bean(name = "imagesExecutor")
     public AsyncTaskExecutor imagesExecutor() {
         int processorsNum = Runtime.getRuntime().availableProcessors();

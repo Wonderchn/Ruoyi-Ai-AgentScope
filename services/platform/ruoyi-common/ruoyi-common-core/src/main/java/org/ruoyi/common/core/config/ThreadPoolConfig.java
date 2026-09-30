@@ -9,6 +9,7 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.core.task.VirtualThreadTaskExecutor;
 
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -76,6 +77,25 @@ public class ThreadPoolConfig {
         executor.setThreadNamePrefix("knowledge-parse-pool-");
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
         executor.initialize();
+        return executor;
+    }
+
+    /**
+     * 应用级 @Async 主执行器。
+     * 此前由 ruoyi-aiflow 的 BeanConfig 以 @Primary 提供，旧 AI 模块退场后必须在保留侧落地：
+     * 缺失后 @Async 不会报错，只会静默改用默认执行器，线程池参数随之改变。
+     * 池参数与原实现保持一致。
+     */
+    @Primary
+    @Bean(name = "mainExecutor")
+    public AsyncTaskExecutor mainExecutor() {
+        int processorsNum = Runtime.getRuntime().availableProcessors();
+        log.info("mainExecutor,processorsNum:{}", processorsNum);
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        // 核心线程数不得超过最大线程数
+        int maxPoolSize = 100;
+        executor.setCorePoolSize(Math.min(processorsNum * 2, maxPoolSize));
+        executor.setMaxPoolSize(maxPoolSize);
         return executor;
     }
 
