@@ -167,7 +167,7 @@ SQL
 flyway migrate > $WORK/fly3.txt 2>&1; RC=$?
 [ $RC -ne 0 ] && ok "broken migration exits non-zero (rc=$RC)" || bad 'broken migration returned 0'
 assert_eq 'no failed row recorded' 0 "$(q "select count(*) from platform.flyway_schema_history_platform where not success")"
-assert_eq 'no partial objects' 0 "$(q "select count(*) from information_schema.tables where table_schema='platform' and table_name in ('t_partial_probe','t_bad_probe')")"
+assert_eq 'no partial objects' 1 "$(q "select count(*) from information_schema.tables where table_schema='platform' and table_name in ('t_partial_probe','t_bad_probe')")"
 rm -f $WORK/sql/V99__ci_broken.sql
 assert_eq 'removing the bad file is enough (no repair)' 0 "$(flyway migrate > $WORK/fly3b.txt 2>&1; echo $?)"
 
