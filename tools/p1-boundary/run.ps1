@@ -1262,6 +1262,11 @@ CREATE SCHEMA IF NOT EXISTS platform;
 CREATE SCHEMA IF NOT EXISTS ai;
 CREATE SCHEMA IF NOT EXISTS extensions;
 GRANT USAGE ON SCHEMA platform, ai, extensions TO platform_app, ai_app;
+-- 迁移账号需要在自己库里建 schema 的权限：否则自足前缀里的
+-- CREATE SCHEMA IF NOT EXISTS 会以 "permission denied for database" 失败，
+-- 而那条错误又会被读成"迁移脚本有问题"。
+GRANT CREATE ON DATABASE ragent_p1b TO platform_migrate, ai_migrate;
+GRANT CREATE ON SCHEMA platform, ai, extensions TO platform_migrate, ai_migrate;
 '@
     $roleSql = $roleSql.Replace('__P1__', $script:Secrets['platformMigrate']).Replace('__P2__', $script:Secrets['platformApp'])
     $roleSql = $roleSql.Replace('__P3__', $script:Secrets['aiMigrate']).Replace('__P4__', $script:Secrets['aiApp'])
