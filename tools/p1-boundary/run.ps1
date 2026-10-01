@@ -107,6 +107,8 @@ $script:S3Port = 0
 $script:RemoteMode = $false
 $script:SshExe = ''
 $script:RemoteComposeDir = ''
+$script:SyntheticEnvNames = New-Object System.Collections.ArrayList
+$script:ExternalizedPlaceholderCount = 0
 
 # -RemoteHost 的**最早**生效点。不能等到容器运行时预检才设置：Integration 的端口预检
 # （Invoke-IntegrationPortCheck）在预检之前运行，而端口是否空闲必须在容器宿主上判定。
@@ -1457,6 +1459,48 @@ function Get-FactsMissingField($Facts) {
     }
     return $missing
 }
+function Initialize-ExternalizedPlaceholders {
+    # 平台把**所有**密钥/口令外化成环境变量占位符，形如
+    #   ${PROJECT_SERVICES_PLATFORM_RUOYI_ADMIN_SRC_MAIN_RESOURCES_APPLICATION_DEV_YML_PASSWORD_12}
+    # 名字由"来源文件路径 + 字段名 + 行号"生成（疑似某次密钥外化工具的产物）。
+    # 未设置时 Spring 直接以 PlaceholderResolutionException 拒绝启动——
+    # 这**不是**产品缺陷，而是"验收环境必须提供这些值"这一前提。
+    #
+    # 做法：从仓库内的平台配置源里**发现**全部占位符名，再按类别生成合成值。
+    # 用"发现"而不是硬编码清单：清单会随配置漂移，而漂移的表现恰好又是"启动失败"，
+    # 与"漏了某个前置"无法区分。
+    $names = New-Object System.Collections.ArrayList
+    # 两侧都要扫：平台 122 个、AI 39 个占位符，任何一侧缺值都会让对应 jar 拒绝启动。
+    $roots = @('services\platform', 'services\ai')
+    foreach ($root in $roots) {
+        $full = Join-Path $RepoRoot $root
+        if (-not (Test-Path -LiteralPath $full)) { continue }
+        foreach ($file in @(Get-ChildItem -LiteralPath $full -Recurse -File -Include '*.yml', '*.yaml' -ErrorAction SilentlyContinue)) {
+            $text = [IO.File]::ReadAllText($file.FullName)
+            foreach ($m in [regex]::Matches($text, '\$\{(PROJECT_SERVICES_[A-Z0-9_]+)\}')) {
+                $n = $m.Groups[1].Value
+                if (-not $names.Contains($n)) { [void]$names.Add($n) }
+            }
+        }
+    }
+    $set = 0
+    foreach ($name in $names) {
+        # 值本身不需要"正确"，只需要合法且唯一：这些占位符在合成环境里没有任何真实后端。
+        # 但要按类别给形状，避免把 UUID 塞进"必须是数字"的字段这类低级不匹配。
+        $value = switch -Regex ($name) {
+            '_TOKEN_\d+$' { [guid]::NewGuid().ToString('N') }
+            '_CLIENT_SECRET_\d+$' { [guid]::NewGuid().ToString('N') }
+            '_ACCESS_KEY_(ID|SECRET)_\d+$' { [guid]::NewGuid().ToString('N') }
+            '_API_KEY_\d+$' { [guid]::NewGuid().ToString('N') }
+            default { 'p1synth' + ([guid]::NewGuid().ToString('N').Substring(0, 16)) }
+        }
+        Set-Item -Path ('env:' + $name) -Value $value
+        [void]$script:SyntheticEnvNames.Add($name)
+        $set++
+    }
+    $script:ExternalizedPlaceholderCount = $set
+    return $set
+}
 function Start-RemotePortForward {
     # 把远端的合成端口通过 ssh -L 转发到本机回环。
     #
@@ -1811,6 +1855,13 @@ function Invoke-BootAndCases {
     Initialize-SyntheticDatabase
     if (-not (Test-ProbeAvailability)) { return }
 
+    # 两个 jar 都要求一批外化占位符（平台 122 个、AI 39 个），缺一个就拒绝启动。
+    # 在**启动 jar 之前**把它们设进本进程环境；Start-Process 会继承，
+    # 因此 jar 能解析到值，而这些值不需要出现在任何命令行里。
+    $placeholderCount = Initialize-ExternalizedPlaceholders
+    Assert-That 'ENV-externalized-placeholders' 'G0' ($placeholderCount -gt 0) `
+        ("discovered and set {0} synthetic values for externalized config placeholders (platform+ai); no real secret is involved" -f $placeholderCount)
+
     # 平台 jar 内容解析（B13 事实来源）。
     $platformJar = Join-Path $RepoRoot 'services\platform\ruoyi-admin\target\ruoyi-admin.jar'
     $archive = [IO.Compression.ZipFile]::OpenRead($platformJar)
@@ -1953,7 +2004,15 @@ try {
         }
     }
 } catch {
-    Add-Result 'HARNESS' '-' 'FAIL' ("unhandled: " + $_.Exception.Message)
+    # 未捕获异常必须带**位置**：只说 "Collection was of a fixed size" 而不说哪一行，
+    # 就得在整个两千行脚本里逐个核对 .Add() 的接收者。PositionMessage 直接给出行号。
+    $where = ''
+    try {
+        if ($_.InvocationInfo -and $_.InvocationInfo.PositionMessage) {
+            $where = ' @ ' + (($_.InvocationInfo.PositionMessage -split "`r?`n")[0..1] -join ' ')
+        }
+    } catch { }
+    Add-Result 'HARNESS' '-' 'FAIL' ("unhandled: " + $_.Exception.Message + $where)
 } finally {
     Write-Step '清理：只停止本脚本自己启动的 PID / 只销毁带本轮 owner label 的容器'
     # 1) 自有 JVM：pid 文件 + PID 归属 + 命令行三重核对。
@@ -2017,6 +2076,17 @@ try {
         Remove-Item -LiteralPath ('env:' + $name) -Force -ErrorAction SilentlyContinue
         [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-synthetic-secrets'; target = $name
                 action = 'env-remove'; result = 'CLEARED'; detail = 'value never written to evidence' })
+    }
+    # 4b) 外化占位符的合成值同样清除：它们是本轮生成、只服务于本轮 jar 启动，
+    # 留在环境里会污染后续进程，也会让"本轮自建、跑完即清"的承诺不成立。
+    foreach ($name in @($script:SyntheticEnvNames)) {
+        Remove-Item -LiteralPath ('env:' + $name) -Force -ErrorAction SilentlyContinue
+    }
+    if ($script:SyntheticEnvNames.Count -gt 0) {
+        [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-synthetic-secrets'
+                target = ('externalized-placeholders x' + $script:SyntheticEnvNames.Count)
+                action = 'env-remove'; result = 'CLEARED'
+                detail = 'synthetic placeholder values generated this run; names only, never values' })
     }
     if ($Mode -ne 'Integration') {
         Write-Output '  Unit 模式未生成任何合成口令；仍清掉 PGPASSWORD/REDIS_PASSWORD 等环境变量（见 cleanup.json）。'
