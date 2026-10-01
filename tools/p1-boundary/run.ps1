@@ -101,6 +101,7 @@ $script:RedisPort = 0
 $script:S3Port = 0
 $script:RemoteMode = $false
 $script:SshExe = ''
+$script:RemoteComposeDir = ''
 
 # -RemoteHost 的**最早**生效点。不能等到容器运行时预检才设置：Integration 的端口预检
 # （Invoke-IntegrationPortCheck）在预检之前运行，而端口是否空闲必须在容器宿主上判定。
@@ -660,6 +661,16 @@ function Format-ShellArg([string]$Value) {
     $q = [string][char]39
     return $q + ($Value -replace $q, ($q + '\' + $q + $q)) + $q
 }
+function Invoke-RemoteShell([string]$Command, [string]$LogName = '') {
+    # 执行一条**复合** shell 命令（不是"参数即参数"的容器命令）。
+    # 与 Invoke-RemoteRuntime 的区别：这里由调用方负责引用，因为命令本身是 shell 语法；
+    # 若按参数逐个引用，整条命令会变成一个被引用的单词，远端只会去找同名文件。
+    $sshArgs = @('-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR',
+        '-o', ('ConnectTimeout=' + $SshConnectTimeoutSeconds))
+    if ($SshKeyPath) { $sshArgs += @('-i', $SshKeyPath) }
+    $sshArgs += @($RemoteHost, $Command)
+    return Invoke-NativeCapture $script:SshExe $sshArgs $LogName $RepoRoot
+}
 function Invoke-RemoteRuntime([string[]]$Arguments, [string]$LogName = '') {
     # 参数向量的语义与本地模式一致：**不含**可执行文件名本身。
     # 本地模式是 `& docker <args>`，远端就必须是 `ssh host docker <args>`；
@@ -1028,14 +1039,39 @@ function Initialize-SyntheticIdentity {
     $script:PgContainer = ('p1b-pg-' + $RunTag.ToLower())
     $script:RedisContainer = ('p1b-redis-' + $RunTag.ToLower())
     $script:S3Container = ('p1b-s3-' + $RunTag.ToLower())
+    # 端口必须在写文件**之前**确定：compose 文件把端口固化成字面量，
+    # 若先写文件再分配端口，文件里会留下 "127.0.0.1:0:5432"，
+    # 而 docker 对 0 端口的行为不是报错而是"随机映射"——合成服务会起在一个
+    # 谁也猜不到的端口上，后续所有连接与隧道全部失效。
     $script:ComposePath = Write-ComposeFile
+}
+function Publish-ComposeFileToHost {
+    # 远端模式下 docker compose 在远端执行，--file 必须是**远端**可读的路径。
+    # 直接把 Windows 路径交给远端会得到
+    # "stat /root/D:\...\docker-compose.yml: no such file or directory"——
+    # 又一次把接线缺陷伪装成环境问题。这里把文件投递到本轮自有目录，
+    # 并把 ComposePath 换成远端路径。文件内容只有 ${...} 变量名，不含口令，可安全归档。
+    if (-not $script:RemoteMode) { return }
+    $remoteDir = '/opt/p1-acceptance/' + ($RunTag.ToLower() -replace '[^a-z0-9-]', '-')
+    $script:RemoteComposeDir = $remoteDir
+    $mk = Invoke-RemoteShell ('mkdir -p ' + (Format-ShellArg $remoteDir) + ' && chmod 700 ' + (Format-ShellArg $remoteDir)) 'compose-remote-mkdir.log'
+    if ($mk.ExitCode -ne 0) { throw ('cannot create remote compose dir ' + $remoteDir) }
+    $content = [IO.File]::ReadAllText($script:ComposePath)
+    $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($content))
+    $remoteFile = $remoteDir + '/docker-compose.yml'
+    $cmd = 'printf %s ' + (Format-ShellArg $b64) + ' | base64 -d > ' + (Format-ShellArg $remoteFile)
+    $put = Invoke-RemoteShell $cmd 'compose-remote-publish.log'
+    if ($put.ExitCode -ne 0) { throw ('cannot publish compose file to ' + $remoteFile) }
+    $script:ComposePath = $remoteFile
 }
 function Start-SyntheticEnvironment {
     Write-Step 'G0：起 runner 自有合成 PG17+pgvector / Redis / S3 mock（唯一 owner label）'
-    if (-not $script:ComposePath) { Initialize-SyntheticIdentity }
+    if (-not $script:ComposePath) { throw 'compose file was not prepared; Initialize-SyntheticIdentity must run first' }
     foreach ($port in @($script:PgPort, $script:RedisPort, $script:S3Port)) {
+        if ($port -le 0) { Add-Result 'ENV-compose-up' 'G0' 'FAIL' 'synthetic port was not allocated'; return }
         if (-not (Test-PortFree $port)) { Add-Result 'ENV-compose-up' 'G0' 'FAIL' ("synthetic port already in use: " + $port); return }
     }
+    Publish-ComposeFileToHost
     $env:P1B_PG_SUPERUSER_PASSWORD = $script:Secrets['pgSuperuser']
     $env:P1B_REDIS_PASSWORD = $script:Secrets['redis']
     $env:P1B_S3_ACCESS_KEY = $script:Secrets['s3Access']
@@ -1517,10 +1553,8 @@ function Invoke-HttpCases {
 function Invoke-BootAndCases {
     Write-Step 'Integration happy path：两真实 jar + runner 自有合成资源 + B01–B13'
     Initialize-SyntheticSecrets
-    # 先确定本轮自有资源的身份与 compose 文件，隔离检查才有东西可查（顺序不能反）。
-    Initialize-SyntheticIdentity
-    [void](Test-P04ContainerIsolation)
-    # 合成端口同样走空闲扫描：绝不复用开发机 5432/6379/9000。
+    # 合成端口先定下来（同样走空闲扫描：绝不复用开发机 5432/6379/9000），
+    # 再确定本轮自有资源身份并写 compose 文件——顺序不能反，见 Initialize-SyntheticIdentity。
     $script:PgPort = Get-FreePortInRange 15432 15472
     $script:RedisPort = Get-FreePortInRange 16379 16419
     $script:S3Port = Get-FreePortInRange 19000 19040
@@ -1528,6 +1562,8 @@ function Invoke-BootAndCases {
         Add-Result 'ENV-compose-up' 'G0' 'FAIL' 'no free synthetic port available for PG/Redis/S3'
         return
     }
+    Initialize-SyntheticIdentity
+    [void](Test-P04ContainerIsolation)
     Start-SyntheticEnvironment
     $upRows = Get-ResultRow 'ENV-compose-up'
     if (@($upRows | Where-Object { $_.status -eq 'FAIL' }).Count -gt 0) { return }
@@ -1707,6 +1743,18 @@ try {
         foreach ($stream in @('stdout', 'stderr')) {
             Copy-SanitizedLog (Join-Path (Join-Path $script:RunWork ($side + '-run')) ($stream + '.log')) `
                 (Join-Path $script:Evidence ('jvm-logs\' + $side + '\' + $stream + '.log'))
+        }
+    }
+    # 2b) 远端自有 compose 目录：只删本轮自己建的路径，路径由 run tag 派生且已核对前缀。
+    if ($script:RemoteMode -and $script:RemoteComposeDir) {
+        if ($script:RemoteComposeDir -match '^/opt/p1-acceptance/[a-z0-9-]+$') {
+            $rm = Invoke-RemoteShell ('rm -rf ' + (Format-ShellArg $script:RemoteComposeDir)) 'compose-remote-cleanup.log'
+            [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-remote-compose-dir'; target = $script:RemoteComposeDir
+                    action = 'rm -rf'; result = $(if ($rm.ExitCode -eq 0) { 'REMOVED' } else { 'FAILED' })
+                    detail = ("exit=" + $rm.ExitCode + " (only this run's own tag-derived directory)") })
+        } else {
+            Add-Result 'CLEANUP-remote-compose-dir' 'G0' 'FAIL' `
+                ("refusing to remove unexpected remote path: " + $script:RemoteComposeDir)
         }
     }
     # 3) 自有容器：只按本轮 project/label 销毁。Unit 模式不起容器，不产生容器清理结论（只记 cleanup.json）。
