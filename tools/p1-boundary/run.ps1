@@ -661,7 +661,12 @@ function Format-ShellArg([string]$Value) {
     return $q + ($Value -replace $q, ($q + '\' + $q + $q)) + $q
 }
 function Invoke-RemoteRuntime([string[]]$Arguments, [string]$LogName = '') {
-    $remote = ($Arguments | ForEach-Object { Format-ShellArg $_ }) -join ' '
+    # 参数向量的语义与本地模式一致：**不含**可执行文件名本身。
+    # 本地模式是 `& docker <args>`，远端就必须是 `ssh host docker <args>`；
+    # 漏掉这里的 'docker' 会让远端执行 `bash <args>`，例如
+    # `compose --project-name ... up` 变成 bash 去找一个叫 compose 的脚本，
+    # 报 "compose: command not found"（exit 127）——一个接线缺陷被读成环境问题。
+    $remote = (@('docker') + $Arguments | ForEach-Object { Format-ShellArg $_ }) -join ' '
     $sshArgs = @('-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR',
         '-o', ('ConnectTimeout=' + $SshConnectTimeoutSeconds))
     if ($SshKeyPath) { $sshArgs += @('-i', $SshKeyPath) }
