@@ -1976,6 +1976,21 @@ function Invoke-HttpCases {
         Assert-That 'B01-preserved-business' 'B' ($legacyLibs.Count -eq 0 -and $workflowKept) `
             ("legacyAiLibs=[{0}] ruoyi-workflowKept={1}" -f ($legacyLibs -join ','), $workflowKept)
 
+        # 平台侧异常必须落进证据：登录失败时返回体只有一句通用中文消息，
+        # 而真正的原因（约束校验、租户不存在、口令不匹配……）只在平台日志里。
+        # 没有这一步就只能对着 "请求参数校验失败" 反复猜是哪一层在拒绝。
+        try {
+            $platLog = Join-Path $script:RunWork 'platform-run-default\stdout.log'
+            if (Test-Path -LiteralPath $platLog) {
+                $tail = (Read-SharedText $platLog) -split "`r?`n" |
+                    Where-Object { $_ -match 'ERROR|WARN|Exception|Caused by|约束|校验|login|tenant' } |
+                    Select-Object -Last 60
+                Copy-SanitizedLog $platLog (Join-Path $script:Evidence 'platform-runtime-tail.log')
+                [IO.File]::WriteAllText((Join-Path $script:Evidence 'platform-login-signals.log'),
+                    (Protect-LogText ($tail -join "`r`n")), (New-Object Text.UTF8Encoding($false)))
+            }
+        } catch { }
+
         # facts 可用性：缺 facts 时"事实类"断言一律 NOT_RUN，绝不读 null 当 0 判 PASS。
         $factsPath = Join-Path $script:Evidence 'probe\ai-runtime-facts.json'
         if (Test-Path -LiteralPath $factsPath) {
