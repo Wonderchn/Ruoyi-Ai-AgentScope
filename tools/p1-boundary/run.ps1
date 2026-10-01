@@ -1276,12 +1276,20 @@ DROP SCHEMA IF EXISTS ai CASCADE;
 CREATE SCHEMA IF NOT EXISTS platform;
 CREATE SCHEMA IF NOT EXISTS ai;
 CREATE SCHEMA IF NOT EXISTS extensions;
+-- app 与 migrate 都需要 USAGE。
+--
+-- 这里是**重建之后**的授权，顺序不能提前：DROP SCHEMA 会连带丢弃该 schema 上的全部授权，
+-- 若在 DROP 之前授权，重建出来的 schema 对 migrate 角色没有 USAGE，
+-- 而 PostgreSQL 在执行 `SET search_path TO platform,extensions` 时会**静默剔除**
+-- 调用者无 USAGE 权限的 schema——命令本身成功、不报错，
+-- 后续裸 `create table` 便落在空 search_path 上，报
+-- "no schema has been selected to create in"。
+-- 看起来像迁移脚本有问题，实际是 search_path 被静默削短了。
+GRANT USAGE, CREATE ON SCHEMA platform, ai, extensions TO platform_migrate, ai_migrate;
 GRANT USAGE ON SCHEMA platform, ai, extensions TO platform_app, ai_app;
 -- 迁移账号需要在自己库里建 schema 的权限：否则自足前缀里的
--- CREATE SCHEMA IF NOT EXISTS 会以 "permission denied for database" 失败，
--- 而那条错误又会被读成"迁移脚本有问题"。
+-- CREATE SCHEMA IF NOT EXISTS 会以 "permission denied for database" 失败。
 GRANT CREATE ON DATABASE ragent_p1b TO platform_migrate, ai_migrate;
-GRANT CREATE ON SCHEMA platform, ai, extensions TO platform_migrate, ai_migrate;
 '@
     $roleSql = $roleSql.Replace('__P1__', $script:Secrets['platformMigrate']).Replace('__P2__', $script:Secrets['platformApp'])
     $roleSql = $roleSql.Replace('__P3__', $script:Secrets['aiMigrate']).Replace('__P4__', $script:Secrets['aiApp'])
@@ -1312,9 +1320,15 @@ GRANT CREATE ON SCHEMA platform, ai, extensions TO platform_migrate, ai_migrate;
             # 之前依赖"角色步骤里已经 CREATE SCHEMA"，于是角色步骤一旦没生效，
             # 迁移就报 "no schema has been selected to create in"——
             # 一个缺失的前置被读成迁移脚本本身有问题。迁移应当是自足的。
+            #
+            # 前缀末尾带一句**自证**：PostgreSQL 会静默丢弃调用者无 USAGE 权限的 schema，
+            # 所以 SET 成功并不代表 search_path 真的生效。这里直接断言它，
+            # 让"权限缺失"在它该失败的地方失败，而不是伪装成迁移脚本的语法/语义问题。
             $prefix = "CREATE SCHEMA IF NOT EXISTS " + $spec.schema + ";`r`n" +
                 "CREATE SCHEMA IF NOT EXISTS extensions;`r`n" +
-                "SET search_path TO " + $spec.schema + ",extensions;`r`n"
+                "SET search_path TO " + $spec.schema + ",extensions;`r`n" +
+                "DO `$`$ BEGIN IF current_schema() IS DISTINCT FROM " + "'" + $spec.schema + "'" +
+                " THEN RAISE EXCEPTION 'search_path not effective for migration: current_schema=%', current_schema(); END IF; END `$`$;`r`n"
             [void](Invoke-SyntheticSql ($prefix + $sql) 'ragent_p1b' `
                     $spec.user $spec.key ('migration-' + $spec.schema + '-' + $file.Name + '.log'))
             $applied += [pscustomobject]@{ schema = $spec.schema; file = $file.Name
