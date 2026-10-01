@@ -1448,6 +1448,22 @@ INSERT INTO platform.sys_client (id, client_id, client_key, client_secret, grant
 VALUES (900000000000000101, 'p1b-client', 'p1b-client-key', '', 'password', 'pc', 1800, 604800, '0', '0');
 '@
     $fixtureSql = $fixtureSql.Replace('__HASH__', $fixtureHash)
+    # 落一份**形状诊断**（逐行长度 + 占位符残留数 + 哈希长度），不落任何口令或哈希本身。
+    # 之所以要它：这条 INSERT 单独在真库上测试是通过的，而 runner 里却报
+    # "value too long for type character varying(100)"，
+    # 说明问题出在 runner **构造出来的那份 SQL**，而不是 SQL 本身。
+    # 没有这份形状记录时，只能在"SQL 对不对"和"库对不对"之间反复猜。
+    $shape = New-Object System.Collections.ArrayList
+    [void]$shape.Add(("totalChars={0} lines={1} hashLen={2} placeholdersLeft={3}" -f `
+                $fixtureSql.Length, (@($fixtureSql -split "`r?`n").Count), $fixtureHash.Length,
+            ([regex]::Matches($fixtureSql, '__HASH__')).Count))
+    $n = 0
+    foreach ($line in ($fixtureSql -split "`r?`n")) {
+        $n++
+        [void]$shape.Add(("line{0}: chars={1} kind={2}" -f $n, $line.Length,
+                $(if ($line -match '^\s*(--|$)') { 'comment-or-blank' } elseif ($line -match '^\s*INSERT') { 'insert-head' } elseif ($line -match '^\s*(VALUES|\()') { 'values' } else { 'other' })))
+    }
+    [IO.File]::WriteAllText((Join-Path $script:Evidence 'db-fixtures-shape.log'), ($shape -join "`r`n"), (New-Object Text.UTF8Encoding($false)))
     # fixture 用 app 账号写入（与真实业务同一条权限路径）：若 app 账号没拿到权限，
     # 这里就会失败，而不是等到 B01–B13 才暴露。
     try { [void](Invoke-SyntheticSql $fixtureSql 'ragent_p1b' 'platform_app' 'platformApp' 'db-fixtures.log') } catch {
