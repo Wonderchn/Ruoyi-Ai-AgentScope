@@ -1559,6 +1559,17 @@ function Start-ProductJar([string]$Side, [string]$State, [int]$Port) {
     }
     if (-not (Test-Path -LiteralPath $jar)) { throw ("fresh product jar missing for {0}: {1} (run the build roots first)" -f $Side, $jar) }
     $run = Join-Path $script:RunWork ($Side + '-run-' + $State)
+    # 数据库口令必须与本轮**自己建的角色**一致。
+    #
+    # 此前只传了用户名（platform_app），口令没传：于是平台拿到的是
+    # 占位符生成器给的合成值，启动时以
+    # "FATAL: password authentication failed for user \"platform_app\"" 失败。
+    # 这条信息看起来像"库那边口令不对"，实际是 runner 少传了一个变量。
+    # 走环境变量而不是命令行：口令不进任何命令行、不进证据。
+    $env:PLATFORM_DB_PASSWORD = $script:Secrets['platformApp']
+    $env:AI_DB_PASSWORD = $script:Secrets['aiApp']
+    $env:PLATFORM_DB_USERNAME = 'platform_app'
+    $env:AI_DB_USERNAME = 'ai_app'
     $arguments = @('-Dfile.encoding=UTF-8', '-Xmx1024m', '-jar', $jar, ('--server.port=' + $Port))
     if ($Side -eq 'platform') {
         $arguments += @(
