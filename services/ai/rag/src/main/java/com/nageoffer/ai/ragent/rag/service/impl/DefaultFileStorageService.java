@@ -196,10 +196,19 @@ public class DefaultFileStorageService implements FileStorageService {
     }
 
     /**
-     * 组装知识库文档 key：{@code {namespace}/{uuid}.{ext}}
+     * 组装知识库文档 key：{@code {tenantId}/{namespace}/{uuid}.{ext}}
+     *
+     * <p><b>P1.3c：key 必须带租户。</b>对象存储是共享桶：key 不带租户时，
+     * "这个对象属于谁"在 key 上不可判定，而 {@code openStream} 只接受 key、不做授权判定，
+     * 于是 key 本身成了唯一的访问凭据——任何能读到 key 的地方（日志、导出、前端直连）
+     * 都等价于拿到读取权。租户进 key 之后，前缀即归属，
+     * {@code deleteByPrefix} 这类按前缀操作才有可能被约束在本租户内。
+     *
+     * <p>租户只从可信执行主体取，不取请求参数；无主体直接拒绝。
      */
     private String documentKey(String namespace, String originalFilename) {
-        return namespace + "/" + randomKey(originalFilename);
+        String tenantId = com.nageoffer.ai.ragent.framework.context.PrincipalContext.require().tenantId();
+        return tenantId + "/" + namespace + "/" + randomKey(originalFilename);
     }
 
     private String extractSuffix(String filename) {

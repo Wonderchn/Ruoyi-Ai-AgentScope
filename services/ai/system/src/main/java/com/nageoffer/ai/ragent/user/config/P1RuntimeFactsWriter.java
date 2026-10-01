@@ -103,10 +103,11 @@ public class P1RuntimeFactsWriter {
 
     private Map<String, Object> collect() {
         Map<String, Object> facts = new LinkedHashMap<>();
+        List<String> routes = routePatterns();
         facts.put("contextStarted", true);
         facts.put("factsSource", "runtime: P1RuntimeFactsWriter inside the launched application context");
-        facts.put("routes", routePatterns());
-        facts.put("legacyMappings", closedLegacyMappings());
+        facts.put("routes", routes);
+        facts.put("legacyMappings", closedLegacyMappings(routes));
         facts.put("mqConsumers", beanNamesFor());
         facts.put("transactionCheckers", beanNamesForTransactions());
         facts.put("checkerMapperInvocations", 0);
@@ -146,12 +147,26 @@ public class P1RuntimeFactsWriter {
         return patterns;
     }
 
-    private List<Map<String, Object>> closedLegacyMappings() {
+    /**
+     * 旧入口的关闭状态，**由上一步实测的路由清单推导**，而不是照抄一份"应当关闭"的常量。
+     *
+     * <p>第一版这里写死了五个 {@code closed: true}。实测发现
+     * {@code /auth/login}、{@code /auth/logout}、{@code /users}、{@code /user/me}、
+     * {@code /user/password} 这些路径**确实注册在** AI 应用里（是应用自身的端点），
+     * 它们的 404 来自入口过滤（B03 已实测 404 + RESOURCE_NOT_FOUND_OR_FORBIDDEN），
+     * 不是来自"没有这个 handler"。写死一份与事实相反的清单，等于把
+     * "我推断它关了"冒充成"我测出它关了"——而这两者在证据里必须能区分。
+     *
+     * <p>因此：清单里列出被考察的旧入口，{@code closed} 取"该路径不在实测路由清单中"。
+     */
+    private List<Map<String, Object>> closedLegacyMappings(List<String> measuredRoutes) {
         List<Map<String, Object>> entries = new ArrayList<>();
         for (String path : new String[] {"/auth/login", "/auth/logout", "/users", "/user/me", "/user/password"}) {
             Map<String, Object> entry = new LinkedHashMap<>();
             entry.put("path", path);
-            entry.put("closed", true);
+            entry.put("registeredInApplication", measuredRoutes.contains(path));
+            // 对外可见性由入口过滤保证，这里只记录实测事实，不替过滤层下结论。
+            entry.put("closed", !measuredRoutes.contains(path));
             entries.add(entry);
         }
         return entries;

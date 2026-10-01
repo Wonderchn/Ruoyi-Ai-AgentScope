@@ -1600,9 +1600,15 @@ function Start-ProductJar([string]$Side, [string]$State, [int]$Port) {
     if ($State -eq 'illegal-legacy-listeners') { $arguments += '--ai.integration.legacy-listeners-enabled=true' }
     # 只有 default 这一态需要 probe facts：其余各态（p04=false / 非法开关）是启动语义用例，
     # 不参与 facts 断言，也就不该额外写文件。
+    #
+    # 必须用 Spring 的 `--key=value` 形式，而**不是** `-Dkey=value`：
+    # 参数表里 `-jar <jar>` 之后的一切都是**程序参数**，JVM 不再把 `-D...` 当系统属性。
+    # 之前写成 `-Dp1.probe.facts-path=...` 并追加在末尾，于是它被原样交给 main()，
+    # Spring 既不认识 `-D` 前缀、也无法据此解析属性，条件装配始终不成立、
+    # facts 文件永远不生成——而现象只表现为"PROBE-ai-facts 缺失"，看不出是传参方式的问题。
     if ($Side -eq 'ai' -and $State -eq 'default') {
         $factsPath = Join-Path $script:Evidence 'probe\ai-runtime-facts.json'
-        $arguments += ('-Dp1.probe.facts-path=' + $factsPath)
+        $arguments += ('--p1.probe.facts-path=' + $factsPath)
     }
     $pidFile = Join-Path $script:RunWork ($Side + '-' + $State + '.pid')
     return Start-OwnedProcess (Join-Path $script:JdkHome 'bin\java.exe') $arguments $run $pidFile
