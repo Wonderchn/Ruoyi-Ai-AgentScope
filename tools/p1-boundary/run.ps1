@@ -1426,9 +1426,15 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA ai GRANT ALL ON SEQUENCES TO ai_app;
     # 看起来像"用户建好了却登不上"。平台写入口令走的是
     # `cn.hutool.crypto.digest.BCrypt.hashpw`（见 SysUserController），
     # 因此这里用**同一个库、同一个算法**生成，保证口径一致。
-    $fixtureHash = New-BCryptHash $script:Secrets['fixtureUser']
-    if (-not $fixtureHash) {
-        Add-Result 'ENV-fixtures' 'G0' 'FAIL' 'cannot compute a BCrypt hash for the fixture password; refusing to seed a plaintext password'
+    # 只取最后一个输出元素：Add-Probe 会往输出流写一行进度，
+    # 于是函数的返回值是 `@(probe 行, 哈希)` 这样的**数组**，不是单个字符串。
+    # 直接赋给变量会得到 Object[]（实测 count=2、asStringLen=213），
+    # 后续 `.Length` 给出的是**元素个数 2**，写进 SQL 的却是整段拼接文本——
+    # 表现为 psql 报 "value too long ... varying(100)"，看起来像列太窄，实际是取错了返回形状。
+    $fixtureHash = @(New-BCryptHash $script:Secrets['fixtureUser']) | Select-Object -Last 1
+    if (-not $fixtureHash -or ([string]$fixtureHash).Length -lt 50) {
+        Add-Result 'ENV-fixtures' 'G0' 'FAIL' `
+            ("cannot compute a BCrypt hash for the fixture password (got len={0}); refusing to seed a plaintext password" -f ([string]$fixtureHash).Length)
         return
     }
     $fixtureSql = @'
