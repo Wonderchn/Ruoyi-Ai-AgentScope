@@ -950,13 +950,20 @@ services:
     image: redis:7.4-alpine
     container_name: __REDIS_CONTAINER__
     command: ["redis-server", "--requirepass", "${P1B_REDIS_PASSWORD}", "--save", ""]
+    # 健康检查在**容器内**执行，所以口令必须是容器自己的环境变量。
+    # 原先只把它插值进 command，容器里并没有这个变量，于是
+    # `redis-cli -a $P1B_REDIS_PASSWORD ping` 展开成 `-a ""`，
+    # redis-cli 把空口令当成"没有口令"从而拒绝认证，容器永远 unhealthy——
+    # 而 redis-server 本身是好的，看起来像"Redis 起不来"，实际只是自检方式错。
+    environment:
+      P1B_REDIS_PASSWORD: ${P1B_REDIS_PASSWORD}
     ports:
       - "127.0.0.1:__REDIS_PORT__:6379"
     labels:
       p1.boundary.owner: __RUNTAG__
       p1.boundary.role: redis
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a $${P1B_REDIS_PASSWORD} ping | grep PONG"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$P1B_REDIS_PASSWORD\" ping | grep PONG"]
       interval: 3s
       timeout: 3s
       retries: 40
