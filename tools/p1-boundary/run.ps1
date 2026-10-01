@@ -1239,11 +1239,20 @@ function Invoke-SyntheticSql([string]$Sql, [string]$Database, [string]$User, [st
         if ($p1.ExitCode -ne 0) { throw ("cannot stage pgpass inside the container (exit={0})" -f $p1.ExitCode) }
         $remote = 'docker exec -i ' + (Format-ShellArg $script:PgContainer) + ' sh -c ' + (Format-ShellArg $inner)
         $r = Invoke-RemoteShellStdin $remote $sqlPayload $LogName
+        if ($r.ExitCode -ne 0) {
+            # 失败时保留负载：否则只能靠猜"psql 到底收到了什么"。
+            # 必须在 finally 删掉源文件**之前**复制，否则复制的是已不存在的路径。
+            # 负载是 SQL 原文（不含口令），只落在本轮 work 目录，不进证据。
+            $keep = Join-Path $script:RunWork (($LogName -replace '[^\w.-]', '_') + '.FAILED.sql')
+            Copy-Item -LiteralPath $sqlPayload -Destination $keep -Force -ErrorAction SilentlyContinue
+        }
     } finally {
         Remove-Item -LiteralPath $passPayload -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $sqlPayload -Force -ErrorAction SilentlyContinue
     }
-    if ($r.ExitCode -ne 0) { throw ("synthetic SQL failed (exit={0}), see {1}" -f $r.ExitCode, $LogName) }
+    if ($r.ExitCode -ne 0) {
+        throw ("synthetic SQL failed (exit={0}), see {1}" -f $r.ExitCode, $LogName)
+    }
     return (($r.Output -join "`r`n").Trim())
 }
 function Initialize-SyntheticDatabase {
