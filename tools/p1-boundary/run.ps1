@@ -448,7 +448,11 @@ function Start-OwnedProcess([string]$Exe, [string[]]$Arguments, [string]$WorkDir
     $p = Start-Process -FilePath $Exe -ArgumentList $Arguments -WorkingDirectory $WorkDir `
         -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
     Set-Content -LiteralPath $PidFile -Value ([string]$p.Id) -Encoding UTF8
-    $script:StartedProcesses += $p.Id
+    # 必须用 .Add()：对 ArrayList 用 `+=` 会让 PowerShell 生成一个新的**固定大小数组**，
+    # 于是后续任何 .Add() 都抛 "Collection was of a fixed size"。
+    # 这条 `+=` 正是第 9 轮那个"找不到接收者"的异常的来源——
+    # 它在 Start-OwnedProcess 里，却在远端的 Invoke-RemoteShellStdin 里炸开。
+    [void]$script:StartedProcesses.Add($p.Id)
     return $p
 }
 function Stop-OwnedProcess([string]$PidFile, [string]$CommandMatch, [string]$Label) {
