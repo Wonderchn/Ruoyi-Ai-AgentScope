@@ -1,0 +1,125 @@
+-- =====================================================================================
+-- P1.1b 合成 fixture（AI 域）：资源归属、持久 ACL、epoch、未知归属与 legacy 样例
+-- =====================================================================================
+-- 用途：为 P1 的"AI 资源 ACL 隔离"验收提供可复算的合成输入。
+--
+-- 重要声明（不得省略）：
+--   * 本文件是**合成数据**，只写 runner 专属的 AI 域合成库。
+--     它<b>不</b>证明生产环境"没有存量"——存量结论只能由负责人按 04 草案的只读计数给出（C6）。
+--   * 本文件按<b>迁移阶段分段</b>：需要 V3/V4/V5 才存在的表与列，
+--     在对应迁移冻结前保留为注释模板（见每段前的 STAGE 标注），
+--     不得为了"跑起来"在产品库里另造实验表绕迁移。
+--   * 不修改已应用的 AI V1–V2；本文件不是 Flyway 迁移，只由专属 runner 装载。
+--
+-- 目标库：AI 域合成库（schema: ai,extensions）。
+-- 期望归属与计数与 tools/p1-fixtures/p1-fixture-spec.json 的 resources/… 段一一对应。
+
+-- =====================================================================================
+-- STAGE V3（registry / ACL / epoch）：本段依赖 AI V3__tenant_acl_expand.sql
+-- =====================================================================================
+-- 说明：以下语句在 V3 冻结后由 runner 执行；未冻结前保持注释，避免写出"看起来已装库"的假证据。
+--
+-- delete from ai_resource_acl where tenant_id in ('T1', 'T2');
+-- delete from ai_resource where tenant_id in ('T1', 'T2');
+-- delete from ai_acl_epoch where tenant_id in ('T1', 'T2');
+--
+-- -- epoch：初值 >= 1，且必须与租户创建同事务产生；不得默认初始化到 1 后又复用旧值
+-- insert into ai_acl_epoch (tenant_id, version) values ('T1', 1), ('T2', 1);
+--
+-- -- 资源 registry：owner/tenant 全部来自可信 Principal，客户端不提供 ownerDeptId
+-- insert into ai_resource (tenant_id, type, id, owner_member_id, owner_dept_id, parent_type, parent_id,
+--                          status, resource_version)
+-- values
+--   ('T1', 'KB',  'kb-t1-private-a',      'platform:T1:2101', 1102, null, null,           'ACTIVE',  1),
+--   ('T1', 'KB',  'kb-t1-public',         'platform:T1:2101', 1102, null, null,           'ACTIVE',  1),
+--   ('T1', 'KB',  'kb-t1-deleted',        'platform:T1:2101', 1102, null, null,           'DELETED', 3),
+--   ('T1', 'DOC', 'doc-t1-b',             'platform:T1:2101', 1102, 'KB', 'kb-t1-public', 'ACTIVE',  1),
+--   ('T1', 'DOC', 'doc-t1-b-private',     'platform:T1:2101', 1102, 'KB', 'kb-t1-public', 'ACTIVE',  1),
+--   ('T1', 'DOC', 'doc-t1-deleted',       'platform:T1:2101', 1102, 'KB', 'kb-t1-public', 'DELETED', 2),
+--   ('T2', 'KB',  'kb-t2-same-selector',  'platform:T2:2201', 1202, null, null,           'ACTIVE',  1);
+--
+-- -- 持久 ACL：subject_type 只接受 member/department/role/tenant_all，且必须同 tenant
+-- insert into ai_resource_acl (tenant_id, resource_type, resource_id, subject_type, subject_id, action, expires_at)
+-- values
+--   ('T1', 'KB',  'kb-t1-private-a',  'member',     'platform:T1:2101', 'kb.read',       null),
+--   ('T1', 'KB',  'kb-t1-public',     'tenant_all', 'T1',               'kb.read',       null),
+--   ('T1', 'KB',  'kb-t1-deleted',    'tenant_all', 'T1',               'kb.read',       null),
+--   ('T1', 'DOC', 'doc-t1-b-private', 'member',     'platform:T1:2101', 'document.read', null),
+--   ('T2', 'KB',  'kb-t2-same-selector','member',   'platform:T2:2201', 'kb.read',       null);
+--
+-- 负例输入（期望<b>插入失败</b>，由 P1.3a 的约束测试断言）：
+--   * 缺 tenant：      insert into ai_resource (type, id, owner_member_id) values ('KB','kb-x','platform:T1:2101');
+--   * 空 owner：       insert into ai_resource (tenant_id,type,id,owner_member_id) values ('T1','KB','kb-y','');
+--   * 跨租户 parent：  insert into ai_resource (tenant_id,type,id,owner_member_id,parent_type,parent_id)
+--                        values ('T2','DOC','doc-cross','platform:T2:2201','KB','kb-t1-public');
+--   * 跨租户 subject： insert into ai_resource_acl (tenant_id,resource_type,resource_id,subject_type,subject_id,action)
+--                        values ('T1','KB','kb-t1-private-a','member','platform:T2:2201','kb.read');
+--   * 空集合扩权：     不存在"ACL 为空即公开"的写入路径；空 ACL 的资源只有 owner 可见。
+
+-- =====================================================================================
+-- STAGE 无迁移依赖：现有 32 表中的合成行（列名以 AI V1 基线为准）
+-- =====================================================================================
+-- 下列表在 V1/V2 已存在。"归属列"由 P1.3a 迁移补充；在补充列冻结前，
+-- 这里只插入**可确定归属**的基线行，并把"完成后应带的归属值"写在注释里，
+-- 便于迁移后逐行核对（row hash 前后对比）。
+
+-- --- 知识库 / 文档：created_by 只留展示审计，owner 由 Principal 决定 -----------------
+-- 归属期望：t_knowledge_base(collection_name) → tenant=T1/T2, owner_member_id, owner_dept_id
+-- 注意：同名 collection 在 T1/T2 各一份，验证"相同可重复定位字段"不得跨租户返回。
+--
+-- insert into t_knowledge_base (id, name, collection_name, created_by, create_time)
+-- values ('kb-t1-public', 'T1 公共库', 'kb_public_shared_name', 'shared-user', now()),
+--        ('kb-t2-same-selector', 'T2 同名库', 'kb_public_shared_name', 'shared-user', now());
+--
+-- --- 会话 / 消息：提交成员私有 ------------------------------------------------------
+-- 归属期望：t_conversation/message → tenant + member_id
+--
+-- --- 记忆与来源引用 ----------------------------------------------------------------
+-- 归属期望：memory 记录必须关联 source refs 与版本；来源未知/撤权后不得向模型提供。
+--   * mem-t1-u1          → source refs: doc-t1-b（有效）
+--   * mem-t1-u1-revoked  → source refs: doc-t1-deleted（撤权/删除后必须无输出）
+
+-- --- Agent 状态：复合命名空间 -------------------------------------------------------
+-- 归属期望：state PK = (tenant, member, session, state_key)；去 __anon__，无 Principal 时拒绝。
+-- 隔离用例：T1 与 T2 使用<b>相同</b> session_id + state_key，必须互不可见。
+--   ('T1','platform:T1:2101','sess-shared','k1') 与 ('T2','platform:T2:2201','sess-shared','k1')
+
+-- --- 向量：显式 tenant/kb/document/version/chunk 列 ---------------------------------
+-- 归属期望：t_knowledge_vector 增 tenant/kb/document/version/chunk 显式列；
+-- where tenant AND authorized published refs；不信 metadata 里的 tenant。
+-- 确定 vector（可复算正反例）：
+--   T1: chunk-t1-1 → [1.0, 0.0, 0.0]
+--   T2: chunk-t2-1 → [0.0, 1.0, 0.0]
+-- 两者在同一物理表、同一 collection（rag_default_store），靠 tenant + 授权 refs 区分。
+
+-- --- 正式 run / event（V5）---------------------------------------------------------
+-- 归属期望：(tenant, run) 复合定位；取 event 不能只按裸 eventId。
+--   run-t1-1 (T1) / run-t2-1 (T2)，各含 seq=1 的合成事件。
+-- 说明：V5 冻结前这些表可能不存在，缺失时如实记 ABSENT，不伪造四表计数。
+
+-- --- 未知归属样例（必须隔离，不得默认 tenant，不得因约束失败被删除）---------------
+--   t_knowledge_base.collection_name = 'kb_unknown_owner'
+--   t_message: 仅有裸 user_id（无法映射到 sourceSystem/sourceTenant/sourceUserId）
+-- 处理：保持不可访问；约束启用时若有冲突，人工裁决，<b>不得删除</b>该行来"通过"。
+
+-- --- legacy token 样例（不含真实 token 值）-----------------------------------------
+--   legacy-ai-token        → 期望 404 RESOURCE_NOT_FOUND_OR_FORBIDDEN
+--   admin-token            → 期望 404（管理员 token 不是成员授权）
+--   platform-token         → 期望 404（浏览器 token 不直接进 AI）
+--   forged-identity-headers→ 期望 404（X-Tenant/X-User/body.userId 不参与主体选择）
+-- 说明：样例只记录形状与期望，不写任何可用凭据。
+
+-- =====================================================================================
+-- 计数核对（与 fixture manifest 的 counts 对齐；装载后由 runner 复算）
+-- =====================================================================================
+-- aiResources  : 7   (T1: 6, T2: 1)
+-- conversations: 2   (T1: 2)
+-- memories     : 2   (T1: 2，其中 1 条来源已撤权)
+-- stateKeys    : 2   (T1: 1, T2: 1，相同 session/key)
+-- runs         : 2   (T1: 1, T2: 1)
+-- objects      : 2   (T1: 1, T2: 1，key 形状 ai/<tenant>/<resource>/<version>/<random>)
+-- vectors      : 2   (T1: 1, T2: 1，同物理表同 collection)
+-- legacyTokens : 4
+--
+-- 回滚：按上表逐段 delete 本文件写入的行 + 删除 runner own 对象 key；不 drop 表、
+--       不回退迁移版本、不删除他人数据。
