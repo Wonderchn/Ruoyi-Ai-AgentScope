@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   P1.2a「SaaS 旧身份 / 旧路由 / 无主体触发关闭」单元边界验收 runner（Spec 01 §6、00 §9）。
 
@@ -666,6 +666,38 @@ function Format-ShellArg([string]$Value) {
     $q = [string][char]39
     return $q + ($Value -replace $q, ($q + '\' + $q + $q)) + $q
 }
+function Invoke-RemoteShellStdin([string]$Command, [string]$PayloadPath, [string]$LogName = '') {
+    # 把**大**负载经 stdin 送进远端命令。
+    #
+    # 为什么不能走命令行或环境变量：平台基线迁移 60KB、V2 种子 149KB、AI 基线 55KB，
+    # 而 Windows 命令行上限约 32KB（报 filename or extension is too long，exit 127），
+    # 环境变量单值上限约 32KB（报"环境变量名或值太长"）。
+    # stdin 是唯一没有这两个上限的通道，且负载不出现在任何命令行里。
+    #
+    # 负载先落到本机临时文件，再作为子进程 stdin 重定向；ssh 把它转给远端命令的 stdin，
+    # `docker exec -i` 再转给容器内 psql 的 stdin。全程不经 shell 解析。
+    $sshArgs = @('-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR',
+        '-o', ('ConnectTimeout=' + $SshConnectTimeoutSeconds))
+    if ($SshKeyPath) { $sshArgs += @('-i', $SshKeyPath) }
+    $sshArgs += @($RemoteHost, $Command)
+    $stdout = Join-Path $script:RunWork (($LogName -replace '[^\w.-]', '_') + '.stdout')
+    $stderr = Join-Path $script:RunWork (($LogName -replace '[^\w.-]', '_') + '.stderr')
+    $p = Start-Process -FilePath $script:SshExe -ArgumentList $sshArgs -PassThru -NoNewWindow `
+        -RedirectStandardInput $PayloadPath -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    [void]$script:StartedProcesses.Add($p.Id)
+    if (-not $p.WaitForExit(600000)) { try { $p.Kill() } catch { } ; throw ('remote stdin command timed out: ' + $LogName) }
+    $code = $p.ExitCode
+    $lines = @()
+    foreach ($f in @($stdout, $stderr)) {
+        if (Test-Path -LiteralPath $f) { $lines += @(Get-Content -LiteralPath $f -Encoding UTF8) }
+    }
+    if ($LogName) {
+        $text = ($lines -join "`r`n")
+        $target = Join-Path $script:Evidence $LogName
+        [IO.File]::WriteAllText($target, (Protect-LogText $text), (New-Object Text.UTF8Encoding($false)))
+    }
+    return [pscustomobject]@{ ExitCode = $code; Output = $lines }
+}
 function Invoke-RemoteShell([string]$Command, [string]$LogName = '') {
     # 执行一条**复合** shell 命令（不是"参数即参数"的容器命令）。
     # 与 Invoke-RemoteRuntime 的区别：这里由调用方负责引用，因为命令本身是 shell 语法；
@@ -1129,19 +1161,24 @@ function Start-SyntheticEnvironment {
         ("up exit=0; containersWithOwnLabel={0} [{1}]" -f $ownedRows.Count, ($ownedRows -join '; '))
 }
 function Invoke-SyntheticSql([string]$Sql, [string]$Database, [string]$User, [string]$PasswordKey, [string]$LogName) {
-    $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Sql))
-    # 原文经 base64 传递：SQL 里有中文与单引号，直接进参数向量会被远端 shell 重新解析。
-    # 口令**不**进参数向量，而是在远端容器内按容器自身环境自证（见下），
-    # 因此它既不出现在本机命令行、也不出现在 ssh 远端命令行、更不落盘或进证据。
+    # SQL 原文经 stdin 送进容器内的 psql。
+    #
+    # 三个通道的上限决定了只能这么做：命令行约 32KB（平台基线 60KB）、
+    # 环境变量单值约 32KB（V2 种子 149KB）、只有 stdin 没有这两个上限。
+    # 顺带的好处是中文与单引号完全不经过任何 shell 解析。
+    # 口令仍然只经 -e NAME 从本进程环境映射进容器，不进命令行、不落盘。
+    $payload = Join-Path $script:RunWork (($LogName -replace '[^\w.-]', '_') + '.sql')
+    [IO.File]::WriteAllBytes($payload, [Text.Encoding]::UTF8.GetBytes($Sql))
     $inner = 'test -n "$PGPASSWORD" || { echo NO_PGPASSWORD_IN_CONTAINER; exit 96; }; '
-    $inner += 'printf %s ' + (Format-ShellArg $b64) + ' | base64 -d | '
     $inner += 'psql -U ' + (Format-ShellArg $User) + ' -d ' + (Format-ShellArg $Database) + ' -X -q -tA -v ON_ERROR_STOP=1 -f -'
     # -e PGPASSWORD 不带值：把值从**本进程环境**映射进容器，命令行只看得到变量名。
     $env:PGPASSWORD = $script:Secrets[$PasswordKey]
     try {
-        $r = Invoke-RuntimeCapture @('exec', '-i', '-e', 'PGPASSWORD', $script:PgContainer, 'sh', '-c', $inner) $LogName
+        $remote = 'docker exec -i -e PGPASSWORD ' + (Format-ShellArg $script:PgContainer) + ' sh -c ' + (Format-ShellArg $inner)
+        $r = Invoke-RemoteShellStdin $remote $payload $LogName
     } finally {
         Remove-Item Env:\PGPASSWORD -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $payload -Force -ErrorAction SilentlyContinue
     }
     if ($r.ExitCode -ne 0) { throw ("synthetic SQL failed (exit={0}), see {1}" -f $r.ExitCode, $LogName) }
     return (($r.Output -join "`r`n").Trim())
