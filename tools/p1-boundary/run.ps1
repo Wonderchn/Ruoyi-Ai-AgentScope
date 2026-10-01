@@ -1267,6 +1267,12 @@ BEGIN
     END IF;
   END LOOP;
 END $$;
+-- 每次运行都从**干净** schema 开始：迁移脚本按"空库"编写（裸 create table，无 IF NOT EXISTS），
+-- 半迁移过的库上重跑会报 "relation ... already exists"，看起来像迁移脚本有缺陷，
+-- 实际是环境没被重置。这两个 schema 只属于本轮合成库（本轮自建、跑完即销毁），
+-- 因此可以安全重建；这也保证每次验收的起点一致，而不是"上一轮的残留"。
+DROP SCHEMA IF EXISTS platform CASCADE;
+DROP SCHEMA IF EXISTS ai CASCADE;
 CREATE SCHEMA IF NOT EXISTS platform;
 CREATE SCHEMA IF NOT EXISTS ai;
 CREATE SCHEMA IF NOT EXISTS extensions;
