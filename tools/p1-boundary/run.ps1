@@ -1485,9 +1485,12 @@ INSERT INTO platform.sys_role (role_id, tenant_id, role_name, role_key, role_sor
 VALUES (900000000000000021, 'p1t1', 'p1b-role-t1', 'p1b_t1', 1, '1', true, true, '0', '0'),
        (900000000000000022, 'p1t2', 'p1b-role-t2', 'p1b_t2', 1, '1', true, true, '0', '0');
 
-INSERT INTO platform.sys_post (post_id, tenant_id, post_code, post_name, post_sort, status, del_flag)
-VALUES (900000000000000031, 'p1t1', 'p1b_post_t1', 'p1b-post-t1', 1, '0', '0'),
-       (900000000000000032, 'p1t2', 'p1b_post_t2', 'p1b-post-t2', 1, '0', '0');
+-- sys_post 上**没有 del_flag 列**（按 V2 的真实种子列核对过）。
+-- 拿 V1 建表语句猜列会得到 "column del_flag does not exist"，
+-- 而这类错误只在 fixture 阶段暴露，表面看像 schema 缺列。
+INSERT INTO platform.sys_post (post_id, tenant_id, post_code, post_category, post_name, post_sort, status)
+VALUES (900000000000000031, 'p1t1', 'p1b_post_t1', NULL, 'p1b-post-t1', 1, '0'),
+       (900000000000000032, 'p1t2', 'p1b_post_t2', NULL, 'p1b-post-t2', 1, '0');
 
 INSERT INTO platform.sys_user_role (user_id, role_id)
 VALUES (900000000000000001, 900000000000000021),
