@@ -1167,14 +1167,25 @@ GRANT USAGE ON SCHEMA platform, ai, extensions TO platform_app, ai_app;
     $roleSql = $roleSql.Replace('__P3__', $script:Secrets['aiMigrate']).Replace('__P4__', $script:Secrets['aiApp'])
     [void](Invoke-SyntheticSql $roleSql 'ragent_p1b' 'postgres' 'pgSuperuser' 'db-roles.log')
     # 迁移用 migrate 账号，逐字执行仓库内迁移原字节（不重写、不改序）。
+    #
+    # 路径必须指向**仓库里真实存在**的迁移目录。此前写的是 ruoyi-admin / bootstrap 下的
+    # resources/db/migration，那两个目录根本不存在；而循环体对不存在的目录是
+    # `continue`（跳过），于是 $applied 恒为空、ENV-db-accounts 恒 FAIL，
+    # 且**一个迁移都没执行**——schema 是空的，后面的 fixture 自然报
+    # "permission denied for schema platform"（表压根不存在）。
+    # 一个"路径写错"被读成了"数据库权限问题"。
     $migrateDirs = @(
-        [pscustomobject]@{ dir = 'services/platform/ruoyi-admin/src/main/resources/db/migration'; schema = 'platform'; user = 'platform_migrate'; key = 'platformMigrate' },
-        [pscustomobject]@{ dir = 'services/ai/bootstrap/src/main/resources/db/migration'; schema = 'ai'; user = 'ai_migrate'; key = 'aiMigrate' }
+        [pscustomobject]@{ dir = 'services/platform/docs/script/sql/postgres'; schema = 'platform'; user = 'platform_migrate'; key = 'platformMigrate' },
+        [pscustomobject]@{ dir = 'services/ai/resources/database/postgres/migrations'; schema = 'ai'; user = 'ai_migrate'; key = 'aiMigrate' }
     )
     $applied = @()
     foreach ($spec in $migrateDirs) {
         $full = Join-Path $RepoRoot ($spec.dir -replace '/', '\')
-        if (-not (Test-Path -LiteralPath $full)) { continue }
+        if (-not (Test-Path -LiteralPath $full)) {
+            # 目录缺失是硬失败：静默跳过会让"没跑任何迁移"看起来像"跑完了但没内容"。
+            Add-Result 'ENV-db-accounts' 'G0' 'FAIL' ("migration directory not found: " + $spec.dir)
+            return
+        }
         foreach ($file in @(Get-ChildItem -LiteralPath $full -File -Filter '*.sql' | Sort-Object Name)) {
             $sql = [IO.File]::ReadAllText($file.FullName)
             [void](Invoke-SyntheticSql ("SET search_path TO " + $spec.schema + ",extensions;`r`n" + $sql) 'ragent_p1b' `
@@ -1183,6 +1194,22 @@ GRANT USAGE ON SCHEMA platform, ai, extensions TO platform_app, ai_app;
                 sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLower() }
         }
     }
+    # 迁移后把 schema 内对象的权限交给 app 账号：迁移由 migrate 账号执行，
+    # 建出来的表归 migrate 所有，app 账号默认无权 INSERT/SELECT。
+    # 这一步不能省，否则所有真实业务读写都会以"permission denied"告终。
+    $grantSql = @'
+GRANT USAGE ON SCHEMA platform, ai, extensions TO platform_app, ai_app;
+GRANT ALL ON ALL TABLES IN SCHEMA platform TO platform_app;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA platform TO platform_app;
+GRANT ALL ON ALL TABLES IN SCHEMA ai TO ai_app;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA ai TO ai_app;
+GRANT ALL ON ALL TABLES IN SCHEMA extensions TO platform_app, ai_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT ALL ON TABLES TO platform_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT ALL ON SEQUENCES TO platform_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA ai GRANT ALL ON TABLES TO ai_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA ai GRANT ALL ON SEQUENCES TO ai_app;
+'@
+    [void](Invoke-SyntheticSql $grantSql 'ragent_p1b' 'postgres' 'pgSuperuser' 'db-grants.log')
     Assert-That 'ENV-db-accounts' 'G0' ($applied.Count -gt 0) `
         ("migrate/app accounts + platform/ai/extensions schemas ready; migrations applied byte-identical from repo: [{0}]" -f `
             (@($applied | ForEach-Object { $_.schema + '/' + $_.file }) -join ','))
@@ -1193,7 +1220,9 @@ VALUES ('p1t1', 'p1b-admin', 'p1b-admin-t1', '__HASH__', '0', '0'),
        ('p1t2', 'p1b-admin', 'p1b-admin-t2', '__HASH__', '0', '0');
 '@
     $fixtureSql = $fixtureSql.Replace('__HASH__', $script:Secrets['fixtureUser'])
-    try { [void](Invoke-SyntheticSql $fixtureSql 'ragent_p1b' 'platform_migrate' 'platformMigrate' 'db-fixtures.log') } catch {
+    # fixture 用 app 账号写入（与真实业务同一条权限路径）：若 app 账号没拿到权限，
+    # 这里就会失败，而不是等到 B01–B13 才暴露。
+    try { [void](Invoke-SyntheticSql $fixtureSql 'ragent_p1b' 'platform_app' 'platformApp' 'db-fixtures.log') } catch {
         Add-Result 'ENV-fixtures' 'G0' 'FAIL' ("synthetic fixture seed failed: " + $_.Exception.Message); return
     }
     Assert-That 'ENV-fixtures' 'G0' $true 'two synthetic tenants with same-named user seeded; no real customer data touched'
@@ -1351,10 +1380,27 @@ function Start-ProductJar([string]$Side, [string]$State, [int]$Port) {
     $pidFile = Join-Path $script:RunWork ($Side + '-' + $State + '.pid')
     return Start-OwnedProcess (Join-Path $script:JdkHome 'bin\java.exe') $arguments $run $pidFile
 }
+function Read-SharedText([string]$Path) {
+    # 读一个**正被其他进程写入**的日志。
+    # [IO.File]::ReadAllText 默认以 FileShare.Read 打开，而 JVM 正持有 stdout.log 的写句柄，
+    # 于是抛 "The process cannot access the file ... because it is being used by another process"，
+    # 把"等 jar 就绪"变成 harness 崩溃。这里显式允许读写共享。
+    $stream = $null
+    try {
+        $stream = [IO.FileStream]::new($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+            [IO.FileShare]::ReadWrite)
+        $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8)
+        try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+    } catch {
+        return ''
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
 function Wait-ApplicationReady([int]$Port, [string]$LogPath, [int]$TimeoutSec) {
     for ($i = 0; $i -lt ($TimeoutSec * 2); $i++) {
         if (Test-Path -LiteralPath $LogPath) {
-            $text = [IO.File]::ReadAllText($LogPath)
+            $text = Read-SharedText $LogPath
             if ($text -match 'Started .+ in [\d.]+ seconds' -or $text -match 'ApplicationReadyEvent') { return $true }
             if ($text -match 'APPLICATION FAILED TO START') { return $false }
         }
@@ -1531,7 +1577,7 @@ function Invoke-HttpCases {
         Assert-ClosedEnvelope $r 'B05-forged-headers' 'forged headers on a closed route'
         $aiLogText = ''
         foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $script:Evidence 'jvm-logs') -Recurse -File -ErrorAction SilentlyContinue)) {
-            $aiLogText += (Protect-LogText ([IO.File]::ReadAllText($log.FullName)))
+            $aiLogText += (Protect-LogText (Read-SharedText $log.FullName))
         }
         Assert-That 'B05-no-payload-in-audit' 'B' ($aiLogText -notmatch [regex]::Escape($marker)) `
             ("forged marker present in sanitized logs={0} (must be false)" -f ($aiLogText -match [regex]::Escape($marker)))
