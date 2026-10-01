@@ -65,8 +65,8 @@ import static org.mockito.Mockito.when;
  * 没有 embedding 调用、没有 SQL、没有 Milvus 客户端调用。因此每个否定用例都同时断言
  * {@code verifyNoInteractions}；每个否定用例后面都配了正向对照，证明这些零交互断言不是空转。
  *
- * <p>注意：Milvus 的<b>写</b>侧 {@code MilvusVectorStoreService} 目前还不是租户感知的
- * （租户贯通推迟到后续变更），本用例刻意不对它做任何断言。
+ * <p>注意：Milvus <b>写</b>侧 {@code MilvusVectorStoreService} 与 PG 写侧都已租户化
+ * （见 {@code P1VectorWriteTenantTest}），本类只覆盖读侧直连 Bean 的守卫，两者互补。
  */
 class P1RetrieverDirectIsolationTest {
 
