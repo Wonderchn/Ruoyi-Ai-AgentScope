@@ -11,13 +11,12 @@
     1. mvn -o -B -ntp -f services/platform/pom.xml -Pdev clean verify
     2. mvn -o -B -ntp -f services/ai/pom.xml       -Pci  clean verify
     3. run.ps1 -Mode Unit        （--InvocationLogPath 传入 1/2 的退出码）
-    4. run.ps1 -Mode Integration （--InvocationLogPath 传入 1/2/3/4 的退出码）
-    5. run.ps1 -Mode Integration --LabContainer <不存在的容器>（缺靶场预检，**期望非零**）
+    4. run.ps1 -Mode Integration --LabContainer <不存在的容器>（确认缺靶场，期望非零）
+    5. run.ps1 -Mode Integration （--InvocationLogPath 传入前四条命令及已验证预检证据）
 
-  第 5 条期望非零：`expectsNonZero=true` 会被 run.ps1 的 ACCEPTANCE-preflight-nonzero
-  断言单独核对，并且 integration 那一轮会把该值记进 manifest.acceptanceCommands。
+  非零例外必须绑定到缺容器的结构化证据；无关构建、环境或断言失败不能充当预检成功。
 
-  约束：不改 main、不 push、不建 PR；只操作本 run 自己的证据目录与 workRoot。
+  约束：只操作本 run 自己的证据目录与 workRoot；发布由维护者指令另行控制。
   本脚本保持 UTF-8 with BOM（PS 5.1 解析中文必需）。
 
 .EXAMPLE
@@ -40,7 +39,10 @@ param(
     [switch]$SkipBuildRoots
 )
 
-$ErrorActionPreference = 'Continue'
+$ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'acceptance-evidence.ps1')
+if ($RunTag -notmatch '^p04[a-z0-9]+$' -or $LabContainer -cne "p04-pg-$RunTag" -or
+        $MissingLabContainer -cne "p04-pg-$RunTag-missing") { throw 'container names must belong to the supplied P0.4 run tag' }
 $script:RunPs1 = Join-Path $RepoRoot 'tools\p04-contract\run.ps1'
 if (-not (Test-Path -LiteralPath $script:RunPs1)) { throw "run.ps1 not found: $($script:RunPs1)" }
 
@@ -66,10 +68,15 @@ function Invoke-AcceptanceCommand {
         $prev = Get-Location
         Set-Location $RepoRoot
         try {
-            & $Exe @Arguments > $capture 2>&1
-            $code = $LASTEXITCODE
+            $previousPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                $global:LASTEXITCODE = $null
+                & $Exe @Arguments > $capture 2>&1
+                $code = $global:LASTEXITCODE
+            } finally { $ErrorActionPreference = $previousPreference }
         } finally { Set-Location $prev }
-        if (Test-Path -LiteralPath $capture) { Get-Content -LiteralPath $capture | Set-Content $log }
+        if (Test-Path -LiteralPath $capture) { Get-Content -LiteralPath $capture | Set-Content -LiteralPath $log -Encoding UTF8 }
     } finally {
         if (Test-Path -LiteralPath $capture) { Remove-Item -LiteralPath $capture -Force -ErrorAction SilentlyContinue }
     }
@@ -123,6 +130,7 @@ Write-InvocationLog
 
 # ---------- 4：缺靶场预检（期望非零；先跑，好让 Integration 的快照里能看到它的非零退出码） ----------
 $preflightEvidence = Join-Path $EvidenceDir 'preflight-missing-lab'
+$preflightDirectories = @(Get-ChildItem -LiteralPath $preflightEvidence -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
 # 预检不传 -InvocationLogPath（它不需要看别人的记录）；它的"应当非零"由 -ExpectsNonZero 记录，
 # 并由 Integration 从自己的输入清单里独立核对，不依赖事后自检。
 $preflight = Invoke-AcceptanceCommand -Label 'preflight-missing-lab' -Kind 'run.ps1 -Mode Integration（不存在的靶场容器）' `
@@ -132,6 +140,16 @@ $preflight = Invoke-AcceptanceCommand -Label 'preflight-missing-lab' -Kind 'run.
         '-PlatformPort', "$PlatformPort", '-AiPort', "$AiPort") -LogName 'preflight-missing-lab.log' -ExpectsNonZero
 Write-InvocationLog -PreflightExitCode ([int]$preflight.exitCode)
 # Integration 的输入清单在此刻拷贝：此时它已含两条构建根、Unit，以及带 expectsNonZero 的预检。
+$newPreflight = @(Get-ChildItem -LiteralPath $preflightEvidence -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $preflightDirectories -notcontains $_.FullName })
+$preflightPath = if ($newPreflight.Count -eq 1) { $newPreflight[0].FullName } else { '' }
+$preflightValidation = Test-P04MissingLabEvidence -EvidencePath $preflightPath `
+    -ExpectedContainer $MissingLabContainer -ExpectedRunTag $RunTag -EntryExitCode ([int]$preflight.exitCode)
+$preflight | Add-Member -NotePropertyMembers @{ mode = 'Integration'; runTag = $RunTag
+    labContainer = $MissingLabContainer; expectedFailure = 'MISSING_LAB_CONTAINER'
+    preflightValidation = $preflightValidation }
+Write-Host ("### 缺靶场原因校验：valid={0} error={1}" -f $preflightValidation.valid, $preflightValidation.error)
+Write-InvocationLog -PreflightExitCode ([int]$preflight.exitCode)
 $integrationLogSnapshot = Join-Path $invRoot 'invocation-commands.integration.json'
 Copy-Item -LiteralPath $invocationLog -Destination $integrationLogSnapshot -Force
 # ---------- 5：Integration（最后跑：它的快照已含预检那条 expectsNonZero 记录） ----------
@@ -151,17 +169,19 @@ Write-Host '### 顶层验收命令原生退出码'
 $script:Commands | ForEach-Object {
     Write-Host ("  {0,-28} exit={1,-4} expectsNonZero={2}  log={3}" -f $_.label, $_.exitCode, $_.expectsNonZero, $_.log)
 }
-$bad = @($script:Commands | Where-Object { $_.exitCode -ne 0 -and -not $_.expectsNonZero })
-$pfOk = ($preflight.exitCode -ne 0)
+$bad = @($script:Commands | Where-Object {
+    -not (Test-P04AcceptanceRecord -Record $_ -ExpectedRunTag $RunTag -PreflightEntryExitCode ([int]$preflight.exitCode)) })
+$pfOk = Test-P04AcceptanceRecord -Record $preflight -ExpectedRunTag $RunTag -PreflightEntryExitCode ([int]$preflight.exitCode)
 Write-Host ("### 非零且非预期：{0}；缺靶场预检非零：{1}" -f $bad.Count, $pfOk)
 $wrapperExit = 0
-if ($bad.Count -gt 0 -or -not $pfOk) { $wrapperExit = 1 }
+if ($script:Commands.Count -ne 5 -or $bad.Count -gt 0 -or -not $pfOk) { $wrapperExit = 1 }
 [pscustomobject]@{
     wrapper = 'tools/p04-contract/run-acceptance.ps1'; runId = $runId
     invocationRoot = $invRoot; invocationLog = $invocationLog
     commandCount = $script:Commands.Count
     nonzeroUnexpected = $bad.Count
     preflightExitCode = [int]$preflight.exitCode
+    preflightEvidenceValid = [bool]$pfOk
     wrapperExitCode = $wrapperExit
     commands = @($script:Commands)
 } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $invRoot 'acceptance-summary.json') -Encoding UTF8

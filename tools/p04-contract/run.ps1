@@ -44,6 +44,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'acceptance-evidence.ps1')
 Add-Type -AssemblyName System.Net.Http
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [Net.ServicePointManager]::DefaultConnectionLimit = 128
@@ -108,86 +109,54 @@ function Read-AcceptanceInvocation {
         Add-Result 'ACCEPTANCE-invocation-log' 'G0' 'NOT_RUN' 'no invocation log supplied; top-level exit codes unavailable'
         return
     }
-    if (-not (Test-Path -LiteralPath $InvocationLogPath)) {
-        Assert-That 'ACCEPTANCE-invocation-log' 'G0' $false ("invocation log missing: " + $InvocationLogPath)
-        return
-    }
-    $raw = Get-Content -LiteralPath $InvocationLogPath -Raw -Encoding UTF8
     $doc = $null
-    try { $doc = $raw | ConvertFrom-Json } catch { $doc = $null }
+    try { $doc = Get-Content -LiteralPath $InvocationLogPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
     if ($null -eq $doc -or $null -eq $doc.commands) {
-        Assert-That 'ACCEPTANCE-invocation-log' 'G0' $false 'invocation log is not valid JSON with a commands array'
-        return
+        Assert-That 'ACCEPTANCE-invocation-log' 'G0' $false 'invocation log missing or invalid'
+        throw 'invalid top-level acceptance invocation'
     }
     $script:AcceptanceCommands = @($doc.commands)
-    # 输入清单只含"在自己之前刚跑完的命令"：Unit 的快照 = 两个构建根；Integration 的快照 =
-    # 两个构建根 + Unit。缺靶场预检是**最后**一条，只出现在包装器最终的
-    # invocation-commands.json 里，因此 Integration 不能要求"预检已在自己的输入中"，
-    # 改用包装器的自检结果（见下方 ACCEPTANCE-wrapper-selfcheck）来核对它。
-    $required = if ($Mode -eq 'Unit') { 2 } else { 4 }
-    Assert-That 'ACCEPTANCE-invocation-log' 'G0' ($script:AcceptanceCommands.Count -ge $required) `
-        ("commands={0} required>={1} log={2} wrapper={3}" -f $script:AcceptanceCommands.Count, $required,
-            $InvocationLogPath, $doc.wrapper)
-    # 两条构建根必须在场（§8.6 的前两条），否则"全零"可能只是因为清单里什么都没记。
-    $builds = @($script:AcceptanceCommands | Where-Object { $_.kind -like 'mvn clean verify*' })
-    Assert-That 'ACCEPTANCE-build-roots-present' 'G0' ($builds.Count -eq 2) `
-        ("mvnCleanVerifyRecords={0} labels={1}" -f $builds.Count,
-            (@($builds | ForEach-Object { $_.label }) -join ','))
-    # 自己的前序记录（Integration 轮里 Unit 的那条）必须已经是 0；非零说明 Unit 真的失败过。
-    $selfLabel = if ($Mode -eq 'Unit') { 'unit-entry' } else { 'integration-entry' }
-    $selfEntry = @($script:AcceptanceCommands | Where-Object { $_.label -eq $selfLabel })
-    if ($selfEntry.Count -gt 0) {
-        Assert-That ('ACCEPTANCE-' + $selfLabel + '-prior-record') 'G0' ([int]$selfEntry[0].exitCode -eq 0) `
-            ("priorRecordedExit={0}" -f $selfEntry[0].exitCode)
+    $labels = @('build-platform-clean-verify', 'build-ai-clean-verify')
+    if ($Mode -eq 'Integration') { $labels += @('unit-entry', 'preflight-missing-lab') }
+    $identityOk = ($script:AcceptanceCommands.Count -eq $labels.Count -and
+        [int]$doc.commandCount -eq $labels.Count -and $doc.runTag -ceq $RunTag)
+    foreach ($label in $labels) {
+        if (@($script:AcceptanceCommands | Where-Object { $_.label -ceq $label }).Count -ne 1) { $identityOk = $false }
     }
-    # 非零只允许出现在显式标记 expectsNonZero 的命令上。
-    $bad = @($script:AcceptanceCommands | Where-Object { [int]$_.exitCode -ne 0 -and $_.expectsNonZero -ne $true })
+    Assert-That 'ACCEPTANCE-invocation-log' 'G0' $identityOk 'exact command inventory and run identity required'
+    $builds = @($script:AcceptanceCommands | Where-Object {
+        ($_.label -ceq 'build-platform-clean-verify' -and $_.kind -ceq 'mvn clean verify (platform)') -or
+        ($_.label -ceq 'build-ai-clean-verify' -and $_.kind -ceq 'mvn clean verify (ai)') })
+    Assert-That 'ACCEPTANCE-build-roots-present' 'G0' ($builds.Count -eq 2) 'both distinct build roots must be present'
+    $bad = @($script:AcceptanceCommands | Where-Object {
+        -not (Test-P04AcceptanceRecord -Record $_ -ExpectedRunTag $RunTag -PreflightEntryExitCode $PreflightEntryExitCode) })
     Assert-That 'ACCEPTANCE-all-exit-zero' 'G1-G4' ($bad.Count -eq 0) `
-        ("unexpectedNonzero={0} of {1} [{2}]" -f $bad.Count, $script:AcceptanceCommands.Count,
-            (@($bad | ForEach-Object { $_.label + '=' + $_.exitCode }) -join ','))
-    # 包装器自己的自检：读的是含预检那条的最终清单，是最完整的一份。
-    # Unit 轮跑在预检之前，这份 summary 还不存在——那是正常时序，不记 FAIL。
-    if ($Mode -eq 'Unit') {
-        Add-Result 'ACCEPTANCE-wrapper-selfcheck' 'G1-G4' 'NOT_RUN' `
-            'Unit runs before the preflight; the wrapper summary is produced at the end of the chain and is asserted by the Integration run'
-    } elseif ($InvocationLogPath) {
-        $selfCheck = Join-Path (Split-Path $InvocationLogPath -Parent) 'acceptance-summary.json'
-        if (Test-Path -LiteralPath $selfCheck) {
-            $sc = $null
-            try { $sc = Get-Content -LiteralPath $selfCheck -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $sc = $null }
-            if ($null -ne $sc) {
-                Assert-That 'ACCEPTANCE-wrapper-selfcheck' 'G1-G4' `
-                    ([int]$sc.commandCount -eq 5 -and [int]$sc.nonzeroUnexpected -eq 0 -and
-                     [int]$sc.preflightExitCode -ne 0) `
-                    ("wrapperCommandCount={0} nonzeroUnexpected={1} preflightExitCode={2} preflightWrapperExit={3}" -f
-                        $sc.commandCount, $sc.nonzeroUnexpected, $sc.preflightExitCode, $sc.wrapperExitCode)
-            } else {
-                Add-Result 'ACCEPTANCE-wrapper-selfcheck' 'G1-G4' 'NOT_RUN' 'wrapper summary unreadable'
-            }
-        } else {
-            Add-Result 'ACCEPTANCE-wrapper-selfcheck' 'G1-G4' 'NOT_RUN' ("wrapper summary absent: " + $selfCheck)
-        }
+        ("invalidCommandRecords={0}: {1}" -f $bad.Count, (@($bad | ForEach-Object { $_.label }) -join ','))
+    $pf = @($script:AcceptanceCommands | Where-Object { $_.label -ceq 'preflight-missing-lab' })
+    $pfOk = ($Mode -eq 'Unit' -and $pf.Count -eq 0)
+    if ($Mode -eq 'Integration' -and $pf.Count -eq 1) {
+        $pfOk = Test-P04AcceptanceRecord -Record $pf[0] -ExpectedRunTag $RunTag -PreflightEntryExitCode $PreflightEntryExitCode
     }
-    $pf = @($script:AcceptanceCommands | Where-Object { $_.expectsNonZero -eq $true })
-    if ($pf.Count -gt 0) {
-        # 只核"清单里恰好一条被标记为应当非零，且它确实非零"。包装器自己那一轮的退出码要等它
-        # 结束才存在（Integration 跑在预检之后、包装器结束之前），故此处不做重复绑定；
-        # 包装器侧的等价核对由 acceptance-summary.json + ACCEPTANCE-wrapper-selfcheck 负责。
-        $pfRecorded = [int]$pf[0].exitCode
-        Assert-That 'ACCEPTANCE-preflight-nonzero' 'G1-G4' ($pf.Count -eq 1 -and $pfRecorded -ne 0) `
-            ("preflightLabel={0} recordedExit={1} wrapperSuppliedExit={2} expectsNonZeroEntries={3}" -f
-                $pf[0].label, $pfRecorded, $PreflightEntryExitCode, $pf.Count)
-    } else {
-        # Unit 轮输入清单里本来就没有预检（预检在 Unit 之后跑），故不记 NOT_RUN，
-        # 否则 Unit 入口会被自己的时序判成非零，进而级联把 Integration 的前序记录判红。
-        # 该断言在 Integration 轮以 expectsNonZero 记录独立核对。
-        Assert-That 'ACCEPTANCE-preflight-nonzero' 'G1-G4' ($Mode -eq 'Unit') `
-            ("preflight not yet run in this mode (mode={0}); asserted by the Integration run" -f $Mode)
-    }
+    Assert-That 'ACCEPTANCE-preflight-nonzero' 'G1-G4' $pfOk `
+        ("mode={0} suppliedExit={1}; only confirmed missing-container evidence is eligible" -f $Mode, $PreflightEntryExitCode)
     foreach ($c in $script:AcceptanceCommands) {
-        Assert-That ("ACCEPTANCE-" + $c.label) 'G0' ([int]$c.exitCode -eq 0 -or $c.expectsNonZero -eq $true) `
-            ("exit={0} kind={1}" -f $c.exitCode, $c.kind)
+        $ok = Test-P04AcceptanceRecord -Record $c -ExpectedRunTag $RunTag -PreflightEntryExitCode $PreflightEntryExitCode
+        Assert-That ('ACCEPTANCE-' + $c.label) 'G0' $ok ("exit={0} kind={1}" -f $c.exitCode, $c.kind)
     }
+    # The current wrapper summary cannot exist before its final child has exited.
+    # Missing summary is the sole NOT_RUN exception; a present but invalid summary is a failure.
+    $selfCheck = Join-Path (Split-Path $InvocationLogPath -Parent) 'acceptance-summary.json'
+    if ($Mode -eq 'Unit' -or -not (Test-Path -LiteralPath $selfCheck)) {
+        Add-Result 'ACCEPTANCE-wrapper-selfcheck' 'G1-G4' 'NOT_RUN' 'wrapper writes the summary only after all children exit'
+    } else {
+        $sc = $null
+        try { $sc = Get-Content -LiteralPath $selfCheck -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+        Assert-That 'ACCEPTANCE-wrapper-selfcheck' 'G1-G4' `
+            ($null -ne $sc -and [int]$sc.commandCount -eq 5 -and [int]$sc.nonzeroUnexpected -eq 0 -and
+             [int]$sc.preflightExitCode -eq 1 -and $sc.preflightEvidenceValid -eq $true -and [int]$sc.wrapperExitCode -eq 0) `
+            'wrapper summary must validate the missing-container evidence and all command exits'
+    }
+    if ($script:Failures -gt 0) { throw 'top-level acceptance record validation failed' }
 }
 $javaProbe = Invoke-NativeCapture 'java' @('-version')
 if ($javaProbe.ExitCode -ne 0) { throw 'java -version preflight failed' }
@@ -201,6 +170,10 @@ function Write-SourceSnapshot {
     $git = Invoke-NativeCapture 'git' @('-C', $RepoRoot, '-c', 'core.excludesFile=NUL',
         'ls-files', '-m', '-o', '--exclude-standard')
     if ($git.ExitCode -ne 0) { throw 'cannot enumerate the working-tree source snapshot' }
+    $committed = Invoke-NativeCapture 'git' @('-C', $RepoRoot, 'diff', '--name-only', '--diff-filter=ACMRT', 'origin/main', 'HEAD')
+    if ($committed.ExitCode -ne 0) { throw 'cannot enumerate committed P0.4 sources' }
+    $sourcePaths = @(@($git.Output) + @($committed.Output) | ForEach-Object { [string]$_ } |
+        Where-Object { $_ -and $_ -notmatch '^warning:' } | Sort-Object -Unique)
     $originFile = 'D:\AI-project\.scratch\p04\fix2\source-origins.json'
     $old = @{}
     if (Test-Path -LiteralPath $originFile) {
@@ -210,7 +183,7 @@ function Write-SourceSnapshot {
     }
     $snapshotRoot = Join-Path $script:Evidence 'source-snapshot'
     $rows = @()
-    foreach ($rel in @($git.Output | ForEach-Object { [string]$_ } | Where-Object { $_ -and $_ -notmatch '^warning:' })) {
+    foreach ($rel in $sourcePaths) {
         $source = [IO.Path]::GetFullPath((Join-Path $RepoRoot ($rel -replace '/', '\')))
         if (-not $source.StartsWith($RepoRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or
                 -not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "unsafe source path: $rel" }
@@ -944,7 +917,19 @@ function Invoke-IntegrationMode {
     try {
         [void](Get-LabEnv 'POSTGRES_PASSWORD')
     } catch {
-        Add-Result 'ENV-lab' '-' 'NOT_RUN' ("synthetic lab unavailable: " + $_.Exception.Message)
+        $failureDetail = $_.Exception.Message
+        $failedIndex = $script:NativeCommands.Count - 1
+        # A successful Docker inventory distinguishes an absent container from SSH/daemon/config failures.
+        $probe = Invoke-NativeCapture 'ssh' @('-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR', $LabHost,
+            "docker container ls -a --format '{{.Names}}'")
+        $names = @($probe.Output | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+        if ($probe.ExitCode -eq 0 -and $names -cnotcontains $LabContainer -and
+                @($names | Where-Object { $_ -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*$' }).Count -eq 0) {
+            $manifest['missingLabEvidence'] = @{ reason = 'MISSING_LAB_CONTAINER'; container = $LabContainer
+                confirmedMissing = $true; probeExitCode = $probe.ExitCode; failedCommandIndex = $failedIndex
+                probeCommandIndex = $script:NativeCommands.Count - 1; failureDetail = $failureDetail }
+        }
+        Add-Result 'ENV-lab' '-' 'NOT_RUN' ("synthetic lab unavailable: " + $failureDetail)
         throw
     }
     $pgFacts = Invoke-LabSql @'
@@ -1463,6 +1448,7 @@ $requiredCases = @('P01','N01','N02','N03','N04','N05','N06','N07',
 $manifest = [ordered]@{
     executionId = $script:ExecutionId
     mode        = $Mode
+    runTag      = $RunTag
     startedUtc  = $started.ToString('o')
     repoRoot    = $RepoRoot
     checkoutCommit = ($headResult.Output | Select-Object -First 1)
@@ -1524,6 +1510,7 @@ try {
     $script:NativeCommands | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $script:Evidence 'native-commands.json') -Encoding UTF8
     $manifest['finishedUtc'] = (Get-Date).ToUniversalTime().ToString('o')
     $manifest['cleanup'] = $cleanup
+    $manifest['ownedProcessIds'] = @($script:StartedProcesses)
     $manifest['nativeCommandCount'] = $script:NativeCommands.Count
     $manifest['nativeCommandsFile'] = 'native-commands.json'
     $manifest['nativeCommands'] = @($script:NativeCommands)
