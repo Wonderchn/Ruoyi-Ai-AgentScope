@@ -1,0 +1,51 @@
+# P0.4 关闭态专用配置：刻意不含任何 p04.* 配置，用来复现"真实应用没有实验配置"的情形。
+# 由 --spring.config.name=p04ai-off 加载。注意：它只改配置文件名，不激活同名 profile。
+# 以 --spring.config.name=p04ai 启动时，产品的 application.yaml 完全不会被读取。
+server:
+  port: 19090
+
+spring:
+  application:
+    name: p04-ai-test
+  main:
+    banner-mode: off
+
+  # 受理事务需要真实 PG（唯一约束与事务原子性是本实验的断言对象）
+  datasource:
+    url: ${P04_AI_DB_URL}
+    username: ${P04_AI_DB_USER}
+    password: ${P04_AI_DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 1
+  sql:
+    init:
+      mode: never
+
+  # 刻意不装配与本实验无关的旧基础设施：Redis/Redisson、RocketMQ、MyBatis-Plus。
+  # 这些类名取自各 jar 内 AutoConfiguration.imports 的实测结果（Boot 4.1.0 已把
+  # Redis 自动装配移到 spring-boot-data-redis，包名为 org.springframework.boot.data.redis）。
+  # 保留 DataSource / JdbcTemplate / 事务自动装配：受理要用真实 PG。
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisReactiveAutoConfiguration
+      - org.springframework.boot.data.redis.autoconfigure.DataRedisRepositoriesAutoConfiguration
+      - org.springframework.boot.data.redis.autoconfigure.health.DataRedisHealthContributorAutoConfiguration
+      - org.springframework.boot.data.redis.autoconfigure.health.DataRedisReactiveHealthContributorAutoConfiguration
+      - org.redisson.spring.starter.RedissonAutoConfigurationV2
+      - org.redisson.spring.starter.RedissonAutoConfigurationV4
+      - org.apache.rocketmq.spring.autoconfigure.RocketMQAutoConfiguration
+      - com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration
+      - com.baomidou.mybatisplus.autoconfigure.MybatisPlusInnerInterceptorAutoConfiguration
+      - com.baomidou.mybatisplus.autoconfigure.MybatisPlusLanguageDriverAutoConfiguration
+      - com.baomidou.mybatisplus.autoconfigure.DdlAutoConfiguration
+      - com.baomidou.mybatisplus.autoconfigure.IdentifierGeneratorAutoConfiguration
+      - cn.dev33.satoken.dao.SaTokenDaoForRedisTemplate
+
+logging:
+  level:
+    root: info
+    com.nageoffer.ai.ragent.rag.runtime: info
+    com.nageoffer.ai.ragent.framework.security: info

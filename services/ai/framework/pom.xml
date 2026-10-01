@@ -10,6 +10,12 @@
 
     <artifactId>framework</artifactId>
 
+    <properties>
+        <!-- P0.4 冻结：委托签名库与 platform 侧同坐标同版本（Spec §8.2）。
+             本机仓库已缓存 0.13.0，无需联网下载。 -->
+        <jjwt.version>0.13.0</jjwt.version>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -90,6 +96,26 @@
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
+        </dependency>
+
+        <!-- P0.4 委托验签：只解析标准紧凑 JWS，不自写 JWT 解析器。
+             用 spring-boot-jackson2 提供的 Jackson 2，与 jjwt-jackson 一致。 -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>${jjwt.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
         </dependency>
     </dependencies>
 </project>

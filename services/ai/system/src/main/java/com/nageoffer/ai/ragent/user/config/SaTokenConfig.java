@@ -21,12 +21,14 @@ import cn.dev33.satoken.interceptor.SaInterceptor;
 import cn.dev33.satoken.stp.StpUtil;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+import org.springframework.web.servlet.resource.ResourceHttpRequestHandler;
 
 /**
  * SaToken 配置类
@@ -72,7 +74,20 @@ public class SaTokenConfig implements WebMvcConfigurer {
                     }
                     // 执行登录检查
                     StpUtil.checkLogin();
-                }))
+                }) {
+                    @Override
+                    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+                        String path = request.getRequestURI().substring(request.getContextPath().length());
+                        // 未注册的实验路径应保持404；只处理静态资源兜底，已注册接口仍完整走登录检查。
+                        if (handler instanceof ResourceHttpRequestHandler
+                                && (path.equals("/internal/ai/v1/runs") || path.startsWith("/internal/ai/v1/runs/")
+                                || path.equals("/p04") || path.startsWith("/p04/"))) {
+                            response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+                            return false;
+                        }
+                        return super.preHandle(request, response, handler);
+                    }
+                })
                 // 拦截所有路径
                 .addPathPatterns("/**")
                 // 排除认证相关路径和错误页面
