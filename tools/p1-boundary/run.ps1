@@ -1848,8 +1848,11 @@ function Invoke-HttpCases {
                 # 此时退回纯响应判据，并在 detail 里点明清单未参与判定。
                 $null
             }
-            $looksHealthy = ($r.Body -match '"status"\s*:\s*"(UP|DOWN|OUT_OF_SERVICE)"')
-            $gatedOr404 = ($r.Status -eq 404) -or ($r.Body -match '"code"\s*:\s*"A\d+"')
+            # 必须取 $r.Text：Send-Json 返回 {Status, Json, Text, RequestId}，**没有 Body 字段**。
+            # 读一个不存在的属性得到 $null，正则恒不匹配、gatedOr404 恒 false，
+            # 而 detail 里只看到 status=200，完全看不出是取错了属性。
+            $looksHealthy = ($r.Text -match '"status"\s*:\s*"(UP|DOWN|OUT_OF_SERVICE)"')
+            $gatedOr404 = ($r.Status -eq 404) -or ($r.Text -match '"code"\s*:\s*"A\d+"')
             $notInInventory = ($null -eq $inInventory) -or (-not $inInventory)
             Assert-That ('B02-unregistered-' + $probe.p) 'B' ($notInInventory -and (-not $looksHealthy) -and $gatedOr404) `
                 ("{0} {1} status={2} inRouteInventory={3} (factsOk={4}) healthPayload={5} gatedOr404={6}" -f `
