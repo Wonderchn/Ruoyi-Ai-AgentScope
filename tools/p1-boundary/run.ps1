@@ -1598,6 +1598,12 @@ function Start-ProductJar([string]$Side, [string]$State, [int]$Port) {
     if ($State -eq 'illegal-integration') { $arguments += '--ai.integration.enabled=true' }
     if ($State -eq 'illegal-customer-api') { $arguments += '--ai.integration.customer-api.enabled=true' }
     if ($State -eq 'illegal-legacy-listeners') { $arguments += '--ai.integration.legacy-listeners-enabled=true' }
+    # 只有 default 这一态需要 probe facts：其余各态（p04=false / 非法开关）是启动语义用例，
+    # 不参与 facts 断言，也就不该额外写文件。
+    if ($Side -eq 'ai' -and $State -eq 'default') {
+        $factsPath = Join-Path $script:Evidence 'probe\ai-runtime-facts.json'
+        $arguments += ('-Dp1.probe.facts-path=' + $factsPath)
+    }
     $pidFile = Join-Path $script:RunWork ($Side + '-' + $State + '.pid')
     return Start-OwnedProcess (Join-Path $script:JdkHome 'bin\java.exe') $arguments $run $pidFile
 }
