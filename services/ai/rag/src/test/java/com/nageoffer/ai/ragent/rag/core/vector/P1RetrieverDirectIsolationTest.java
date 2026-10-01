@@ -172,7 +172,10 @@ class P1RetrieverDirectIsolationTest {
         when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
                 .thenAnswer(invocation -> {
                     capturedSql[0] = invocation.getArgument(0);
-                    capturedArgs[0] = invocation.getArgument(2);
+                    // 必须走 getRawArguments()：Mockito 5.x 对 getArguments()/getArgument(i) 会
+                    // <b>展开 varargs</b>，于是 getArgument(2) 拿到的是第一个 vararg 元素（String），
+                    // 而不是调用方绑定的那个 Object[]。这不是实现缺陷——任何实现都无法满足那种取法。
+                    capturedArgs[0] = (Object[]) invocation.getRawArguments()[2];
                     return List.<RetrievedChunk>of();
                 });
 
@@ -191,10 +194,14 @@ class P1RetrieverDirectIsolationTest {
                 "SQL 必须排除 tombstone，实际 SQL=" + capturedSql[0]);
         assertTrue(capturedSql[0].contains("collection_name IN (?)"),
                 "授权 collection 必须作为求交结果下推到 SQL，实际 SQL=" + capturedSql[0]);
-        // (c) 绑定的参数里必须出现当前租户
-        assertNotNull(capturedArgs[0], "检索 SQL 必须带绑定参数");
-        assertTrue(Arrays.asList(capturedArgs[0]).contains(TENANT),
-                "绑定参数必须包含当前租户 " + TENANT + "，实际=" + Arrays.toString(capturedArgs[0]));
+        // (c) 绑定顺序必须与 SQL 文本里 ? 的出现顺序一致：打分向量 → tenant → 授权 collection → 排序向量 → LIMIT。
+        // 只断言"参数里包含 tenant"太弱：tenant 落到错误的位置上同样会"包含"，
+        // 但那样过滤的就不是租户列，而是别的列——隔离会在看不见的地方失效。
+        Object[] args = capturedArgs[0];
+        assertNotNull(args, "检索 SQL 必须带绑定参数");
+        assertEquals(TENANT, args[1], "第二个绑定参数必须是当前租户，实际=" + Arrays.toString(args));
+        assertEquals(AUTHORIZED_COLLECTION, args[2],
+                "第三个绑定参数必须是授权 collection（紧随 tenant），实际=" + Arrays.toString(args));
     }
 
     // ================================================================= Milvus
