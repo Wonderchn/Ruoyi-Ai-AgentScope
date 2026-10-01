@@ -17,6 +17,7 @@
 
 package com.nageoffer.ai.ragent.knowledge.mq;
 
+import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.framework.exception.ServiceException;
 import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
 import com.nageoffer.ai.ragent.framework.mq.MessageWrapper;
@@ -75,6 +76,14 @@ public class KnowledgeBaseCleanupConsumer implements RocketMQListener<MessageWra
                 SaasCapabilityBoundary.LegacyCapability.KB_CLEANUP_CONSUMER);
         KnowledgeBaseCleanupEvent event = message.getBody();
         String collectionName = event.getCollectionName();
+        // 异步清理作用在共享索引/共享 collection 上，没有租户就不能安全执行：
+        // 事件缺租户说明投递侧漏传（或投递的是本改动之前入队的旧事件），
+        // 此时明确失败并留证，而不是按"没有租户"继续清理。
+        String tenantId = event.getTenantId();
+        if (tenantId == null || tenantId.isBlank()) {
+            throw new ClientException("知识库清理事件缺少 tenantId，拒绝执行：kbId=" + event.getKbId()
+                    + "（共享索引上的清理必须限定租户）");
+        }
 
         log.info("[消费者] 开始清理知识库物理资源，kbId={}, collectionName={}", event.getKbId(), collectionName);
 
@@ -97,10 +106,10 @@ public class KnowledgeBaseCleanupConsumer implements RocketMQListener<MessageWra
         KeywordIndexService keywordIndexService = keywordIndexServiceProvider.getIfAvailable();
         if (keywordIndexService != null) {
             try {
-                keywordIndexService.deleteByCollection(collectionName);
+                keywordIndexService.deleteByCollection(tenantId, collectionName);
             } catch (Exception e) {
                 allSucceeded = false;
-                log.error("删除 ES 关键词索引失败，collectionName={}", collectionName, e);
+                log.error("删除 ES 关键词索引失败，tenant={}, collectionName={}", tenantId, collectionName, e);
             }
         }
 

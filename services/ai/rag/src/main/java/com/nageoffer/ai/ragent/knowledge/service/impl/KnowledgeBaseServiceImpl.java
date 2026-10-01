@@ -35,6 +35,7 @@ import com.nageoffer.ai.ragent.knowledge.dao.entity.KnowledgeBaseDO;
 import com.nageoffer.ai.ragent.knowledge.dao.entity.KnowledgeDocumentDO;
 import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeBaseMapper;
 import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeDocumentMapper;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.framework.exception.ServiceException;
@@ -242,9 +243,14 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         }
 
         String operator = UserContext.getUsername();
+        // 租户必须随事件一起投递：消费者是异步的，已经没有请求上下文，
+        // 而清理共享 ES 索引/共享 collection 都必须限定租户。
+        // 在这里取是因为此时主体仍在；消费者侧缺失即拒绝，不做默认。
+        String tenantId = PrincipalContext.require().tenantId();
         KnowledgeBaseCleanupEvent event = KnowledgeBaseCleanupEvent.builder()
                 .kbId(kbId)
                 .collectionName(kbDO.getCollectionName())
+                .tenantId(tenantId)
                 .operator(operator)
                 .build();
 

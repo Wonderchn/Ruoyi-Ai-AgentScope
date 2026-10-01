@@ -89,6 +89,12 @@ import static org.mockito.Mockito.verifyNoInteractions;
  */
 class P1TriggerBoundaryTest {
 
+    /**
+     * 合成租户：知识库清理事件必须携带租户，否则消费者拒绝执行。
+     * 用真实形状（1..64、无冒号）而不是 "t"，避免测试通过而真实契约不满足。
+     */
+    private static final String TENANT = "p1-tenant-trigger";
+
     /** 关闭态：显式写出全部开关为 false，与产品默认配置同义。 */
     private static final SaasBoundaryProperties CLOSED_PROPERTIES =
             new SaasBoundaryProperties(false, true, new SaasBoundaryProperties.CustomerApi(false), false);
@@ -295,7 +301,8 @@ class P1TriggerBoundaryTest {
     private static MessageWrapper<KnowledgeBaseCleanupEvent> cleanupMessage(String kbId) {
         return MessageWrapper.<KnowledgeBaseCleanupEvent>builder()
                 .keys("kb:" + kbId)
-                .body(KnowledgeBaseCleanupEvent.builder().kbId(kbId).collectionName("kb_" + kbId).build())
+                .body(KnowledgeBaseCleanupEvent.builder().kbId(kbId).tenantId(TENANT)
+                        .collectionName("kb_" + kbId).build())
                 .build();
     }
 
