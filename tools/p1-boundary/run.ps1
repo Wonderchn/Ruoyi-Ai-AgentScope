@@ -1362,9 +1362,12 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA ai GRANT ALL ON SEQUENCES TO ai_app;
             (@($applied | ForEach-Object { $_.schema + '/' + $_.file }) -join ','))
     $fixtureSql = @'
 -- synthetic fixtures only: two tenants, one same-named user per tenant; password hash injected by the runner.
-INSERT INTO platform.sys_user (tenant_id, user_name, nick_name, password, status, del_flag)
-VALUES ('p1t1', 'p1b-admin', 'p1b-admin-t1', '__HASH__', '0', '0'),
-       ('p1t2', 'p1b-admin', 'p1b-admin-t2', '__HASH__', '0', '0');
+-- user_id 必须显式给出：该列是 bigint NOT NULL 且**没有默认值**（不是自增/序列），
+-- 省略它会直接违反非空约束。两个租户用不同的 user_id 是刻意的：
+-- 同名用户在不同租户下是两条不同的行，这正是 P1 要验证的"同名不串号"。
+INSERT INTO platform.sys_user (user_id, tenant_id, user_name, nick_name, password, status, del_flag)
+VALUES (900000000000000001, 'p1t1', 'p1b-admin', 'p1b-admin-t1', '__HASH__', '0', '0'),
+       (900000000000000002, 'p1t2', 'p1b-admin', 'p1b-admin-t2', '__HASH__', '0', '0');
 '@
     $fixtureSql = $fixtureSql.Replace('__HASH__', $script:Secrets['fixtureUser'])
     # fixture 用 app 账号写入（与真实业务同一条权限路径）：若 app 账号没拿到权限，
