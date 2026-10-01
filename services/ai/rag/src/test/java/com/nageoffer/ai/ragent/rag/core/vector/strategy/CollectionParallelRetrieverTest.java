@@ -17,14 +17,19 @@
 
 package com.nageoffer.ai.ragent.rag.core.vector.strategy;
 
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.security.AuthorizedResourceScope;
+import com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope;
 import com.nageoffer.ai.ragent.rag.core.retrieval.RetrieveRequest;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorRetrieverService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -36,13 +41,29 @@ class CollectionParallelRetrieverTest {
     @DisplayName("fan-out全库检索时同一个子问题只生成一次Query向量")
     void fanOutGlobalRetrievalEmbedSubQuestionOnce() {
         VectorRetrieverService retrieverService = mock(VectorRetrieverService.class);
-        when(retrieverService.embedAndNormalize("报销流程")).thenReturn(new float[]{0.6F, 0.8F});
-        when(retrieverService.retrieveByVector(any(float[].class), any(RetrieveRequest.class))).thenReturn(List.of());
+        when(retrieverService.embedAndNormalize(any(AuthorizedRetrievalScope.class), eq("报销流程")))
+                .thenReturn(new float[]{0.6F, 0.8F});
+        when(retrieverService.retrieveByVector(any(AuthorizedRetrievalScope.class),
+                any(float[].class), any(RetrieveRequest.class))).thenReturn(List.of());
 
         CollectionParallelRetriever retriever = new CollectionParallelRetriever(retrieverService, Runnable::run);
-        retriever.executeParallelRetrieval("报销流程", List.of("kb-finance", "kb-policy"), 7);
+        retriever.executeParallelRetrieval(grantedScope(), "报销流程", List.of("kb-finance", "kb-policy"), 7);
 
-        verify(retrieverService, times(1)).embedAndNormalize("报销流程");
-        verify(retrieverService, times(2)).retrieveByVector(any(float[].class), any(RetrieveRequest.class));
+        verify(retrieverService, times(1)).embedAndNormalize(any(AuthorizedRetrievalScope.class), eq("报销流程"));
+        verify(retrieverService, times(2)).retrieveByVector(any(AuthorizedRetrievalScope.class),
+                any(float[].class), any(RetrieveRequest.class));
+    }
+
+    /**
+     * 构造生产语义的授权作用域：本用例的两个逻辑库都在授权集合内（空集合会被判为空授权而直接短路）
+     */
+    private static AuthorizedRetrievalScope grantedScope() {
+        List<String> collections = List.of("kb-finance", "kb-policy");
+        ExecutionPrincipal principal = new ExecutionPrincipal("tenant-1", "1001",
+                ExecutionPrincipal.canonicalMembershipId("tenant-1", "1001"),
+                1, 1, Set.of(), "jti-test-1", "test-issuer", 0L, 0L);
+        AuthorizedResourceScope resourceScope = AuthorizedResourceScope.granted(
+                principal, "kb.retrieve", collections, 0L);
+        return AuthorizedRetrievalScope.of(resourceScope, collections, List.of(), List.of(), collections);
     }
 }

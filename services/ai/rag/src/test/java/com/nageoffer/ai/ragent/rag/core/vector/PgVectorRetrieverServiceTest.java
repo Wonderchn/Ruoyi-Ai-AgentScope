@@ -18,7 +18,10 @@
 package com.nageoffer.ai.ragent.rag.core.vector;
 
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.security.AuthorizedResourceScope;
 import com.nageoffer.ai.ragent.infra.embedding.EmbeddingService;
+import com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope;
 import com.nageoffer.ai.ragent.rag.core.retrieval.RetrieveRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -27,6 +30,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -53,7 +57,7 @@ class PgVectorRetrieverServiceTest {
         )).thenReturn(List.<RetrievedChunk>of());
 
         PgVectorRetrieverService service = new PgVectorRetrieverService(jdbcTemplate, embeddingService);
-        service.retrieve(RetrieveRequest.builder()
+        service.retrieve(grantedScope(), RetrieveRequest.builder()
                 .query("报销流程")
                 .collectionNames(List.of("kb-finance", "kb-policy"))
                 .topK(7)
@@ -69,9 +73,26 @@ class PgVectorRetrieverServiceTest {
 
         assertTrue(sqlCaptor.getValue().contains("collection_name IN (?, ?)"));
         Object[] args = argsCaptor.getValue();
-        assertEquals("kb-finance", args[1]);
-        assertEquals("kb-policy", args[2]);
-        assertEquals(7, args[4], "SQL 只能有一个跨 Collection 共享的 LIMIT");
+        // 参数顺序：向量字面量、tenant_id、授权 collection 列表、再次向量字面量（ORDER BY）、LIMIT。
+        // tenant 必须排在 collection 之前——过滤条件的第一条永远是租户，它不能被"可选化"。
+        assertEquals("tenant-1", args[1], "第二个参数必须是当前租户");
+        assertEquals("kb-finance", args[2]);
+        assertEquals("kb-policy", args[3]);
+        assertEquals(7, args[5], "SQL 只能有一个跨 Collection 共享的 LIMIT");
         verify(embeddingService, times(1)).embed("报销流程");
+    }
+
+    /**
+     * 构造生产语义的授权作用域：请求里的两个逻辑库都必须在授权集合内，
+     * 否则求交后为空，SQL 就不会带上 {@code collection_name IN (?, ?)}
+     */
+    private static AuthorizedRetrievalScope grantedScope() {
+        List<String> collections = List.of("kb-finance", "kb-policy");
+        ExecutionPrincipal principal = new ExecutionPrincipal("tenant-1", "1001",
+                ExecutionPrincipal.canonicalMembershipId("tenant-1", "1001"),
+                1, 1, Set.of(), "jti-test-1", "test-issuer", 0L, 0L);
+        AuthorizedResourceScope resourceScope = AuthorizedResourceScope.granted(
+                principal, "kb.retrieve", collections, 0L);
+        return AuthorizedRetrievalScope.of(resourceScope, collections, List.of(), List.of(), collections);
     }
 }

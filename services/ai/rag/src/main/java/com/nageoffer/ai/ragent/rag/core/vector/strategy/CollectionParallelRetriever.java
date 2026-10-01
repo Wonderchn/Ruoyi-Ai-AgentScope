@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.rag.core.vector.strategy;
 
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
+import com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope;
 import com.nageoffer.ai.ragent.rag.core.retrieval.RetrieveRequest;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorRetrieverService;
 import lombok.extern.slf4j.Slf4j;
@@ -47,29 +48,52 @@ public class CollectionParallelRetriever {
 
     /**
      * 并行检索，内部生成查询向量
+     *
+     * @param scope 已授权检索作用域（不可为 {@code null}）
      */
-    public List<RetrievedChunk> executeParallelRetrieval(String question,
+    public List<RetrievedChunk> executeParallelRetrieval(AuthorizedRetrievalScope scope,
+                                                         String question,
                                                          List<String> collections,
                                                          int topK) {
-        return executeParallelRetrieval(question, collections, topK, retrieverService.embedAndNormalize(question));
+        if (VectorRetrieverService.mustReturnEmpty(scope, "executeParallelRetrieval")) {
+            // 空作用域连 embedding 都不做：未授权请求不应产生任何模型调用
+            return List.of();
+        }
+        if (collections == null || collections.isEmpty()) {
+            // 没有可扇出的库：连 embedding 都不必做
+            return List.of();
+        }
+        return executeParallelRetrieval(scope, question, collections, topK,
+                retrieverService.embedAndNormalize(scope, question));
     }
 
     /**
      * 并行检索，复用调用方已算好的查询向量
      * 供同一次请求内还有其他向量取数路（如向量通道的补充路）时共用一次 embedding
      *
+     * @param scope       已授权检索作用域（不可为 {@code null}）
      * @param queryVector 已归一化的查询向量
      */
-    public List<RetrievedChunk> executeParallelRetrieval(String question,
+    public List<RetrievedChunk> executeParallelRetrieval(AuthorizedRetrievalScope scope,
+                                                         String question,
                                                          List<String> collections,
                                                          int topK,
                                                          float[] queryVector) {
+        if (VectorRetrieverService.mustReturnEmpty(scope, "executeParallelRetrieval")) {
+            // 空作用域不提交任何任务：不查后端，也不占用执行器线程
+            return List.of();
+        }
+        if (collections == null || collections.isEmpty()) {
+            // 没有可扇出的库：直接空集，不打印"总目标数 0"的扇出统计
+            return List.of();
+        }
+
         record RetrievalFuture(String collection, CompletableFuture<List<RetrievedChunk>> future) {
         }
 
         List<RetrievalFuture> futures = collections.stream()
                 .map(collection -> new RetrievalFuture(collection, CompletableFuture.supplyAsync(
-                        () -> retrieveOne(question, collection, queryVector, topK),
+                        () -> retrieveOne(scope, question, collection, queryVector, topK),
                         executor
                 )))
                 .toList();
@@ -101,9 +125,11 @@ public class CollectionParallelRetriever {
     /**
      * 单库取数，失败返回空列表兑现「单库失败只损失自己」
      */
-    private List<RetrievedChunk> retrieveOne(String question, String collectionName, float[] queryVector, int topK) {
+    private List<RetrievedChunk> retrieveOne(AuthorizedRetrievalScope scope, String question, String collectionName,
+                                             float[] queryVector, int topK) {
         try {
             return retrieverService.retrieveByVector(
+                    scope,
                     queryVector,
                     RetrieveRequest.builder()
                             .collectionName(collectionName)
