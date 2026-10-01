@@ -61,11 +61,32 @@ public class VectorSpaceInitializer {
 
     @PostConstruct
     public void initVectorSpace() {
-        initVectorSpace(capabilityBoundary == null ? null : capabilityBoundary.getIfAvailable());
+        // 与 StorageInitializer 同因同治：@PostConstruct 里让受控异常逃出去，
+        // 等于把"关闭旧能力"变成"应用启动失败"。关闭的要求是不发生任何
+        // 向量后端/Redis 调用，而不是拒绝启动；启动阶段也没有请求可拒绝。
+        // 显式重载 initVectorSpace(boundary) 仍抛异常，供请求/命令路径使用。
+        try {
+            runStartupInit(capabilityBoundary == null ? null : capabilityBoundary.getIfAvailable());
+        } catch (SaasCapabilityBoundary.ClosedCapabilityException e) {
+            log.warn("向量共享空间初始化已跳过：旧能力关闭（capability={}）。"
+                    + "本次启动未创建 collection、未获取 Redis 锁。", e.capability());
+        }
     }
 
-    /** 显式边界版本：关闭时抛受控异常，且不发生任何向量后端/Redis 调用。 */
-    void initVectorSpace(SaasCapabilityBoundary boundary) {
+    /**
+     * 启动期专用包装：与显式重载同名会自递归，并会让"显式版本必须抛异常"的契约失效。
+     */
+    private void runStartupInit(SaasCapabilityBoundary boundary) {
+        initVectorSpace(boundary);
+    }
+
+    /**
+     * 显式边界版本：关闭时抛受控异常，且不发生任何向量后端/Redis 调用。
+     *
+     * <p>public 而非包内可见：这是请求/命令路径契约，与
+     * {@link #initVectorSpace()} 的启动期跳过分离，两者都需跨包断言。
+     */
+    public void initVectorSpace(SaasCapabilityBoundary boundary) {
         if (boundary == null) {
             throw new SaasCapabilityBoundary.ClosedCapabilityException(
                     SaasCapabilityBoundary.LegacyCapability.VECTOR_SPACE_INITIALIZER);

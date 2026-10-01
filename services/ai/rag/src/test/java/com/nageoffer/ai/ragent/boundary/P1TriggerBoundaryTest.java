@@ -59,6 +59,7 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.concurrent.Executor;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -268,6 +269,43 @@ class P1TriggerBoundaryTest {
         verifyNoInteractions(vectorStoreAdmin, redissonClient);
     }
 
+    // ---------------------------------------------------------------- 启动期包装（与边界契约分开）
+
+    @Test
+    @DisplayName("对象存储初始化：关闭态下 @PostConstruct 必须跳过而不是让应用起不来")
+    void storageInitializerStartupSkipsWhenClosed() {
+        ObjectStorageClient objectStorageClient = mock(ObjectStorageClient.class);
+        RedissonClient redissonClient = mock(RedissonClient.class);
+        RagStorageProperties properties = new RagStorageProperties();
+        properties.setKbBucket("ragent-sources");
+        properties.setAssetBucket("ragent-assets");
+        com.nageoffer.ai.ragent.rag.config.StorageInitializer initializer =
+                new com.nageoffer.ai.ragent.rag.config.StorageInitializer(
+                        objectStorageClient, redissonClient, properties, providerOf(CLOSED_BOUNDARY));
+
+        // 启动包装**不得**抛异常：@PostConstruct 抛异常会连带整个 ApplicationContext 启动失败，
+        // 于是"关闭旧能力"变成"应用不可用"。关闭的语义是"不发生远端调用"，不是"拒绝启动"。
+        assertDoesNotThrow(() -> initializer.initBuckets(),
+                "关闭态下启动初始化必须跳过，不得把异常抛给 Spring");
+        verifyNoInteractions(objectStorageClient, redissonClient);
+    }
+
+    @Test
+    @DisplayName("向量空间初始化：关闭态下 @PostConstruct 必须跳过而不是让应用起不来")
+    void vectorSpaceInitializerStartupSkipsWhenClosed() {
+        VectorStoreAdmin vectorStoreAdmin = mock(VectorStoreAdmin.class);
+        RedissonClient redissonClient = mock(RedissonClient.class);
+        RAGDefaultProperties properties = new RAGDefaultProperties();
+        properties.setCollectionName("rag_default_store");
+        com.nageoffer.ai.ragent.rag.config.VectorSpaceInitializer initializer =
+                new com.nageoffer.ai.ragent.rag.config.VectorSpaceInitializer(
+                        vectorStoreAdmin, properties, redissonClient, providerOf(CLOSED_BOUNDARY));
+
+        assertDoesNotThrow(() -> initializer.initVectorSpace(),
+                "关闭态下启动初始化必须跳过，不得把异常抛给 Spring");
+        verifyNoInteractions(vectorStoreAdmin, redissonClient);
+    }
+
     @Test
     @DisplayName("ES 共享索引初始化：关闭态下零 ES 请求；显式打开才发起 exists/create（正向对照）")
     void esSharedIndexInitializerIsGatedByTheBoundary() throws Exception {
@@ -364,7 +402,11 @@ class P1TriggerBoundaryTest {
             com.nageoffer.ai.ragent.rag.config.StorageInitializer initializer =
                     new com.nageoffer.ai.ragent.rag.config.StorageInitializer(client, redisson, properties,
                             providerOf(boundary));
-            initializer.initBuckets();
+            // 调用**显式边界**重载，而不是 @PostConstruct 版本：本用例断言的是边界契约——
+            // "关闭时抛受控异常且不发生任何远端调用"。
+            // 启动包装"跳过而不抛出"的行为由 storageInitializerStartupSwallowsWhenClosed 覆盖。
+            // 两者混为一谈正是"关闭能力"被误做成"应用起不来"的根因。
+            initializer.initBuckets(boundary);
         }
     }
 
@@ -376,7 +418,8 @@ class P1TriggerBoundaryTest {
             com.nageoffer.ai.ragent.rag.config.VectorSpaceInitializer initializer =
                     new com.nageoffer.ai.ragent.rag.config.VectorSpaceInitializer(admin, properties, redisson,
                             providerOf(boundary));
-            initializer.initVectorSpace();
+            // 同上：断言的是显式边界契约，不是启动包装。
+            initializer.initVectorSpace(boundary);
         }
     }
 
