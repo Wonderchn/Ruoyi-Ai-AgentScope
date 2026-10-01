@@ -390,9 +390,19 @@ function Test-PortFree([int]$Port) {
 }
 function Test-RemotePortFree([int]$Port) {
     # 在容器宿主上探测：/dev/tcp 不需要额外工具，也不依赖 ss/netstat 的输出格式。
-    # 走 Invoke-RemoteRuntime 是为了与其余远端调用同一套 ssh 参数与引号规则。
+    #
+    # 这里**不**走 Invoke-RemoteRuntime：那条路径把每个参数按 POSIX 单引号引用，
+    # 对 `docker ps --format ...` 这类"参数即参数"的命令是对的，但对本探测这种复合
+    # shell 命令会把整条命令变成一个被引用的**单词**，远端 shell 于是去找一个叫
+    # "if (echo > /dev/tcp/...)" 的文件（实测报 No such file or directory，
+    # 而退出码非 0 又被本函数判为"端口不空闲"，于是把空闲端口误报成占用）。
+    # 探测语句由本函数自己构造、不含外部输入，直接作为单个 ssh 参数传递即可。
     $probe = 'if (echo > /dev/tcp/127.0.0.1/' + $Port + ') >/dev/null 2>&1; then echo BUSY; else echo FREE; fi'
-    $r = Invoke-RemoteRuntime @($probe) ''
+    $sshArgs = @('-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR',
+        '-o', ('ConnectTimeout=' + $SshConnectTimeoutSeconds))
+    if ($SshKeyPath) { $sshArgs += @('-i', $SshKeyPath) }
+    $sshArgs += @($RemoteHost, $probe)
+    $r = Invoke-NativeCapture $script:SshExe $sshArgs 'preflight-remote-port.log' $RepoRoot
     $text = ((@($r.Output) -join ' ') -replace '\s+', ' ').Trim()
     # 探测本身失败（ssh 不通等）时**不**当作空闲：宁可让预检判失败，也不要盲起容器。
     if ($r.ExitCode -ne 0) { return $false }
