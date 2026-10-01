@@ -47,32 +47,32 @@ public class GraphSyncingVectorStoreService implements VectorStoreService {
     }
 
     @Override
-    public void indexDocumentChunks(String collectionName, String docId, List<EmbeddedChunk> chunks) {
-        delegate.indexDocumentChunks(collectionName, docId, chunks);
+    public void indexDocumentChunks(String tenantId, String collectionName, String docId, List<EmbeddedChunk> chunks) {
+        delegate.indexDocumentChunks(tenantId, collectionName, docId, chunks);
         syncGraph(docId, () -> lightRagClient.insertText(concatContent(chunks), fileSource(collectionName, docId)));
     }
 
     @Override
-    public void updateChunk(String collectionName, String docId, EmbeddedChunk chunk) {
-        delegate.updateChunk(collectionName, docId, chunk);
+    public void updateChunk(String tenantId, String collectionName, String docId, EmbeddedChunk chunk) {
+        delegate.updateChunk(tenantId, collectionName, docId, chunk);
         // 子文档粒度，Phase1 不单独同步图谱（见类注释）
     }
 
     @Override
-    public void deleteDocumentVectors(String collectionName, String docId) {
-        delegate.deleteDocumentVectors(collectionName, docId);
+    public void deleteDocumentVectors(String tenantId, String collectionName, String docId) {
+        delegate.deleteDocumentVectors(tenantId, collectionName, docId);
         syncGraph(docId, () -> lightRagClient.deleteByDoc(docId));
     }
 
     @Override
-    public void deleteChunkById(String collectionName, String chunkId) {
-        delegate.deleteChunkById(collectionName, chunkId);
+    public void deleteChunkById(String tenantId, String collectionName, String chunkId) {
+        delegate.deleteChunkById(tenantId, collectionName, chunkId);
         // 子文档粒度，Phase1 不单独同步图谱（见类注释）
     }
 
     @Override
-    public void deleteChunksByIds(String collectionName, List<String> chunkIds) {
-        delegate.deleteChunksByIds(collectionName, chunkIds);
+    public void deleteChunksByIds(String tenantId, String collectionName, List<String> chunkIds) {
+        delegate.deleteChunksByIds(tenantId, collectionName, chunkIds);
         // 子文档粒度，Phase1 不单独同步图谱（见类注释）
     }
 

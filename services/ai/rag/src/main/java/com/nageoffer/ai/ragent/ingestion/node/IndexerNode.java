@@ -20,6 +20,7 @@ package com.nageoffer.ai.ragent.ingestion.node;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.core.chunk.model.EmbeddedChunk;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.ingestion.domain.context.DocumentSource;
 import com.nageoffer.ai.ragent.ingestion.domain.context.IngestionContext;
@@ -92,8 +93,11 @@ public class IndexerNode implements IngestionNode {
         }
 
         ensureVectorSpace(partition);
-        vectorStoreService.indexDocumentChunks(partition, context.getTaskId(), enriched);
-        log.info("向量写入成功，集合={}，行数={}", partition, enriched.size());
+        // 租户只从可信执行主体取：管道路由可能被异步线程驱动，但"这些行属于谁"必须能回答。
+        // 缺主体时 PrincipalContext.require() 直接抛错，绝不默认某个租户。
+        String tenantId = PrincipalContext.require().tenantId();
+        vectorStoreService.indexDocumentChunks(tenantId, partition, context.getTaskId(), enriched);
+        log.info("向量写入成功，租户={}，集合={}，行数={}", tenantId, partition, enriched.size());
         return NodeResult.ok("已写入 " + enriched.size() + " 个分块到集合 " + partition);
     }
 

@@ -47,6 +47,7 @@ import com.nageoffer.ai.ragent.knowledge.dao.entity.KnowledgeDocumentDO;
 import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeBaseMapper;
 import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeChunkMapper;
 import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeDocumentMapper;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.framework.exception.ServiceException;
@@ -216,9 +217,10 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
 
         log.info("更新 Chunk 成功, kbId={}, docId={}, chunkId={}", documentDO.getKbId(), docId, chunkId);
 
-        // 同步向量数据库
-        vectorStoreService.updateChunk(collectionName, docId,
-                embedPersisted(List.of(chunkDO), vectorTargetResolver.resolve(kbDO)).get(0));
+        // 同步向量数据库；租户取自落点身份，避免在这里再解析一次主体
+        VectorTarget target = vectorTargetResolver.resolve(kbDO);
+        vectorStoreService.updateChunk(target.tenantId(), collectionName, docId,
+                embedPersisted(List.of(chunkDO), target).get(0));
         bizChangeLogContext.put(chunkId, before, chunkMapper.selectById(chunkId));
     }
 
@@ -368,6 +370,8 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
 
         KnowledgeBaseDO kbDO = knowledgeBaseMapper.selectById(documentDO.getKbId());
         String collectionName = kbDO.getCollectionName();
+        // 租户取自落点身份（唯一产生地），两个分支共用；缺主体时 resolve 已经直接拒绝
+        String tenantId = vectorTargetResolver.resolve(kbDO).tenantId();
 
         if (enabled) {
             List<EmbeddedChunk> vectorChunks = embedPersisted(needUpdateChunks, vectorTargetResolver.resolve(kbDO));
@@ -379,7 +383,7 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
                                 .set(KnowledgeChunkDO::getEnabled, 1)
                                 .set(KnowledgeChunkDO::getUpdatedBy, UserContext.getUsername())
                 );
-                vectorStoreService.indexDocumentChunks(collectionName, docId, vectorChunks);
+                vectorStoreService.indexDocumentChunks(tenantId, collectionName, docId, vectorChunks);
             });
         } else {
             transactionOperations.executeWithoutResult(status -> {
@@ -389,7 +393,7 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
                                 .set(KnowledgeChunkDO::getEnabled, 0)
                                 .set(KnowledgeChunkDO::getUpdatedBy, UserContext.getUsername())
                 );
-                vectorStoreService.deleteChunksByIds(collectionName, needUpdateIds);
+                vectorStoreService.deleteChunksByIds(tenantId, collectionName, needUpdateIds);
             });
         }
 
@@ -456,17 +460,23 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
     private void syncChunkToVector(String collectionName, String docId, KnowledgeChunkDO chunkDO,
                                    VectorTarget target) {
         EmbeddedChunk chunk = embedPersisted(List.of(chunkDO), target).get(0);
-        vectorStoreService.indexDocumentChunks(collectionName, docId, List.of(chunk));
+        vectorStoreService.indexDocumentChunks(target.tenantId(), collectionName, docId, List.of(chunk));
 
-        log.debug("同步 Chunk 到向量库成功, collectionName={}, docId={}, chunkId={}", collectionName, docId, chunkDO.getId());
+        log.debug("同步 Chunk 到向量库成功, tenant={}, collectionName={}, docId={}, chunkId={}",
+                target.tenantId(), collectionName, docId, chunkDO.getId());
     }
 
     /**
      * 从向量库删除单个 chunk
+     *
+     * <p>租户取自当前执行主体：删除路径上知识库行还没有 V3 的 tenant 列，
+     * 而"按 chunkId 删除"在共享向量表上必须带租户条件，否则会删掉别人的行。
+     * 缺主体时 {@link PrincipalContext#require()} 直接抛错，不默认租户。
      */
     private void deleteChunkFromVector(String collectionName, String chunkId) {
-        vectorStoreService.deleteChunkById(collectionName, chunkId);
-        log.debug("从向量库删除 Chunk, collectionName={}, chunkId={}", collectionName, chunkId);
+        String tenantId = PrincipalContext.require().tenantId();
+        vectorStoreService.deleteChunkById(tenantId, collectionName, chunkId);
+        log.debug("从向量库删除 Chunk, tenant={}, collectionName={}, chunkId={}", tenantId, collectionName, chunkId);
     }
 
     /**

@@ -40,6 +40,7 @@ import com.nageoffer.ai.ragent.core.ingest.IngestionSpec;
 import com.nageoffer.ai.ragent.core.ingest.VectorTarget;
 import com.nageoffer.ai.ragent.core.ingest.sink.ChunkIndexWriter;
 import com.nageoffer.ai.ragent.core.parser.registry.ParserRegistry;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.framework.exception.ServiceException;
@@ -692,6 +693,9 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         // 提前查知识库，两个分支都需要，避免重复查询
         KnowledgeBaseDO kbDO = knowledgeBaseMapper.selectById(documentDO.getKbId());
         String collectionName = kbDO.getCollectionName();
+        // 租户只从可信执行主体取（知识库行上的 created_by 是展示审计，不是归属；
+        // KnowledgeBaseDO 的 tenantId 列要到 V3 才存在）。缺主体直接抛错，不默认租户。
+        String tenantId = PrincipalContext.require().tenantId();
 
         // 启用时：embed 耗时较长，在事务外提前执行，避免长事务占用连接
         List<EmbeddedChunk> vectorChunks = Collections.emptyList();
@@ -712,9 +716,9 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
             knowledgeChunkService.updateEnabledByDocId(docId, String.valueOf(kbDO.getId()), enabled);
 
             if (!enabled) {
-                vectorStoreService.deleteDocumentVectors(collectionName, docId);
+                vectorStoreService.deleteDocumentVectors(tenantId, collectionName, docId);
             } else if (CollUtil.isNotEmpty(finalEmbeddedChunks)) {
-                vectorStoreService.indexDocumentChunks(collectionName, docId, finalEmbeddedChunks);
+                vectorStoreService.indexDocumentChunks(tenantId, collectionName, docId, finalEmbeddedChunks);
             }
         });
         bizChangeLogContext.put(docId, before, documentMapper.selectById(docId));

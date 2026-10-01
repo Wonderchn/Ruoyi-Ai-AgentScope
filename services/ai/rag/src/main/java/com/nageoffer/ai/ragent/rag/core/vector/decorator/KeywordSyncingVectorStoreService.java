@@ -44,32 +44,32 @@ public class KeywordSyncingVectorStoreService implements VectorStoreService {
     }
 
     @Override
-    public void indexDocumentChunks(String collectionName, String docId, List<EmbeddedChunk> chunks) {
-        delegate.indexDocumentChunks(collectionName, docId, chunks);
+    public void indexDocumentChunks(String tenantId, String collectionName, String docId, List<EmbeddedChunk> chunks) {
+        delegate.indexDocumentChunks(tenantId, collectionName, docId, chunks);
         syncKeyword(docId, () -> keywordIndexService.indexDocumentChunks(collectionName, docId, chunks));
     }
 
     @Override
-    public void updateChunk(String collectionName, String docId, EmbeddedChunk chunk) {
-        delegate.updateChunk(collectionName, docId, chunk);
+    public void updateChunk(String tenantId, String collectionName, String docId, EmbeddedChunk chunk) {
+        delegate.updateChunk(tenantId, collectionName, docId, chunk);
         syncKeyword(docId, () -> keywordIndexService.updateChunk(collectionName, docId, chunk));
     }
 
     @Override
-    public void deleteDocumentVectors(String collectionName, String docId) {
-        delegate.deleteDocumentVectors(collectionName, docId);
+    public void deleteDocumentVectors(String tenantId, String collectionName, String docId) {
+        delegate.deleteDocumentVectors(tenantId, collectionName, docId);
         syncKeyword(docId, () -> keywordIndexService.deleteDocumentIndex(collectionName, docId));
     }
 
     @Override
-    public void deleteChunkById(String collectionName, String chunkId) {
-        delegate.deleteChunkById(collectionName, chunkId);
+    public void deleteChunkById(String tenantId, String collectionName, String chunkId) {
+        delegate.deleteChunkById(tenantId, collectionName, chunkId);
         syncKeyword(chunkId, () -> keywordIndexService.deleteChunkById(collectionName, chunkId));
     }
 
     @Override
-    public void deleteChunksByIds(String collectionName, List<String> chunkIds) {
-        delegate.deleteChunksByIds(collectionName, chunkIds);
+    public void deleteChunksByIds(String tenantId, String collectionName, List<String> chunkIds) {
+        delegate.deleteChunksByIds(tenantId, collectionName, chunkIds);
         syncKeyword(null, () -> keywordIndexService.deleteChunksByIds(collectionName, chunkIds));
     }
 
