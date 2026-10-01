@@ -1184,6 +1184,52 @@ function Get-FactsMissingField($Facts) {
     }
     return $missing
 }
+function Start-RemotePortForward {
+    # 把远端的合成端口通过 ssh -L 转发到本机回环。
+    #
+    # 为什么用转发而不是把 JAR 直接指向远端 IP：
+    #  - 产品配置里所有端点都是 127.0.0.1（见 Start-ProductJar）。改成远端 IP 就要在
+    #    每个 URL/主机名参数上分别特判，配置面越改越大；
+    #  - 更关键的是"绝不连到已有业务库"这条约束：转发后本机回环上出现的端口一定是
+    #    本轮的 ssh 隧道，语义与本地模式完全一致；而直接指向远端 IP 会让
+    #    Invoke-SubstituteRefusalScan 失去意义——它扫的是回环。隧道让拒绝扫描继续有效。
+    #
+    # 隧道只让端点"在本机看起来一样"，不降低任何检查强度：合成 PG/Redis/S3
+    # 仍是本轮自己在远端创建的、带 owner label 的容器。
+    if (-not $script:RemoteMode) { return $true }
+    $forward = @()
+    foreach ($p in @($script:PgPort, $script:RedisPort, $script:S3Port)) {
+        $forward += @('-L', ('127.0.0.1:' + $p + ':127.0.0.1:' + $p))
+    }
+    $sshArgs = @('-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR', '-o', 'ExitOnForwardFailure=yes',
+        '-o', ('ConnectTimeout=' + $SshConnectTimeoutSeconds), '-N') + $forward
+    if ($SshKeyPath) { $sshArgs += @('-i', $SshKeyPath) }
+    $sshArgs += @($RemoteHost)
+    $stdout = Join-Path $script:RunWork 'ssh-port-forward.out'
+    $stderr = Join-Path $script:RunWork 'ssh-port-forward.err'
+    $p = Start-Process -FilePath $script:SshExe -ArgumentList $sshArgs -PassThru -NoNewWindow `
+        -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    $pidFile = Join-Path $script:RunWork 'ssh-port-forward.pid'
+    Set-Content -LiteralPath $pidFile -Value ([string]$p.Id) -Encoding UTF8
+    [void]$script:StartedProcesses.Add($p.Id)
+    # 等隧道真正可用：进程活着不等于端口已建立。
+    foreach ($port in @($script:PgPort, $script:RedisPort, $script:S3Port)) {
+        $ok = $false
+        for ($i = 0; $i -lt 40; $i++) {
+            if (Test-TcpEndpoint '127.0.0.1' $port 300) { $ok = $true; break }
+            Start-Sleep -Milliseconds 250
+        }
+        if (-not $ok) {
+            Add-Result 'ENV-port-forward' 'G0' 'FAIL' `
+                ("ssh tunnel did not open 127.0.0.1:{0} (see ssh-port-forward.err)" -f $port)
+            return $false
+        }
+    }
+    Add-Result 'ENV-port-forward' 'G0' 'PASS' `
+        ("ssh -L tunnels for PG/Redis/S3 ({0},{1},{2}); endpoints stay 127.0.0.1 so the substitute-refusal scan keeps its meaning" -f `
+            $script:PgPort, $script:RedisPort, $script:S3Port)
+    return $true
+}
 function Start-ProductJar([string]$Side, [string]$State, [int]$Port) {
     $jar = if ($Side -eq 'platform') {
         Join-Path $RepoRoot 'services\platform\ruoyi-admin\target\ruoyi-admin.jar'
@@ -1470,6 +1516,8 @@ function Invoke-BootAndCases {
     Start-SyntheticEnvironment
     $upRows = Get-ResultRow 'ENV-compose-up'
     if (@($upRows | Where-Object { $_.status -eq 'FAIL' }).Count -gt 0) { return }
+    # 合成服务在远端时，先把它们的端口转发到本机回环，再让两个 jar 按原有 127.0.0.1 配置连接。
+    if (-not (Start-RemotePortForward)) { return }
     Invoke-SyntheticDatabase
     if (-not (Test-ProbeAvailability)) { return }
 
@@ -1620,7 +1668,15 @@ try {
     Write-Step '清理：只停止本脚本自己启动的 PID / 只销毁带本轮 owner label 的容器'
     # 1) 自有 JVM：pid 文件 + PID 归属 + 命令行三重核对。
     $pidFiles = @(Get-ChildItem -LiteralPath $script:RunWork -Filter '*.pid' -File -ErrorAction SilentlyContinue)
-    foreach ($pidFile in $pidFiles) { Stop-OwnedProcess $pidFile.FullName 'java' ('owned JVM ' + $pidFile.Name) }
+    foreach ($pidFile in $pidFiles) {
+        # ssh 端口转发同样是本脚本启动、并按 PID 归属核对后才停止的自有进程；
+        # 命令行的判别模式不同（ssh 而非 java），因此按文件名分流。
+        if ($pidFile.Name -eq 'ssh-port-forward.pid') {
+            Stop-OwnedProcess $pidFile.FullName 'ssh' 'owned ssh port-forward'
+        } else {
+            Stop-OwnedProcess $pidFile.FullName 'java' ('owned JVM ' + $pidFile.Name)
+        }
+    }
     if ($pidFiles.Count -eq 0) {
         Add-Result 'CLEANUP-owned-processes' 'G0' 'PASS' 'no JVM was started by this run; nothing to stop'
     } else {
