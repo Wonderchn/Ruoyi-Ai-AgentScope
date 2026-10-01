@@ -22,6 +22,7 @@ import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.security.AuthorizedResourceScope;
 import com.nageoffer.ai.ragent.framework.security.AuthorizedRetrievalScopeResolver;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.util.Collection;
@@ -49,13 +50,56 @@ public class RetrievalScopeAuthorizer {
     private final AuthorizedRetrievalScopeResolver<AuthorizedRetrievalScope> resolver;
 
     /**
-     * @param authorizationService 本地资源授权服务（可为 {@code null}：尚未接线时一律拒绝）
-     * @param resolver             把资源作用域投影为检索作用域的解析器（可为 {@code null}）
+     * 依赖用 {@link ObjectProvider} 而不是直接注入：授权链的落地依赖
+     * {@code FactPort} / {@code SubjectMatchPort} 的实现，而那两个实现要等
+     * 注册表与 ACL 版本表落地（受 C6 门控）。在它们就绪之前，
+     * <b>缺席必须是一种合法装配状态</b>，结果是"没有授权"（denied），
+     * 而不是"应用起不来"。
+     *
+     * <p>这里曾经直接构造器注入 {@code ResourceAuthorizationService}：
+     * 由于 {@code DefaultResourceAuthorizationService} 没有（也不该有）bean 定义，
+     * AI 应用启动即失败：{@code Parameter 0 of constructor in
+     * RetrievalScopeAuthorizer required a bean of type ResourceAuthorizationService}。
+     * 把"授权尚未接线"做成"应用不可用"是错的——未接线时正确行为是拒绝检索，
+     * 不是拒绝启动。
+     *
+     * @param authorizationService 本地资源授权服务；缺席时为 {@code null}（一律拒绝）
+     * @param resolver             资源作用域 → 检索作用域的投影；缺席时为 {@code null}（一律拒绝）
      */
-    public RetrievalScopeAuthorizer(ResourceAuthorizationService authorizationService,
-                                    AuthorizedRetrievalScopeResolver<AuthorizedRetrievalScope> resolver) {
-        this.authorizationService = authorizationService;
-        this.resolver = resolver;
+    public RetrievalScopeAuthorizer(ObjectProvider<ResourceAuthorizationService> authorizationService,
+                                    ObjectProvider<AuthorizedRetrievalScopeResolver<AuthorizedRetrievalScope>> resolver) {
+        this.authorizationService = authorizationService == null ? null : authorizationService.getIfAvailable();
+        this.resolver = resolver == null ? null : resolver.getIfAvailable();
+    }
+
+    /** 便于测试与诊断：显式实例版本。 */
+    public static RetrievalScopeAuthorizer of(ResourceAuthorizationService service,
+                                              AuthorizedRetrievalScopeResolver<AuthorizedRetrievalScope> resolver) {
+        return new RetrievalScopeAuthorizer(constantProvider(service), constantProvider(resolver));
+    }
+
+    private static <T> ObjectProvider<T> constantProvider(T value) {
+        return new ObjectProvider<>() {
+            @Override
+            public T getObject(Object... args) {
+                return value;
+            }
+
+            @Override
+            public T getIfAvailable() {
+                return value;
+            }
+
+            @Override
+            public T getIfUnique() {
+                return value;
+            }
+
+            @Override
+            public T getObject() {
+                return value;
+            }
+        };
     }
 
     /** 解析当前线程主体的检索作用域。 */
