@@ -2174,19 +2174,25 @@ try {
                 (Join-Path $script:Evidence ('jvm-logs\' + $side + '\' + $stream + '.log'))
         }
     }
-    # 2b) 远端自有 compose 目录：只删本轮自己建的路径，路径由 run tag 派生且已核对前缀。
+    # 2b) 远端自有 compose 目录：**必须排在 compose down 之后**，见下方第 3 步的说明。
+    #     这里只记下"待删路径"，真正删除延后执行。
+    $remoteDirToRemove = ''
     if ($script:RemoteMode -and $script:RemoteComposeDir) {
         if ($script:RemoteComposeDir -match '^/opt/p1-acceptance/[a-z0-9-]+$') {
-            $rm = Invoke-RemoteShell ('rm -rf ' + (Format-ShellArg $script:RemoteComposeDir)) 'compose-remote-cleanup.log'
-            [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-remote-compose-dir'; target = $script:RemoteComposeDir
-                    action = 'rm -rf'; result = $(if ($rm.ExitCode -eq 0) { 'REMOVED' } else { 'FAILED' })
-                    detail = ("exit=" + $rm.ExitCode + " (only this run's own tag-derived directory)") })
+            $remoteDirToRemove = $script:RemoteComposeDir
         } else {
             Add-Result 'CLEANUP-remote-compose-dir' 'G0' 'FAIL' `
                 ("refusing to remove unexpected remote path: " + $script:RemoteComposeDir)
         }
     }
     # 3) 自有容器：只按本轮 project/label 销毁。Unit 模式不起容器，不产生容器清理结论（只记 cleanup.json）。
+    #
+    # 顺序很关键：`compose down` 需要 **--file 指向的那个文件还在**。
+    # 曾经在第 2b 步就把远端 compose 目录删掉，于是 down 报
+    # "stat /opt/p1-acceptance/<tag>/docker-compose.yml: no such file or directory"、
+    # 退出码 14，本轮自有的 3 个容器与卷**全部残留**——
+    # 而 detail 只说 "down exit=14"，看起来像 docker 的问题。
+    # 这与"先停被测 jar 再跑用例"是同一类错误：**先销毁了后一步要用的东西**。
     if ($Mode -ne 'Integration') {
         [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-owned-containers'; target = 'none'
                 action = 'noop'; result = 'NOT_APPLICABLE'; detail = 'Unit mode starts no container and no database' })
@@ -2200,6 +2206,13 @@ try {
         Write-Output '  CLEANUP-owned-containers 已在闸门关闭时记为 NOT_RUN（本轮未创建容器）。'
     } else {
         Add-GatedResult 'CLEANUP-owned-containers' 'G0' 'destroy runner-owned synthetic containers/volumes by owner label'
+    }
+    # 3b) 现在才删远端自有 compose 目录：容器已 down，文件不再被需要。
+    if ($remoteDirToRemove) {
+        $rm = Invoke-RemoteShell ('rm -rf ' + (Format-ShellArg $remoteDirToRemove)) 'compose-remote-cleanup.log'
+        [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-remote-compose-dir'; target = $remoteDirToRemove
+                action = 'rm -rf'; result = $(if ($rm.ExitCode -eq 0) { 'REMOVED' } else { 'FAILED' })
+                detail = ("exit=" + $rm.ExitCode + " (only this run's own tag-derived directory; removed after compose down)") })
     }
     # 4) 随机口令：从进程环境清除；证据里只留 key 名。
     foreach ($name in @('PGPASSWORD', 'P1B_PG_SUPERUSER_PASSWORD', 'P1B_REDIS_PASSWORD', 'P1B_S3_ACCESS_KEY', 'P1B_S3_SECRET_KEY',
