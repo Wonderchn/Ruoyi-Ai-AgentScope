@@ -194,7 +194,15 @@ public class MilvusVectorRetrieverService implements VectorRetrieverService {
 
         return results.get(0).stream()
                 .map(r -> RetrievedChunk.builder()
-                        .id(Objects.toString(r.getEntity().get("id"), ""))
+                        // 业务身份取 chunk_id（逻辑块 ID），**不**取 id：
+                        // id 现在是租户作用域物理主键 tenantId + ":" + chunkId，
+                        // 直接当成 chunkId 返回会让下游所有按块 ID 的关联失效。
+                        // 兼容读取：老数据只有 id 且没有 chunk_id 时退回 id，避免升级期读空。
+                        .id(Objects.toString(
+                                r.getEntity().get("chunk_id") != null
+                                        ? r.getEntity().get("chunk_id")
+                                        : r.getEntity().get("id"),
+                                ""))
                         .text(Objects.toString(r.getEntity().get("content"), ""))
                         .collectionName(Objects.toString(r.getEntity().get("collection_name"), null))
                         .score(r.getScore())

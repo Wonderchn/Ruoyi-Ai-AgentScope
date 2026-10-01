@@ -62,10 +62,24 @@ public class MilvusVectorStoreAdmin implements VectorStoreAdmin {
                 CreateCollectionReq.FieldSchema.builder()
                         .name("id")
                         .dataType(DataType.VarChar)
-                        // chunkId 为雪花主键（最长 19 位），与 PG t_knowledge_vector.id VARCHAR(20) 对齐
-                        .maxLength(20)
+                        // P1.3b：主键不再等于裸 chunkId，而是**租户作用域物理主键**
+                        // tenantId + ":" + chunkId（见 MilvusVectorStoreService.physicalKey）。
+                        // Milvus 只允许单字段主键，所以"跨租户同 chunkId 不互相覆盖"这个不变量
+                        // 只能由主键自身承载。长度按 tenantId ≤64 + ':' + chunkId ≤20 取 128。
+                        .maxLength(128)
                         .isPrimaryKey(true)
                         .autoID(false)
+                        .build()
+        );
+
+        // 逻辑块 ID 单独存：读回时业务身份来自这个字段，而不是带租户前缀的物理主键。
+        // 它同时是"物理主键可换、逻辑身份不变"这条约定的落点——
+        // 没有它，检索结果里的 id 会变成 tenant:chunk 这种合成值，下游按 chunkId 的关联全部失效。
+        fieldSchemaList.add(
+                CreateCollectionReq.FieldSchema.builder()
+                        .name("chunk_id")
+                        .dataType(DataType.VarChar)
+                        .maxLength(20)
                         .build()
         );
 
@@ -144,6 +158,14 @@ public class MilvusVectorStoreAdmin implements VectorStoreAdmin {
                 .indexName("tenant_id")
                 .build();
 
+        // chunk_id 与 tenant_id 一起出现在"按租户 + 逻辑块"的过滤里，同样需要倒排索引；
+        // 少了它，从逻辑块 ID 反查物理行会退化成全量标量扫描。
+        IndexParam chunkIdIndex = IndexParam.builder()
+                .fieldName("chunk_id")
+                .indexType(IndexParam.IndexType.INVERTED)
+                .indexName("chunk_id")
+                .build();
+
         CreateCollectionReq createReq = CreateCollectionReq.builder()
                 .collectionName(sharedCollection)
                 .collectionSchema(collectionSchema)
@@ -151,7 +173,7 @@ public class MilvusVectorStoreAdmin implements VectorStoreAdmin {
                 .vectorFieldName("embedding")
                 .metricType(ragDefaultProperties.getMetricType())
                 .consistencyLevel(ConsistencyLevel.BOUNDED)
-                .indexParams(List.of(hnswIndex, collectionNameIndex, tenantIdIndex))
+                .indexParams(List.of(hnswIndex, collectionNameIndex, tenantIdIndex, chunkIdIndex))
                 .description("RAG 共享向量存储")
                 .build();
 

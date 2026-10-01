@@ -84,7 +84,11 @@ public class MilvusVectorStoreService implements VectorStoreService {
             JsonObject metadata = buildMetadata(docId, chunk);
 
             JsonObject row = new JsonObject();
-            row.addProperty("id", chunk.chunkId());
+            // 物理主键带租户前缀：Milvus 只支持单字段主键，无法像 PG 那样建 (tenant_id, id) 复合唯一键，
+            // 于是"跨租户同 chunkId 互相覆盖"只能靠主键本身承载租户来消除。
+            row.addProperty("id", physicalKey(tenantId, chunk.chunkId()));
+            // 逻辑块 ID 单独存：读回时业务身份来自这里，而不是物理主键。
+            row.addProperty("chunk_id", chunk.chunkId());
             // tenant_id 与 id / collection_name 并列的顶层标量字段：共享物理 collection 下它就是授权边界，
             // 缺了它检索侧的租户过滤永远不会命中，写入本身也就没有归属可言
             row.addProperty("tenant_id", tenantId);
@@ -114,7 +118,7 @@ public class MilvusVectorStoreService implements VectorStoreService {
         final int dim = ragDefaultProperties.getDimension();
         float[] vector = extractVector(chunk, dim);
 
-        String chunkPk = chunk.chunkId();
+        String chunkPk = physicalKey(tenantId, chunk.chunkId());
 
         String content = chunk.content() == null ? "" : chunk.content();
         if (content.length() > 65535) {
@@ -125,6 +129,8 @@ public class MilvusVectorStoreService implements VectorStoreService {
 
         JsonObject row = new JsonObject();
         row.addProperty("id", chunkPk);
+        // chunk_id 保存**逻辑**块 ID：物理主键已带租户前缀，读回时只有这个字段能还原业务身份。
+        row.addProperty("chunk_id", chunk.chunkId());
         // 与 insert 同口径：tenant_id 是顶层标量字段，upsert 覆盖的是"本租户的这一行"
         row.addProperty("tenant_id", tenantId);
         row.addProperty("collection_name", collectionName);
@@ -165,9 +171,9 @@ public class MilvusVectorStoreService implements VectorStoreService {
     @Override
     public void deleteChunkById(String tenantId, String collectionName, String chunkId) {
         VectorStoreService.requireTenant(tenantId);
-        // id 全局唯一只说明"能定位到这一行"，不说明"有权删这一行"：id 唯一性是主键的属性，不是授权依据。
-        // 共享物理 collection 下不带租户条件就按 id 删除，删掉的是任意租户的同 id 行。
-        String filter = tenantClause(tenantId) + " and id == \"" + escape(chunkId) + "\"";
+        // 删的是本租户的**物理主键**（见 physicalKey）。仍保留租户条件作为第二道边界：
+        // 主键带租户前缀使跨租户覆盖不可能，租户条件使跨租户删除不可能——两者都不依赖调用方自律。
+        String filter = tenantClause(tenantId) + " and id == \"" + escape(physicalKey(tenantId, chunkId)) + "\"";
 
         DeleteReq deleteReq = DeleteReq.builder()
                 .collectionName(sharedCollection())
@@ -186,6 +192,7 @@ public class MilvusVectorStoreService implements VectorStoreService {
             return;
         }
         String idList = chunkIds.stream()
+                .map(id -> physicalKey(tenantId, id))
                 .map(MilvusVectorStoreService::escape)
                 .map(value -> "\"" + value + "\"")
                 .collect(java.util.stream.Collectors.joining(", "));
@@ -211,6 +218,27 @@ public class MilvusVectorStoreService implements VectorStoreService {
      */
     static String tenantClause(String tenantId) {
         return "tenant_id == \"" + escape(tenantId) + "\"";
+    }
+
+    /**
+     * 租户作用域的物理主键。
+     *
+     * <p><b>为什么需要它。</b>PG 侧用复合唯一键 {@code (tenant_id, id)} 消除"跨租户同 chunkId
+     * 互相覆盖"，但 <b>Milvus 的主键只能是单一字段</b>，同样的修法在这里不成立。
+     * 于是这个不变量只能由主键自身承载：把租户编进主键，两个租户的同一个 chunkId
+     * 就落在两行上，upsert 不再互相覆盖。
+     *
+     * <p><b>为什么是 {@code tenantId + ":" + chunkId} 而不是哈希。</b>
+     * 这个函数是确定性的、可逆读的，运维排查时能从主键直接看出归属；
+     * 哈希会牺牲可读性却换不来额外保证（chunkId 本身已是雪花 ID，不需要再压缩长度）。
+     * 分隔符用 {@code ":"}：租户 ID 契约本身就禁止冒号（{@code ExecutionPrincipal.requireTenantId}），
+     * 因此这个拼接不会有歧义。
+     *
+     * <p><b>读回。</b>业务身份不从这个主键反推，而由同行的 {@code chunk_id} 标量字段给出，
+     * 见 {@code MilvusVectorRetrieverService}。
+     */
+    static String physicalKey(String tenantId, String chunkId) {
+        return tenantId + ":" + (chunkId == null ? "" : chunkId);
     }
 
     /**
