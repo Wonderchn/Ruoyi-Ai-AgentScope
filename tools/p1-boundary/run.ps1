@@ -1531,10 +1531,20 @@ public final class P1HashGen {
     [IO.File]::WriteAllText($src, $program, (New-Object Text.UTF8Encoding($false)))
     $cp = ($cryptoJar + ';' + $coreJar)
     $r = Invoke-NativeCapture (Join-Path $script:JdkHome 'bin\java.exe') @('-cp', $cp, $src, $PlainPassword)
+    # 形状诊断：$r.Output 究竟是"行数组"还是被逐字符拆开的字符串。
+    # 上一版只记 exit code，于是哈希长度变成 2 时看不出原因——
+    # 两字符恰好是 `$2`，即**取到了单个字符**而不是整行。
+    $outItems = @($r.Output)
+    $outShape = ("items={0} firstType={1} firstLen={2}" -f `
+            $outItems.Count, $(if ($outItems.Count -gt 0) { $outItems[0].GetType().Name } else { 'none' }),
+        $(if ($outItems.Count -gt 0) { ([string]$outItems[0]).Length } else { -1 }))
     $hash = (@($r.Output) | Where-Object { $_ -match '^\$2[aby]\$' } | Select-Object -First 1)
-    if ($r.ExitCode -ne 0 -or -not $hash) {
+    # 长度下限是**必须**的：正则只锚定前缀，单个字符 `$2` 也会被 -match 命中，
+    # 于是"匹配到了"并不代表"拿到了一整个哈希"。
+    if ($r.ExitCode -ne 0 -or -not $hash -or ([string]$hash).Length -lt 50) {
         Add-Probe 'ENV-bcrypt-hash' 'cn.hutool.crypto.digest.BCrypt' 'failed' `
-            ("exit={0} firstError='{1}'" -f $r.ExitCode, (@($r.Output) | Select-Object -First 1))
+            ("exit={0} {1} capturedLen={2} firstError='{3}'" -f $r.ExitCode, $outShape,
+            $(if ($hash) { ([string]$hash).Length } else { 0 }), (@($r.Output) | Select-Object -First 1))
         return ''
     }
     Add-Probe 'ENV-bcrypt-hash' 'cn.hutool.crypto.digest.BCrypt' 'usable' `
