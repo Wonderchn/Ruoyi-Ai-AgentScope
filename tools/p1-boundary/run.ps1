@@ -1214,19 +1214,34 @@ function Invoke-SyntheticSql([string]$Sql, [string]$Database, [string]$User, [st
     # 三个通道的上限决定了只能这么做：命令行约 32KB（平台基线 60KB）、
     # 环境变量单值约 32KB（V2 种子 149KB）、只有 stdin 没有这两个上限。
     # 顺带的好处是中文与单引号完全不经过任何 shell 解析。
-    # 口令仍然只经 -e NAME 从本进程环境映射进容器，不进命令行、不落盘。
-    $payload = Join-Path $script:RunWork (($LogName -replace '[^\w.-]', '_') + '.sql')
-    [IO.File]::WriteAllBytes($payload, [Text.Encoding]::UTF8.GetBytes($Sql))
-    $inner = 'test -n "$PGPASSWORD" || { echo NO_PGPASSWORD_IN_CONTAINER; exit 96; }; '
-    $inner += 'psql -U ' + (Format-ShellArg $User) + ' -d ' + (Format-ShellArg $Database) + ' -X -q -tA -v ON_ERROR_STOP=1 -f -'
-    # -e PGPASSWORD 不带值：把值从**本进程环境**映射进容器，命令行只看得到变量名。
-    $env:PGPASSWORD = $script:Secrets[$PasswordKey]
+    #
+    # 口令**不**用 docker exec -e PGPASSWORD 传递：实测 `docker exec -e NAME`（不带 =值）
+    # 并不继承客户端环境，而是把容器内该变量设为**空串**，于是自证恒真、psql 却拿不到口令。
+    # 也不把口令拼进命令行：那样它会出现在远端进程表与任何错误信息里。
+    #
+    # 采用容器内临时 .pgpass：口令由本机经 ssh 的 stdin 写进容器内文件，
+    # 再用 PGPASSFILE 指过去。口令因此不出现在本机命令行、远端命令行、ssh 命令行、
+    # 任何日志或证据里；文件权限 0600，用完即删。
+    $pgpassLine = '127.0.0.1:5432:*:' + $User + ':' + $script:Secrets[$PasswordKey]
+    $tmpName = '/tmp/p1b-pgpass-' + ([guid]::NewGuid().ToString('N').Substring(0, 12))
+    $passPayload = Join-Path $script:RunWork (($LogName -replace '[^\w.-]', '_') + '.pgpass')
+    [IO.File]::WriteAllBytes($passPayload, [Text.Encoding]::UTF8.GetBytes($pgpassLine + "`n"))
+    $sqlPayload = Join-Path $script:RunWork (($LogName -replace '[^\w.-]', '_') + '.sql')
+    [IO.File]::WriteAllBytes($sqlPayload, [Text.Encoding]::UTF8.GetBytes($Sql))
+    $inner = 'PGPASSFILE=' + (Format-ShellArg $tmpName) + ' psql -h 127.0.0.1 -p 5432'
+    $inner += ' -U ' + (Format-ShellArg $User) + ' -d ' + (Format-ShellArg $Database)
+    $inner += ' -X -q -tA -v ON_ERROR_STOP=1 -f -; rc=$?; rm -f ' + (Format-ShellArg $tmpName) + '; exit $rc'
     try {
-        $remote = 'docker exec -i -e PGPASSWORD ' + (Format-ShellArg $script:PgContainer) + ' sh -c ' + (Format-ShellArg $inner)
-        $r = Invoke-RemoteShellStdin $remote $payload $LogName
+        # 口令文件先单独送进容器，SQL 再单独送一次；两次都走纯 stdin，没有长度上限。
+        $passCmd = 'docker exec -i ' + (Format-ShellArg $script:PgContainer) + ' sh -c ' +
+            (Format-ShellArg ('umask 077; cat > ' + $tmpName))
+        $p1 = Invoke-RemoteShellStdin $passCmd $passPayload ($LogName + '.stage')
+        if ($p1.ExitCode -ne 0) { throw ("cannot stage pgpass inside the container (exit={0})" -f $p1.ExitCode) }
+        $remote = 'docker exec -i ' + (Format-ShellArg $script:PgContainer) + ' sh -c ' + (Format-ShellArg $inner)
+        $r = Invoke-RemoteShellStdin $remote $sqlPayload $LogName
     } finally {
-        Remove-Item Env:\PGPASSWORD -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $payload -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $passPayload -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $sqlPayload -Force -ErrorAction SilentlyContinue
     }
     if ($r.ExitCode -ne 0) { throw ("synthetic SQL failed (exit={0}), see {1}" -f $r.ExitCode, $LogName) }
     return (($r.Output -join "`r`n").Trim())
