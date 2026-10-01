@@ -1439,6 +1439,16 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA ai GRANT ALL ON SEQUENCES TO ai_app;
     }
     $fixtureSql = @'
 -- synthetic fixtures only: two tenants, one same-named user per tenant; password hash injected by the runner.
+--
+-- 租户行必须先存在：AuthController.login 在解析客户端之后调用
+-- SysLoginService.checkTenant(tenantId)，而它对非默认租户会
+-- tenantService.queryByTenantId(tenantId)，查不到就抛 TenantException("tenant.not.exists")。
+-- V2 只种了**一个**默认租户（'000000'），所以 p1t1/p1t2 若不显式建行，
+-- 登录必然以"请求处理失败"告终——一个与口令、客户端都无关的失败。
+INSERT INTO platform.sys_tenant (id, tenant_id, contact_user_name, contact_phone, company_name, package_id, account_count, status, del_flag)
+VALUES (900000000000000011, 'p1t1', 'p1b-admin-t1', '13900000001', 'p1 synthetic tenant 1', NULL, -1, '0', '0'),
+       (900000000000000012, 'p1t2', 'p1b-admin-t2', '13900000002', 'p1 synthetic tenant 2', NULL, -1, '0', '0');
+
 -- user_id 必须显式给出：该列是 bigint NOT NULL 且**没有默认值**（不是自增/序列），
 -- 省略它会直接违反非空约束。两个租户用不同的 user_id 是刻意的：
 -- 同名用户在不同租户下是两条不同的行，这正是 P1 要验证的"同名不串号"。
