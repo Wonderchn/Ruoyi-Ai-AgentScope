@@ -93,6 +93,7 @@ $script:AiBase = ''
 $script:IllegalBootResults = @()
 $script:ComposeProject = ''
 $script:ComposePath = ''
+$script:ComposePathForHost = ''
 $script:PgContainer = ''
 $script:RedisContainer = ''
 $script:S3Container = ''
@@ -1016,7 +1017,10 @@ function Invoke-OwnedCompose([string[]]$Arguments, [string]$LogName) {
         throw ('Invoke-OwnedCompose called before the compose file exists (project={0}); ' -f $script:ComposeProject) +
             'the run must prepare its own synthetic environment identity first'
     }
-    $full = @('compose', '--project-name', $script:ComposeProject, '--file', $script:ComposePath) + $Arguments
+    # 给 compose 的 --file 用"执行机上可读"的那个路径；本机归档路径另存，
+    # 否则远端模式下会把本机路径交给远端（stat 失败），或反过来。
+    $fileForHost = if ($script:ComposePathForHost) { $script:ComposePathForHost } else { $script:ComposePath }
+    $full = @('compose', '--project-name', $script:ComposeProject, '--file', $fileForHost) + $Arguments
     return Invoke-RuntimeCapture $full $LogName
 }
 function Test-P04ContainerIsolation {
@@ -1070,7 +1074,11 @@ function Publish-ComposeFileToHost {
     $cmd = 'printf %s ' + (Format-ShellArg $b64) + ' | base64 -d > ' + (Format-ShellArg $remoteFile)
     $put = Invoke-RemoteShell $cmd 'compose-remote-publish.log'
     if ($put.ExitCode -ne 0) { throw ('cannot publish compose file to ' + $remoteFile) }
-    $script:ComposePath = $remoteFile
+    # 只改"给执行机用的路径"，保留本机归档路径：
+    # 覆盖 ComposePath 会让 --file 永远是远端路径，于是清理阶段的 compose down
+    # 在远端找不到文件（stat ... no such file or directory），本轮自有容器
+    # 就永远删不掉——清理失败比创建失败更严重，因为它会污染后续每一轮。
+    $script:ComposePathForHost = $remoteFile
 
     # 变量插值发生在**执行 compose 的那台机器**上。合成口令只存在于本进程环境里，
     # 远端 shell 看不到它们，于是 compose 把 ${P1B_...} 当未定义变量：
@@ -1105,9 +1113,14 @@ function Start-SyntheticEnvironment {
     $up = Invoke-OwnedCompose @('up', '--detach', '--wait') 'compose-up.log'
     if ($up.ExitCode -ne 0) { Add-Result 'ENV-compose-up' 'G0' 'FAIL' ("compose up exit={0}; see compose-up.log" -f $up.ExitCode); return }
     foreach ($container in @($script:PgContainer, $script:RedisContainer, $script:S3Container)) { [void]$script:OwnedContainers.Add($container) }
+    # 只按 owner label 数一遍本轮自有容器。**不要**在 --format 里用 {{.Label "x"}}：
+    # 该模板含双引号，经 ssh 参数向量传递时引号被吃掉，docker 收到
+    # `{{.Label p1.boundary.role}}` 并报 'function "p1" not defined'——
+    # 于是一个"标签其实完全正确"的环境被判成 0 个自有容器（实测容器标签无误）。
+    # 单字段模板不含引号，可以安全传递。
     $label = Invoke-RuntimeCapture @('ps', '--all', '--filter', ('label=p1.boundary.owner=' + $RunTag),
-        '--format', '{{.Names}}|{{.Label "p1.boundary.role"}}|{{.Status}}') 'compose-owned-label-inventory.log'
-    $ownedRows = @($label.Output | Where-Object { $_ -match '\|' })
+        '--format', '{{.Names}}') 'compose-owned-label-inventory.log'
+    $ownedRows = @($label.Output | Where-Object { $_.Trim() })
     Assert-That 'ENV-compose-up' 'G0' ($label.ExitCode -eq 0 -and $ownedRows.Count -eq 3) `
         ("up exit=0; containersWithOwnLabel={0} [{1}]" -f $ownedRows.Count, ($ownedRows -join '; '))
 }
