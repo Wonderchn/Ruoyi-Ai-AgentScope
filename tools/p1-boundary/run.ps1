@@ -1829,10 +1829,32 @@ function Invoke-HttpCases {
         }
         $factsOk = ($null -ne $script:Facts -and @(Get-FactsMissingField $script:Facts).Count -eq 0)
 
-        # B02：默认无 p04 属性 + 显式 p04=false 的启动事实（BOOT 阶段保证），未注册 health 路径必须 404。
+        # B02：未注册的 health 路径必须**不可达**。
+        #
+        # 判据不能只看 HTTP 状态码：AI 侧对未映射路径走全局异常处理，
+        # 返回的是 HTTP 200 + 业务错误码（实测 /api/ragent/actuator/health 得到
+        # 200 / {"code":"A000001",...}），这是**产品既有的错误响应口径**，不是"路径存在"。
+        # 按状态码断言会把"路径确实没注册"判成 FAIL，而按状态码放宽又会放过真正注册的端点。
+        # 因此改为三条同时成立：
+        #   1) 实测路由清单里没有该路径（facts 提供，最直接）；
+        #   2) 响应体不是健康载荷（没有 status/UP 之类）；
+        #   3) 状态码是 404，或响应体带业务错误码（即"被异常处理兜住"）。
         foreach ($probe in @(@{ m = 'GET'; p = '/actuator/health' }, @{ m = 'GET'; p = '/p04/health' }, @{ m = 'POST'; p = '/p04/control/reset' })) {
             $r = Send-Json $client $probe.m ($script:AiBase + $probe.p) @{} '{}'
-            Assert-That ('B02-unregistered-' + $probe.p) 'B' ($r.Status -eq 404) ("{0} {1} status={2}" -f $probe.m, $probe.p, $r.Status)
+            $inInventory = if ($factsOk) {
+                @($script:Facts.routes | Where-Object { $_ -ceq $probe.p }).Count -gt 0
+            } else {
+                # facts 不可用时**不能**把"没查"当成"不在清单里"——那正是静默放宽。
+                # 此时退回纯响应判据，并在 detail 里点明清单未参与判定。
+                $null
+            }
+            $looksHealthy = ($r.Body -match '"status"\s*:\s*"(UP|DOWN|OUT_OF_SERVICE)"')
+            $gatedOr404 = ($r.Status -eq 404) -or ($r.Body -match '"code"\s*:\s*"A\d+"')
+            $notInInventory = ($null -eq $inInventory) -or (-not $inInventory)
+            Assert-That ('B02-unregistered-' + $probe.p) 'B' ($notInInventory -and (-not $looksHealthy) -and $gatedOr404) `
+                ("{0} {1} status={2} inRouteInventory={3} (factsOk={4}) healthPayload={5} gatedOr404={6}" -f `
+                    $probe.m, $probe.p, $r.Status, $(if ($null -eq $inInventory) { 'notChecked' } else { $inInventory }),
+                    $factsOk, $looksHealthy, $gatedOr404)
         }
         if ($factsOk) {
             $experimental = @($script:Facts.routes | Where-Object { $_ -match '^/(p04/|internal/ai/v1/|api/ai/v1/)' })
