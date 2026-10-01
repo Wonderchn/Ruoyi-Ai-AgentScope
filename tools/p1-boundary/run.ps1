@@ -71,7 +71,11 @@ $script:Surefire = New-Object System.Collections.ArrayList
 $script:Cleanup = New-Object System.Collections.ArrayList
 $script:HttpLog = New-Object System.Collections.ArrayList
 $script:GatedNotRun = New-Object System.Collections.ArrayList
-$script:StartedProcesses = @()
+# 必须用可增长集合：@() 是固定大小数组，对它有 .Add() 会抛
+# "Collection was of a fixed size."（本文件其它地方用 += 重建数组所以看不出问题）。
+# 这个集合决定"哪些 PID 是本轮启动的"，而清理正是靠它拒绝停别人的进程——
+# 它一旦在运行中抛异常，本轮启动的 ssh 隧道就无人认领、无法停止。
+$script:StartedProcesses = New-Object System.Collections.ArrayList
 $script:OwnedContainers = New-Object System.Collections.ArrayList
 $script:ExecutionId = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
 $script:RunStartedUtc = (Get-Date).ToUniversalTime()
