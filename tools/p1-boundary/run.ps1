@@ -1055,8 +1055,19 @@ function Assert-IntegrationInventory {
 # =========================== Integration：合成环境（全部在闸门之后） ===========================
 function Initialize-SyntheticSecrets {
     foreach ($name in @('pgSuperuser', 'platformMigrate', 'platformApp', 'aiMigrate', 'aiApp', 'redis', 's3Access', 's3Secret',
-            'platformJwt', 'aiServiceCredential', 'aiDelegationSigning', 'fixtureUser')) {
+            'platformJwt', 'aiServiceCredential', 'aiDelegationSigning')) {
         $script:Secrets[$name] = New-RandomSecret 24
+    }
+    # fixture 用户口令必须满足**平台自己的登录校验**：
+    # PasswordLoginBody 上是 @Length(min = 5, max = 30)，
+    # 而 New-RandomSecret 24 生成 24 字节 base64 → **32 个字符**，超过上限 30。
+    # 于是登录在 PasswordAuthStrategy 的第二次校验被拒，
+    # 返回的却只是通用文案 "请求参数校验失败"，与"字段缺失"无法区分。
+    # 改用 18 字节（≈24 字符）留出余量，并在此处显式校验长度落区间内。
+    $script:Secrets['fixtureUser'] = New-RandomSecret 18
+    $fixtureLen = ([string]$script:Secrets['fixtureUser']).Length
+    if ($fixtureLen -lt 5 -or $fixtureLen -gt 30) {
+        throw ("fixture user password length {0} is outside the platform's accepted 5..30 range" -f $fixtureLen)
     }
     # 真实 provider key 一律覆盖为随机值：即使发生意外外呼，也只会用合成 key 失败。
     foreach ($var in $script:ProviderKeyOverrides) { Set-Item -Path ('env:' + $var) -Value (New-RandomSecret 18) }
