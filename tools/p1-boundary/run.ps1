@@ -1294,6 +1294,12 @@ GRANT CREATE ON DATABASE ragent_p1b TO platform_migrate, ai_migrate;
     $roleSql = $roleSql.Replace('__P1__', $script:Secrets['platformMigrate']).Replace('__P2__', $script:Secrets['platformApp'])
     $roleSql = $roleSql.Replace('__P3__', $script:Secrets['aiMigrate']).Replace('__P4__', $script:Secrets['aiApp'])
     [void](Invoke-SyntheticSql $roleSql 'ragent_p1b' 'postgres' 'pgSuperuser' 'db-roles.log')
+    # vector 扩展由**超级用户**安装：AI 基线里直接写 vector(1536)，
+    # 而 CREATE EXTENSION 需要超级权限，migrate 账号做不到——
+    # 迁移文件自己的注释也写明了这一点（"实跑 CREATE EXTENSION vector 需要超级账号，
+    # 故 bootstrap 步骤"）。装到 extensions schema，再由 search_path 覆盖到。
+    [void](Invoke-SyntheticSql 'CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions;' 'ragent_p1b' `
+            'postgres' 'pgSuperuser' 'db-extension-vector.log')
     # 迁移用 migrate 账号，逐字执行仓库内迁移原字节（不重写、不改序）。
     #
     # 路径必须指向**仓库里真实存在**的迁移目录。此前写的是 ruoyi-admin / bootstrap 下的
