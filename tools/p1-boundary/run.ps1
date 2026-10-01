@@ -58,6 +58,9 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 # =========================== 脚本状态 ===========================
 $script:JdkHome = 'D:\develop\java\jdk-17.0.18.8-hotspot'
 $script:MavenExe = 'D:\develop\apache-maven-3.9.1\bin\mvn.cmd'
+# 本机 Maven 本地仓库。**不是** ~/.m2：本机把 localRepository 改到了这里，
+# 从 ~/.m2 找依赖会一无所获，而"找不到 jar"很容易被误读成"依赖没下载"。
+$script:MavenRepo = 'D:\develop\maven_repository'
 $script:SpecPaths = @(
     'D:\AI-project\mydocs\p1\01-p1-first-unit-spec.md',
     'D:\AI-project\mydocs\p1\00-p1-plan.md'
@@ -1416,6 +1419,18 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA ai GRANT ALL ON SEQUENCES TO ai_app;
     Assert-That 'ENV-db-accounts' 'G0' ($applied.Count -gt 0) `
         ("migrate/app accounts + platform/ai/extensions schemas ready; migrations applied byte-identical from repo: [{0}]" -f `
             (@($applied | ForEach-Object { $_.schema + '/' + $_.file }) -join ','))
+    # 口令列必须存**真实 BCrypt 哈希**，不能存明文。
+    #
+    # 此前这里直接替换成随机口令明文，于是 `BCrypt.checkpw(明文, 该列)` 永远失败——
+    # 表现为登录返回参数校验/认证失败，而两行 sys_user 明明存在，
+    # 看起来像"用户建好了却登不上"。平台写入口令走的是
+    # `cn.hutool.crypto.digest.BCrypt.hashpw`（见 SysUserController），
+    # 因此这里用**同一个库、同一个算法**生成，保证口径一致。
+    $fixtureHash = New-BCryptHash $script:Secrets['fixtureUser']
+    if (-not $fixtureHash) {
+        Add-Result 'ENV-fixtures' 'G0' 'FAIL' 'cannot compute a BCrypt hash for the fixture password; refusing to seed a plaintext password'
+        return
+    }
     $fixtureSql = @'
 -- synthetic fixtures only: two tenants, one same-named user per tenant; password hash injected by the runner.
 -- user_id 必须显式给出：该列是 bigint NOT NULL 且**没有默认值**（不是自增/序列），
@@ -1424,14 +1439,91 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA ai GRANT ALL ON SEQUENCES TO ai_app;
 INSERT INTO platform.sys_user (user_id, tenant_id, user_name, nick_name, password, status, del_flag)
 VALUES (900000000000000001, 'p1t1', 'p1b-admin', 'p1b-admin-t1', '__HASH__', '0', '0'),
        (900000000000000002, 'p1t2', 'p1b-admin', 'p1b-admin-t2', '__HASH__', '0', '0');
+
+-- 平台登录是"客户端 + 授权类型"流程：AuthController.login 先按 clientId 查 sys_client，
+-- 再要求 client.grant_type 包含请求的 grantType，最后才走 PasswordAuthStrategy 校验口令。
+-- 基线 V1 只建表、**没有任何 sys_client 种子行**（已核对：V1/V2 都不插该表），
+-- 所以不补这一行，登录必然在"授权类型错误"处失败——而错误信息同样读起来像口令问题。
+INSERT INTO platform.sys_client (id, client_id, client_key, client_secret, grant_type, device_type, active_timeout, timeout, status, del_flag)
+VALUES (900000000000000101, 'p1b-client', 'p1b-client-key', '', 'password', 'pc', 1800, 604800, '0', '0');
 '@
-    $fixtureSql = $fixtureSql.Replace('__HASH__', $script:Secrets['fixtureUser'])
+    $fixtureSql = $fixtureSql.Replace('__HASH__', $fixtureHash)
     # fixture 用 app 账号写入（与真实业务同一条权限路径）：若 app 账号没拿到权限，
     # 这里就会失败，而不是等到 B01–B13 才暴露。
     try { [void](Invoke-SyntheticSql $fixtureSql 'ragent_p1b' 'platform_app' 'platformApp' 'db-fixtures.log') } catch {
         Add-Result 'ENV-fixtures' 'G0' 'FAIL' ("synthetic fixture seed failed: " + $_.Exception.Message); return
     }
     Assert-That 'ENV-fixtures' 'G0' $true 'two synthetic tenants with same-named user seeded; no real customer data touched'
+}
+function New-BCryptHash([string]$PlainPassword) {
+    # 生成平台口径的 BCrypt 哈希。
+    #
+    # 必须用**平台实际使用的那个实现**（cn.hutool.crypto.digest.BCrypt），
+    # 不能自己拼一个"看起来像 BCrypt"的字符串：哈希前缀、cost、盐编码任一不同，
+    # checkpw 就是 false，而失败信息只会说"口令不对"，看不出是哈希口径不一致。
+    #
+    # 依赖从本机 Maven 仓库解析（与构建用的是同一个仓库），找不到就**返回空串让调用方显式失败**，
+    # 绝不退化成"写明文"——写明文会让 fixture 永远登不上，却看起来像产品问题。
+    # 版本必须取**平台自己打进去的那一个**，不能按文件名排序猜。
+    # 按名称降序会选到 5.8.43，而平台用的是 5.3.8（字符串排序不是版本排序：
+    # "5.8" > "5.3" 只是巧合，换个版本号就会选错）。口径取错则哈希对不上，
+    # 而失败信息只会说"口令不对"，看不出是哈希来源选错了。
+    # 这里直接从平台 jar 的 BOOT-INF/lib 读实际依赖版本，再按 Maven 仓库布局定位。
+    $platformJar = Join-Path $RepoRoot 'services\platform\ruoyi-admin\target\ruoyi-admin.jar'
+    $cryptoJar = ''
+    $coreJar = ''
+    if (Test-Path -LiteralPath $platformJar) {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+        $zip = [IO.Compression.ZipFile]::OpenRead($platformJar)
+        try {
+            $libNames = @($zip.Entries | ForEach-Object { $_.FullName })
+        } finally { $zip.Dispose() }
+        foreach ($pair in @(@{ m = 'hutool-crypto-'; t = $cryptoJar; a = 'crypto' }, @{ m = 'hutool-core-'; t = $coreJar; a = 'core' })) {
+            $entry = @($libNames | Where-Object { $_ -match ('^BOOT-INF/lib/' + $pair.m) -and $_ -match '\.jar$' }) | Select-Object -First 1
+            if (-not $entry) { continue }
+            $fileName = Split-Path $entry -Leaf
+            $version = ($fileName -replace ('^' + $pair.m), '') -replace '\.jar$', ''
+            $candidate = Join-Path $script:MavenRepo ('cn\hutool\' + $pair.m.TrimEnd('-') + '\' + $version + '\' + $fileName)
+            if ($pair.a -eq 'crypto') { $cryptoJar = $candidate } else { $coreJar = $candidate }
+        }
+    }
+    if (-not (Test-Path -LiteralPath $cryptoJar) -or -not (Test-Path -LiteralPath $coreJar)) {
+        Add-Probe 'ENV-bcrypt-hash' 'cn.hutool.crypto.digest.BCrypt' 'unavailable' `
+            ("cannot resolve the platform's own hutool jars from {0} (crypto='{1}' core='{2}'); refusing to guess a version" -f $platformJar, $cryptoJar, $coreJar)
+        return ''
+    }
+    $work = Join-Path $script:RunWork 'bcrypt'
+    [void](New-Item -ItemType Directory -Force -Path $work)
+    $src = Join-Path $work 'P1HashGen.java'
+    $program = @'
+import cn.hutool.crypto.digest.BCrypt;
+
+public final class P1HashGen {
+    private P1HashGen() {
+    }
+
+    public static void main(String[] args) {
+        String hash = BCrypt.hashpw(args[0]);
+        // 回读一次：只输出哈希而从不验证，就等于没有验证过口径一致。
+        if (!BCrypt.checkpw(args[0], hash)) {
+            throw new IllegalStateException("BCrypt round-trip check failed");
+        }
+        System.out.println(hash);
+    }
+}
+'@
+    [IO.File]::WriteAllText($src, $program, (New-Object Text.UTF8Encoding($false)))
+    $cp = ($cryptoJar + ';' + $coreJar)
+    $r = Invoke-NativeCapture (Join-Path $script:JdkHome 'bin\java.exe') @('-cp', $cp, $src, $PlainPassword)
+    $hash = (@($r.Output) | Where-Object { $_ -match '^\$2[aby]\$' } | Select-Object -First 1)
+    if ($r.ExitCode -ne 0 -or -not $hash) {
+        Add-Probe 'ENV-bcrypt-hash' 'cn.hutool.crypto.digest.BCrypt' 'failed' `
+            ("exit={0} firstError='{1}'" -f $r.ExitCode, (@($r.Output) | Select-Object -First 1))
+        return ''
+    }
+    Add-Probe 'ENV-bcrypt-hash' 'cn.hutool.crypto.digest.BCrypt' 'usable' `
+        ('round-trip verified=true versionResolvedFromPlatformJar=' + (Split-Path $cryptoJar -Leaf))
+    return $hash.Trim()
 }
 function Get-RowHashSnapshot {
     # 全表行数 + 行哈希：不只数新增，update/delete 同样查得出来。
@@ -1811,11 +1903,24 @@ function Invoke-HttpCases {
         Add-Result 'DB-snapshot-before' 'G1' 'PASS' ("tables={0} (count+rowHash per table)" -f @($script:DbBefore.PSObject.Properties.Name).Count)
 
         # B01：平台正常登录控制组（两租户同名用户）+ 保留业务审批装配。
+        #
+        # 请求形状必须与平台契约一致（见 AuthController + PasswordAuthStrategy）：
+        #   clientId + grantType 是 LoginBody 的 @NotBlank 字段，并由 sys_client 提供授权类型；
+        #   username/password 由 PasswordLoginBody（LoginBody 子类）承载。
+        # 只发 tenantId/username/password 会在参数校验阶段就 500，
+        # 而返回体是 HTTP 200 —— 看起来像"业务失败"，其实是**请求缺字段**。
         foreach ($tenant in @('p1t1', 'p1t2')) {
-            $body = @{ tenantId = $tenant; username = 'p1b-admin'; password = $script:Secrets['fixtureUser'] } | ConvertTo-Json -Compress
+            $body = @{
+                tenantId   = $tenant
+                clientId   = 'p1b-client'
+                grantType  = 'password'
+                username   = 'p1b-admin'
+                password   = $script:Secrets['fixtureUser']
+            } | ConvertTo-Json -Compress
             $r = Send-Json $client 'POST' ($script:PlatformBase + '/auth/login') @{} $body
             Assert-That ('B01-login-' + $tenant) 'B' ($r.Status -eq 200 -and $null -ne $r.Json -and [int]$r.Json.code -eq 200) `
-                ("POST /auth/login tenant={0} status={1}" -f $tenant, $r.Status)
+                ("POST /auth/login tenant={0} status={1} code={2} msg={3}" -f $tenant, $r.Status,
+                    $(if ($r.Json) { $r.Json.code } else { 'nil' }), $(if ($r.Json) { $r.Json.msg } else { '' }))
         }
         $legacyLibs = @($script:PlatformJarEntries | Where-Object { $_ -match 'BOOT-INF/lib/(ruoyi-chat|ruoyi-ai-integration)' })
         $workflowKept = @($script:PlatformJarEntries | Where-Object { $_ -match 'BOOT-INF/lib/ruoyi-workflow' }).Count -gt 0
