@@ -109,6 +109,10 @@ $script:SshExe = ''
 $script:RemoteComposeDir = ''
 $script:SyntheticEnvNames = New-Object System.Collections.ArrayList
 $script:ExternalizedPlaceholderCount = 0
+# 真实 Process 对象与它的事件回调持有物：见 Start-OwnedProcess 的说明。
+# 不保住它们，退出码与异步日志都会在需要时已经不可读。
+$script:OwnedProcessObjects = @{}
+$script:ProcessWriters = @{}
 
 # -RemoteHost 的**最早**生效点。不能等到容器运行时预检才设置：Integration 的端口预检
 # （Invoke-IntegrationPortCheck）在预检之前运行，而端口是否空闲必须在容器宿主上判定。
@@ -440,20 +444,90 @@ function Get-ResultRow([string]$Id) {
 }
 
 # ---------- 进程所有权（只动自己的） ----------
+function Quote-WindowsArg([string]$Value) {
+    # 按 Windows 命令行解析规则引用单个参数（CommandLineToArgvW 语义）：
+    # 不含空格/制表/引号则原样；否则整体加引号，并把内部的反斜杠-引号序列按
+    # 2n+1 规则转义。用于 .NET Framework 上只能拼 Arguments 字符串的场景。
+    #
+    # 定义位置必须早于 Start-OwnedProcess：后者现在用它拼 Arguments。
+    # PowerShell 是运行期解析函数名，所以放后面也能跑，但那是**靠调用顺序侥幸**——
+    # 一旦有更早的调用点就会以 "not recognized" 失败。放在使用点之前是明确的。
+    if ($Value -eq '') { return '""' }
+    if ($Value -notmatch '[\s"]') { return $Value }
+    $sb = New-Object Text.StringBuilder
+    [void]$sb.Append('"')
+    $backslashes = 0
+    foreach ($ch in $Value.ToCharArray()) {
+        if ($ch -eq '\') { $backslashes++; continue }
+        if ($ch -eq '"') {
+            [void]$sb.Append('\' * (2 * $backslashes + 1))
+            [void]$sb.Append('"')
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes -gt 0) { [void]$sb.Append('\' * $backslashes); $backslashes = 0 }
+        [void]$sb.Append($ch)
+    }
+    if ($backslashes -gt 0) { [void]$sb.Append('\' * (2 * $backslashes)) }
+    [void]$sb.Append('"')
+    return $sb.ToString()
+}
 function Start-OwnedProcess([string]$Exe, [string[]]$Arguments, [string]$WorkDir, [string]$PidFile) {
     [void](New-Item -ItemType Directory -Force -Path $WorkDir)
     $stdout = Join-Path $WorkDir 'stdout.log'
     $stderr = Join-Path $WorkDir 'stderr.log'
     Remove-Item -LiteralPath $stdout, $stderr -Force -ErrorAction SilentlyContinue
-    $p = Start-Process -FilePath $Exe -ArgumentList $Arguments -WorkingDirectory $WorkDir `
-        -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
-    Set-Content -LiteralPath $PidFile -Value ([string]$p.Id) -Encoding UTF8
+    # 用 System.Diagnostics.Process 而不是 Start-Process：
+    # Start-Process -PassThru 在**同时重定向两个流**时，$p.ExitCode 永远是空串
+    # （本轮实测：轮询与 WaitForExit 两种等法都是空）。于是"非法开关必须非零退出"
+    # 这类断言拿不到退出码，B08 四条全部 FAIL，而 detail 里 exitCode= 后面什么都没有——
+    # 看起来像"进程没退"，实际是**拿到了进程却读不到它的退出码**。
+    # 另一个走不通的方向是 WMI：进程退出后 Win32_Process 对象即消失，读不到 ExitCode（已实测）。
+    #
+    # 流怎么读：不用 add_OutputDataReceived（PowerShell 的脚本块转成 .NET 委托后，
+    # 由 .NET 线程回调时**不会执行**——实测两个流都拿不到任何一行）。
+    # 改为每个流起一个独立 runspace 同步 drain 到文件：
+    # 文件在进程运行期间就持续可读（Wait-ApplicationReady 依赖这一点），
+    # 而退出码由真实 Process 对象给出，两者互不牺牲。
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    # .NET Framework 上没有 ArgumentList，只能自己按 Windows 命令行规则拼一个字符串，
+    # 否则带空格的路径会被拆成两个参数。
+    $psi.Arguments = (@($Arguments | ForEach-Object { Quote-WindowsArg $_ }) -join ' ')
+    $psi.WorkingDirectory = $WorkDir
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    $drains = New-Object System.Collections.ArrayList
+    foreach ($spec in @(@{ stream = $proc.StandardOutput; file = $stdout }, @{ stream = $proc.StandardError; file = $stderr })) {
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.Open()
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript({
+                param($reader, $path)
+                $sw = New-Object IO.StreamWriter($path, $false, (New-Object Text.UTF8Encoding($false)))
+                $sw.AutoFlush = $true
+                try { while ($null -ne ($line = $reader.ReadLine())) { $sw.WriteLine($line) } }
+                finally { try { $sw.Dispose() } catch { }; try { $reader.Dispose() } catch { } }
+            }).AddArgument($spec.stream).AddArgument($spec.file)
+        [void]$drains.Add([pscustomobject]@{ ps = $ps; rs = $rs; handle = $ps.BeginInvoke() })
+    }
+    # 保住 Process 对象与 drain 句柄：PowerShell 变量被覆盖后对象可能被回收，
+    # 回收后 $proc.ExitCode 不可读——这正是要修的那个失败模式。
+    $script:OwnedProcessObjects[$proc.Id] = $proc
+    $script:ProcessWriters[$proc.Id] = $drains
+    Set-Content -LiteralPath $PidFile -Value ([string]$proc.Id) -Encoding UTF8
     # 必须用 .Add()：对 ArrayList 用 `+=` 会让 PowerShell 生成一个新的**固定大小数组**，
     # 于是后续任何 .Add() 都抛 "Collection was of a fixed size"。
     # 这条 `+=` 正是第 9 轮那个"找不到接收者"的异常的来源——
     # 它在 Start-OwnedProcess 里，却在远端的 Invoke-RemoteShellStdin 里炸开。
-    [void]$script:StartedProcesses.Add($p.Id)
-    return $p
+    [void]$script:StartedProcesses.Add($proc.Id)
+    return $proc
 }
 function Stop-OwnedProcess([string]$PidFile, [string]$CommandMatch, [string]$Label) {
     # 只停止本脚本启动过、且 PID 归属 + 命令行双重对得上的进程。
@@ -671,30 +745,6 @@ function Format-ShellArg([string]$Value) {
     # 不做这一步会把含空格/引号的 SQL 或口令拆成多个参数，静默改变语义。
     $q = [string][char]39
     return $q + ($Value -replace $q, ($q + '\' + $q + $q)) + $q
-}
-function Quote-WindowsArg([string]$Value) {
-    # 按 Windows 命令行解析规则引用单个参数（CommandLineToArgvW 语义）：
-    # 不含空格/制表/引号则原样；否则整体加引号，并把内部的反斜杠-引号序列按
-    # 2n+1 规则转义。用于 .NET Framework 上只能拼 Arguments 字符串的场景。
-    if ($Value -eq '') { return '""' }
-    if ($Value -notmatch '[\s"]') { return $Value }
-    $sb = New-Object Text.StringBuilder
-    [void]$sb.Append('"')
-    $backslashes = 0
-    foreach ($ch in $Value.ToCharArray()) {
-        if ($ch -eq '\') { $backslashes++; continue }
-        if ($ch -eq '"') {
-            [void]$sb.Append('\' * (2 * $backslashes + 1))
-            [void]$sb.Append('"')
-            $backslashes = 0
-            continue
-        }
-        if ($backslashes -gt 0) { [void]$sb.Append('\' * $backslashes); $backslashes = 0 }
-        [void]$sb.Append($ch)
-    }
-    if ($backslashes -gt 0) { [void]$sb.Append('\' * (2 * $backslashes)) }
-    [void]$sb.Append('"')
-    return $sb.ToString()
 }
 function Invoke-RemoteShellStdin([string]$Command, [string]$PayloadPath, [string]$LogName = '') {
     # 把**大**负载经 stdin 送进远端命令。
@@ -2161,6 +2211,23 @@ try {
         Add-Result 'CLEANUP-synthetic-secrets' 'G0' 'PASS' 'runner-generated synthetic secrets removed from the process environment; evidence holds key names only'
     }
     # 5) 自有临时工作目录（解析绝对路径 + 归属校验后才删）。
+    #
+    # 删目录前先释放 Process 对象与日志 StreamWriter：它们持有 stdout.log/stderr.log 的句柄，
+    # 在句柄未释放时删目录会失败（表现为"自己的临时目录删不掉"）。
+    foreach ($id in @($script:OwnedProcessObjects.Keys)) {
+        try { $script:OwnedProcessObjects[$id].Dispose() } catch { }
+    }
+    foreach ($id in @($script:ProcessWriters.Keys)) {
+        foreach ($d in @($script:ProcessWriters[$id])) {
+            # 先等 drain 把剩余输出写完，再关 runspace；否则日志尾部会丢，
+            # 而"启动失败的最后几行"恰恰是最需要的那几行。
+            try { [void]$d.ps.EndInvoke($d.handle) } catch { }
+            try { $d.ps.Dispose() } catch { }
+            try { $d.rs.Dispose() } catch { }
+        }
+    }
+    $script:OwnedProcessObjects = @{}
+    $script:ProcessWriters = @{}
     if (Test-Path -LiteralPath $script:RunWork) { [void](Remove-OwnedPath $script:RunWork 'per-run scratch under WorkRoot') }
 
     # ---------- 证据落盘 ----------
