@@ -1454,6 +1454,13 @@ VALUES (900000000000000101, 'p1b-client', 'p1b-client-key', '', 'password', 'pc'
     # 说明问题出在 runner **构造出来的那份 SQL**，而不是 SQL 本身。
     # 没有这份形状记录时，只能在"SQL 对不对"和"库对不对"之间反复猜。
     $shape = New-Object System.Collections.ArrayList
+    # 哈希本身不落盘（它是口令的派生物），但**类型与长度**必须落盘：
+    # 只有 "hashLen=2" 时无法判断是"元素个数 2"还是"长度 2"，也就无法区分
+    # "返回了一个 2 字符的串" 与 "返回了 2 个元素的数组"。
+    [void]$shape.Add(("fixtureHash type={0} isArray={1} count={2} asStringLen={3}" -f `
+                $fixtureHash.GetType().Name, ($fixtureHash -is [array]),
+            $(if ($fixtureHash -is [array]) { $fixtureHash.Count } else { 1 }),
+            ([string]$fixtureHash).Length))
     [void]$shape.Add(("totalChars={0} lines={1} hashLen={2} placeholdersLeft={3}" -f `
                 $fixtureSql.Length, (@($fixtureSql -split "`r?`n").Count), $fixtureHash.Length,
             ([regex]::Matches($fixtureSql, '__HASH__')).Count))
