@@ -108,10 +108,10 @@ public class P1RuntimeFactsWriter {
         facts.put("factsSource", "runtime: P1RuntimeFactsWriter inside the launched application context");
         facts.put("routes", routes);
         facts.put("legacyMappings", closedLegacyMappings(routes));
-        facts.put("mqConsumers", beanNamesFor());
-        facts.put("transactionCheckers", beanNamesForTransactions());
+        facts.put("mqConsumers", legacyConsumerBeans());
+        facts.put("transactionCheckers", transactionCheckerBeans());
         facts.put("checkerMapperInvocations", 0);
-        facts.put("storageBeans", beanNamesContaining("Storage", "Initializer", "VectorSpace"));
+        facts.put("storageBeans", ownBeansContaining("Storage", "Initializer", "VectorSpace"));
         facts.put("createdBuckets", List.of());
         facts.put("createdIndexes", List.of());
         facts.put("publicReadGrants", 0);
@@ -172,22 +172,66 @@ public class P1RuntimeFactsWriter {
         return entries;
     }
 
-    private List<String> beanNamesFor() {
-        return beanNamesContaining("Consumer", "Listener");
-    }
-
-    private List<String> beanNamesForTransactions() {
-        return beanNamesContaining("TransactionChecker");
-    }
-
-    private List<String> beanNamesContaining(String... fragments) {
+    /**
+     * 旧 MQ consumer 的注册清单。
+     *
+     * <p>第一版按 {@code Consumer}/{@code Listener} 片段匹配 bean 名，结果把框架自身的
+     * 监听基础设施也算了进去（RocketMQ 的 {@code ListenerContainerConfiguration}、
+     * Spring 的 {@code redisMessageListenerContainer}、{@code transactionalEventListenerFactory} 等），
+     * 得出"注册了 15 个旧 consumer"这种明显不成立的结论——
+     * 断言的是"框架的 listener 基础设施有多少个"，不是"旧业务 consumer 有没有被注册"。
+     *
+     * <p>因此改为只统计**本仓库自有**的 bean：类名/bean 名落在
+     * {@code com.nageoffer.ai.ragent} 命名空间下。框架 bean 由 Spring 管理，
+     * 它们的数量与"旧能力是否关闭"无关，不该进这个计数。
+     */
+    private List<String> legacyConsumerBeans() {
         List<String> names = new ArrayList<>();
         for (String name : applicationContext.getBeanDefinitionNames()) {
+            if (!name.contains("onsumer") && !name.contains("istener")) {
+                continue;
+            }
+            if (!isOwnBean(name)) {
+                continue;
+            }
+            names.add(name);
+        }
+        names.sort(String::compareTo);
+        return names;
+    }
+
+    /** bean 是否属于本仓库命名空间（借此排除 Spring/Redisson/RocketMQ 的框架 bean）。 */
+    private boolean isOwnBean(String beanName) {
+        Class<?> type;
+        try {
+            type = applicationContext.getType(beanName);
+        } catch (RuntimeException e) {
+            return false;
+        }
+        if (type == null) {
+            return false;
+        }
+        String pkg = type.getPackageName();
+        return pkg != null && pkg.startsWith("com.nageoffer.ai.ragent");
+    }
+
+    /** 与上面同一口径：只统计本仓库自有的旧 TransactionChecker bean。 */
+    private List<String> transactionCheckerBeans() {
+        return ownBeansContaining("TransactionChecker");
+    }
+
+    private List<String> ownBeansContaining(String... fragments) {
+        List<String> names = new ArrayList<>();
+        for (String name : applicationContext.getBeanDefinitionNames()) {
+            boolean matches = false;
             for (String fragment : fragments) {
                 if (name.contains(fragment)) {
-                    names.add(name);
+                    matches = true;
                     break;
                 }
+            }
+            if (matches && isOwnBean(name)) {
+                names.add(name);
             }
         }
         names.sort(String::compareTo);
