@@ -1985,11 +1985,17 @@ function Invoke-HttpCases {
                 $tail = (Read-SharedText $platLog) -split "`r?`n" |
                     Where-Object { $_ -match 'ERROR|WARN|Exception|Caused by|约束|校验|login|tenant' } |
                     Select-Object -Last 60
-                Copy-SanitizedLog $platLog (Join-Path $script:Evidence 'platform-runtime-tail.log')
                 [IO.File]::WriteAllText((Join-Path $script:Evidence 'platform-login-signals.log'),
                     (Protect-LogText ($tail -join "`r`n")), (New-Object Text.UTF8Encoding($false)))
+            } else {
+                # 不吞掉"日志不在"这件事：空文件与文件不存在是两种不同的结论。
+                [IO.File]::WriteAllText((Join-Path $script:Evidence 'platform-login-signals.log'),
+                    ("platform log not found at " + $platLog), (New-Object Text.UTF8Encoding($false)))
             }
-        } catch { }
+        } catch {
+            [IO.File]::WriteAllText((Join-Path $script:Evidence 'platform-login-signals.log'),
+                ("capture failed: " + $_.Exception.Message), (New-Object Text.UTF8Encoding($false)))
+        }
 
         # facts 可用性：缺 facts 时"事实类"断言一律 NOT_RUN，绝不读 null 当 0 判 PASS。
         $factsPath = Join-Path $script:Evidence 'probe\ai-runtime-facts.json'
@@ -2361,10 +2367,23 @@ try {
                 $pidFiles.Count, $owned.Count, $stopped.Count, ($script:StartedProcesses -join ','))
     }
     # 2) jar 日志先按脱敏归档，再删自有临时目录（顺序不能反）。
+    #
+    # 目录名必须与 Start-ProductJar 建的那个一致：那边是 `$Side + '-run-' + $State`
+    # （如 platform-run-default），这里曾拼成 `$Side + '-run'`（platform-default-run）。
+    # 两者对不上，Copy-SanitizedLog 因为源文件不存在而**静默返回**，
+    # 于是**从来没有一份 jar 日志进过证据目录**——两个 jar 的启动与运行期异常
+    # 全部只存在于会被删掉的临时目录里。找 B01 登录失败原因时反复"日志不在"
+    # 就是这个拼写差异造成的，而它看起来像"日志没写"。
     foreach ($side in @('platform-default', 'ai-default', 'ai-cli-false', 'ai-illegal-p04', 'ai-illegal-integration',
             'ai-illegal-customer-api', 'ai-illegal-legacy-listeners')) {
         foreach ($stream in @('stdout', 'stderr')) {
-            Copy-SanitizedLog (Join-Path (Join-Path $script:RunWork ($side + '-run')) ($stream + '.log')) `
+            # 这里必须与 Start-ProductJar 的目录名逐字一致（`<side>-run-<state>`）。
+            # side 形如 "platform-default"；Start-ProductJar 建的目录是 "platform-run-default"。
+            # 拆成 base/state 再按同样顺序拼回，避免两处各写一种拼法而静默对不上。
+            $sideBase = $side.Split('-')[0]
+            $sideState = $side.Substring($sideBase.Length + 1)
+            $sideRunDir = $sideBase + '-run-' + $sideState
+            Copy-SanitizedLog (Join-Path (Join-Path $script:RunWork $sideRunDir) ($stream + '.log')) `
                 (Join-Path $script:Evidence ('jvm-logs\' + $side + '\' + $stream + '.log'))
         }
     }
