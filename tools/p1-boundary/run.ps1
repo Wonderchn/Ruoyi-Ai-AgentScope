@@ -1875,6 +1875,10 @@ function Invoke-HttpCases {
         Assert-That 'CASES-complete' 'G1-G4' ($caseRows.Count -eq 13 -and @($caseRows | Where-Object { $_.status -ne 'PASS' }).Count -eq 0) `
             ("cases={0} nonPass=[{1}]" -f $caseRows.Count, (@($caseRows | Where-Object { $_.status -ne 'PASS' } | ForEach-Object { $_.id }) -join ','))
     } finally { $client.Dispose() }
+
+    # 用例全部跑完后才停止被测 jar（见启动处的说明：提前停会让 B 系列全部失败）。
+    Stop-OwnedProcess (Join-Path $script:RunWork 'platform-default.pid') 'java' 'platform default boot'
+    Stop-OwnedProcess (Join-Path $script:RunWork 'ai-cli-false.pid') 'java' 'ai p04=false boot'
 }
 function Invoke-BootAndCases {
     Write-Step 'Integration happy path：两真实 jar + runner 自有合成资源 + B01–B13'
@@ -1927,7 +1931,11 @@ function Invoke-BootAndCases {
         ("ready={0} alive={1} port={2}" -f $platformReady, (-not $platformProc.HasExited), $PlatformPort)
     Assert-That 'BOOT-ai-jar' 'G0' ($aiReady -and -not $aiProc.HasExited) `
         ("default boot ready={0} alive={1} port={2}" -f $aiReady, (-not $aiProc.HasExited), $AiPort)
-    Stop-OwnedProcess (Join-Path $script:RunWork 'platform-default.pid') 'java' 'platform default boot'
+    # 这里**不**停 platform / ai default：BOOT-* 只是"起得来"的证据，
+    # 而紧随其后的 B01–B08 与 facts 驱动的用例都要对这两个**正在运行**的 jar 发真实 HTTP 请求。
+    # 此前在这两处提前 Stop-OwnedProcess，于是 B 系列第一次请求就失败
+    # （"发送请求时出错"），看起来像 HTTP/网络问题，实际是**runner 把自己的被测对象关掉了**。
+    # 收尾统一在用例结束之后进行（见本函数末尾）。
 
     # 显式 p04=false 的第二态启动（B02 的另一半）。
     $aiFalsePort = $AiPort + 1
@@ -1935,7 +1943,7 @@ function Invoke-BootAndCases {
     $falseReady = Wait-ApplicationReady $aiFalsePort (Join-Path $script:RunWork 'ai-run-cli-false\stdout.log') 240
     Assert-That 'BOOT-ai-jar' 'G0' ($falseReady -and -not $aiFalse.HasExited) `
         ("explicit p04.enabled=false boot ready={0} alive={1}" -f $falseReady, (-not $aiFalse.HasExited))
-    Stop-OwnedProcess (Join-Path $script:RunWork 'ai-cli-false.pid') 'java' 'ai p04=false boot'
+    # 同样不停：这一态是 B02 的另一半，用例要连它发请求。
 
     # B08：四个非法开关各起一次，必须非零退出。
     $script:IllegalBootResults = @()
