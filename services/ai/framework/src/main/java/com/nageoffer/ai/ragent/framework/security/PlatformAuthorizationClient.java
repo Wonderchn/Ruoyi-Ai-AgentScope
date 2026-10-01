@@ -17,6 +17,7 @@
 
 package com.nageoffer.ai.ragent.framework.security;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -52,12 +53,16 @@ public class PlatformAuthorizationClient implements AuthorizationChecker {
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
+    private final ObjectMapper responseMapper;
     private final P04SecurityProperties properties;
 
     public PlatformAuthorizationClient(HttpClient httpClient, ObjectMapper objectMapper,
                                        P04SecurityProperties properties) {
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
+        this.responseMapper = objectMapper.copy()
+                .enable(DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY)
+                .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
         this.properties = properties;
     }
 
@@ -107,23 +112,33 @@ public class PlatformAuthorizationClient implements AuthorizationChecker {
 
         JsonNode root;
         try {
-            root = objectMapper.readTree(response.body());
+            root = responseMapper.readTree(response.body());
         } catch (Exception e) {
             // 坏响应
             throw new P04AiException(P04AiErrorCode.AUTHORIZATION_UNAVAILABLE);
         }
 
         int status = response.statusCode();
-        if (status == 200 && root.path("code").asInt(-1) == ApiEnvelope.SUCCESS_CODE
-                && root.path("data").path("allowed").asBoolean(false)) {
-            return new AuthorizeResult(true, root.path("data").path("policyVersion").asInt(principal.policyVersion()));
+        if (root == null || !root.isObject() || !root.path("code").isIntegralNumber()
+                || !root.path("code").canConvertToInt() || root.path("code").intValue() != status
+                || !root.path("data").isObject()) {
+            throw new P04AiException(P04AiErrorCode.AUTHORIZATION_UNAVAILABLE);
+        }
+        JsonNode data = root.get("data");
+        if (status == ApiEnvelope.SUCCESS_CODE && data.path("allowed").isBoolean()
+                && data.path("allowed").booleanValue() && data.path("policyVersion").isIntegralNumber()
+                && data.path("policyVersion").canConvertToInt() && !data.has("errorCode")) {
+            return new AuthorizeResult(true, data.get("policyVersion").intValue());
         }
 
         // 平台侧拒绝：透传同一符号码，保证跨服务断言可对齐
-        String symbolic = root.path("data").path("errorCode").asText(null);
-        if (symbolic != null && !symbolic.isBlank()) {
+        JsonNode symbolic = data.path("errorCode");
+        if (symbolic.isTextual() && !symbolic.textValue().isBlank()) {
             try {
-                throw new P04AiException(P04AiErrorCode.valueOf(symbolic.trim()));
+                P04AiErrorCode errorCode = P04AiErrorCode.valueOf(symbolic.textValue());
+                if (errorCode.httpStatus() == status) {
+                    throw new P04AiException(errorCode);
+                }
             } catch (IllegalArgumentException ignored) {
                 throw new P04AiException(P04AiErrorCode.AUTHORIZATION_UNAVAILABLE);
             }
