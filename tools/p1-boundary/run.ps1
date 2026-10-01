@@ -666,6 +666,30 @@ function Format-ShellArg([string]$Value) {
     $q = [string][char]39
     return $q + ($Value -replace $q, ($q + '\' + $q + $q)) + $q
 }
+function Quote-WindowsArg([string]$Value) {
+    # 按 Windows 命令行解析规则引用单个参数（CommandLineToArgvW 语义）：
+    # 不含空格/制表/引号则原样；否则整体加引号，并把内部的反斜杠-引号序列按
+    # 2n+1 规则转义。用于 .NET Framework 上只能拼 Arguments 字符串的场景。
+    if ($Value -eq '') { return '""' }
+    if ($Value -notmatch '[\s"]') { return $Value }
+    $sb = New-Object Text.StringBuilder
+    [void]$sb.Append('"')
+    $backslashes = 0
+    foreach ($ch in $Value.ToCharArray()) {
+        if ($ch -eq '\') { $backslashes++; continue }
+        if ($ch -eq '"') {
+            [void]$sb.Append('\' * (2 * $backslashes + 1))
+            [void]$sb.Append('"')
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes -gt 0) { [void]$sb.Append('\' * $backslashes); $backslashes = 0 }
+        [void]$sb.Append($ch)
+    }
+    if ($backslashes -gt 0) { [void]$sb.Append('\' * (2 * $backslashes)) }
+    [void]$sb.Append('"')
+    return $sb.ToString()
+}
 function Invoke-RemoteShellStdin([string]$Command, [string]$PayloadPath, [string]$LogName = '') {
     # 把**大**负载经 stdin 送进远端命令。
     #
@@ -676,25 +700,49 @@ function Invoke-RemoteShellStdin([string]$Command, [string]$PayloadPath, [string
     #
     # 负载先落到本机临时文件，再作为子进程 stdin 重定向；ssh 把它转给远端命令的 stdin，
     # `docker exec -i` 再转给容器内 psql 的 stdin。全程不经 shell 解析。
-    $sshArgs = @('-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR',
+    #
+    # 这里用 System.Diagnostics.Process 而不是 Start-Process -PassThru：
+    # 后者在本机 PowerShell 5.1 上，一旦同时重定向 stdout/stderr，**ExitCode 恒为空**，
+    # 于是 `if ($r.ExitCode -ne 0)` 永不成立——失败被静默当成成功。
+    # 一个"检测不出失败"的包装比没有包装更危险，所以必须拿到真实退出码。
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $script:SshExe
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    # Windows PowerShell 5.1 跑在 .NET Framework 上，ProcessStartInfo 没有 ArgumentList
+    # （那是 .NET Core 2.1+ 的属性），只能拼 Arguments 字符串。
+    # 直接拼接会被空格/引号拆错参数，所以按 Windows 命令行引用规则逐项引用。
+    $argv = @('-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR',
         '-o', ('ConnectTimeout=' + $SshConnectTimeoutSeconds))
-    if ($SshKeyPath) { $sshArgs += @('-i', $SshKeyPath) }
-    $sshArgs += @($RemoteHost, $Command)
-    $stdout = Join-Path $script:RunWork (($LogName -replace '[^\w.-]', '_') + '.stdout')
-    $stderr = Join-Path $script:RunWork (($LogName -replace '[^\w.-]', '_') + '.stderr')
-    $p = Start-Process -FilePath $script:SshExe -ArgumentList $sshArgs -PassThru -NoNewWindow `
-        -RedirectStandardInput $PayloadPath -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-    [void]$script:StartedProcesses.Add($p.Id)
-    if (-not $p.WaitForExit(600000)) { try { $p.Kill() } catch { } ; throw ('remote stdin command timed out: ' + $LogName) }
-    $code = $p.ExitCode
+    if ($SshKeyPath) { $argv += @('-i', $SshKeyPath) }
+    $argv += @($RemoteHost, $Command)
+    $psi.Arguments = (($argv | ForEach-Object { Quote-WindowsArg $_ }) -join ' ')
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    [void]$script:StartedProcesses.Add($proc.Id)
+    $outTask = $proc.StandardOutput.ReadToEndAsync()
+    $errTask = $proc.StandardError.ReadToEndAsync()
+    # 负载经 stdin 送入；写完后必须关闭，否则远端会一直等输入。
+    $bytes = [IO.File]::ReadAllBytes($PayloadPath)
+    $proc.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+    $proc.StandardInput.BaseStream.Flush()
+    $proc.StandardInput.Close()
+    if (-not $proc.WaitForExit(600000)) { try { $proc.Kill() } catch { } ; throw ('remote stdin command timed out: ' + $LogName) }
+    $code = $proc.ExitCode
     $lines = @()
-    foreach ($f in @($stdout, $stderr)) {
-        if (Test-Path -LiteralPath $f) { $lines += @(Get-Content -LiteralPath $f -Encoding UTF8) }
+    foreach ($t in @($outTask, $errTask)) {
+        $text = $t.Result
+        if ($text) { $lines += @($text -split "`r?`n" | Where-Object { $_ -ne '' }) }
     }
+    $proc.Dispose()
     if ($LogName) {
-        $text = ($lines -join "`r`n")
         $target = Join-Path $script:Evidence $LogName
-        [IO.File]::WriteAllText($target, (Protect-LogText $text), (New-Object Text.UTF8Encoding($false)))
+        [IO.File]::WriteAllText($target, (Protect-LogText ($lines -join "`r`n")), (New-Object Text.UTF8Encoding($false)))
     }
     return [pscustomobject]@{ ExitCode = $code; Output = $lines }
 }
