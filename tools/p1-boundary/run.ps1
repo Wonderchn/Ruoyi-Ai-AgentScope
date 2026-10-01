@@ -1888,6 +1888,17 @@ function Wait-ApplicationReady([int]$Port, [string]$LogPath, [int]$TimeoutSec) {
 }
 function Send-Json($Client, [string]$Method, [string]$Url, $Headers, [string]$Json) {
     $req = New-Object System.Net.Http.HttpRequestMessage((New-Object System.Net.Http.HttpMethod($Method)), $Url)
+    # 必须带 User-Agent。
+    #
+    # 平台的 UserActionListener.doLogin 会
+    #   UserAgentUtil.parse(request.getHeader("User-Agent"))
+    # 然后在结果上直接 getBrowser().getName()。HttpClient 默认**不发** User-Agent，
+    # 于是 parse 返回 null，登录在"建好会话之后"抛 NullPointerException，
+    # 对外只显示 "系统异常，请联系管理员"——与请求头缺失看不出任何关系。
+    # 任何真实浏览器/客户端都会发这个头，验收请求也应当发。
+    # 用 TryAddWithoutValidation 是因为 User-Agent 是受限头，直接 Add 会被拒。
+    [void]$req.Headers.TryAddWithoutValidation('User-Agent',
+        'p1-acceptance-runner/1.0 (synthetic boundary check; not a real browser)')
     if ($Json -and $Method -notin @('GET', 'HEAD')) {
         $req.Content = New-Object System.Net.Http.StringContent($Json, [Text.Encoding]::UTF8, 'application/json')
     }
