@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.rag.config;
 
 import com.nageoffer.ai.ragent.framework.exception.ServiceException;
+import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorSpaceId;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorSpaceSpec;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorStoreAdmin;
@@ -26,6 +27,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.util.concurrent.TimeUnit;
@@ -36,8 +38,10 @@ import java.util.concurrent.TimeUnit;
  * 与 {@link StorageInitializer} 对称：系统启动时幂等确保共享向量空间存在，免去首次建库/首次入库前的懒加载依赖
  * 后端无关——Milvus 建共享 collection，PG 依赖迁移脚本建表故此处为空操作，均以 {@link VectorStoreAdmin} 抹平差异
  * 集群环境下用 Redisson 分布式锁保证只建一次：先判断是否存在 → 拿锁 → 双重检查 → 创建
- * <p>
- * 失败策略：快速失败，向量后端 / Redis 不可用时让异常向上抛，启动即暴露问题
+ *
+ * <p>P1.2a：本初始化器属于<b>未批准旧能力</b>。它在 {@link #initVectorSpace()} 的
+ * <b>第一次后端/Redis 调用之前</b>短路关闭，因此默认启动不会建 collection、不会抢锁。
+ * 共享向量结构由未来迁移/专门能力批准后恢复；Bean 保留以便其他 service 解析依赖。
  */
 @Slf4j
 @Component
@@ -50,9 +54,24 @@ public class VectorSpaceInitializer {
     private final VectorStoreAdmin vectorStoreAdmin;
     private final RAGDefaultProperties ragDefaultProperties;
     private final RedissonClient redissonClient;
+    /**
+     * 旧能力关闭判定；缺席按关闭处理（不默认放行）。
+     */
+    private final ObjectProvider<SaasCapabilityBoundary> capabilityBoundary;
 
     @PostConstruct
     public void initVectorSpace() {
+        initVectorSpace(capabilityBoundary == null ? null : capabilityBoundary.getIfAvailable());
+    }
+
+    /** 显式边界版本：关闭时抛受控异常，且不发生任何向量后端/Redis 调用。 */
+    void initVectorSpace(SaasCapabilityBoundary boundary) {
+        if (boundary == null) {
+            throw new SaasCapabilityBoundary.ClosedCapabilityException(
+                    SaasCapabilityBoundary.LegacyCapability.VECTOR_SPACE_INITIALIZER);
+        }
+        boundary.requireOpen(SaasCapabilityBoundary.LegacyCapability.VECTOR_SPACE_INITIALIZER);
+
         String collectionName = ragDefaultProperties.getCollectionName();
         ensureVectorSpace(collectionName);
         log.info("向量共享空间就绪 collection={}", collectionName);

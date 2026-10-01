@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.knowledge.mq;
 
 import cn.hutool.json.JSONUtil;
+import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
 import com.nageoffer.ai.ragent.framework.mq.MessageWrapper;
 import com.nageoffer.ai.ragent.framework.mq.producer.DelegatingTransactionListener;
 import com.nageoffer.ai.ragent.framework.mq.producer.TransactionChecker;
@@ -27,26 +28,49 @@ import com.nageoffer.ai.ragent.knowledge.mq.event.KnowledgeBaseCleanupEvent;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /**
  * 知识库删除清理事务消息回查器
  * 按 topic 注册，Broker 回查时可路由到任意实例，通过查询 DB 中知识库是否已逻辑删除判断本地事务是否已提交
+ *
+ * <p>P1.2a：本回查器按"未批准旧能力"处理。注册前先判定并直接拒绝，因此不会向
+ * {@link DelegatingTransactionListener} 注册旧 topic；{@link #check(MessageWrapper)}
+ * 也在读取消息体与裸 KB 查询之前先判定。
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
+@ConditionalOnProperty(name = "ai.integration.legacy-listeners-enabled", havingValue = "true")
 public class KnowledgeBaseCleanupTransactionChecker implements TransactionChecker<KnowledgeBaseCleanupEvent> {
 
     private final KnowledgeBaseMapper knowledgeBaseMapper;
     private final DelegatingTransactionListener transactionListener;
+
+    /**
+     * 关闭判定依赖；刻意不放进构造器，保证轻量测试可独立构造并断言关闭行为。
+     */
+    @Autowired(required = false)
+    private SaasCapabilityBoundary capabilityBoundary;
 
     @Value("knowledge-base-cleanup_topic${unique-name:}")
     private String cleanupTopic;
 
     @PostConstruct
     public void init() {
+        init(capabilityBoundary);
+    }
+
+    /** 显式边界版本：关闭时抛受控异常，注册次数为 0。 */
+    void init(SaasCapabilityBoundary boundary) {
+        if (boundary == null) {
+            throw new SaasCapabilityBoundary.ClosedCapabilityException(
+                    SaasCapabilityBoundary.LegacyCapability.KB_CLEANUP_CHECKER);
+        }
+        boundary.requireOpen(SaasCapabilityBoundary.LegacyCapability.KB_CLEANUP_CHECKER);
         transactionListener.registerChecker(cleanupTopic, this);
     }
 
@@ -57,6 +81,12 @@ public class KnowledgeBaseCleanupTransactionChecker implements TransactionChecke
 
     @Override
     public boolean check(MessageWrapper<KnowledgeBaseCleanupEvent> message) {
+        if (capabilityBoundary == null) {
+            throw new SaasCapabilityBoundary.ClosedCapabilityException(
+                    SaasCapabilityBoundary.LegacyCapability.KB_CLEANUP_CHECKER);
+        }
+        capabilityBoundary.requireOpen(SaasCapabilityBoundary.LegacyCapability.KB_CLEANUP_CHECKER);
+
         log.info("[事务回查] 知识库删除清理，消息体：{}", JSONUtil.toJsonStr(message));
 
         KnowledgeBaseCleanupEvent event = message.getBody();

@@ -23,10 +23,12 @@ import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch.core.BulkRequest;
 import co.elastic.clients.elasticsearch.core.BulkResponse;
 import com.nageoffer.ai.ragent.core.chunk.model.EmbeddedChunk;
+import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
 import com.nageoffer.ai.ragent.rag.config.KeywordProperties;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
@@ -40,6 +42,10 @@ import java.util.Map;
  * 只写关键词文本与检索所需元信息，不写向量；文档主键 {@code _id} 取 chunkId，与向量库主键对齐才能保证
  * 跨模态去重与融合一致；所有知识库写同一物理索引、以 {@code collection_name} 区分，与向量库共享
  * collection 同构
+ *
+ * <p>P1.2a 只关<b>启动期</b>的共享索引自动创建（{@link #initSharedIndex()}）：
+ * 默认启动不对 ES 发起任何请求。检索/写入方向的租户与授权 filter 由 P1.3b 负责，
+ * 不因本单元关闭而假装已经隔离。
  */
 @Slf4j
 @Service
@@ -51,12 +57,28 @@ public class EsKeywordIndexService implements KeywordIndexService {
 
     private final ElasticsearchClient esClient;
     private final KeywordProperties keywordProperties;
+    /**
+     * 旧能力关闭判定；缺席按关闭处理（不默认放行）。
+     */
+    private final ObjectProvider<SaasCapabilityBoundary> capabilityBoundary;
 
     /**
-     * 启动即幂等确保共享索引存在，与向量共享 collection 的启动初始化对称
+     * 启动即幂等确保共享索引存在，与向量共享 collection 的启动初始化对称。
+     *
+     * <p>P1.2a：默认关闭，不做 {@code indices().exists()/create()} 任何远端调用。
      */
     @PostConstruct
     public void initSharedIndex() {
+        initSharedIndex(capabilityBoundary == null ? null : capabilityBoundary.getIfAvailable());
+    }
+
+    /** 显式边界版本：关闭时抛受控异常，且不含任何 ES 请求。 */
+    void initSharedIndex(SaasCapabilityBoundary boundary) {
+        if (boundary == null) {
+            throw new SaasCapabilityBoundary.ClosedCapabilityException(
+                    SaasCapabilityBoundary.LegacyCapability.ES_SHARED_INDEX_INITIALIZER);
+        }
+        boundary.requireOpen(SaasCapabilityBoundary.LegacyCapability.ES_SHARED_INDEX_INITIALIZER);
         ensureSharedIndex();
     }
 

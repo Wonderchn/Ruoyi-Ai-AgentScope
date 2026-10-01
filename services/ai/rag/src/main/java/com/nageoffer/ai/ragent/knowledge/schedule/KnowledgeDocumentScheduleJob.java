@@ -18,11 +18,13 @@
 package com.nageoffer.ai.ragent.knowledge.schedule;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
 import com.nageoffer.ai.ragent.knowledge.config.KnowledgeScheduleProperties;
 import com.nageoffer.ai.ragent.knowledge.dao.entity.KnowledgeDocumentScheduleDO;
 import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeDocumentScheduleMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -33,6 +35,13 @@ import java.util.concurrent.RejectedExecutionException;
 
 /**
  * 知识库文档定时刷新任务
+ *
+ * <p>P1.2a：这两个业务扫描属于<b>未批准旧能力</b>，且旧实现没有可信主体
+ * （既无 tenant 也无 member，恢复逻辑会直接写文档状态）。两个 {@code @Scheduled} 方法
+ * 在<b>任何 SQL / claim lease / 线程 submit 之前</b>短路关闭，因此即使在测试里直接调用，
+ * 也不会查询、不会更新文档状态、不会抢 Redis 锁、不会提交任务。
+ *
+ * <p>保留 Bean 与调度入口（不删除），可靠恢复算法仍按 P2 处理，本单元不改它。
  */
 @Slf4j
 @Component
@@ -45,6 +54,10 @@ public class KnowledgeDocumentScheduleJob {
     private final ScheduleLockManager lockManager;
     private final ScheduleRefreshProcessor scheduleRefreshProcessor;
     private final DocumentStatusHelper documentStatusHelper;
+    /**
+     * 旧能力关闭判定；缺席按关闭处理（不默认放行）。
+     */
+    private final ObjectProvider<SaasCapabilityBoundary> capabilityBoundary;
 
     /**
      * 恢复长时间卡在 RUNNING 状态的文档（进程崩溃等异常场景）
@@ -52,6 +65,9 @@ public class KnowledgeDocumentScheduleJob {
      */
     @Scheduled(fixedDelay = 60_000, initialDelay = 30_000)
     public void recoverStuckRunningDocuments() {
+        SaasCapabilityBoundary.requireOpenOrClosed(capabilityBoundary,
+                SaasCapabilityBoundary.LegacyCapability.DOCUMENT_SCHEDULE_RECOVER);
+
         long timeoutMinutes = scheduleProperties.getRunningTimeoutMinutes();
         DocumentStatusHelper.StuckRecoveryResult result = documentStatusHelper.recoverStuckRunning(timeoutMinutes);
         if (result.actualRecovered() > 0) {
@@ -63,6 +79,9 @@ public class KnowledgeDocumentScheduleJob {
 
     @Scheduled(fixedDelayString = "${rag.knowledge.schedule.scan-delay-ms:10000}")
     public void scan() {
+        SaasCapabilityBoundary.requireOpenOrClosed(capabilityBoundary,
+                SaasCapabilityBoundary.LegacyCapability.DOCUMENT_SCHEDULE_SCAN);
+
         Date now = new Date();
         List<KnowledgeDocumentScheduleDO> schedules = scheduleMapper.selectList(
                 new LambdaQueryWrapper<KnowledgeDocumentScheduleDO>()

@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.knowledge.mq;
 
 import com.nageoffer.ai.ragent.framework.exception.ServiceException;
+import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
 import com.nageoffer.ai.ragent.framework.mq.MessageWrapper;
 import com.nageoffer.ai.ragent.knowledge.mq.event.KnowledgeBaseCleanupEvent;
 import com.nageoffer.ai.ragent.rag.core.graph.LightRagClient;
@@ -29,6 +30,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
 import org.apache.rocketmq.spring.core.RocketMQListener;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /**
@@ -36,10 +38,16 @@ import org.springframework.stereotype.Component;
  * 负责异步回收知识库独占的底层物理资源：向量数据、bucket、ES 关键词索引、知识图谱数据
  * <p>
  * 各清理项 best-effort 互不影响，存在失败项则抛异常触发重试；所有操作均幂等，重试安全
+ *
+ * <p>P1.2a：本消费者属于<b>未批准旧能力</b>。装配层由
+ * {@code ai.integration.legacy-listeners-enabled=true} 才注册（产品配置出现该属性会让启动失败），
+ * 消息入口第一行再做一次关闭判定，因此人工直接调用不会 drop 向量空间、删除存储目录、
+ * 操作 ES 或连接图谱。
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
+@ConditionalOnProperty(name = "ai.integration.legacy-listeners-enabled", havingValue = "true")
 @RocketMQMessageListener(
         topic = "knowledge-base-cleanup_topic${unique-name:}",
         consumerGroup = "knowledge-base-cleanup_cg${unique-name:}"
@@ -56,9 +64,15 @@ public class KnowledgeBaseCleanupConsumer implements RocketMQListener<MessageWra
      * 图谱客户端惰性解析：rag.graph.type=none 时无该 bean，getIfAvailable() 返回 null 即跳过图谱清理
      */
     private final ObjectProvider<LightRagClient> lightRagClientProvider;
+    /**
+     * 旧能力关闭判定；缺席按关闭处理，绝不默认放行。
+     */
+    private final ObjectProvider<SaasCapabilityBoundary> capabilityBoundary;
 
     @Override
     public void onMessage(MessageWrapper<KnowledgeBaseCleanupEvent> message) {
+        SaasCapabilityBoundary.requireOpenOrClosed(capabilityBoundary,
+                SaasCapabilityBoundary.LegacyCapability.KB_CLEANUP_CONSUMER);
         KnowledgeBaseCleanupEvent event = message.getBody();
         String collectionName = event.getCollectionName();
 

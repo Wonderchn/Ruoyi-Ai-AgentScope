@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.knowledge.mq;
 
 import cn.hutool.json.JSONUtil;
+import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
 import com.nageoffer.ai.ragent.framework.mq.MessageWrapper;
 import com.nageoffer.ai.ragent.framework.mq.producer.DelegatingTransactionListener;
 import com.nageoffer.ai.ragent.framework.mq.producer.TransactionChecker;
@@ -28,27 +29,54 @@ import com.nageoffer.ai.ragent.knowledge.mq.event.KnowledgeDocumentChunkEvent;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /**
  * 文档分块事务消息回查器
  * <p>
  * 按 topic 注册，Broker 回查时可路由到任意实例，通过查询 DB 中文档状态判断本地事务是否已提交
+ *
+ * <p>P1.2a：本回查器按"未批准旧能力"处理。{@link #init(SaasCapabilityBoundary)} 在
+ * <b>注册之前</b>先判定并直接拒绝，因此不会向 {@link DelegatingTransactionListener}
+ * 注册任何旧 topic；{@link #check(MessageWrapper)} 也在读取消息体之前先判定，
+ * 人工直接调用不会触发裸 doc 查询。
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
+@ConditionalOnProperty(name = "ai.integration.legacy-listeners-enabled", havingValue = "true")
 public class KnowledgeDocumentChunkTransactionChecker implements TransactionChecker<KnowledgeDocumentChunkEvent> {
 
     private final KnowledgeDocumentMapper documentMapper;
     private final DelegatingTransactionListener transactionListener;
+
+    /**
+     * 事务回查的关闭判定依赖，同时被生命周期方法与直接调用复用。
+     *
+     * <p>刻意<b>不</b>放进构造器：关闭判定必须能在不装配该 checker 的轻量测试上下文里
+     * 被单独构造并断言（构造器只保留既有协作者，不因边界改造而改变实例化契约）。
+     */
+    @Autowired(required = false)
+    private SaasCapabilityBoundary capabilityBoundary;
 
     @Value("knowledge-document-chunk_topic${unique-name:}")
     private String chunkTopic;
 
     @PostConstruct
     public void init() {
+        init(capabilityBoundary);
+    }
+
+    /** 显式边界版本：关闭时抛受控异常，注册次数为 0。 */
+    void init(SaasCapabilityBoundary boundary) {
+        if (boundary == null) {
+            throw new SaasCapabilityBoundary.ClosedCapabilityException(
+                    SaasCapabilityBoundary.LegacyCapability.KB_DOCUMENT_CHUNK_CHECKER);
+        }
+        boundary.requireOpen(SaasCapabilityBoundary.LegacyCapability.KB_DOCUMENT_CHUNK_CHECKER);
         transactionListener.registerChecker(chunkTopic, this);
     }
 
@@ -59,6 +87,12 @@ public class KnowledgeDocumentChunkTransactionChecker implements TransactionChec
 
     @Override
     public boolean check(MessageWrapper<KnowledgeDocumentChunkEvent> message) {
+        if (capabilityBoundary == null) {
+            throw new SaasCapabilityBoundary.ClosedCapabilityException(
+                    SaasCapabilityBoundary.LegacyCapability.KB_DOCUMENT_CHUNK_CHECKER);
+        }
+        capabilityBoundary.requireOpen(SaasCapabilityBoundary.LegacyCapability.KB_DOCUMENT_CHUNK_CHECKER);
+
         log.info("[事务回查] 文档分块，消息体：{}", JSONUtil.toJsonStr(message));
 
         KnowledgeDocumentChunkEvent event = message.getBody();
