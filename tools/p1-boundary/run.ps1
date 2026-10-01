@@ -1473,6 +1473,29 @@ VALUES (900000000000000001, 'p1t1', 'p1b-admin', 'p1b-admin-t1', '__HASH__', '0'
 -- 所以不补这一行，登录必然在"授权类型错误"处失败——而错误信息同样读起来像口令问题。
 INSERT INTO platform.sys_client (id, client_id, client_key, client_secret, grant_type, device_type, active_timeout, timeout, status, del_flag)
 VALUES (900000000000000101, 'p1b-client', 'p1b-client-key', '', 'password', 'pc', 1800, 604800, '0', '0');
+
+-- 登录成功后 SysLoginService.buildLoginUser 会继续取权限与关联：
+--   permissionService.getMenuPermission / getRolePermission
+--   roleService.selectRolesByUserId / postService.selectPostsByUserId
+-- fixture 此前只建用户与租户，这些查询没有任何可关联的行。
+-- 平台随后在这些结果上做解引用，于是登录以 NullPointerException 收场——
+-- 错误信息是"系统异常，请联系管理员"，与角色数据缺失毫无表面关联。
+-- 这里补齐最小可用的角色、岗位与关联行。
+INSERT INTO platform.sys_role (role_id, tenant_id, role_name, role_key, role_sort, data_scope, menu_check_strictly, dept_check_strictly, status, del_flag)
+VALUES (900000000000000021, 'p1t1', 'p1b-role-t1', 'p1b_t1', 1, '1', true, true, '0', '0'),
+       (900000000000000022, 'p1t2', 'p1b-role-t2', 'p1b_t2', 1, '1', true, true, '0', '0');
+
+INSERT INTO platform.sys_post (post_id, tenant_id, post_code, post_name, post_sort, status, del_flag)
+VALUES (900000000000000031, 'p1t1', 'p1b_post_t1', 'p1b-post-t1', 1, '0', '0'),
+       (900000000000000032, 'p1t2', 'p1b_post_t2', 'p1b-post-t2', 1, '0', '0');
+
+INSERT INTO platform.sys_user_role (user_id, role_id)
+VALUES (900000000000000001, 900000000000000021),
+       (900000000000000002, 900000000000000022);
+
+INSERT INTO platform.sys_user_post (user_id, post_id)
+VALUES (900000000000000001, 900000000000000031),
+       (900000000000000002, 900000000000000032);
 '@
     $fixtureSql = $fixtureSql.Replace('__HASH__', $fixtureHash)
     # 落一份**形状诊断**（逐行长度 + 占位符残留数 + 哈希长度），不落任何口令或哈希本身。
