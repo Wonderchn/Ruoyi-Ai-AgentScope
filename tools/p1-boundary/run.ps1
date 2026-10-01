@@ -1566,10 +1566,16 @@ function Start-ProductJar([string]$Side, [string]$State, [int]$Port) {
     # "FATAL: password authentication failed for user \"platform_app\"" 失败。
     # 这条信息看起来像"库那边口令不对"，实际是 runner 少传了一个变量。
     # 走环境变量而不是命令行：口令不进任何命令行、不进证据。
+    #
+    # 同一类错误随后又出现一次：Redis 只传了 host/port、没传 REDIS_PASSWORD，
+    # Redisson 于是报 "WRONGPASS invalid username-password pair"。
+    # 两个后端、两种报错、同一个成因——**runner 少传凭据**。
+    # 这里把本轮自建服务的凭据一次性给全，避免继续逐个踩。
     $env:PLATFORM_DB_PASSWORD = $script:Secrets['platformApp']
     $env:AI_DB_PASSWORD = $script:Secrets['aiApp']
     $env:PLATFORM_DB_USERNAME = 'platform_app'
     $env:AI_DB_USERNAME = 'ai_app'
+    $env:REDIS_PASSWORD = $script:Secrets['redis']
     $arguments = @('-Dfile.encoding=UTF-8', '-Xmx1024m', '-jar', $jar, ('--server.port=' + $Port))
     if ($Side -eq 'platform') {
         $arguments += @(
