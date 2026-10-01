@@ -1288,7 +1288,14 @@ GRANT USAGE ON SCHEMA platform, ai, extensions TO platform_app, ai_app;
         }
         foreach ($file in @(Get-ChildItem -LiteralPath $full -File -Filter '*.sql' | Sort-Object Name)) {
             $sql = [IO.File]::ReadAllText($file.FullName)
-            [void](Invoke-SyntheticSql ("SET search_path TO " + $spec.schema + ",extensions;`r`n" + $sql) 'ragent_p1b' `
+            # 每个迁移自带 schema 与 search_path，不依赖前一步是否成功。
+            # 之前依赖"角色步骤里已经 CREATE SCHEMA"，于是角色步骤一旦没生效，
+            # 迁移就报 "no schema has been selected to create in"——
+            # 一个缺失的前置被读成迁移脚本本身有问题。迁移应当是自足的。
+            $prefix = "CREATE SCHEMA IF NOT EXISTS " + $spec.schema + ";`r`n" +
+                "CREATE SCHEMA IF NOT EXISTS extensions;`r`n" +
+                "SET search_path TO " + $spec.schema + ",extensions;`r`n"
+            [void](Invoke-SyntheticSql ($prefix + $sql) 'ragent_p1b' `
                     $spec.user $spec.key ('migration-' + $spec.schema + '-' + $file.Name + '.log'))
             $applied += [pscustomobject]@{ schema = $spec.schema; file = $file.Name
                 sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLower() }
