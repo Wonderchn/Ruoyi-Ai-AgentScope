@@ -90,7 +90,7 @@ public class KnowledgeBaseCleanupConsumer implements RocketMQListener<MessageWra
         boolean allSucceeded = true;
 
         try {
-            vectorStoreAdmin.dropVectorSpace(collectionName);
+            vectorStoreAdmin.dropVectorSpace(tenantId, collectionName);
         } catch (Exception e) {
             allSucceeded = false;
             log.error("清理向量空间失败，collectionName={}", collectionName, e);

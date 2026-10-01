@@ -168,25 +168,29 @@ public class MilvusVectorStoreAdmin implements VectorStoreAdmin {
     }
 
     @Override
-    public void dropVectorSpace(String collectionName) {
-        // 共享 collection 模型：按 collection_name 标量字段删除该知识库的行，而非 drop 整个 collection。
-        //
-        // P1.3b 已知缺口（尚未修）：本方法仍然只按 collection_name 过滤，没有租户条件。
-        // 在共享 collection 上，这意味着若两个租户存在同名 collection_name，拆除操作会跨租户删行。
-        // 完整的修法是让该入口同样接收并校验 tenantId（涉及 VectorStoreAdmin 接口签名，
-        // 超出本单元范围，已记录在 P1-closeout §7.3）。
-        //
-        // 这里先加一道"空值即拒绝"的兜底：空 collection_name 会让 filter 变成
-        // collection_name == ""，而拼错成空串的前缀式删除是本方法最容易造成大范围误删的形态。
+    public void dropVectorSpace(String tenantId, String collectionName) {
+        // 共享 collection 模型：按标量字段删除该知识库的行，而非 drop 整个 collection。
+        // 租户条件与 collection_name 条件是**并列必需**的：共享 collection 上两个租户
+        // 可以各有同名 collection_name，只按 collection_name 删除会跨租户删行。
+        VectorStoreAdmin.requireTenant(tenantId);
         if (collectionName == null || collectionName.isBlank()) {
             throw new ClientException("dropVectorSpace 需要明确的 collection_name：空值会匹配到全部行");
         }
-        String filter = "collection_name == \"" + escapeFilterValue(collectionName) + "\"";
+        String filter = tenantClause(tenantId)
+                + " and collection_name == \"" + escapeFilterValue(collectionName) + "\"";
         DeleteResp resp = milvusClient.delete(DeleteReq.builder()
                 .collectionName(ragDefaultProperties.getCollectionName())
                 .filter(filter)
                 .build());
-        log.info("已删除 collection_name={} 的向量行，deleteCnt={}", collectionName, resp.getDeleteCnt());
+        log.info("已删除 tenant={} collection_name={} 的向量行，deleteCnt={}",
+                tenantId, collectionName, resp.getDeleteCnt());
+    }
+
+    /**
+     * 租户过滤子句，与写侧/读侧同一形状（{@code tenant_id == "..."}）。
+     */
+    static String tenantClause(String tenantId) {
+        return "tenant_id == \"" + escapeFilterValue(tenantId) + "\"";
     }
 
     /**

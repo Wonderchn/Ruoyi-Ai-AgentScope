@@ -271,6 +271,42 @@ class P1VectorWriteTenantTest {
         }
     }
 
+    @Test
+    @DisplayName("Pg 管理面拆除必须带租户条件，缺 V3 列时明确失败而非无租户删除")
+    void pgAdminDropIsTenantScopedAndFailsLoudly() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        PgVectorStoreAdmin admin = new PgVectorStoreAdmin(jdbcTemplate, defaults());
+
+        // (a) 缺租户：必须在发出任何语句之前拒绝——共享表上无租户的删除就是跨租户删行
+        for (String bad : new String[] {null, "", "   ", "T:1", "x".repeat(65)}) {
+            assertThrows(RuntimeException.class, () -> admin.dropVectorSpace(bad, COLLECTION),
+                    "dropVectorSpace 必须拒绝 tenant=" + bad);
+        }
+        verifyNoInteractions(jdbcTemplate);
+
+        // (b) 有租户：SQL 必须同时限定租户与知识库
+        when(jdbcTemplate.update(anyString(), any(Object[].class))).thenReturn(0);
+        admin.dropVectorSpace(TENANT, COLLECTION);
+
+        ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Object[]> argsCaptor = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbcTemplate).update(sqlCaptor.capture(), argsCaptor.capture());
+        assertTrue(sqlCaptor.getValue().contains("tenant_id = ? AND collection_name = ?"),
+                "拆除语句必须同时限定租户与知识库，实际 SQL=" + sqlCaptor.getValue());
+        assertEquals(TENANT, argsCaptor.getValue()[0], "租户必须是第一个绑定参数");
+
+        // (c) 缺 V3 列：明确失败，绝不回落到只按 collection_name 删除的旧语句
+        JdbcTemplate broken = mock(JdbcTemplate.class);
+        PgVectorStoreAdmin brokenAdmin = new PgVectorStoreAdmin(broken, defaults());
+        when(broken.update(anyString(), any(Object[].class)))
+                .thenThrow(new BadSqlGrammarException("test", "DELETE ...", new SQLException("column does not exist")));
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> brokenAdmin.dropVectorSpace(TENANT, COLLECTION));
+        assertTrue(failure.getMessage().contains("V3"), "错误信息必须指向缺失的迁移，实际=" + failure.getMessage());
+        // 只尝试一条语句：第二次调用就意味着发生了回落
+        verify(broken, org.mockito.Mockito.times(1)).update(anyString(), any(Object[].class));
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private static EmbeddedChunk chunk() {

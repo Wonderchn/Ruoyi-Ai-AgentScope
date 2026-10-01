@@ -58,6 +58,9 @@ class P1MilvusSchemaTenantTest {
 
     private static final String SHARED_COLLECTION = "rag_default_store";
 
+    /** 合成租户，形状符合主体契约（1..64、无冒号），避免用 "t" 这类不合契约的值把测试做成假绿。 */
+    private static final String TENANT = "p1-tenant-milvus-schema";
+
     @Test
     @DisplayName("共享 collection 必须声明 tenant_id 字段，否则写行的租户会被服务端拒绝")
     void collectionDeclaresTenantField() {
@@ -133,12 +136,48 @@ class P1MilvusSchemaTenantTest {
         MilvusClientV2 milvusClient = mock(MilvusClientV2.class);
         MilvusVectorStoreAdmin admin = new MilvusVectorStoreAdmin(milvusClient, properties());
 
-        assertThrows(ClientException.class, () -> admin.dropVectorSpace(null));
-        assertThrows(ClientException.class, () -> admin.dropVectorSpace(""));
-        assertThrows(ClientException.class, () -> admin.dropVectorSpace("   "));
+        assertThrows(ClientException.class, () -> admin.dropVectorSpace(TENANT, null));
+        assertThrows(ClientException.class, () -> admin.dropVectorSpace(TENANT, ""));
+        assertThrows(ClientException.class, () -> admin.dropVectorSpace(TENANT, "   "));
 
         // 拒绝必须发生在删除之前：发一条 filter 为空/恒假的删除语句再去抛错是不可接受的
         verify(milvusClient, never()).delete(any(DeleteReq.class));
+    }
+
+    @Test
+    @DisplayName("dropVectorSpace 拒绝缺失/非法租户，且发生在删除之前")
+    void dropRejectsMissingTenant() {
+        MilvusClientV2 milvusClient = mock(MilvusClientV2.class);
+        MilvusVectorStoreAdmin admin = new MilvusVectorStoreAdmin(milvusClient, properties());
+
+        for (String bad : new String[] {null, "", "   ", "T:1", "x".repeat(65)}) {
+            assertThrows(RuntimeException.class, () -> admin.dropVectorSpace(bad, "kb_a"),
+                    "dropVectorSpace 必须拒绝 tenant=" + bad);
+        }
+
+        // 共享 collection 上缺租户的删除就是跨租户删行，必须在发出任何删除之前失败
+        verify(milvusClient, never()).delete(any(DeleteReq.class));
+    }
+
+    @Test
+    @DisplayName("dropVectorSpace 的 filter 必须同时含租户与 collection_name")
+    void dropFilterCarriesTenantAndCollection() {
+        MilvusClientV2 milvusClient = mock(MilvusClientV2.class);
+        DeleteResp resp = mock(DeleteResp.class);
+        when(resp.getDeleteCnt()).thenReturn(0L);
+        when(milvusClient.delete(any(DeleteReq.class))).thenReturn(resp);
+        MilvusVectorStoreAdmin admin = new MilvusVectorStoreAdmin(milvusClient, properties());
+
+        admin.dropVectorSpace(TENANT, "kb_a");
+
+        ArgumentCaptor<DeleteReq> reqCaptor = ArgumentCaptor.forClass(DeleteReq.class);
+        verify(milvusClient).delete(reqCaptor.capture());
+        String filter = reqCaptor.getValue().getFilter();
+        assertNotNull(filter);
+        assertTrue(filter.startsWith("tenant_id == \"" + TENANT + "\""),
+                "filter 必须以本租户条件开头，实际=" + filter);
+        assertTrue(filter.contains("collection_name == \"kb_a\""),
+                "filter 必须同时限定知识库，实际=" + filter);
     }
 
     @Test
@@ -150,7 +189,7 @@ class P1MilvusSchemaTenantTest {
         when(milvusClient.delete(any(DeleteReq.class))).thenReturn(resp);
         MilvusVectorStoreAdmin admin = new MilvusVectorStoreAdmin(milvusClient, properties());
 
-        admin.dropVectorSpace("kb\" or collection_name != \"");
+        admin.dropVectorSpace(TENANT, "kb\" or collection_name != \"");
 
         ArgumentCaptor<DeleteReq> reqCaptor = ArgumentCaptor.forClass(DeleteReq.class);
         verify(milvusClient).delete(reqCaptor.capture());

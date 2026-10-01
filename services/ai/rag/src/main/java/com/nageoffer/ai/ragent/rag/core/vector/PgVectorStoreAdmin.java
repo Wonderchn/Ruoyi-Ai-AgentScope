@@ -18,10 +18,12 @@
 package com.nageoffer.ai.ragent.rag.core.vector;
 
 import com.nageoffer.ai.ragent.rag.config.RAGDefaultProperties;
+import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.framework.exception.ServiceException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.jdbc.BadSqlGrammarException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -78,11 +80,29 @@ public class PgVectorStoreAdmin implements VectorStoreAdmin {
     }
 
     @Override
-    public void dropVectorSpace(String collectionName) {
-        // PG 为共享表：仅删除该 collection 的残留向量行，不动共享 HNSW 索引
-        // 常规情况下文档删除已逐一清理，此处多为 0 行的兜底
+    public void dropVectorSpace(String tenantId, String collectionName) {
+        VectorStoreAdmin.requireTenant(tenantId);
+        if (collectionName == null || collectionName.isBlank()) {
+            throw new ClientException("dropVectorSpace 需要明确的 collection_name：空值会匹配到全部行");
+        }
+        // PG 为共享表：仅删除该租户该 collection 的残留向量行，不动共享 HNSW 索引。
+        // 常规情况下文档删除已逐一清理，此处多为 0 行的兜底。
+        // 租户条件是必需的：共享表上两个租户可以各有同名 collection_name，
+        // 只按 collection_name 删除会删到别人的行。
+        //
+        // tenant_id 列由 C6 门控的 V3 迁移补齐；缺列时**明确失败**，
+        // 绝不回落到只按 collection_name 删除的旧语句——那正是本方法要消除的越权面。
         // noinspection SqlDialectInspection,SqlNoDataSourceInspection
-        int deleted = jdbcTemplate.update("DELETE FROM t_knowledge_vector WHERE collection_name = ?", collectionName);
-        log.info("已删除 collection={} 的残留向量行，count={}", collectionName, deleted);
+        String sql = "DELETE FROM t_knowledge_vector WHERE tenant_id = ? AND collection_name = ?";
+        int deleted;
+        try {
+            deleted = jdbcTemplate.update(sql, tenantId, collectionName);
+        } catch (BadSqlGrammarException e) {
+            log.error("dropVectorSpace 失败：向量表缺少 tenant_id 列（需 V3 迁移），拒绝执行无租户条件的删除, "
+                    + "tenant={}, collection={}, sqlState={}", tenantId, collectionName, e.getSQLException().getSQLState());
+            throw new IllegalStateException("dropVectorSpace 需要 V3 迁移补齐 t_knowledge_vector.tenant_id；"
+                    + "在补齐之前不执行任何无租户条件的删除", e);
+        }
+        log.info("已删除 tenant={} collection={} 的残留向量行，count={}", tenantId, collectionName, deleted);
     }
 }
