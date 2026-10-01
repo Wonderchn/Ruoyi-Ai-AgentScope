@@ -1,4 +1,4 @@
-# tools/p1-boundary —— P1.2a 边界验收 runner
+﻿# tools/p1-boundary —— P1.2a 边界验收 runner
 
 本目录只有两个文件：`run.ps1`（验收 runner）与 `README.md`（本文件）。runner 不修改仓库、
 不接触 CI/工作流、不连接任何已有业务库；除 `-EvidenceDir` 下的证据与 `-WorkRoot` 下的临时目录外，
