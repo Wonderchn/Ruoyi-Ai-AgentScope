@@ -32,6 +32,7 @@ import java.util.Map;
  * 合成替身，不触达任何真实身份数据。只存在于测试源集。
  */
 @RestController
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class P04TestControlController {
 
     private final SyntheticPlatformIdentitySource identities;

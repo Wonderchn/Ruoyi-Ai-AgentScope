@@ -26,6 +26,11 @@ package com.nageoffer.ai.ragent.rag.runtime;
  */
 public interface AclProvider {
 
+    /** Current tenant ACL revision; an absent revision must fail closed. */
+    default int aclVersion(String tenantId) {
+        throw new IllegalStateException("ACL version provider is required");
+    }
+
     /**
      * @return 该成员是否可对指定资源执行本动作；资源不存在或无权时必须返回 {@code false}
      *         （对外统一 404，避免泄露存在性）

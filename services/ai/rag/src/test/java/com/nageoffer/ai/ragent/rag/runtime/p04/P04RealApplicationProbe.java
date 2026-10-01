@@ -15,25 +15,25 @@
  * limitations under the License.
  */
 
-package org.ruoyi.aiintegration.p04;
+package com.nageoffer.ai.ragent.rag.runtime.p04;
 
-import org.ruoyi.aiintegration.web.ApiResponse;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.boot.SpringApplication;
+import org.springframework.context.ConfigurableApplicationContext;
 
-import java.util.Map;
+/** 启动真实产品配置类；classpath只复制本类与证据工具，不带测试组件或占位配置。 */
+public final class P04RealApplicationProbe {
 
-/**
- * 最小测试应用的就绪探针（Spec §8.4 冻结路径 {@code GET /p04/health}）。
- *
- * <p>只存在于测试源集：它服务于"两个独立 JVM 就绪"的验收编排，不属于产品接口。
- */
-@RestController
-@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
-public class P04HealthController {
+    private P04RealApplicationProbe() {
+    }
 
-    @GetMapping("/p04/health")
-    public ApiResponse<Map<String, Object>> health() {
-        return ApiResponse.ok(Map.of("status", "UP", "app", "p04-platform-test"));
+    public static void main(String[] args) throws Exception {
+        ConfigurableApplicationContext context = SpringApplication.run(
+                Class.forName("com.nageoffer.ai.ragent.RagentApplication"), args);
+        try {
+            P04ApplicationEvidence.write(context, System.getenv("CONTRACT_ASSEMBLY_EVIDENCE"));
+        } catch (Exception e) {
+            context.close();
+            throw e;
+        }
     }
 }

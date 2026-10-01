@@ -22,6 +22,8 @@ import org.springframework.stereotype.Component;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Map;
 
 /**
  * <b>测试专用</b>的合成资源 ACL（Spec §7.3 / §8.1 的 C4）。
@@ -34,6 +36,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <b>没有任何</b> KB 授权（对应"空的有效授权集合必须拒绝"）。
  */
 @Component
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class SyntheticAclProvider implements AclProvider {
 
     /** T1 的知识库 A。 */
@@ -43,10 +46,19 @@ public class SyntheticAclProvider implements AclProvider {
     public static final String KB_B = "KB-B";
 
     private final Set<String> grants = ConcurrentHashMap.newKeySet();
+    private final Map<String, AtomicInteger> versions = new ConcurrentHashMap<>();
 
     public SyntheticAclProvider() {
         grant("T1", "M1", "rag.chat", KB_A);
         grant("T2", "M1T2", "rag.chat", KB_B);
+        versions.put("T1", new AtomicInteger(1));
+        versions.put("T2", new AtomicInteger(1));
+    }
+
+    @Override
+    public int aclVersion(String tenantId) {
+        AtomicInteger version = versions.get(tenantId);
+        return version == null ? 0 : version.get();
     }
 
     @Override
@@ -58,12 +70,20 @@ public class SyntheticAclProvider implements AclProvider {
     }
 
     /** 测试控制面：授权/撤权（N07「仅撤 AI ACL」场景）。 */
-    public void setGranted(String tenantId, String membershipId, String action, String resourceRef,
+    public synchronized void setGranted(String tenantId, String membershipId, String action, String resourceRef,
                            boolean granted) {
+        AtomicInteger version = versions.get(tenantId);
+        if (version == null) {
+            throw new IllegalArgumentException("unknown synthetic tenant");
+        }
+        boolean changed;
         if (granted) {
-            grant(tenantId, membershipId, action, resourceRef);
+            changed = grants.add(key(tenantId, membershipId, action, resourceRef));
         } else {
-            grants.remove(key(tenantId, membershipId, action, resourceRef));
+            changed = grants.remove(key(tenantId, membershipId, action, resourceRef));
+        }
+        if (changed) {
+            version.incrementAndGet();
         }
     }
 

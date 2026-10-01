@@ -29,6 +29,7 @@ import java.util.Map;
  * <p>只存在于测试源集，不是产品接口。
  */
 @RestController
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class P04HealthController {
 
     @GetMapping("/p04/health")

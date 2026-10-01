@@ -42,6 +42,7 @@ import java.util.UUID;
  * 因此主源集不携带任何"负例铸造"能力。负例只服务于合成靶场的拒绝断言。
  */
 @Component
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class NegativeDelegationMinter {
 
     private final DelegationSigningKeys keys;

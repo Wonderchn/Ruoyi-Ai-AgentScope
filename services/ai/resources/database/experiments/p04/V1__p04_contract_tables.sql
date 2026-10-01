@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS ai_run (
     request_hash    VARCHAR(64)  NOT NULL,
     status          VARCHAR(32)  NOT NULL,
     policy_version  INTEGER      NOT NULL,
+    acl_version     INTEGER      NOT NULL,
     created_at      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     -- 持久幂等的唯一裁决点：靠约束而不是"先查后插"
     CONSTRAINT uk_run_idempotency UNIQUE (tenant_id, membership_id, action, idempotency_key)

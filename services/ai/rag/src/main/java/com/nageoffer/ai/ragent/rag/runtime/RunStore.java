@@ -53,7 +53,7 @@ public interface RunStore {
     /** 待落库的受理记录。 */
     record NewRun(String runId, String eventId, String outboxId, String ledgerId, String tenantId,
                   String membershipId, String subject, String action, String idempotencyKey,
-                  String requestHash, int policyVersion) {
+                  String requestHash, int policyVersion, int aclVersion) {
     }
 
     /** 并发同键导致唯一键冲突。 */

@@ -26,13 +26,30 @@ package com.nageoffer.ai.ragent.rag.runtime;
  */
 public interface AcceptanceFaultHook {
 
+    /** Test-only synchronization immediately before the replay-guard insert. */
+    default void beforeJtiDecision(String jti) {
+    }
+
+    /** Test-only synchronization immediately before the idempotency lookup/insert decision. */
+    default void beforeIdempotencyDecision(String idempotencyKey) {
+    }
+
+    /** Test-only failure at one of the four writes while the transaction is still open. */
+    default void afterWrite(String stage, String runId) {
+    }
+
     /**
      * 四类业务记录已写入、事务<b>尚未提交</b>时调用；抛出即整体回滚（F01）。
      */
     void beforeCommit(String runId);
 
     /**
-     * 事务<b>已提交</b>后调用；抛出用于模拟"提交成功但响应丢失"（F02）。
+     * 事务<b>已提交</b>后调用。抛出会让客户端看到非 2xx 而业务记录确实存在。
+     *
+     * <p><b>口径说明</b>：P0.4 集成验收的 F02 判据<b>不是</b>本回调——F02 由外部
+     * 回环 TCP 代理在真实 202 提交后直接断开客户端连接来产生真正的 transport 失联
+     * （见 {@code tools/p04-contract/run.ps1} 的 {@code Invoke-DroppedResponse}）。
+     * 本回调是更早的"部署内响应丢失近似"，保留供测试源集使用，不得据此声称已证明网络丢包。
      */
     void afterCommit(String runId);
 }

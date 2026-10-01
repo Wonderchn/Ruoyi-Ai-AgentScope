@@ -20,6 +20,7 @@ package com.nageoffer.ai.ragent.rag.runtime;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -84,7 +85,8 @@ public class RequestHasher {
         JsonFactory strictFactory = JsonFactory.builder()
                 .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
                 .build();
-        this.strictMapper = new ObjectMapper(strictFactory);
+        this.strictMapper = new ObjectMapper(strictFactory)
+                .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     }
 
     /**
@@ -108,18 +110,20 @@ public class RequestHasher {
             throw bad("request body must be an object");
         }
 
-        for (String name : fieldNames(root)) {
-            if (IDENTITY_FIELDS.contains(name)) {
-                // 身份只能来自委托凭证；不得靠请求体声明，也不得回落默认租户
+        // 可解析对象中的身份声明优先于结构错误，不能由输入键顺序决定 403/400。
+        for (String name : IDENTITY_FIELDS) {
+            if (root.has(name)) {
                 throw new P04AiException(P04AiErrorCode.TENANT_CONTEXT_MISSING);
             }
+        }
+        for (String name : fieldNames(root)) {
             if (!ALLOWED_FIELDS.contains(name)) {
                 throw bad("unknown field: " + name);
             }
         }
 
         JsonNode schemaVersion = root.get("schemaVersion");
-        if (schemaVersion == null || !schemaVersion.isIntegralNumber()
+        if (schemaVersion == null || !schemaVersion.isIntegralNumber() || !schemaVersion.canConvertToInt()
                 || schemaVersion.asInt() != EXPECTED_SCHEMA_VERSION) {
             throw bad("schemaVersion must be exactly " + EXPECTED_SCHEMA_VERSION);
         }

@@ -92,10 +92,12 @@ class P04RunAcceptanceTest {
         int events;
         int outbox;
         int ledger;
+        int lastAclVersion;
 
         @Override
         public StoredRun accept(NewRun run) {
             calls.add("accept");
+            lastAclVersion = run.aclVersion();
             runs++;
             events++;
             outbox++;
@@ -165,9 +167,17 @@ class P04RunAcceptanceTest {
 
         store = new InMemoryRunStore();
         checker = new RecordingChecker(store.calls);
-        service = new RunAcceptanceService(verifier, checker,
-                (tenantId, membershipId, action, resourceRef) -> "KB-A".equals(resourceRef), store, hasher,
-                noFaultHook());
+        service = new RunAcceptanceService(verifier, checker, new AclProvider() {
+            @Override
+            public boolean canAccess(String tenantId, String membershipId, String action, String resourceRef) {
+                return "KB-A".equals(resourceRef);
+            }
+
+            @Override
+            public int aclVersion(String tenantId) {
+                return 7;
+            }
+        }, store, hasher, noFaultHook());
     }
 
     /** 单测层不注入故障：显式给一个"永远没有实现"的提供者，与 Spring 装配语义保持一致。 */
@@ -229,6 +239,7 @@ class P04RunAcceptanceTest {
         assertEquals(1, store.events);
         assertEquals(1, store.outbox);
         assertEquals(1, store.ledger);
+        assertEquals(7, store.lastAclVersion);
     }
 
     @Test
@@ -463,5 +474,58 @@ class P04RunAcceptanceTest {
         assertTrue(names.contains("userId"));
         assertTrue(names.contains("mid"));
         assertTrue(names.contains("membershipId"));
+    }
+
+    @Test
+    @DisplayName("版本必须精确整数1：浮点、溢出Long和BigInteger不得截断成1")
+    void numericCoercionCannotBypassSchemaVersion() {
+        for (String value : List.of("1.0", "1e0", "\"1\"", "null", "4294967297",
+                "-4294967295", "18446744073709551617")) {
+            assertEquals(P04AiErrorCode.BAD_REQUEST,
+                    codeOfBody(LEGAL_BODY.replace("\"schemaVersion\":1", "\"schemaVersion\":" + value)),
+                    () -> "must reject schemaVersion=" + value);
+        }
+        assertEquals(0, store.runs);
+        assertEquals(0, store.events);
+        assertEquals(0, store.outbox);
+        assertEquals(0, store.ledger);
+    }
+
+    @Test
+    @DisplayName("完整消费JSON：尾随对象、数组、第二个标量及垃圾均400")
+    void trailingContentIsRejected() {
+        for (String suffix : List.of(" {}", " []", " null", " INVALID", " {\"tenantId\":\"T2\"}")) {
+            assertEquals(P04AiErrorCode.BAD_REQUEST, codeOfBody(LEGAL_BODY + suffix));
+        }
+        assertEquals(0, store.runs);
+    }
+
+    @Test
+    @DisplayName("可解析对象携带身份字段时403优先级与键顺序无关")
+    void identityRejectionDoesNotDependOnFieldOrder() {
+        String tail = LEGAL_BODY.substring(1);
+        assertEquals(P04AiErrorCode.TENANT_CONTEXT_MISSING,
+                codeOfBody("{\"extra\":1,\"tenantId\":\"T2\"," + tail));
+        assertEquals(P04AiErrorCode.TENANT_CONTEXT_MISSING,
+                codeOfBody("{\"tenantId\":\"T2\",\"extra\":1," + tail));
+        assertEquals(P04AiErrorCode.TENANT_CONTEXT_MISSING,
+                codeOfBody("{\"tenantId\":null," + tail));
+        assertEquals(0, store.runs);
+    }
+
+    @Test
+    @DisplayName("审核反例：null文本、非字符串资源、数组根、深JSON和相似动作拒绝")
+    void adversarialRequestShapesAreRejected() {
+        for (String body : List.of(
+                LEGAL_BODY.replace("\"text\":\"synthetic-p04\"", "\"text\":null"),
+                LEGAL_BODY.replace("[\"KB-A\"]", "[1]"),
+                LEGAL_BODY.replace("[\"KB-A\"]", "[null]"),
+                "[" + LEGAL_BODY + "]", "[".repeat(1001) + "0" + "]".repeat(1001))) {
+            assertEquals(P04AiErrorCode.BAD_REQUEST, codeOfBody(body));
+        }
+        for (String action : List.of("RAG.CHAT", "rag.chat ", "rag.Chat", "rag.chat.submit")) {
+            assertEquals(P04AiErrorCode.BAD_REQUEST, codeOfBody(LEGAL_BODY.replace("rag.chat", action)));
+        }
+        assertEquals(0, store.runs);
     }
 }

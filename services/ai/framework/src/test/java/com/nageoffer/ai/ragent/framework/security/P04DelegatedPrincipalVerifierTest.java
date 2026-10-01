@@ -285,6 +285,88 @@ class P04DelegatedPrincipalVerifierTest {
         assertEquals(P04AiErrorCode.DELEGATION_INVALID, codeOf(() -> verifier.verify(futureIat)));
     }
 
+    /** 原始JSON签名绕过签发库的claim类型保护，验证接收侧处理真正的坏类型。 */
+    private static Map<String, Object> validRawClaims() {
+        Map<String, Object> claims = new LinkedHashMap<>();
+        claims.put("iss", "platform");
+        claims.put("aud", List.of("ai"));
+        claims.put("sub", "sub-u1");
+        claims.put("tid", "T1");
+        claims.put("mid", "M1");
+        claims.put("pv", 1);
+        claims.put("jti", UUID.randomUUID().toString());
+        claims.put("iat", NOW.getEpochSecond());
+        claims.put("exp", NOW.plusSeconds(60).getEpochSecond());
+        return claims;
+    }
+
+    private static String signedRawClaims(Map<String, Object> claims) throws Exception {
+        return Jwts.builder().header().keyId(KID).type("JWT").and()
+                .content(MAPPER.writeValueAsBytes(claims))
+                .signWith(trusted.getPrivate(), Jwts.SIG.RS256).compact();
+    }
+
+    @Test
+    @DisplayName("iat纯边界：不带nbf，skew30秒内接受、31秒拒绝")
+    void issuedAtSkewIsCheckedIndependentlyOfNotBefore() throws Exception {
+        Map<String, Object> claims = validRawClaims();
+        claims.put("iat", NOW.plusSeconds(30).getEpochSecond());
+        assertEquals("T1", verifier.verify(signedRawClaims(claims)).tenantId());
+        claims.put("iat", NOW.plusSeconds(31).getEpochSecond());
+        assertEquals(P04AiErrorCode.DELEGATION_INVALID,
+                codeOf(() -> verifier.verify(signedRawClaims(claims))));
+    }
+
+    @Test
+    @DisplayName("exp边界：恰在30秒skew内通过，超出1秒拒绝")
+    void expirationSkewBoundaryIsEnforced() throws Exception {
+        Map<String, Object> claims = validRawClaims();
+        claims.put("iat", NOW.minusSeconds(60).getEpochSecond());
+        claims.put("exp", NOW.minusSeconds(30).getEpochSecond());
+        assertEquals("T1", verifier.verify(signedRawClaims(claims)).tenantId());
+        claims.put("exp", NOW.minusSeconds(31).getEpochSecond());
+        assertEquals(P04AiErrorCode.DELEGATION_INVALID,
+                codeOf(() -> verifier.verify(signedRawClaims(claims))));
+    }
+
+    @Test
+    @DisplayName("nbf可缺席；存在时30秒skew内通过，31秒拒绝")
+    void notBeforeSkewBoundaryIsEnforced() throws Exception {
+        Map<String, Object> claims = validRawClaims();
+        assertEquals("T1", verifier.verify(signedRawClaims(claims)).tenantId());
+        claims.put("nbf", NOW.plusSeconds(30).getEpochSecond());
+        assertEquals("T1", verifier.verify(signedRawClaims(claims)).tenantId());
+        claims.put("nbf", NOW.plusSeconds(31).getEpochSecond());
+        assertEquals(P04AiErrorCode.DELEGATION_INVALID,
+                codeOf(() -> verifier.verify(signedRawClaims(claims))));
+    }
+
+    @Test
+    @DisplayName("exp必须晚于iat，不能相等或更早")
+    void expirationMustFollowIssuedAt() {
+        for (long offset : List.of(0L, -1L)) {
+            Map<String, Object> claims = validRawClaims();
+            claims.put("exp", NOW.plusSeconds(offset).getEpochSecond());
+            assertEquals(P04AiErrorCode.DELEGATION_INVALID,
+                    codeOf(() -> verifier.verify(signedRawClaims(claims))));
+        }
+    }
+
+    @Test
+    @DisplayName("签名有效但时间/身份claim类型错误统一401，不泄漏类型异常为500")
+    void invalidClaimTypesAreControlledRejections() {
+        for (String field : List.of("iat", "exp", "nbf", "pv", "tid", "mid")) {
+            Map<String, Object> claims = validRawClaims();
+            claims.put(field, Map.of("invalid", true));
+            assertEquals(P04AiErrorCode.DELEGATION_INVALID,
+                    codeOf(() -> verifier.verify(signedRawClaims(claims))), field);
+        }
+        Map<String, Object> claims = validRawClaims();
+        claims.put("pv", "bad");
+        assertEquals(P04AiErrorCode.DELEGATION_INVALID,
+                codeOf(() -> verifier.verify(signedRawClaims(claims))));
+    }
+
     private static String base64Url(byte[] bytes) {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }

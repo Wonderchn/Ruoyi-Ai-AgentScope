@@ -92,6 +92,7 @@ public class RunAcceptanceService {
         }
 
         // 防重放不可用则拒绝，不回退为内存判定
+        faultHook.ifAvailable(hook -> hook.beforeJtiDecision(principal.jti()));
         if (!runStore.recordJti(principal.issuer(), principal.jti())) {
             throw new P04AiException(P04AiErrorCode.DELEGATION_INVALID);
         }
@@ -103,13 +104,22 @@ public class RunAcceptanceService {
         // 权限检查先行：撤权后不能靠重放拿回原 runId
         authorizationClient.check(principal, action, firstResource);
 
+        int aclVersion = aclProvider.aclVersion(principal.tenantId());
+        if (aclVersion < 1) {
+            throw new P04AiException(P04AiErrorCode.AUTHORIZATION_UNAVAILABLE);
+        }
+
         for (String ref : resourceRefs) {
             if (!aclProvider.canAccess(principal.tenantId(), principal.membershipId(), action, ref)) {
                 throw new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
             }
         }
+        if (aclProvider.aclVersion(principal.tenantId()) != aclVersion) {
+            throw new P04AiException(P04AiErrorCode.AUTHORIZATION_UNAVAILABLE);
+        }
 
         String requestHash = hasher.hash(body);
+        faultHook.ifAvailable(hook -> hook.beforeIdempotencyDecision(idempotencyKey));
         Optional<RunStore.StoredRun> existing = runStore.findByIdempotencyKey(principal.tenantId(),
                 principal.membershipId(), action, idempotencyKey);
         if (existing.isPresent()) {
@@ -118,7 +128,7 @@ public class RunAcceptanceService {
 
         RunStore.NewRun newRun = new RunStore.NewRun(newId(), newId(), newId(), newId(),
                 principal.tenantId(), principal.membershipId(), principal.subject(), action,
-                idempotencyKey, requestHash, principal.policyVersion());
+                idempotencyKey, requestHash, principal.policyVersion(), aclVersion);
         try {
             RunStore.StoredRun stored = runStore.accept(newRun);
             // F02：事务已提交（accept 的 @Transactional 已在返回前提交）；此处抛出用于模拟

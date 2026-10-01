@@ -193,6 +193,7 @@ class P04AssemblyBoundaryTest {
             assertHasBean(context, DelegationVerifier.class);
             assertHasBean(context, PlatformAuthorizationClient.class);
             assertHasBean(context, P04SecurityConfig.class);
+            assertHasBean(context, P04AiExceptionHandler.class);
             assertHasBean(context, RequestHasher.class);
             assertHasBean(context, RunAcceptanceService.class);
             assertHasBean(context, JdbcRunStore.class);
@@ -232,7 +233,17 @@ class P04AssemblyBoundaryTest {
 
         @Bean
         AclProvider aclProvider() {
-            return (tenantId, membershipId, action, resourceRef) -> false;
+            return new AclProvider() {
+                @Override
+                public boolean canAccess(String tenantId, String membershipId, String action, String resourceRef) {
+                    return false;
+                }
+
+                @Override
+                public int aclVersion(String tenantId) {
+                    return 1;
+                }
+            };
         }
     }
 

@@ -33,7 +33,13 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication(scanBasePackages = "org.ruoyi.aiintegration")
 public class P04PlatformTestApplication {
 
-    public static void main(String[] args) {
-        SpringApplication.run(P04PlatformTestApplication.class, args);
+    public static void main(String[] args) throws Exception {
+        var context = SpringApplication.run(P04PlatformTestApplication.class, args);
+        try {
+            P04PlatformEvidence.write(context, System.getenv("CONTRACT_ASSEMBLY_EVIDENCE"));
+        } catch (Exception e) {
+            context.close();
+            throw e;
+        }
     }
 }

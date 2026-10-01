@@ -40,6 +40,7 @@ import java.util.Locale;
  */
 @RestController
 @RequestMapping("/internal/platform/v1")
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class P04DelegationTestController {
 
     private final NegativeDelegationMinter minter;

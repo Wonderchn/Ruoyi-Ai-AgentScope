@@ -32,6 +32,7 @@ import java.util.Set;
  * 归属判定只认 {@code tid/sub/mid}。
  */
 @Component
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class SyntheticPlatformIdentitySource implements PlatformIdentitySource {
 
     /** 同名用户：不得据此合并身份。 */

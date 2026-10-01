@@ -42,6 +42,7 @@ import java.nio.charset.StandardCharsets;
  * </ul>
  */
 @Component
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
 public class P04PlatformFaultInjector implements PlatformFaultInjector {
 
     /**

@@ -54,19 +54,23 @@ public class JdbcRunStore implements RunStore {
     public StoredRun accept(NewRun run) {
         try {
             jdbcTemplate.update("INSERT INTO ai_run (id, tenant_id, membership_id, subject, action, "
-                            + "idempotency_key, request_hash, status, policy_version) VALUES (?,?,?,?,?,?,?,?,?)",
+                            + "idempotency_key, request_hash, status, policy_version, acl_version) VALUES (?,?,?,?,?,?,?,?,?,?)",
                     run.runId(), run.tenantId(), run.membershipId(), run.subject(), run.action(),
-                    run.idempotencyKey(), run.requestHash(), "QUEUED", run.policyVersion());
+                    run.idempotencyKey(), run.requestHash(), "QUEUED", run.policyVersion(), run.aclVersion());
+            faultHook.ifAvailable(hook -> hook.afterWrite("run", run.runId()));
 
             jdbcTemplate.update("INSERT INTO ai_run_event (id, run_id, seq, type, payload) VALUES (?,?,?,?,?)",
                     run.eventId(), run.runId(), 1, RunAcceptanceService.EVENT_RUN_ACCEPTED, null);
-
-            jdbcTemplate.update("INSERT INTO outbox_event (id, run_id, event_id, topic, payload) VALUES (?,?,?,?,?)",
-                    run.outboxId(), run.runId(), run.eventId(), "ai.run.accepted", null);
+            faultHook.ifAvailable(hook -> hook.afterWrite("event", run.runId()));
 
             // 合成额度：每个新 run 预占 1 个实验单位；真实竞争/结算属 P2
             jdbcTemplate.update("INSERT INTO ai_usage_ledger (id, run_id, tenant_id, units, state) VALUES (?,?,?,?,?)",
                     run.ledgerId(), run.runId(), run.tenantId(), 1, "RESERVED");
+            faultHook.ifAvailable(hook -> hook.afterWrite("reserve", run.runId()));
+
+            jdbcTemplate.update("INSERT INTO outbox_event (id, run_id, event_id, topic, payload) VALUES (?,?,?,?,?)",
+                    run.outboxId(), run.runId(), run.eventId(), "ai.run.accepted", null);
+            faultHook.ifAvailable(hook -> hook.afterWrite("outbox", run.runId()));
 
             // F01：四类记录已写入、事务尚未提交；此处抛出会整体回滚
             faultHook.ifAvailable(hook -> hook.beforeCommit(run.runId()));

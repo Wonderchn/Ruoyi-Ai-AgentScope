@@ -95,9 +95,8 @@ public class DelegationVerifier {
             throw new P04AiException(P04AiErrorCode.AUTH_REQUIRED);
         }
 
-        Jws<Claims> jws;
         try {
-            jws = parser().parseSignedClaims(token);
+            return verifiedClaims(parser().parseSignedClaims(token));
         } catch (JwtException | IllegalArgumentException e) {
             // 不区分具体原因对外呈现，避免给攻击者反馈；细节只进服务端日志
             log.warn("delegation rejected reason={} requestId={}", e.getClass().getSimpleName(),
@@ -105,6 +104,10 @@ public class DelegationVerifier {
             throw new P04AiException(P04AiErrorCode.DELEGATION_INVALID);
         }
 
+    }
+
+    /** 将 claim 的类型转换也置于 verify 的受控错误映射内，避免错类型变成 500。 */
+    private DelegationClaims verifiedClaims(Jws<Claims> jws) {
         // 头部白名单：alg/typ/kid 必须精确命中
         if (!"RS256".equals(jws.getHeader().getAlgorithm())
                 || !"JWT".equals(jws.getHeader().getType())

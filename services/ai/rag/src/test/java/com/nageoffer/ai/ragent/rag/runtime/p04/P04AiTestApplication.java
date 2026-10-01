@@ -37,7 +37,13 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 })
 public class P04AiTestApplication {
 
-    public static void main(String[] args) {
-        SpringApplication.run(P04AiTestApplication.class, args);
+    public static void main(String[] args) throws Exception {
+        var context = SpringApplication.run(P04AiTestApplication.class, args);
+        try {
+            P04ApplicationEvidence.write(context, System.getenv("CONTRACT_ASSEMBLY_EVIDENCE"));
+        } catch (Exception e) {
+            context.close();
+            throw e;
+        }
     }
 }

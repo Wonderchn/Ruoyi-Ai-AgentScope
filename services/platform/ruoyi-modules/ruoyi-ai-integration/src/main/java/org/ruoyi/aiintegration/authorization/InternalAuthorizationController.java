@@ -132,6 +132,9 @@ public class InternalAuthorizationController {
      * {@code containsAll(空集)} 恒真，等于默认放行；不得依赖 AI 侧校验兜住。
      */
     private static Set<String> requiredScopes(String action) {
+        if (action == null) {
+            throw new P04Exception(P04ErrorCode.FORBIDDEN);
+        }
         Set<String> required = REQUIRED_SCOPES.get(action);
         if (required == null) {
             throw new P04Exception(P04ErrorCode.FORBIDDEN);
