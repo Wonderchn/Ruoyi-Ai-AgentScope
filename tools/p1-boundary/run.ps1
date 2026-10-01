@@ -961,12 +961,13 @@ services:
       timeout: 3s
       retries: 40
   s3:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    image: rustfs/rustfs:1.0.0-alpha.72
     container_name: __S3_CONTAINER__
-    command: ["server", "/data"]
     environment:
-      MINIO_ROOT_USER: ${P1B_S3_ACCESS_KEY}
-      MINIO_ROOT_PASSWORD: ${P1B_S3_SECRET_KEY}
+      RUSTFS_ACCESS_KEY: ${P1B_S3_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${P1B_S3_SECRET_KEY}
+      RUSTFS_ADDRESS: "0.0.0.0:9000"
+      RUSTFS_CONSOLE_ENABLE: "false"
     ports:
       - "127.0.0.1:__S3_PORT__:9000"
     labels:
@@ -975,7 +976,7 @@ services:
     volumes:
       - s3data:/data
     healthcheck:
-      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/health >/dev/null 2>&1 || exit 1"]
       interval: 3s
       timeout: 3s
       retries: 40
