@@ -1605,6 +1605,22 @@ function Wait-ApplicationReady([int]$Port, [string]$LogPath, [int]$TimeoutSec) {
         if (Test-TcpEndpoint '127.0.0.1' $Port 300) { return $true }
         Start-Sleep -Milliseconds 500
     }
+    # 超时必须立刻把启动日志的尾部写进证据。此前的做法是在收尾阶段才归档 jvm-logs，
+    # 而收尾会先删除 run work 目录——一旦中途因异常退出，日志就永远拿不到，
+    # 于是"jar 为什么没起来"只能靠猜。失败现场要在失败当时留存。
+    try {
+        if (Test-Path -LiteralPath $LogPath) {
+            $tail = (Read-SharedText $LogPath) -split "`r?`n" | Select-Object -Last 40
+            $name = 'boot-failure-' + ((Split-Path $LogPath -Parent | Split-Path -Leaf)) + '.log'
+            $target = Join-Path $script:Evidence $name
+            [IO.File]::WriteAllText($target, (Protect-LogText ($tail -join "`r`n")), (New-Object Text.UTF8Encoding($false)))
+        } else {
+            $name = 'boot-failure-' + ((Split-Path $LogPath -Parent | Split-Path -Leaf)) + '.log'
+            [IO.File]::WriteAllText((Join-Path $script:Evidence $name),
+                "log file was never created: $LogPath (the JVM produced no output, or failed to start at all)",
+                (New-Object Text.UTF8Encoding($false)))
+        }
+    } catch { }
     return $false
 }
 function Send-Json($Client, [string]$Method, [string]$Url, $Headers, [string]$Json) {
