@@ -36,6 +36,13 @@ param(
     [string]$RunTag = ('p1b' + (Get-Date -Format 'yyyyMMddHHmmss')),
     [string]$RepoRoot = 'D:\AI-project\Ruoyi-Ai-AgentScope',
     [string]$WorkRoot = 'D:\AI-project\.scratch\p1-boundary\work',
+    # 远端容器宿主（可选）。本机没有容器运行时时，验收环境可以是既有测试 VM：
+    # 容器命令经 ssh 在远端执行，合成 PG/Redis/S3 建在远端，本机只跑 jar 与断言。
+    # 语义边界：-RemoteHost 只把"执行容器命令的位置"搬到远端，**不**降低任何检查强度，
+    # 也**不**允许复用远端既有容器——归属仍由本脚本自己的 run tag label 判定。
+    [string]$RemoteHost = '',
+    [string]$SshKeyPath = '',
+    [int]$SshConnectTimeoutSeconds = 15,
     # 端口默认值 = 绑定期做一次空闲端口扫描（区间内第一个可绑定端口）；0 = 扫描失败，交给 ENV-ports 判 FAIL。
     [int]$PlatformPort = $( $chosen = 0; foreach ($c in 18082..18160) { try { $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $c); $l.Start(); $l.Stop(); $chosen = $c; break } catch { } }; $chosen ),
     [int]$AiPort = $( $chosen = 0; foreach ($c in 19090..19168) { try { $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $c); $l.Start(); $l.Stop(); $chosen = $c; break } catch { } }; $chosen ),
@@ -92,6 +99,17 @@ $script:S3Container = ''
 $script:PgPort = 0
 $script:RedisPort = 0
 $script:S3Port = 0
+$script:RemoteMode = $false
+$script:SshExe = ''
+
+# -RemoteHost 的**最早**生效点。不能等到容器运行时预检才设置：Integration 的端口预检
+# （Invoke-IntegrationPortCheck）在预检之前运行，而端口是否空闲必须在容器宿主上判定。
+# 若此处不生效，远端模式下端口预检会退回探测本机，从而给出与真实宿主无关的结论。
+if ($RemoteHost) {
+    $script:RemoteMode = $true
+    $sshCmd = Get-Command 'ssh' -ErrorAction SilentlyContinue
+    if ($null -ne $sshCmd) { $script:SshExe = $sshCmd.Source }
+}
 
 # Spec 01 §5/§6 的精确路径与 FQCN。expectedFqcn 是规格路径推导出的身份：
 # 若 XML 的 testsuite name 与之不符（同名类跑到别的包），按 FAIL 处理并写清差异。
@@ -359,11 +377,26 @@ function Test-TcpEndpoint([string]$TargetHost, [int]$Port, [int]$TimeoutMs = 700
     } catch { return $false } finally { $client.Close() }
 }
 function Test-PortFree([int]$Port) {
+    # 端口是否空闲必须在**容器宿主**上判定，而不是本机。
+    # 远端模式下合成 PG/Redis/S3 发布在 VM 的端口上：只看本机，
+    # 会让一个在 VM 上已被占用的端口通过预检，然后 compose up 才失败——
+    # 而那种失败信息会被误读成"环境不可用"。
+    if ($script:RemoteMode) { return Test-RemotePortFree $Port }
     try {
         $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
         $listener.Start(); $listener.Stop()
         return $true
     } catch { return $false }
+}
+function Test-RemotePortFree([int]$Port) {
+    # 在容器宿主上探测：/dev/tcp 不需要额外工具，也不依赖 ss/netstat 的输出格式。
+    # 走 Invoke-RemoteRuntime 是为了与其余远端调用同一套 ssh 参数与引号规则。
+    $probe = 'if (echo > /dev/tcp/127.0.0.1/' + $Port + ') >/dev/null 2>&1; then echo BUSY; else echo FREE; fi'
+    $r = Invoke-RemoteRuntime @($probe) ''
+    $text = ((@($r.Output) -join ' ') -replace '\s+', ' ').Trim()
+    # 探测本身失败（ssh 不通等）时**不**当作空闲：宁可让预检判失败，也不要盲起容器。
+    if ($r.ExitCode -ne 0) { return $false }
+    return ($text -match 'FREE')
 }
 function Get-FreePortInRange([int]$From, [int]$To) {
     foreach ($candidate in $From..$To) { if (Test-PortFree $candidate) { return $candidate } }
@@ -610,8 +643,82 @@ function Invoke-IntegrationPortCheck {
         ("platform={0} free={1}; ai={2} free={3} (defaults come from a bind-time free-port scan)" -f `
             $PlatformPort, $platformFree, $AiPort, $aiFree)
 }
+function Format-ShellArg([string]$Value) {
+    # POSIX 单引号引用：' -> '\'' 是唯一在单引号内可用的转义形式。
+    # 远端命令是**参数向量**（ssh 逐个拼接、由远端 shell 解析），
+    # 不做这一步会把含空格/引号的 SQL 或口令拆成多个参数，静默改变语义。
+    $q = [string][char]39
+    return $q + ($Value -replace $q, ($q + '\' + $q + $q)) + $q
+}
+function Invoke-RemoteRuntime([string[]]$Arguments, [string]$LogName = '') {
+    $remote = ($Arguments | ForEach-Object { Format-ShellArg $_ }) -join ' '
+    $sshArgs = @('-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR',
+        '-o', ('ConnectTimeout=' + $SshConnectTimeoutSeconds))
+    if ($SshKeyPath) { $sshArgs += @('-i', $SshKeyPath) }
+    $sshArgs += @($RemoteHost, $remote)
+    return Invoke-NativeCapture $script:SshExe $sshArgs $LogName $RepoRoot
+}
+function Invoke-RuntimeCapture([string[]]$Arguments, [string]$LogName = '') {
+    # 全部容器命令的唯一出口：本机直调，远端经 ssh。下游调用点因此**不需要**知道
+    # 运行时在哪台机器上——这是"环境位置可变、检查强度不变"的实现方式。
+    if ($script:RemoteMode) { return Invoke-RemoteRuntime $Arguments $LogName }
+    return Invoke-NativeCapture $script:Runtime.path $Arguments $LogName $RepoRoot
+}
+function Test-RemoteRuntimeUsable {
+    # -RemoteHost 指定时先走这里。返回 $true 表示远端 docker 可用且已切到远端模式。
+    #
+    # 为什么需要它：本机没有容器运行时**不等于**没有验收环境。此前只探测本机，
+    # 于是把"这台 Windows 上没有 docker"误判成"无法验收"，并据此把整段 Integration 记 NOT_RUN——
+    # 那是关于沙箱的结论，不是关于基础设施的结论。探测口径必须覆盖用户指定的验收宿主。
+    if (-not $RemoteHost) { return $false }
+    $ssh = Get-Command 'ssh' -ErrorAction SilentlyContinue
+    if ($null -eq $ssh) {
+        Add-Probe 'ENV-runtime-remote-ssh' 'ssh -V' 'absent' 'ssh client not found on PATH'
+        return $false
+    }
+    $script:SshExe = $ssh.Source
+    $prevMode = $script:RemoteMode
+    $script:RemoteMode = $true   # 让 Invoke-RuntimeCapture 走远端分支
+    try {
+        $ver = Invoke-RuntimeCapture @('version', '--format', '{{.Server.Version}}') 'preflight-remote-docker-version.log'
+        $verText = ((@($ver.Output | Where-Object { $_.Trim() }) -join ' ') -replace '\s+', ' ').Trim()
+        Add-Probe 'ENV-runtime-remote-docker' ('ssh ' + $RemoteHost + ' docker version') `
+            $(if ($ver.ExitCode -eq 0) { 'usable' } else { 'unusable' }) `
+            ("host={0} exit={1} serverVersion='{2}'" -f $RemoteHost, $ver.ExitCode, $verText)
+        if ($ver.ExitCode -ne 0) { $script:RemoteMode = $prevMode; return $false }
+
+        $compose = Invoke-RuntimeCapture @('compose', 'version', '--short') 'preflight-remote-compose-version.log'
+        $composeText = ((@($compose.Output | Where-Object { $_.Trim() }) -join ' ') -replace '\s+', ' ').Trim()
+        Add-Probe 'ENV-runtime-remote-compose' ('ssh ' + $RemoteHost + ' docker compose version') `
+            $(if ($compose.ExitCode -eq 0) { 'usable' } else { 'unusable' }) `
+            ("exit={0} version='{1}'" -f $compose.ExitCode, $composeText)
+        if ($compose.ExitCode -ne 0) { $script:RemoteMode = $prevMode; return $false }
+
+        # 记录既有容器只用于**声明不去碰它们**，不参与任何复用判定。
+        $existing = Invoke-RuntimeCapture @('ps', '--format', '{{.Names}}') 'preflight-remote-existing-containers.log'
+        $existingNames = @($existing.Output | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim() })
+        Add-Probe 'ENV-runtime-remote-existing' ('ssh ' + $RemoteHost + ' docker ps') `
+            'noted-not-reused' ("count={0} names='{1}'" -f $existingNames.Count, ($existingNames -join ','))
+
+        $script:Runtime = [pscustomobject]@{
+            name   = 'docker@' + $RemoteHost
+            path   = 'ssh ' + $RemoteHost + ' docker'
+            engine = $true
+        }
+        $script:RemoteMode = $true
+        Add-Result 'ENV-container-runtime' 'G0' 'PASS' `
+            ("runtime={0}; container commands execute on the remote acceptance host over ssh; serverVersion={1} composeVersion={2}; existingContainersNotReused={3}" -f `
+                $script:Runtime.name, $verText, $composeText, $existingNames.Count)
+        return $true
+    } catch {
+        Add-Probe 'ENV-runtime-remote-docker' ('ssh ' + $RemoteHost) 'unusable' ('probe threw: ' + $_.Exception.Message)
+        $script:RemoteMode = $prevMode
+        return $false
+    }
+}
 function Invoke-ContainerRuntimePreflight {
     Write-Step 'Integration 预检：可用容器运行时（合成 PG/Redis/S3 的唯一前提）'
+    if (Test-RemoteRuntimeUsable) { return }
     $found = @()
     foreach ($cli in @('docker', 'podman', 'docker-compose', 'nerdctl')) {
         $cmd = Get-Command $cli -ErrorAction SilentlyContinue
@@ -657,8 +764,12 @@ function Invoke-ContainerRuntimePreflight {
     if ($usableRuntime.Count -eq 0) {
         $script:EnvGateBlocked = $true
         $script:GateReason = 'NO_CONTAINER_RUNTIME'
-        $script:GateReasonDetail = ('no usable container runtime: docker/podman/docker-compose/nerdctl absent or unusable on PATH, ' +
-            'Docker Desktop directory and \\.\pipe\docker_engine absent, and no container engine reachable through WSL')
+        $detail = 'no usable container runtime: docker/podman/docker-compose/nerdctl absent or unusable on PATH, ' +
+            'Docker Desktop directory and \\.\pipe\docker_engine absent, and no container engine reachable through WSL'
+        if ($RemoteHost) {
+            $detail = $detail + '; additionally -RemoteHost ' + $RemoteHost + ' did not yield a usable docker'
+        }
+        $script:GateReasonDetail = $detail
         $script:GateReasonShort = 'no usable container runtime (docker/podman/docker-compose/nerdctl/Docker Desktop/docker_engine pipe/WSL engine all absent or unusable)'
         # 该行是主记录：保留完整探测结论，并显式写出原因代号（收尾一致性会核对这个代号）。
         Add-Result 'ENV-container-runtime' 'G0' 'NOT_RUN' ("blocked: {0} -- {1}" -f $script:GateReason, $script:GateReasonDetail)
@@ -865,8 +976,14 @@ volumes:
     return $composePath
 }
 function Invoke-OwnedCompose([string[]]$Arguments, [string]$LogName) {
+    # 空 --file 会变成 `docker compose --file "" ps`：docker 报错，而错误文本会被读成
+    # "环境不可用"，把一次接线缺陷伪装成环境问题。这里先自证，让缺陷在源头显形。
+    if (-not $script:ComposePath) {
+        throw ('Invoke-OwnedCompose called before the compose file exists (project={0}); ' -f $script:ComposeProject) +
+            'the run must prepare its own synthetic environment identity first'
+    }
     $full = @('compose', '--project-name', $script:ComposeProject, '--file', $script:ComposePath) + $Arguments
-    return Invoke-NativeCapture $script:Runtime.path $full $LogName $RepoRoot
+    return Invoke-RuntimeCapture $full $LogName
 }
 function Test-P04ContainerIsolation {
     Write-Step 'G0：本轮不得复用 P0.4 容器（只按 owner label 识别自有资源）'
@@ -884,12 +1001,23 @@ function Test-P04ContainerIsolation {
             $script:ComposeProject, ($names -join ','), $p04.Count)
     return $true
 }
-function Start-SyntheticEnvironment {
-    Write-Step 'G0：起 runner 自有合成 PG17+pgvector / Redis / S3 mock（唯一 owner label）'
+function Initialize-SyntheticIdentity {
+    # 把"本轮自有资源的身份 + compose 文件"与"把它们起来"分开。
+    #
+    # 为什么必须分开：Test-P04ContainerIsolation 要先问一句"这个 compose project 里现在有没有
+    # p04-* 容器"，而 `docker compose --file <path> ps` 需要一个**真实存在**的 file——
+    # 原先 ComposePath 是在 Start-SyntheticEnvironment 里才赋值的，于是隔离检查在
+    # --file 为空串的情况下发出，docker 直接报错。检查的顺序是对的（先确认不复用，再创建），
+    # 错的是"文件还没准备好"。
     $script:ComposeProject = (('p1b-' + $RunTag.ToLower()) -replace '[^a-z0-9-]', '-')
     $script:PgContainer = ('p1b-pg-' + $RunTag.ToLower())
     $script:RedisContainer = ('p1b-redis-' + $RunTag.ToLower())
     $script:S3Container = ('p1b-s3-' + $RunTag.ToLower())
+    $script:ComposePath = Write-ComposeFile
+}
+function Start-SyntheticEnvironment {
+    Write-Step 'G0：起 runner 自有合成 PG17+pgvector / Redis / S3 mock（唯一 owner label）'
+    if (-not $script:ComposePath) { Initialize-SyntheticIdentity }
     foreach ($port in @($script:PgPort, $script:RedisPort, $script:S3Port)) {
         if (-not (Test-PortFree $port)) { Add-Result 'ENV-compose-up' 'G0' 'FAIL' ("synthetic port already in use: " + $port); return }
     }
@@ -897,22 +1025,30 @@ function Start-SyntheticEnvironment {
     $env:P1B_REDIS_PASSWORD = $script:Secrets['redis']
     $env:P1B_S3_ACCESS_KEY = $script:Secrets['s3Access']
     $env:P1B_S3_SECRET_KEY = $script:Secrets['s3Secret']
-    $script:ComposePath = Write-ComposeFile
     $up = Invoke-OwnedCompose @('up', '--detach', '--wait') 'compose-up.log'
     if ($up.ExitCode -ne 0) { Add-Result 'ENV-compose-up' 'G0' 'FAIL' ("compose up exit={0}; see compose-up.log" -f $up.ExitCode); return }
     foreach ($container in @($script:PgContainer, $script:RedisContainer, $script:S3Container)) { [void]$script:OwnedContainers.Add($container) }
-    $label = Invoke-NativeCapture $script:Runtime.path @('ps', '--all', '--filter', ('label=p1.boundary.owner=' + $RunTag),
+    $label = Invoke-RuntimeCapture @('ps', '--all', '--filter', ('label=p1.boundary.owner=' + $RunTag),
         '--format', '{{.Names}}|{{.Label "p1.boundary.role"}}|{{.Status}}') 'compose-owned-label-inventory.log'
     $ownedRows = @($label.Output | Where-Object { $_ -match '\|' })
     Assert-That 'ENV-compose-up' 'G0' ($label.ExitCode -eq 0 -and $ownedRows.Count -eq 3) `
         ("up exit=0; containersWithOwnLabel={0} [{1}]" -f $ownedRows.Count, ($ownedRows -join '; '))
 }
 function Invoke-SyntheticSql([string]$Sql, [string]$Database, [string]$User, [string]$PasswordKey, [string]$LogName) {
-    $env:PGPASSWORD = $script:Secrets[$PasswordKey]
     $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Sql))
-    $inner = 'echo ' + $b64 + ' | base64 -d | psql -U ' + $User + ' -d ' + $Database + ' -X -q -tA -v ON_ERROR_STOP=1 -f -'
-    # PGPASSWORD 只经 docker exec 的环境透传（-e PGPASSWORD），不出现在命令行/证据里。
-    $r = Invoke-NativeCapture $script:Runtime.path @('exec', '-i', '-e', 'PGPASSWORD', $script:PgContainer, 'sh', '-c', $inner) $LogName
+    # 原文经 base64 传递：SQL 里有中文与单引号，直接进参数向量会被远端 shell 重新解析。
+    # 口令**不**进参数向量，而是在远端容器内按容器自身环境自证（见下），
+    # 因此它既不出现在本机命令行、也不出现在 ssh 远端命令行、更不落盘或进证据。
+    $inner = 'test -n "$PGPASSWORD" || { echo NO_PGPASSWORD_IN_CONTAINER; exit 96; }; '
+    $inner += 'printf %s ' + (Format-ShellArg $b64) + ' | base64 -d | '
+    $inner += 'psql -U ' + (Format-ShellArg $User) + ' -d ' + (Format-ShellArg $Database) + ' -X -q -tA -v ON_ERROR_STOP=1 -f -'
+    # -e PGPASSWORD 不带值：把值从**本进程环境**映射进容器，命令行只看得到变量名。
+    $env:PGPASSWORD = $script:Secrets[$PasswordKey]
+    try {
+        $r = Invoke-RuntimeCapture @('exec', '-i', '-e', 'PGPASSWORD', $script:PgContainer, 'sh', '-c', $inner) $LogName
+    } finally {
+        Remove-Item Env:\PGPASSWORD -ErrorAction SilentlyContinue
+    }
     if ($r.ExitCode -ne 0) { throw ("synthetic SQL failed (exit={0}), see {1}" -f $r.ExitCode, $LogName) }
     return (($r.Output -join "`r`n").Trim())
 }
@@ -1320,6 +1456,8 @@ function Invoke-HttpCases {
 function Invoke-BootAndCases {
     Write-Step 'Integration happy path：两真实 jar + runner 自有合成资源 + B01–B13'
     Initialize-SyntheticSecrets
+    # 先确定本轮自有资源的身份与 compose 文件，隔离检查才有东西可查（顺序不能反）。
+    Initialize-SyntheticIdentity
     [void](Test-P04ContainerIsolation)
     # 合成端口同样走空闲扫描：绝不复用开发机 5432/6379/9000。
     $script:PgPort = Get-FreePortInRange 15432 15472
@@ -1506,7 +1644,7 @@ try {
                 action = 'noop'; result = 'NOT_APPLICABLE'; detail = 'Unit mode starts no container and no database' })
     } elseif ($script:OwnedContainers.Count -gt 0 -and $null -ne $script:Runtime) {
         $down = Invoke-OwnedCompose @('down', '--volumes', '--remove-orphans', '--timeout', '20') 'compose-down.log'
-        $left = Invoke-NativeCapture $script:Runtime.path @('ps', '--all', '--filter', ('label=p1.boundary.owner=' + $RunTag), '--format', '{{.Names}}') 'compose-leftover.log'
+        $left = Invoke-RuntimeCapture @('ps', '--all', '--filter', ('label=p1.boundary.owner=' + $RunTag), '--format', '{{.Names}}') 'compose-leftover.log'
         $remaining = @($left.Output | Where-Object { $_.Trim() })
         Assert-That 'CLEANUP-owned-containers' 'G0' ($down.ExitCode -eq 0 -and $remaining.Count -eq 0) `
             ("down exit={0} remainingOwnedContainers={1} [{2}]" -f $down.ExitCode, $remaining.Count, ($remaining -join ','))
