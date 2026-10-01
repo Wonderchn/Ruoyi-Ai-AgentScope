@@ -1063,6 +1063,24 @@ function Publish-ComposeFileToHost {
     $put = Invoke-RemoteShell $cmd 'compose-remote-publish.log'
     if ($put.ExitCode -ne 0) { throw ('cannot publish compose file to ' + $remoteFile) }
     $script:ComposePath = $remoteFile
+
+    # 变量插值发生在**执行 compose 的那台机器**上。合成口令只存在于本进程环境里，
+    # 远端 shell 看不到它们，于是 compose 把 ${P1B_...} 当未定义变量：
+    # 它不报错，只警告 "variable is not set. Defaulting to a blank string"，
+    # 然后拿空口令把容器**起成功**——一个"全绿但从未真正设过口令"的环境。
+    # 因此把变量写成 compose 同目录的 .env（docker compose 自动读取），umask 077，
+    # 并在清理时随本轮自有目录一起删除。.env 只落在远端本轮自有目录，不进证据、不进仓库。
+    $envLines = @(
+        ('P1B_PG_SUPERUSER_PASSWORD=' + $script:Secrets['pgSuperuser']),
+        ('P1B_REDIS_PASSWORD=' + $script:Secrets['redis']),
+        ('P1B_S3_ACCESS_KEY=' + $script:Secrets['s3Access']),
+        ('P1B_S3_SECRET_KEY=' + $script:Secrets['s3Secret'])
+    ) -join "`n"
+    $envB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($envLines + "`n"))
+    $remoteEnv = $remoteDir + '/.env'
+    $envCmd = 'umask 077; printf %s ' + (Format-ShellArg $envB64) + ' | base64 -d > ' + (Format-ShellArg $remoteEnv)
+    $envPut = Invoke-RemoteShell $envCmd 'compose-remote-env.log'
+    if ($envPut.ExitCode -ne 0) { throw ('cannot publish compose env file to ' + $remoteEnv) }
 }
 function Start-SyntheticEnvironment {
     Write-Step 'G0：起 runner 自有合成 PG17+pgvector / Redis / S3 mock（唯一 owner label）'
