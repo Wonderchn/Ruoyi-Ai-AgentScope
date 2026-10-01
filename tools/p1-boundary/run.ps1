@@ -1576,6 +1576,12 @@ function Start-ProductJar([string]$Side, [string]$State, [int]$Port) {
     $env:PLATFORM_DB_USERNAME = 'platform_app'
     $env:AI_DB_USERNAME = 'ai_app'
     $env:REDIS_PASSWORD = $script:Secrets['redis']
+    # AI 侧的 redis 口令走的是**外化占位符**（application.yaml 里 redis.password 那一行），
+    # 而不是通用 REDIS_PASSWORD。占位符生成器给的是随机合成值，因此这里必须
+    # 用本轮真实的 Redis 口令**覆盖**它，否则 Redisson 报 WRONGPASS。
+    # 这条映射是显式写死的：名字由"来源文件路径 + 字段 + 行号"生成，无法从语义推断，
+    # 与其指望生成器猜对，不如写明它的来源，便于日后核对。
+    $env:PROJECT_SERVICES_AI_BOOTSTRAP_SRC_MAIN_RESOURCES_APPLICATION_YAML_PASSWORD_33 = $script:Secrets['redis']
     $arguments = @('-Dfile.encoding=UTF-8', '-Xmx1024m', '-jar', $jar, ('--server.port=' + $Port))
     if ($Side -eq 'platform') {
         $arguments += @(
