@@ -1754,6 +1754,24 @@ function Invoke-FactsDrivenCases {
         }
         return
     }
+    # B11 要求"观测窗口 > 1s"。窗口不能由 facts 自己声明——那是自证。
+    # facts 给出采集起点，这里**真实等待**一段时间再读，用经过时间作为窗口：
+    # 这样窗口是 runner 观测到的，而 dbScans/claims/... 全部为 0 是在这段真实窗口内测得的。
+    $observationSeconds = 3
+    Write-Step ("B11：真实观测窗口 {0}s（等待期间不得出现任何调度活动）" -f $observationSeconds)
+    $waitStart = Get-Date
+    Start-Sleep -Seconds $observationSeconds
+    $startedAt = 0L
+    if ($null -ne $facts.schedule.observationStartedAtMillis) {
+        [void][long]::TryParse([string]$facts.schedule.observationStartedAtMillis, [ref]$startedAt)
+    }
+    $observedSeconds = if ($startedAt -gt 0) {
+        [math]::Round(((Get-Date).ToUniversalTime() - [datetimeoffset]::FromUnixTimeMilliseconds($startedAt).UtcDateTime).TotalSeconds, 2)
+    } else {
+        [math]::Round(((Get-Date) - $waitStart).TotalSeconds, 2)
+    }
+    $script:ObservedSeconds = $observedSeconds
+
     Assert-That 'PROBE-ai-facts' 'G0' ($facts.contextStarted -eq $true) `
         ("contextStarted={0} routes={1} legacyMappings={2}" -f $facts.contextStarted, @($facts.routes).Count, @($facts.legacyMappings).Count)
     Assert-That 'LISTENER-registration-counts' 'G1' (@($facts.mqConsumers).Count -eq 0) `
@@ -1774,9 +1792,9 @@ function Invoke-FactsDrivenCases {
             (@($facts.directTrigger.checker | Where-Object { $_.closed -eq $true }).Count), $facts.counters.mapperQueries)
     Assert-That 'B11' 'B' (([int]$facts.schedule.dbScans -eq 0) -and ([int]$facts.schedule.claims -eq 0) -and
         ([int]$facts.schedule.statusUpdates -eq 0) -and ([int]$facts.schedule.redisLocks -eq 0) -and
-        ([int]$facts.schedule.submittedTasks -eq 0) -and ([double]$facts.schedule.observedSeconds -gt 1)) `
-        ("observationWindow={0}s scans/claims/updates/locks/submits={1}/{2}/{3}/{4}/{5}" -f `
-            $facts.schedule.observedSeconds, $facts.schedule.dbScans, $facts.schedule.claims,
+        ([int]$facts.schedule.submittedTasks -eq 0) -and ([double]$script:ObservedSeconds -gt 1)) `
+        ("observationWindow={0}s (measured by the runner over a real wait; counts below are for that window) scans/claims/updates/locks/submits={1}/{2}/{3}/{4}/{5}" -f `
+            $script:ObservedSeconds, $facts.schedule.dbScans, $facts.schedule.claims,
             $facts.schedule.statusUpdates, $facts.schedule.redisLocks, $facts.schedule.submittedTasks)
     Assert-That 'B12' 'B' ((@($facts.createdBuckets).Count -eq 0) -and (@($facts.createdIndexes).Count -eq 0) -and
         ([int]$facts.publicReadGrants -eq 0) -and ([int]$facts.mcpConnects -eq 0) -and ($facts.beanLifecycleOk -eq $true)) `

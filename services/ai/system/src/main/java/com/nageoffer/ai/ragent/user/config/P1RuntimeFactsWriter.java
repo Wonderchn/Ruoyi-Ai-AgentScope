@@ -75,6 +75,9 @@ public class P1RuntimeFactsWriter {
     private final ObjectMapper objectMapper;
     private final SaasBoundaryProperties boundaryProperties;
 
+    /** 事实采集开始时刻：runner 据此算出真实观测窗口，而不是靠这里编一个秒数。 */
+    private final long observationStartedAtMillis = System.currentTimeMillis();
+
     @PostConstruct
     public void writeFacts() {
         String target = environment.getProperty("p1.probe.facts-path");
@@ -175,29 +178,34 @@ public class P1RuntimeFactsWriter {
     /**
      * 旧 MQ consumer 的注册清单。
      *
-     * <p>第一版按 {@code Consumer}/{@code Listener} 片段匹配 bean 名，结果把框架自身的
-     * 监听基础设施也算了进去（RocketMQ 的 {@code ListenerContainerConfiguration}、
-     * Spring 的 {@code redisMessageListenerContainer}、{@code transactionalEventListenerFactory} 等），
-     * 得出"注册了 15 个旧 consumer"这种明显不成立的结论——
-     * 断言的是"框架的 listener 基础设施有多少个"，不是"旧业务 consumer 有没有被注册"。
+     * <p>判据必须与直接触发证据（B09）**一致**：那边按类名判定
+     * （{@code DelegatingTransactionListener} 等本仓库的旧 listener 类型），
+     * 这里若改用 bean 名字里是否含 "istener"，同一个概念就会有两个答案——
+     * 实测确实如此：按 bean 名得到 1 个（别人的 bean 恰好叫 {@code delegatingTransactionListener}），
+     * 按类名得到 0 个。两项证据互相矛盾时，评审无从判断哪个是真的。
      *
-     * <p>因此改为只统计**本仓库自有**的 bean：类名/bean 名落在
-     * {@code com.nageoffer.ai.ragent} 命名空间下。框架 bean 由 Spring 管理，
-     * 它们的数量与"旧能力是否关闭"无关，不该进这个计数。
+     * <p>因此统一为**类名子串**匹配，并集中在同一份类名清单上维护。
      */
     private List<String> legacyConsumerBeans() {
-        List<String> names = new ArrayList<>();
-        for (String name : applicationContext.getBeanDefinitionNames()) {
-            if (!name.contains("onsumer") && !name.contains("istener")) {
-                continue;
+        return registeredTypes(LEGACY_CONSUMER_CLASSES);
+    }
+
+    /** 本仓库的旧 MQ consumer 类型：关闭态下不应出现在上下文里。 */
+    private static final List<String> LEGACY_CONSUMER_CLASSES = List.of(
+            "com.nageoffer.ai.ragent.rag.core.retrieval.DelegatingTransactionListener",
+            "com.nageoffer.ai.ragent.rag.core.retrieval.KnowledgeBaseCleanupConsumer",
+            "com.nageoffer.ai.ragent.rag.core.retrieval.KnowledgeDocumentChunkConsumer");
+
+    /** 上下文里实际注册的、属于给定类名清单的类型。 */
+    private List<String> registeredTypes(List<String> classNames) {
+        List<String> found = new ArrayList<>();
+        for (String className : classNames) {
+            if (isRegisteredType(className)) {
+                found.add(className);
             }
-            if (!isOwnBean(name)) {
-                continue;
-            }
-            names.add(name);
         }
-        names.sort(String::compareTo);
-        return names;
+        found.sort(String::compareTo);
+        return found;
     }
 
     /** bean 是否属于本仓库命名空间（借此排除 Spring/Redisson/RocketMQ 的框架 bean）。 */
@@ -216,9 +224,15 @@ public class P1RuntimeFactsWriter {
     }
 
     /** 与上面同一口径：只统计本仓库自有的旧 TransactionChecker bean。 */
+    /** 与 consumer 同口径：按类名判定，与 B10 的直接触发证据一致。 */
     private List<String> transactionCheckerBeans() {
-        return ownBeansContaining("TransactionChecker");
+        return registeredTypes(LEGACY_CHECKER_CLASSES);
     }
+
+    /** 本仓库的旧 TransactionChecker 类型。 */
+    private static final List<String> LEGACY_CHECKER_CLASSES = List.of(
+            "com.nageoffer.ai.ragent.rag.core.retrieval.KnowledgeBaseCleanupTransactionChecker",
+            "com.nageoffer.ai.ragent.rag.core.retrieval.KnowledgeDocumentChunkTransactionChecker");
 
     private List<String> ownBeansContaining(String... fragments) {
         List<String> names = new ArrayList<>();
@@ -244,19 +258,65 @@ public class P1RuntimeFactsWriter {
      */
     private Map<String, Object> directTrigger() {
         Map<String, Object> trigger = new LinkedHashMap<>();
-        trigger.put("listener", List.of(Map.of("closed", true)));
-        trigger.put("checker", List.of(Map.of("closed", true)));
+        trigger.put("listener", legacyListeners());
+        trigger.put("checker", legacyCheckers());
         trigger.put("userContextLeaks", 0);
+        trigger.put("evidenceSource", "legacy classes enumerated by type; closed = the gate suppressed their registration, "
+                + "so no direct trigger can reach an implementation");
         return trigger;
     }
 
     /**
-     * 调度观测。runner 是在启动探测窗口内取这份快照的，因此 observedSeconds 记 0 并标注来源，
-     * 不假装做过一段时间的观测。
+     * 旧 MQ listener 的逐个状态。
+     *
+     * <p>按**类型**枚举而不是按 bean 名：这些类在关闭态下根本不会注册成 bean，
+     * 按 bean 名找只会得到空集合（第一版正是如此，B09 拿到 1 条而不是 3 条）。
+     * {@code registered} 取自实测的 bean 清单，{@code closed} 为"未注册"，
+     * 两者并列记录，读的人能分辨"我们没注册它"与"我们没看它"。
+     */
+    private List<Map<String, Object>> legacyListeners() {
+        return legacyStatus(LEGACY_CONSUMER_CLASSES);
+    }
+
+    private List<Map<String, Object>> legacyCheckers() {
+        return legacyStatus(LEGACY_CHECKER_CLASSES);
+    }
+
+    private List<Map<String, Object>> legacyStatus(List<String> classNames) {
+        List<Map<String, Object>> entries = new ArrayList<>();
+        for (String className : classNames) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("type", className);
+            entry.put("registered", isRegisteredType(className));
+            entry.put("closed", !isRegisteredType(className));
+            entries.add(entry);
+        }
+        return entries;
+    }
+
+    /** 该类型是否真的出现在当前上下文里（而不是"我们期望它不出现"）。 */
+    private boolean isRegisteredType(String className) {
+        try {
+            Class<?> type = Class.forName(className);
+            return applicationContext.getBeanNamesForType(type).length > 0;
+        } catch (ClassNotFoundException e) {
+            // 类不在 classpath 上也是"没有注册"，但原因不同，这里如实返回 false，
+            // 由上层把 registered=false/closed=true 一并写出。
+            return false;
+        }
+    }
+
+    /**
+     * 调度观测。{@code observedSeconds} 由 runner 依据本文件的写入时刻与读取时刻计算，
+     * 因此这里写的是**观测窗口起点**，而不是一个我无从测量的时长。
+     * 写 0 会让 B11 恒 FAIL（它要求窗口 > 1s），写一个编造的秒数则是伪造证据；
+     * 给出起点让 runner 用真实经过时间判定，是唯一诚实的做法。
      */
     private Map<String, Object> schedule() {
         Map<String, Object> schedule = new LinkedHashMap<>();
         schedule.put("observedSeconds", 0);
+        schedule.put("observationStartedAtMillis", observationStartedAtMillis);
+        schedule.put("observationWindowSource", "runner computes elapsed seconds from observationStartedAtMillis");
         schedule.put("dbScans", 0);
         schedule.put("claims", 0);
         schedule.put("statusUpdates", 0);
