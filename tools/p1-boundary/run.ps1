@@ -1612,7 +1612,7 @@ function Invoke-BootAndCases {
     if (@($upRows | Where-Object { $_.status -eq 'FAIL' }).Count -gt 0) { return }
     # 合成服务在远端时，先把它们的端口转发到本机回环，再让两个 jar 按原有 127.0.0.1 配置连接。
     if (-not (Start-RemotePortForward)) { return }
-    Invoke-SyntheticDatabase
+    Initialize-SyntheticDatabase
     if (-not (Test-ProbeAvailability)) { return }
 
     # 平台 jar 内容解析（B13 事实来源）。
