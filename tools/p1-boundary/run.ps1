@@ -245,6 +245,17 @@ function Add-Result([string]$id, [string]$target, [string]$status, [string]$deta
     # 状态集：PASS / FAIL / NOT_RUN / REFUSED。
     #   NOT_RUN：只在「环境缺失/被闸门挡住」时出现，必须带确切原因；Unit 模式下不算通过。
     #   REFUSED：只用于「检测到但拒绝使用」（例如本机已有业务库/缓存）：不算 PASS、不算 FAIL、不阻塞。
+    # 同一个 id **只能有一行**：后写的结果替换先写的，而不是追加。
+    #
+    # 这一点很关键，此前是纯追加，于是同一个 id 会同时留下两行：
+    # 闸门阶段补的 NOT_RUN（"happy path did not reach this check"）与随后真实跑出的 PASS。
+    # 后果有三个，全都表现为"莫名其妙的失败"：
+    #   1) CASES-complete 逐个查状态时看到 B01 仍是 NOT_RUN，即使两条 B01-login 都是 PASS；
+    #   2) INVENTORY-integrity 报 "planned check X produced 2 result row(s)"；
+    #   3) 汇总与明细对不上，读数的人无法判断哪一行才作数。
+    # 结果集是"每个检查项的当前结论"，不是事件日志——追加语义在这里是错的。
+    $existing = @($script:Results | Where-Object { $_.id -ceq $id })
+    foreach ($row in $existing) { [void]$script:Results.Remove($row) }
     [void]$script:Results.Add([pscustomobject]@{ id = $id; target = $target; status = $status; detail = $detail })
     if ($status -eq 'FAIL') { $script:Failures++; Write-Output ("  [FAIL]    {0} {1}" -f $id, $detail) }
     elseif ($status -eq 'PASS') { Write-Output ("  [ok]      {0} {1}" -f $id, $detail) }
@@ -2199,9 +2210,26 @@ function Invoke-HttpCases {
         Assert-That 'B13-workflow-run-exclusion-removed' 'B' (-not $workflowRunExclusion) `
             ("packaged application.yml still excludes /workflow/run={0}" -f $workflowRunExclusion)
 
+        # 把子用例结果汇总成 B01–B13 的**用例级**结论。
+        #
+        # 为什么需要：各用例把结果记在**子编号**上（B01-login-p1t1、B03-none-POST/auth/login、
+        # B13-jar-contents……），而计划清单声明的是 B01…B13 这 13 个**用例编号**。
+        # 于是 B01–B08/B13 永远没有自己的行，只剩下预检留下的 NOT_RUN，
+        # CASES-complete 逐个计数自然不成立——而每条子用例其实都 PASS 了。
+        # 这不是"用例没跑"，而是**汇总口径缺失**：只看到 4 条，实际跑了 30 多条。
+        #
+        # 规则：某用例只要有 FAIL 或 NOT_RUN 子行就不算完成；一条子行都没有才是 NOT_RUN（真没跑）。
+        foreach ($caseId in @('B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B09', 'B10', 'B11', 'B12', 'B13')) {
+            $children = @($script:Results | Where-Object { $_.id -match ('^' + $caseId + '-') })
+            if ($children.Count -eq 0) { continue }
+            $bad = @($children | Where-Object { $_.status -ne 'PASS' })
+            $summary = if ($bad.Count -gt 0) { 'FAIL' } else { 'PASS' }
+            Add-Result $caseId 'B' $summary `
+                ("{0} sub-checks; nonPass=[{1}]" -f $children.Count, (@($bad | ForEach-Object { $_.id }) -join ','))
+        }
         $caseRows = @($script:Results | Where-Object { $_.id -match '^B\d\d$' })
         Assert-That 'CASES-complete' 'G1-G4' ($caseRows.Count -eq 13 -and @($caseRows | Where-Object { $_.status -ne 'PASS' }).Count -eq 0) `
-            ("cases={0} nonPass=[{1}]" -f $caseRows.Count, (@($caseRows | Where-Object { $_.status -ne 'PASS' } | ForEach-Object { $_.id }) -join ','))
+            ("cases={0} of 13; nonPass=[{1}]" -f $caseRows.Count, (@($caseRows | Where-Object { $_.status -ne 'PASS' } | ForEach-Object { $_.id }) -join ','))
     } finally { $client.Dispose() }
 
     # 用例全部跑完后才停止被测 jar（见启动处的说明：提前停会让 B 系列全部失败）。
