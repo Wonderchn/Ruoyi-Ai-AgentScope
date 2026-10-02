@@ -48,7 +48,8 @@ param(
     [int]$AiPort = $( $chosen = 0; foreach ($c in 19090..19168) { try { $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $c); $l.Start(); $l.Stop(); $chosen = $c; break } catch { } }; $chosen ),
     # 评审辅助（不属于验收契约）：预检判定环境缺失时，仍执行两条 clean verify 构建根。
     # 只会让 BUILD-* 从 NOT_RUN 变成真实结果，永远不会把 NOT_RUN 变成 PASS。
-    [switch]$ForceBuildRoots
+    [switch]$ForceBuildRoots,
+    [switch]$LibraryOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -1804,7 +1805,7 @@ function Start-RemotePortForward {
             $script:PgPort, $script:RedisPort, $script:S3Port)
     return $true
 }
-function Start-ProductJar([string]$Side, [string]$State, [int]$Port) {
+function Start-ProductJar([string]$Side, [string]$State, [int]$Port, [string[]]$ExtraArguments = @()) {
     $jar = if ($Side -eq 'platform') {
         Join-Path $RepoRoot 'services\platform\ruoyi-admin\target\ruoyi-admin.jar'
     } else {
@@ -1864,6 +1865,7 @@ function Start-ProductJar([string]$Side, [string]$State, [int]$Port) {
         $arguments += ('--p1.probe.facts-path=' + $factsPath)
     }
     $pidFile = Join-Path $script:RunWork ($Side + '-' + $State + '.pid')
+    $arguments += $ExtraArguments
     return Start-OwnedProcess (Join-Path $script:JdkHome 'bin\java.exe') $arguments $run $pidFile
 }
 function Read-SharedText([string]$Path) {
@@ -2377,6 +2379,7 @@ function Invoke-BootAndCases {
 }
 
 # =========================== 入口 ===========================
+if ($LibraryOnly) { return }
 function Stop-Usage([string]$Message) {
     Write-Output ("### USAGE REFUSED: " + $Message)
     exit 2
