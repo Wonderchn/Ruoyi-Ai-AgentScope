@@ -19,6 +19,7 @@ package com.nageoffer.ai.ragent.rag.core.retrieval.channel;
 
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
 import com.nageoffer.ai.ragent.rag.config.SearchChannelProperties;
+import com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope;
 import com.nageoffer.ai.ragent.rag.core.retrieval.RetrievalBudget;
 import com.nageoffer.ai.ragent.rag.core.retrieval.RetrieveRequest;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorRetrieverService;
@@ -75,6 +76,13 @@ public class VectorSearchChannel implements SearchChannel {
         long startTime = System.currentTimeMillis();
 
         try {
+            if (context.getAuthorizedScope().isEmpty()) {
+                // 空作用域 = 一个已授权 KB 都没有：必须在 embedding / 后端调用之前就交空卷，
+                // 不允许"授权集合为空 → 查全库"的回落
+                log.info("授权作用域为空，跳过向量检索");
+                return emptyResult(System.currentTimeMillis() - startTime);
+            }
+
             RetrievalScope scope = context.getRetrievalScope();
             List<RetrievedChunk> chunks;
             Map<String, Object> metadata;
@@ -111,15 +119,17 @@ public class VectorSearchChannel implements SearchChannel {
      * 定向与全局同一取数原语、只差库集合；两路共用一次 embedding、同池并发，补充路不增加通道延迟
      */
     private List<RetrievedChunk> retrieveDirected(SearchContext context, RetrievalScope scope) {
+        AuthorizedRetrievalScope authorizedScope = context.requireAuthorizedScope();
         String question = context.getMainQuestion();
-        float[] queryVector = retrieverService.embedAndNormalize(question);
+        float[] queryVector = retrieverService.embedAndNormalize(authorizedScope, question);
         ScopeQuota quota = ScopeQuota.split(scope, resolveDirectedBudget(scope, context.getBudget()), supplementRatio());
 
         // 补充路失败必须只损失自己：它拿到的是兜底名额，而 join() 抛出会让已经取回的定向证据一起被
         // 通道级 catch 丢掉——兜底路把主路带走，鲁棒性方向正好反了
         CompletableFuture<List<RetrievedChunk>> supplementTask = quota.supplement() > 0
                 ? CompletableFuture.<List<RetrievedChunk>>supplyAsync(
-                () -> retrieveOver(question, queryVector, scope.supplementCollections(), quota.supplement()),
+                () -> retrieveOver(authorizedScope, question, queryVector,
+                        scope.supplementCollections(), quota.supplement()),
                 retrievalExecutor)
                 .exceptionally(e -> {
                     log.warn("向量补充路检索失败，仅丢弃补充证据: {}", e.getMessage());
@@ -127,7 +137,8 @@ public class VectorSearchChannel implements SearchChannel {
                 })
                 : CompletableFuture.completedFuture(List.of());
 
-        List<RetrievedChunk> directed = retrieveOver(question, queryVector, scope.targetCollections(), quota.primary());
+        List<RetrievedChunk> directed = retrieveOver(authorizedScope, question, queryVector,
+                scope.targetCollections(), quota.primary());
         List<RetrievedChunk> supplement = supplementTask.join();
 
         log.info("向量检索完成（定向），意图 top1={}，命中 {} 库 {} 条（最高余弦 {}），补充 {} 库 {} 条（最高余弦 {}）",
@@ -163,8 +174,10 @@ public class VectorSearchChannel implements SearchChannel {
             log.warn("未找到任何 KB collection，跳过全局检索");
             return List.of();
         }
+        AuthorizedRetrievalScope authorizedScope = context.requireAuthorizedScope();
         String question = context.getMainQuestion();
-        List<RetrievedChunk> chunks = retrieveOver(question, retrieverService.embedAndNormalize(question),
+        List<RetrievedChunk> chunks = retrieveOver(authorizedScope, question,
+                retrieverService.embedAndNormalize(authorizedScope, question),
                 scope.targetCollections(), context.getBudget().recallBudget());
 
         log.info("向量检索完成（全局），意图 top1={}，{} 库 {} 条（最高余弦 {}）",
@@ -181,18 +194,22 @@ public class VectorSearchChannel implements SearchChannel {
      * <p>
      * 排序在截断之前，且后端返回序不能直接信：PG 开了 {@code hnsw.iterative_scan=relaxed_order}，
      * pgvector 在该模式下允许轻微乱序且规划器不补 Sort 节点，先排后截才是取全局最优的前 budget 条
+     *
+     * @param authorizedScope 已授权检索作用域，原样下传给后端：collection 范围只是选择条件，
+     *                        能不能查这些库由作用域决定
      */
-    private List<RetrievedChunk> retrieveOver(String question, float[] queryVector, List<String> collections, int budget) {
+    private List<RetrievedChunk> retrieveOver(AuthorizedRetrievalScope authorizedScope, String question,
+                                              float[] queryVector, List<String> collections, int budget) {
         if (collections.isEmpty()) {
             return List.of();
         }
         List<RetrievedChunk> chunks = retrieverService.supportsGlobalRetrieval()
-                ? retrieverService.retrieveByVector(queryVector, RetrieveRequest.builder()
+                ? retrieverService.retrieveByVector(authorizedScope, queryVector, RetrieveRequest.builder()
                 .collectionNames(collections)
                 .query(question)
                 .topK(budget)
                 .build())
-                : globalRetriever.executeParallelRetrieval(question, collections, budget, queryVector);
+                : globalRetriever.executeParallelRetrieval(authorizedScope, question, collections, budget, queryVector);
         return ScopeQuota.cap(ChunkRanking.sortedByScore(chunks), budget);
     }
 

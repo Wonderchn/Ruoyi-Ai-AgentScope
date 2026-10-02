@@ -263,7 +263,7 @@ export interface ChatMessageVo {
   /**
    * 主键
    */
-  id?: number;
+  id?: number | string;
   /**
    * 模型名称
    */

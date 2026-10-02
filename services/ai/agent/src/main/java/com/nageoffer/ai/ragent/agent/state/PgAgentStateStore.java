@@ -19,6 +19,8 @@ package com.nageoffer.ai.ragent.agent.state;
 
 import cn.hutool.core.util.StrUtil;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentStateMapper;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.state.State;
 import io.agentscope.core.util.JsonUtils;
@@ -34,25 +36,40 @@ import java.util.Set;
  * AgentStateStore 的 PostgreSQL 实现
  * 官方 2.0.2 仅有 in-memory / JSON 文件 / Redis / MySQL，本项目主存储为 PG，故自实现挂 t_agent_state
  * payload 是 AgentScope 自有编解码的不透明 JSON，不与业务表建立结构约定
+ *
+ * <p><b>P1.3d：租户/成员进键，匿名回退移除。</b>t_agent_state 的主键是
+ * {@code (tenant_id, member_id, session_id, state_key)}，而 {@link AgentStateStore}
+ * 接口的方法签名（外部库）固定为 userId 形态，因此租户与成员只能在本实现内部、
+ * <b>每次访问 DAO 之前</b>从可信执行主体解析：没有主体即拒绝（fail-closed），
+ * 不再把匿名请求落成 {@code __anon__} 行——那曾是一个所有匿名流量共享的全局命名空间，
+ * 与隔离语义不相容。user_id 仅作为展示/legacy 引用写入，不参与键。
  */
 @RequiredArgsConstructor
 public class PgAgentStateStore implements AgentStateStore {
 
-    /**
-     * 与官方 JsonFileAgentStateStore 对齐的匿名用户哨兵，PG 主键列不可为空
-     */
-    private static final String ANONYMOUS_USER = "__anon__";
-
     private final AgentStateMapper agentStateMapper;
+    private boolean provenanceRequired;
+    private com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService sourceAuthorization;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureSources(@org.springframework.beans.factory.annotation.Value("${ai.integration.enabled:false}") boolean required,
+            org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService> sources) {
+        this.provenanceRequired=required; this.sourceAuthorization=sources.getIfAvailable();
+    }
 
     @Override
     public void save(String userId, String sessionId, String key, State value) {
-        agentStateMapper.upsert(safeUser(userId), sessionId, key, JsonUtils.getJsonCodec().toJson(value));
+        Scope scope = requireScope();
+        // 展示引用取可信主体上的 userId，不取 AgentScope 运行时入参（那是可伪造的展示值）
+        agentStateMapper.upsert(scope.tenantId(), scope.memberId(), scope.displayUserId(),
+                sessionId, key, JsonUtils.getJsonCodec().toJson(value));
     }
 
     @Override
     public void save(String userId, String sessionId, String key, List<? extends State> values) {
-        agentStateMapper.upsert(safeUser(userId), sessionId, key, JsonUtils.getJsonCodec().toJson(values));
+        Scope scope = requireScope();
+        agentStateMapper.upsert(scope.tenantId(), scope.memberId(), scope.displayUserId(),
+                sessionId, key, JsonUtils.getJsonCodec().toJson(values));
     }
 
     @Override
@@ -80,29 +97,53 @@ public class PgAgentStateStore implements AgentStateStore {
 
     @Override
     public boolean exists(String userId, String sessionId) {
-        return agentStateMapper.exists(safeUser(userId), sessionId);
+        Scope scope = requireScope();
+        return agentStateMapper.exists(scope.tenantId(), scope.memberId(), sessionId);
     }
 
     @Override
     public void delete(String userId, String sessionId) {
-        agentStateMapper.deleteBySession(safeUser(userId), sessionId);
+        Scope scope = requireScope();
+        agentStateMapper.deleteBySession(scope.tenantId(), scope.memberId(), sessionId);
     }
 
     @Override
     public void delete(String userId, String sessionId, String key) {
-        agentStateMapper.deleteByKey(safeUser(userId), sessionId, key);
+        Scope scope = requireScope();
+        agentStateMapper.deleteByKey(scope.tenantId(), scope.memberId(), sessionId, key);
     }
 
     @Override
     public Set<String> listSessionIds(String userId) {
-        return new LinkedHashSet<>(agentStateMapper.selectSessionIds(safeUser(userId)));
+        Scope scope = requireScope();
+        return new LinkedHashSet<>(agentStateMapper.selectSessionIds(scope.tenantId(), scope.memberId()));
     }
 
     private String queryPayload(String userId, String sessionId, String key) {
-        return agentStateMapper.selectPayload(safeUser(userId), sessionId, key);
+        Scope scope = requireScope();
+        if(provenanceRequired){
+            var provenance=agentStateMapper.selectProvenance(scope.tenantId(),scope.memberId(),sessionId,key);
+            if(sourceAuthorization==null || provenance==null || !sourceAuthorization.sourcesCurrent(PrincipalContext.require(),
+                    provenance.sourceRefs(),provenance.policyVersion()==null?0:provenance.policyVersion(),
+                    provenance.aclVersion()==null?0:provenance.aclVersion())){return null;}
+            return provenance.payload();
+        }
+        return agentStateMapper.selectPayload(scope.tenantId(), scope.memberId(), sessionId, key);
     }
 
-    private String safeUser(String userId) {
-        return StrUtil.isBlank(userId) ? ANONYMOUS_USER : userId;
+    /**
+     * 访问 DAO 前解析租户作用域：无执行主体直接拒绝，绝不落库。
+     */
+    private Scope requireScope() {
+        ExecutionPrincipal principal = PrincipalContext.require();
+        return new Scope(principal.tenantId(), principal.membershipId(), principal.userId());
+    }
+
+    /**
+     * @param tenantId       租户（键的一部分）
+     * @param memberId       canonical membershipId（键的一部分，权威主体引用）
+     * @param displayUserId  平台用户 ID（展示/legacy 引用，不参与键）
+     */
+    private record Scope(String tenantId, String memberId, String displayUserId) {
     }
 }

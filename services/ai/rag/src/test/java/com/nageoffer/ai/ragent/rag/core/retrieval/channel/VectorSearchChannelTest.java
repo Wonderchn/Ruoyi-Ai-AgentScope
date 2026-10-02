@@ -18,9 +18,12 @@
 package com.nageoffer.ai.ragent.rag.core.retrieval.channel;
 
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.security.AuthorizedResourceScope;
 import com.nageoffer.ai.ragent.rag.config.SearchChannelProperties;
 import com.nageoffer.ai.ragent.rag.core.intent.IntentNode;
 import com.nageoffer.ai.ragent.rag.core.intent.NodeScore;
+import com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope;
 import com.nageoffer.ai.ragent.rag.core.retrieval.RetrievalBudget;
 import com.nageoffer.ai.ragent.rag.core.retrieval.RetrieveRequest;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorRetrieverService;
@@ -30,12 +33,14 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.util.List;
+import java.util.Set;
 import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -49,6 +54,9 @@ class VectorSearchChannelTest {
     private static final float[] QUERY_VECTOR = {0.6F, 0.8F};
     /** 生产配置：每通道召回 20、Rerank 候选池 40、最终 10 条 */
     private static final RetrievalBudget PRODUCTION_BUDGET = new RetrievalBudget(20, 40, 10);
+    /** 非空授权作用域：本用例用到的逻辑库全部在授权集合内（空作用域会直接短路，不再查后端） */
+    private static final AuthorizedRetrievalScope AUTHORIZED_SCOPE = grantedScope(
+            List.of("kb-0", "kb-1", "kb-2", "kb-faq", "kb-finance", "kb-hr", "kb-policy", "kb-tech"));
 
     private VectorRetrieverService retrieverService;
     private SearchChannelProperties properties;
@@ -56,12 +64,14 @@ class VectorSearchChannelTest {
     @BeforeEach
     void setUp() {
         retrieverService = mock(VectorRetrieverService.class);
-        when(retrieverService.embedAndNormalize(QUESTION)).thenReturn(QUERY_VECTOR);
+        when(retrieverService.embedAndNormalize(any(AuthorizedRetrievalScope.class), eq(QUESTION)))
+                .thenReturn(QUERY_VECTOR);
         when(retrieverService.supportsGlobalRetrieval()).thenReturn(true);
         // 遵守 topK 的桩：真实后端返回条数受请求深度约束，否则测不出「主路产能 < 名额」这类错配
-        when(retrieverService.retrieveByVector(any(float[].class), any(RetrieveRequest.class)))
+        when(retrieverService.retrieveByVector(any(AuthorizedRetrievalScope.class),
+                any(float[].class), any(RetrieveRequest.class)))
                 .thenAnswer(invocation -> {
-                    RetrieveRequest request = invocation.getArgument(1);
+                    RetrieveRequest request = invocation.getArgument(2);
                     return roundRobin(request.getEffectiveCollectionNames(), request.getTopK());
                 });
         properties = new SearchChannelProperties();
@@ -186,9 +196,10 @@ class VectorSearchChannelTest {
         search(directedScope(), PRODUCTION_BUDGET);
 
         ArgumentCaptor<float[]> vectorCaptor = ArgumentCaptor.forClass(float[].class);
-        verify(retrieverService, times(2)).retrieveByVector(vectorCaptor.capture(), any(RetrieveRequest.class));
+        verify(retrieverService, times(2)).retrieveByVector(any(AuthorizedRetrievalScope.class),
+                vectorCaptor.capture(), any(RetrieveRequest.class));
         vectorCaptor.getAllValues().forEach(vector -> assertSame(QUERY_VECTOR, vector));
-        verify(retrieverService, times(1)).embedAndNormalize(QUESTION);
+        verify(retrieverService, times(1)).embedAndNormalize(any(AuthorizedRetrievalScope.class), eq(QUESTION));
     }
 
     @Test
@@ -259,9 +270,10 @@ class VectorSearchChannelTest {
     void supplementFailureDoesNotDropDirectedChunks() {
         // 回归：补充路拿的是兜底名额，它抛出却会让已取回的定向证据被通道级 catch 一起丢掉，
         // 等于兜底路把主路带走——鲁棒性方向正好反了
-        when(retrieverService.retrieveByVector(any(float[].class), any(RetrieveRequest.class)))
+        when(retrieverService.retrieveByVector(any(AuthorizedRetrievalScope.class),
+                any(float[].class), any(RetrieveRequest.class)))
                 .thenAnswer(invocation -> {
-                    RetrieveRequest request = invocation.getArgument(1);
+                    RetrieveRequest request = invocation.getArgument(2);
                     if (request.getEffectiveCollectionNames().equals(SUPPLEMENT)) {
                         throw new IllegalStateException("向量库抖动");
                     }
@@ -279,7 +291,8 @@ class VectorSearchChannelTest {
     void backendOutOfOrderIsResortedAtChannelExit() {
         // 回归：PG 开了 hnsw.iterative_scan=relaxed_order，pgvector 在该模式下允许轻微乱序且规划器不补 Sort，
         // 全局路曾原样返回后端列表，是唯一一条不重排的通道出口
-        when(retrieverService.retrieveByVector(any(float[].class), any(RetrieveRequest.class)))
+        when(retrieverService.retrieveByVector(any(AuthorizedRetrievalScope.class),
+                any(float[].class), any(RetrieveRequest.class)))
                 .thenReturn(List.of(chunk("a", 0.5F), chunk("b", 0.9F), chunk("c", 0.7F)));
 
         List<RetrievedChunk> chunks = search(
@@ -318,14 +331,28 @@ class VectorSearchChannelTest {
                 .originalQuestion(QUESTION)
                 .budget(budget)
                 .retrievalScope(scope)
+                .authorizedScope(AUTHORIZED_SCOPE)
                 .build();
         return new VectorSearchChannel(retrieverService, properties, Runnable::run).search(context);
     }
 
     private List<RetrieveRequest> captureRequests() {
         ArgumentCaptor<RetrieveRequest> captor = ArgumentCaptor.forClass(RetrieveRequest.class);
-        verify(retrieverService, atLeastOnce()).retrieveByVector(any(float[].class), captor.capture());
+        verify(retrieverService, atLeastOnce()).retrieveByVector(any(AuthorizedRetrievalScope.class),
+                any(float[].class), captor.capture());
         return captor.getAllValues();
+    }
+
+    /**
+     * 构造生产语义的授权作用域：KB 引用与逻辑库同时给出，空集合会被通道判为空授权而直接短路
+     */
+    private static AuthorizedRetrievalScope grantedScope(List<String> collections) {
+        ExecutionPrincipal principal = new ExecutionPrincipal("tenant-1", "1001",
+                ExecutionPrincipal.canonicalMembershipId("tenant-1", "1001"),
+                1, 1, Set.of(), "jti-test-1", "test-issuer", 0L, 0L);
+        AuthorizedResourceScope resourceScope = AuthorizedResourceScope.granted(
+                principal, "kb.retrieve", collections, 0L);
+        return AuthorizedRetrievalScope.of(resourceScope, collections, List.of(), List.of(), collections);
     }
 
     private static RetrievalScope directedScope() {

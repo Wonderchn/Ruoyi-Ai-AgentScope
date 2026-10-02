@@ -84,9 +84,23 @@ onMounted(() => {
 // 记录进入思考中
 let isThinking = false;
 
+watch(() => userStore.authEpoch, () => {
+  cancel();
+  bubbleItems.value = [];
+  inputValue.value = '';
+  toolCallEvents.value = [];
+  toolCallKeyCounter = 0;
+  copyIconMap.value = {};
+  editingMessageKeys.value = [];
+  editedContents.value = {};
+  isThinking = false;
+}, { flush: 'sync' });
+
 watch(
   () => route.params?.id,
   async (_id_) => {
+    const epoch = userStore.authEpoch;
+    bubbleItems.value = [];
     if (_id_) {
       // 切换会话时清空工具调用事件与工作流运行状态
       toolCallEvents.value = [];
@@ -105,8 +119,10 @@ watch(
 
         // 无缓存则请求聊天记录
         await chatStore.requestChatList(`${_id_}`);
+        if (epoch !== userStore.authEpoch || _id_ !== route.params?.id)
+          return;
         // 请求聊天记录后，赋值回显，并滚动到底部
-        bubbleItems.value = chatStore.chatMap[`${_id_}`] as MessageItem[];
+        bubbleItems.value = (chatStore.chatMap[`${_id_}`] ?? []) as MessageItem[];
 
         // 滚动到底部
         setTimeout(() => {
@@ -119,7 +135,8 @@ watch(
       if (v) {
         // 发送消息
         setTimeout(() => {
-          startSSE(v);
+          if (epoch === userStore.authEpoch && _id_ === route.params?.id)
+            startSSE(v);
         }, 350);
 
         localStorage.removeItem('chatContent');
@@ -135,6 +152,7 @@ function handleError(err: any) {
 }
 
 async function startSSE(chatContent: string) {
+  const epoch = userStore.authEpoch;
   if (!userStore.token) {
     userStore.ensureLogin('/chat', '登录后即可继续当前对话');
     return;
@@ -180,6 +198,8 @@ async function startSSE(chatContent: string) {
     }
 
     for await (const chunk of stream(payload)) {
+      if (epoch !== userStore.authEpoch)
+        break;
       // 处理数据块 - chunk.result 可能是字符串或对象
       // 返回 true 表示流结束
       const isStreamEnd = handleDataChunk(chunk.result as AnyObject | string);
@@ -202,9 +222,11 @@ async function startSSE(chatContent: string) {
     }
   }
   catch (err) {
+    if (epoch !== userStore.authEpoch)
+      return;
     handleError(err);
     // 出错时也要清除 loading 状态
-    if (bubbleItems.value.length) {
+    if (epoch === userStore.authEpoch && bubbleItems.value.length) {
       const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
       lastMessage.loading = false;
       bubbleItems.value = [...bubbleItems.value];
@@ -212,7 +234,7 @@ async function startSSE(chatContent: string) {
   }
   finally {
     // 停止打字器状态
-    if (bubbleItems.value.length) {
+    if (epoch === userStore.authEpoch && bubbleItems.value.length) {
       const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
       if (lastMessage.workflowRun?.status === 'running') {
         lastMessage.workflowRun.status = 'error';

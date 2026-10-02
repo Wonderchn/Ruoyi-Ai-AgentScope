@@ -34,9 +34,12 @@ public interface AgentMemoryMapper extends BaseMapper<AgentMemoryDO> {
     @Update("""
             UPDATE t_agent_memory
             SET invalid_at = CURRENT_TIMESTAMP, superseded_by = #{newId}
-            WHERE id = #{oldId} AND user_id = #{userId} AND invalid_at IS NULL
+            WHERE id = #{oldId} AND user_id = #{userId}
+              AND tenant_id = #{tenantId} AND member_id = #{memberId} AND invalid_at IS NULL
             """)
-    int supersede(@Param("userId") String userId,
+    int supersede(@Param("tenantId") String tenantId,
+                  @Param("memberId") String memberId,
+                  @Param("userId") String userId,
                   @Param("oldId") String oldId,
                   @Param("newId") String newId);
 
@@ -46,9 +49,13 @@ public interface AgentMemoryMapper extends BaseMapper<AgentMemoryDO> {
     @Update("""
             UPDATE t_agent_memory
             SET invalid_at = CURRENT_TIMESTAMP
-            WHERE id = #{oldId} AND user_id = #{userId} AND invalid_at IS NULL
+            WHERE id = #{oldId} AND user_id = #{userId}
+              AND tenant_id = #{tenantId} AND member_id = #{memberId} AND invalid_at IS NULL
             """)
-    int retract(@Param("userId") String userId, @Param("oldId") String oldId);
+    int retract(@Param("tenantId") String tenantId,
+                @Param("memberId") String memberId,
+                @Param("userId") String userId,
+                @Param("oldId") String oldId);
 
     /**
      * 清空：该用户全部生效条目一次失效，不留后继；同事务内 CURRENT_TIMESTAMP 相同，失效时刻即这批台账的结算时刻
@@ -56,7 +63,10 @@ public interface AgentMemoryMapper extends BaseMapper<AgentMemoryDO> {
     @Update("""
             UPDATE t_agent_memory
             SET invalid_at = CURRENT_TIMESTAMP
-            WHERE user_id = #{userId} AND invalid_at IS NULL
+            WHERE user_id = #{userId}
+              AND tenant_id = #{tenantId} AND member_id = #{memberId} AND invalid_at IS NULL
             """)
-    int retractAll(@Param("userId") String userId);
+    int retractAll(@Param("tenantId") String tenantId,
+                   @Param("memberId") String memberId,
+                   @Param("userId") String userId);
 }

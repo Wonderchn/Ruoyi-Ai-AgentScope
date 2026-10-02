@@ -46,15 +46,18 @@ public class VectorChunkSink implements ChunkSink {
     @Override
     public void replaceDocument(VectorTarget target, DocumentRef doc, List<EmbeddedChunk> chunks) {
         // 先删后建：装饰器链的图谱同步正是依赖这个顺序构成 upsert 语义，
-        // 顺序留在实现内部，不暴露给调用方
-        vectorStoreService.deleteDocumentVectors(target.partition(), doc.docId());
+        // 顺序留在实现内部，不暴露给调用方。
+        // 租户取自落点身份：向量表的"这一行属于谁"与"写到哪个分区"由同一个产生地决定，
+        // 不在本方法里再猜一次。
+        String tenantId = target.tenantId();
+        vectorStoreService.deleteDocumentVectors(tenantId, target.partition(), doc.docId());
         if (!chunks.isEmpty()) {
-            vectorStoreService.indexDocumentChunks(target.partition(), doc.docId(), chunks);
+            vectorStoreService.indexDocumentChunks(tenantId, target.partition(), doc.docId(), chunks);
         }
     }
 
     @Override
     public void deleteDocument(VectorTarget target, DocumentRef doc) {
-        vectorStoreService.deleteDocumentVectors(target.partition(), doc.docId());
+        vectorStoreService.deleteDocumentVectors(target.tenantId(), target.partition(), doc.docId());
     }
 }

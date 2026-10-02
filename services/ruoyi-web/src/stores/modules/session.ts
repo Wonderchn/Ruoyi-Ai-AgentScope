@@ -34,6 +34,16 @@ export const useSessionStore = defineStore('session', () => {
   // 搜索相关状态
   const searchKeyword = ref(''); // 搜索关键词
   const isSearching = ref(false); // 是否正在搜索
+  const resetSessions = () => {
+    currentSession.value = null;
+    sessionList.value = [];
+    currentPage.value = 1;
+    hasMore.value = true;
+    isLoading.value = false;
+    isLoadingMore.value = false;
+    searchKeyword.value = '';
+    isSearching.value = false;
+  };
 
   // 创建新对话（按钮点击）
   const createSessionBtn = async () => {
@@ -49,6 +59,7 @@ export const useSessionStore = defineStore('session', () => {
 
   // 获取会话列表（核心分页方法）
   const requestSessionList = async (page: number = currentPage.value, force: boolean = false) => {
+    const epoch = userStore.authEpoch;
     // 如果没有token就直接清空
     if (!userStore.token) {
       sessionList.value = [];
@@ -80,6 +91,8 @@ export const useSessionStore = defineStore('session', () => {
       };
 
       const resArr = await get_session_list(params);
+      if (epoch !== userStore.authEpoch)
+        return;
 
       // 预处理会话分组 并添加前缀图标
       const res = processSessions(resArr.rows);
@@ -114,8 +127,10 @@ export const useSessionStore = defineStore('session', () => {
       console.error('[requestSessionList] 错误详情:', error);
     }
     finally {
-      isLoading.value = false;
-      isLoadingMore.value = false;
+      if (epoch === userStore.authEpoch) {
+        isLoading.value = false;
+        isLoadingMore.value = false;
+      }
     }
   };
 
@@ -249,6 +264,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   return {
+    resetSessions,
     // 当前选中的会话
     currentSession,
     // 设置当前会话

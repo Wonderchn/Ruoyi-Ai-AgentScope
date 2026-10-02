@@ -13,6 +13,8 @@ import org.ruoyi.common.core.utils.StreamUtils;
 import org.ruoyi.common.core.utils.StringUtils;
 import org.ruoyi.common.core.utils.TreeBuildUtils;
 import org.ruoyi.common.satoken.utils.LoginHelper;
+import org.ruoyi.common.tenant.helper.TenantHelper;
+import org.ruoyi.system.aiidentity.AiPolicyMutationGuard;
 import org.ruoyi.system.domain.SysMenu;
 import org.ruoyi.system.domain.SysRole;
 import org.ruoyi.system.domain.SysRoleMenu;
@@ -44,6 +46,31 @@ public class SysMenuServiceImpl implements ISysMenuService {
     private final SysRoleMapper roleMapper;
     private final SysRoleMenuMapper roleMenuMapper;
     private final SysTenantPackageMapper tenantPackageMapper;
+    private final AiPolicyMutationGuard aiPolicyMutationGuard;
+
+    /**
+     * 菜单 perms 变更影响的是「绑定了该菜单的角色所属租户」（P1.2b：受影响租户
+     * 必须显式可枚举，禁止按全部租户递增）。
+     */
+    private Set<String> tenantIdsBoundToMenus(List<Long> menuIds) {
+        Set<String> tenantIds = new HashSet<>();
+        if (CollUtil.isEmpty(menuIds)) {
+            return tenantIds;
+        }
+        List<SysRoleMenu> roleMenus = roleMenuMapper.selectList(
+            new LambdaQueryWrapper<SysRoleMenu>().in(SysRoleMenu::getMenuId, menuIds));
+        if (CollUtil.isEmpty(roleMenus)) {
+            return tenantIds;
+        }
+        List<Long> roleIds = StreamUtils.toList(roleMenus, SysRoleMenu::getRoleId);
+        // 菜单是全局表、角色归属租户：跨租户读取忽略租户过滤
+        for (SysRole role : TenantHelper.ignore(() -> roleMapper.selectByIds(roleIds))) {
+            if (StringUtils.isNotBlank(role.getTenantId())) {
+                tenantIds.add(role.getTenantId());
+            }
+        }
+        return tenantIds;
+    }
 
     /**
      * 根据用户查询系统菜单列表
@@ -293,6 +320,9 @@ public class SysMenuServiceImpl implements ISysMenuService {
     /**
      * 新增保存菜单信息
      *
+     * <p>P1.2b：新菜单尚未绑定任何角色，受影响租户集合为空（显式可枚举的空集），
+     * 无需递增策略版本。
+     *
      * @param bo 菜单信息
      * @return 结果
      */
@@ -309,9 +339,13 @@ public class SysMenuServiceImpl implements ISysMenuService {
      * @return 结果
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public int updateMenu(SysMenuBo bo) {
         SysMenu menu = MapstructUtils.convert(bo, SysMenu.class);
-        return baseMapper.updateById(menu);
+        int rows = baseMapper.updateById(menu);
+        // P1.2b：菜单 perms/状态变更影响绑定角色所属租户 → 同事务递增其策略版本
+        aiPolicyMutationGuard.bump(tenantIdsBoundToMenus(List.of(menu.getMenuId())));
+        return rows;
     }
 
     /**
@@ -321,8 +355,16 @@ public class SysMenuServiceImpl implements ISysMenuService {
      * @return 结果
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public int deleteMenuById(Long menuId) {
-        return baseMapper.deleteById(menuId);
+        // 删除前枚举受影响租户（角色-菜单关联将被一并清理）
+        Set<String> tenantIds = tenantIdsBoundToMenus(List.of(menuId));
+        int rows = baseMapper.deleteById(menuId);
+        // P1.2b：同事务递增受影响租户的策略版本
+        if (rows > 0) {
+            aiPolicyMutationGuard.bump(tenantIds);
+        }
+        return rows;
     }
 
     /**
@@ -334,8 +376,12 @@ public class SysMenuServiceImpl implements ISysMenuService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteMenuById(List<Long> menuIds) {
+        // 删除前枚举受影响租户
+        Set<String> tenantIds = tenantIdsBoundToMenus(menuIds);
         baseMapper.deleteByIds(menuIds);
         roleMenuMapper.deleteByMenuIds(menuIds);
+        // P1.2b：同事务递增受影响租户的策略版本
+        aiPolicyMutationGuard.bump(tenantIds);
     }
 
     /**

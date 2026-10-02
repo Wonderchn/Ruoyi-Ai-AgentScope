@@ -25,6 +25,8 @@ import org.ruoyi.common.mybatis.core.page.TableDataInfo;
 import org.ruoyi.common.redis.utils.CacheUtils;
 import org.ruoyi.common.tenant.core.TenantEntity;
 import org.ruoyi.common.tenant.helper.TenantHelper;
+import org.ruoyi.system.aiidentity.AiPolicyMutationGuard;
+import org.ruoyi.system.aiidentity.AiPolicyRevisionService;
 import org.ruoyi.system.domain.*;
 import org.ruoyi.system.domain.bo.SysTenantBo;
 import org.ruoyi.system.domain.vo.SysTenantVo;
@@ -57,6 +59,8 @@ public class SysTenantServiceImpl implements ISysTenantService {
     private final SysDictTypeMapper dictTypeMapper;
     private final SysDictDataMapper dictDataMapper;
     private final SysConfigMapper configMapper;
+    private final AiPolicyMutationGuard aiPolicyMutationGuard;
+    private final AiPolicyRevisionService aiPolicyRevisionService;
 
     /**
      * 查询租户
@@ -216,6 +220,8 @@ public class SysTenantServiceImpl implements ISysTenantService {
             // 新增租户流程定义
             workflowService.syncDef(tenantId);
         }
+        // P1.2b：新租户在创建事务内同建 AI 策略版本行（version=1，不预置行口径下的唯一初始化点）
+        aiPolicyRevisionService.initialize(tenantId);
         return true;
     }
 
@@ -278,12 +284,20 @@ public class SysTenantServiceImpl implements ISysTenantService {
      * 修改租户
      */
     @CacheEvict(cacheNames = CacheNames.SYS_TENANT, key = "#bo.tenantId")
+    @Transactional(rollbackFor = Exception.class)
     @Override
     public Boolean updateByBo(SysTenantBo bo) {
         SysTenant tenant = MapstructUtils.convert(bo, SysTenant.class);
         tenant.setTenantId(null);
         tenant.setPackageId(null);
-        return baseMapper.updateById(tenant) > 0;
+        // 记录的租户（变更前读取，租户状态/期限属于成员事实）
+        SysTenant existing = baseMapper.selectById(tenant.getId());
+        boolean flag = baseMapper.updateById(tenant) > 0;
+        // P1.2b：租户信息变更 → 同事务递增该租户的策略版本
+        if (flag && existing != null && StringUtils.isNotBlank(existing.getTenantId())) {
+            aiPolicyMutationGuard.bumpTenant(existing.getTenantId());
+        }
+        return flag;
     }
 
     /**
@@ -293,12 +307,20 @@ public class SysTenantServiceImpl implements ISysTenantService {
      * @return 结果
      */
     @CacheEvict(cacheNames = CacheNames.SYS_TENANT, key = "#bo.tenantId")
+    @Transactional(rollbackFor = Exception.class)
     @Override
     public int updateTenantStatus(SysTenantBo bo) {
         SysTenant tenant = new SysTenant();
         tenant.setId(bo.getId());
         tenant.setStatus(bo.getStatus());
-        return baseMapper.updateById(tenant);
+        // 记录的租户（变更前读取）
+        SysTenant existing = baseMapper.selectById(bo.getId());
+        int rows = baseMapper.updateById(tenant);
+        // P1.2b：租户启用/停用 → 同事务递增该租户的策略版本
+        if (rows > 0 && existing != null && StringUtils.isNotBlank(existing.getTenantId())) {
+            aiPolicyMutationGuard.bumpTenant(existing.getTenantId());
+        }
+        return rows;
     }
 
     /**
@@ -317,6 +339,7 @@ public class SysTenantServiceImpl implements ISysTenantService {
      * 批量删除租户
      */
     @CacheEvict(cacheNames = CacheNames.SYS_TENANT, allEntries = true)
+    @Transactional(rollbackFor = Exception.class)
     @Override
     public Boolean deleteWithValidByIds(Collection<Long> ids, Boolean isValid) {
         if (isValid) {
@@ -325,7 +348,20 @@ public class SysTenantServiceImpl implements ISysTenantService {
                 throw new ServiceException("超管租户不能删除");
             }
         }
-        return baseMapper.deleteByIds(ids) > 0;
+        // 记录的租户集合（删除前读取，P1.2b：受影响租户显式可枚举）
+        List<SysTenant> tenants = baseMapper.selectByIds(ids);
+        boolean flag = baseMapper.deleteByIds(ids) > 0;
+        // P1.2b：同事务递增受影响租户集合的策略版本
+        if (flag) {
+            Set<String> tenantIds = new HashSet<>();
+            for (SysTenant tenant : tenants) {
+                if (StringUtils.isNotBlank(tenant.getTenantId())) {
+                    tenantIds.add(tenant.getTenantId());
+                }
+            }
+            aiPolicyMutationGuard.bump(tenantIds);
+        }
+        return flag;
     }
 
     /**
@@ -398,6 +434,8 @@ public class SysTenantServiceImpl implements ISysTenantService {
             roleMenuMapper.delete(
                 new LambdaQueryWrapper<SysRoleMenu>().in(SysRoleMenu::getRoleId, roleIds).notIn(!menuIds.isEmpty(), SysRoleMenu::getMenuId, menuIds));
         }
+        // P1.2b：套餐-租户菜单同步 → 同事务递增该租户的策略版本
+        aiPolicyMutationGuard.bumpTenant(tenantId);
         return true;
     }
 

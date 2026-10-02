@@ -40,6 +40,7 @@ import com.nageoffer.ai.ragent.core.ingest.IngestionSpec;
 import com.nageoffer.ai.ragent.core.ingest.VectorTarget;
 import com.nageoffer.ai.ragent.core.ingest.sink.ChunkIndexWriter;
 import com.nageoffer.ai.ragent.core.parser.registry.ParserRegistry;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.framework.exception.ServiceException;
@@ -105,6 +106,12 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
 
+    /**
+     * P1.3a：既有查询补租户条件的统一谓词（{0} 绑定当前主体的 tenantId）。
+     * 代理主键全局唯一可以保留，但访问路径必须带租户条件（逐表账判据）。
+     */
+    private static final String TENANT_PREDICATE = "tenant_id = {0}";
+
     private final KnowledgeBaseMapper knowledgeBaseMapper;
     private final KnowledgeDocumentMapper documentMapper;
     private final ParserRegistry parserRegistry;
@@ -131,6 +138,25 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
     @Value("knowledge-document-chunk_topic${unique-name:}")
     private String chunkTopic;
 
+    /** 当前主体租户；缺失即拒绝（不降级到默认租户）。 */
+    private static String requireTenantId() {
+        return PrincipalContext.require().tenantId();
+    }
+
+    /** 按租户读文档行：替代裸 selectById，跨租户 id 与不存在同外显。 */
+    private KnowledgeDocumentDO selectTenantKnowledgeDocument(String docId) {
+        return documentMapper.selectOne(new LambdaQueryWrapper<KnowledgeDocumentDO>()
+                .eq(KnowledgeDocumentDO::getId, docId)
+                .apply(TENANT_PREDICATE, requireTenantId()));
+    }
+
+    /** 按租户读 KB 行：文档落点必须先确认属于本租户。 */
+    private KnowledgeBaseDO selectTenantKnowledgeBase(String kbId) {
+        return knowledgeBaseMapper.selectOne(new LambdaQueryWrapper<KnowledgeBaseDO>()
+                .eq(KnowledgeBaseDO::getId, kbId)
+                .apply(TENANT_PREDICATE, requireTenantId()));
+    }
+
     @Override
     @LogRecord(
             success = "上传文档：{{#bizChangeName}}",
@@ -142,7 +168,8 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public KnowledgeDocumentVO upload(String kbId, KnowledgeDocumentUploadRequest requestParam, MultipartFile file) {
-        KnowledgeBaseDO kbDO = knowledgeBaseMapper.selectById(kbId);
+        // P1.3a：落点 KB 必须属于当前主体租户，跨租户 kbId 与不存在同外显
+        KnowledgeBaseDO kbDO = selectTenantKnowledgeBase(kbId);
         Assert.notNull(kbDO, () -> new ClientException("知识库不存在"));
 
         SourceType sourceType = SourceType.normalize(requestParam.getSourceType());
@@ -195,7 +222,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public void startChunk(String docId) {
-        KnowledgeDocumentDO beforeDO = documentMapper.selectById(docId);
+        KnowledgeDocumentDO beforeDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(beforeDO, () -> new ClientException("文档不存在"));
         bizChangeLogContext.putName(beforeDO.getDocName());
         KnowledgeDocumentDO before = BeanUtil.copyProperties(beforeDO, KnowledgeDocumentDO.class);
@@ -203,6 +230,8 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                 .docId(docId)
                 .operator(UserContext.getUsername())
                 .build();
+        // 事务回调里没有请求上下文可依赖，租户在这里取出并闭包传入
+        String tenantId = requireTenantId();
 
         messageQueueProducer.sendInTransaction(
                 chunkTopic,
@@ -217,19 +246,20 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                                     .set(KnowledgeDocumentDO::getUpdatedBy, event.getOperator())
                                     .set(KnowledgeDocumentDO::getUpdateTime, new Date())
                                     .eq(KnowledgeDocumentDO::getId, docId)
+                                    .apply(TENANT_PREDICATE, tenantId)
                                     .ne(KnowledgeDocumentDO::getStatus, DocumentStatus.RUNNING.getCode())
                     );
                     if (updated == 0) {
-                        KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
+                        KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
                         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
                         throw new ClientException("文档分块操作正在进行中，请稍后再试");
                     }
-                    KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
+                    KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
                     event.setKbId(documentDO.getKbId());
                     scheduleService.upsertSchedule(documentDO);
                 }
         );
-        bizChangeLogContext.put(docId, before, documentMapper.selectById(docId));
+        bizChangeLogContext.put(docId, before, selectTenantKnowledgeDocument(docId));
     }
 
     @Override
@@ -424,10 +454,11 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public void delete(String docId) {
-        KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
+        KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
         bizChangeLogContext.putName(documentDO.getDocName());
         KnowledgeDocumentDO before = BeanUtil.copyProperties(documentDO, KnowledgeDocumentDO.class);
+        String tenantId = requireTenantId();
 
         // 禁止在文档分块运行时删除
         if (DocumentStatus.RUNNING.getCode().equals(documentDO.getStatus())) {
@@ -436,14 +467,18 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
 
         scheduleService.deleteByDocId(docId);
         chunkLogMapper.delete(Wrappers.lambdaQuery(KnowledgeDocumentChunkLogDO.class)
-                .eq(KnowledgeDocumentChunkLogDO::getDocId, docId));
+                .eq(KnowledgeDocumentChunkLogDO::getDocId, docId)
+                .apply(TENANT_PREDICATE, tenantId));
 
         documentDO.setDeleted(1);
         documentDO.setUpdatedBy(UserContext.getUsername());
-        documentMapper.deleteById(documentDO);
+        // P1.3a：软删同样带租户条件（逻辑删 UPDATE ... WHERE id AND tenant_id）
+        documentMapper.delete(Wrappers.lambdaQuery(KnowledgeDocumentDO.class)
+                .eq(KnowledgeDocumentDO::getId, docId)
+                .apply(TENANT_PREDICATE, tenantId));
 
         // 一次调用覆盖全部落点：关系库块与向量都在扇出里，未来加索引后端也自动跟随
-        KnowledgeBaseDO kbDO = knowledgeBaseMapper.selectById(documentDO.getKbId());
+        KnowledgeBaseDO kbDO = selectTenantKnowledgeBase(documentDO.getKbId());
         chunkIndexWriter.deleteDocument(vectorTargetResolver.resolve(kbDO), documentRef(documentDO));
         deleteStoredFileQuietly(documentDO);
         bizChangeLogContext.put(docId, before, null);
@@ -451,7 +486,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
 
     @Override
     public KnowledgeDocumentVO get(String docId) {
-        KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
+        KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
         return toVO(documentDO);
     }
@@ -468,7 +503,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public void update(String docId, KnowledgeDocumentUpdateRequest requestParam) {
-        KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
+        KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
         bizChangeLogContext.putName(documentDO.getDocName());
         KnowledgeDocumentDO before = BeanUtil.copyProperties(documentDO, KnowledgeDocumentDO.class);
@@ -485,6 +520,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
 
         LambdaUpdateWrapper<KnowledgeDocumentDO> updateWrapper = Wrappers.lambdaUpdate(KnowledgeDocumentDO.class)
                 .eq(KnowledgeDocumentDO::getId, documentDO.getId())
+                .apply(TENANT_PREDICATE, requireTenantId())
                 .set(KnowledgeDocumentDO::getDocName, docName.trim())
                 .set(KnowledgeDocumentDO::getUpdatedBy, UserContext.getUsername());
 
@@ -542,7 +578,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
 
             // 验证：启用定时拉取时必须有 cron 和 sourceLocation
             if (scheduleChanged) {
-                KnowledgeDocumentDO willBe = documentMapper.selectById(docId);
+                KnowledgeDocumentDO willBe = selectTenantKnowledgeDocument(docId);
                 Integer finalEnabled = newScheduleEnabled != null ? newScheduleEnabled : willBe.getScheduleEnabled();
                 String finalCron = StringUtils.hasText(newScheduleCron) ? newScheduleCron.trim() : willBe.getScheduleCron();
                 String finalLocation = StringUtils.hasText(newSourceLocation) ? newSourceLocation.trim() : willBe.getSourceLocation();
@@ -561,10 +597,10 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         documentMapper.update(updateWrapper);
 
         if (scheduleChanged) {
-            KnowledgeDocumentDO updated = documentMapper.selectById(docId);
+            KnowledgeDocumentDO updated = selectTenantKnowledgeDocument(docId);
             scheduleService.upsertSchedule(updated);
         }
-        bizChangeLogContext.put(docId, before, documentMapper.selectById(docId));
+        bizChangeLogContext.put(docId, before, selectTenantKnowledgeDocument(docId));
     }
 
     @Override
@@ -573,6 +609,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         LambdaQueryWrapper<KnowledgeDocumentDO> queryWrapper = Wrappers.lambdaQuery(KnowledgeDocumentDO.class)
                 .eq(KnowledgeDocumentDO::getKbId, kbId)
                 .eq(KnowledgeDocumentDO::getDeleted, 0)
+                .apply(TENANT_PREDICATE, requireTenantId())
                 .like(requestParam.getKeyword() != null && !requestParam.getKeyword().isBlank(), KnowledgeDocumentDO::getDocName, requestParam.getKeyword())
                 .eq(requestParam.getStatus() != null && !requestParam.getStatus().isBlank(), KnowledgeDocumentDO::getStatus, requestParam.getStatus())
                 .orderByDesc(KnowledgeDocumentDO::getCreateTime);
@@ -611,6 +648,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         QueryWrapper<KnowledgeChunkDO> wrapper = new QueryWrapper<>();
         wrapper.select("DISTINCT doc_id")
                 .in("doc_id", docIds)
+                .apply(TENANT_PREDICATE, requireTenantId())
                 .apply("update_time > create_time + INTERVAL '1 second'");
         return chunkMapper.selectObjs(wrapper).stream()
                 .map(String::valueOf)
@@ -627,6 +665,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         Page<KnowledgeDocumentDO> mpPage = new Page<>(1, size);
         LambdaQueryWrapper<KnowledgeDocumentDO> qw = new LambdaQueryWrapper<KnowledgeDocumentDO>()
                 .eq(KnowledgeDocumentDO::getDeleted, 0)
+                .apply(TENANT_PREDICATE, requireTenantId())
                 .like(KnowledgeDocumentDO::getDocName, keyword)
                 .orderByDesc(KnowledgeDocumentDO::getUpdateTime);
 
@@ -648,7 +687,11 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
             return records;
         }
 
-        List<KnowledgeBaseDO> bases = knowledgeBaseMapper.selectByIds(kbIds);
+        // P1.3a：按租户读 KB 名称，避免用全局 selectByIds 拼出来源不明的名字
+        List<KnowledgeBaseDO> bases = knowledgeBaseMapper.selectList(
+                new LambdaQueryWrapper<KnowledgeBaseDO>()
+                        .in(KnowledgeBaseDO::getId, kbIds)
+                        .apply(TENANT_PREDICATE, requireTenantId()));
         Map<String, String> nameMap = new HashMap<>();
         if (bases != null) {
             for (KnowledgeBaseDO base : bases) {
@@ -672,7 +715,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public void enable(String docId, boolean enabled) {
-        KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
+        KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
         bizChangeLogContext.putName(documentDO.getDocName());
         KnowledgeDocumentDO before = BeanUtil.copyProperties(documentDO, KnowledgeDocumentDO.class);
@@ -690,8 +733,11 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         }
 
         // 提前查知识库，两个分支都需要，避免重复查询
-        KnowledgeBaseDO kbDO = knowledgeBaseMapper.selectById(documentDO.getKbId());
+        KnowledgeBaseDO kbDO = selectTenantKnowledgeBase(documentDO.getKbId());
         String collectionName = kbDO.getCollectionName();
+        // 租户只从可信执行主体取（知识库行上的 created_by 是展示审计，不是归属；
+        // KnowledgeBaseDO 的 tenantId 列要到 V3 才存在）。缺主体直接抛错，不默认租户。
+        String tenantId = PrincipalContext.require().tenantId();
 
         // 启用时：embed 耗时较长，在事务外提前执行，避免长事务占用连接
         List<EmbeddedChunk> vectorChunks = Collections.emptyList();
@@ -707,14 +753,19 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         transactionOperations.executeWithoutResult(status -> {
             documentDO.setEnabled(targetEnabled);
             documentDO.setUpdatedBy(UserContext.getUsername());
-            documentMapper.updateById(documentDO);
+            // P1.3a：启用状态更新带租户条件（WHERE id AND tenant_id）
+            documentMapper.update(Wrappers.lambdaUpdate(KnowledgeDocumentDO.class)
+                    .eq(KnowledgeDocumentDO::getId, documentDO.getId())
+                    .apply(TENANT_PREDICATE, tenantId)
+                    .set(KnowledgeDocumentDO::getEnabled, targetEnabled)
+                    .set(KnowledgeDocumentDO::getUpdatedBy, UserContext.getUsername()));
             scheduleService.syncScheduleIfExists(documentDO);
             knowledgeChunkService.updateEnabledByDocId(docId, String.valueOf(kbDO.getId()), enabled);
 
             if (!enabled) {
-                vectorStoreService.deleteDocumentVectors(collectionName, docId);
+                vectorStoreService.deleteDocumentVectors(tenantId, collectionName, docId);
             } else if (CollUtil.isNotEmpty(finalEmbeddedChunks)) {
-                vectorStoreService.indexDocumentChunks(collectionName, docId, finalEmbeddedChunks);
+                vectorStoreService.indexDocumentChunks(tenantId, collectionName, docId, finalEmbeddedChunks);
             }
         });
         bizChangeLogContext.put(docId, before, documentMapper.selectById(docId));
@@ -722,9 +773,13 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
 
     @Override
     public IPage<KnowledgeDocumentChunkLogVO> getChunkLogs(String docId, Page<KnowledgeDocumentChunkLogVO> page) {
+        // P1.3a：先按租户确认文档归属，再做分块日志分页
+        KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
+        Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
         Page<KnowledgeDocumentChunkLogDO> mpPage = new Page<>(page.getCurrent(), page.getSize());
         LambdaQueryWrapper<KnowledgeDocumentChunkLogDO> qw = new LambdaQueryWrapper<KnowledgeDocumentChunkLogDO>()
                 .eq(KnowledgeDocumentChunkLogDO::getDocId, docId)
+                .apply(TENANT_PREDICATE, requireTenantId())
                 .orderByDesc(KnowledgeDocumentChunkLogDO::getCreateTime);
 
         IPage<KnowledgeDocumentChunkLogDO> result = chunkLogMapper.selectPage(mpPage, qw);
@@ -829,7 +884,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
 
     @Override
     public String preview(String docId) {
-        KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
+        KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
         if (DisplayType.from(documentDO.getFileType()) != DisplayType.MARKDOWN) {
             throw new ClientException("仅支持预览 markdown 格式文档");

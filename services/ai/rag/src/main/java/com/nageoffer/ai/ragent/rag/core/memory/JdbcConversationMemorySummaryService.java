@@ -54,6 +54,24 @@ import static com.nageoffer.ai.ragent.rag.constant.RAGConstant.CONTEXT_FORMAT_PA
 @Service
 @RequiredArgsConstructor
 public class JdbcConversationMemorySummaryService implements ConversationMemorySummaryService {
+    private boolean provenanceRequired;
+    private com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService sourceAuthorization;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureSources(@org.springframework.beans.factory.annotation.Value("${ai.integration.enabled:false}") boolean required,
+            org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService> sources) {
+        provenanceRequired=required;sourceAuthorization=sources.getIfAvailable();
+    }
+
+    private ConversationSummaryDO verifiedSummary(String conversationId,String userId) {
+        var summary=conversationGroupService.findLatestSummary(conversationId,userId);
+        if(!provenanceRequired || summary==null){return summary;}
+        var principal=com.nageoffer.ai.ragent.framework.context.PrincipalContext.require();
+        if(!principal.tenantId().equals(summary.getTenantId()) || !principal.membershipId().equals(summary.getMemberId())
+                || sourceAuthorization==null || !sourceAuthorization.sourcesCurrent(principal,summary.getSourceRefs(),
+                summary.getSourcePolicyVersion()==null?0:summary.getSourcePolicyVersion(),summary.getSourceAclVersion()==null?0:summary.getSourceAclVersion())){return null;}
+        return summary;
+    }
 
     private static final String SUMMARY_LOCK_PREFIX = "ragent:memory:summary:lock:";
 
@@ -84,7 +102,7 @@ public class JdbcConversationMemorySummaryService implements ConversationMemoryS
 
     @Override
     public ChatMessage loadLatestSummary(String conversationId, String userId) {
-        ConversationSummaryDO summary = conversationGroupService.findLatestSummary(conversationId, userId);
+        ConversationSummaryDO summary = verifiedSummary(conversationId, userId);
         return toChatMessage(summary);
     }
 
@@ -119,7 +137,7 @@ public class JdbcConversationMemorySummaryService implements ConversationMemoryS
                 return;
             }
 
-            ConversationSummaryDO latestSummary = conversationGroupService.findLatestSummary(conversationId, userId);
+            ConversationSummaryDO latestSummary = verifiedSummary(conversationId, userId);
             List<ConversationMessageDO> latestUserTurns = conversationGroupService.listLatestUserOnlyMessages(
                     conversationId,
                     userId,

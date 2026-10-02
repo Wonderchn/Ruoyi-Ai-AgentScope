@@ -21,16 +21,17 @@ export const request = hookFetch.create<BaseResponse, 'data' | 'rows'>({
 });
 
 function jwtPlugin(): HookFetchPlugin<BaseResponse> {
-  const userStore = useUserStore();
   return {
     name: 'jwt',
     beforeRequest: async (config) => {
+      const userStore = useUserStore();
       config.headers = new Headers(config.headers);
       config.headers.set('authorization', `Bearer ${userStore.token}`);
       config.headers.set('ClientID', import.meta.env.VITE_CLIENT_ID);
       return config;
     },
     afterResponse: async (response) => {
+      const userStore = useUserStore();
       // console.log(response);
       if (response.result?.code === 200) {
         return response;

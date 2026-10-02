@@ -201,6 +201,17 @@ rag:
     max-output-tokens: 4096
 
 ai:
+  # ---------------------------------------------------------------------------------
+  # P1 SaaS 边界（缺属性等价于关闭；显式写出便于运维核对与配置评审）
+  # 产品默认：不接生产委托、不开客户 API、不装配旧 listener/回查/调度。
+  # 任一 true 会让产品启动直接失败（ai.integration.startup-validation-enabled=false
+  # 只供「只扫几个类」的单元装配上下文使用，不得用于产品部署）。
+  # ---------------------------------------------------------------------------------
+  integration:
+    enabled: false
+    customer-api:
+      enabled: false
+    legacy-listeners-enabled: false
   providers:
     ollama:
       url: http://localhost:11434

@@ -1,0 +1,147 @@
+{
+  "manifestVersion": "P1-FIXTURE-v1",
+  "specVersion": "P1-FULL-v1",
+  "baseline": "c2fdc73c67ca9156098ce4a1b1f2853486fc5aa1",
+  "generatedAt": "2026-10-01T00:00:00Z",
+  "purpose": "P1.1b 合成 fixture 契约：两租户同名不同 user/member、跨部门、无 ACL、显式 tenant_all、deleted/tombstone、未知归属、legacy token 样例。全部为合成数据，不证明无存量。",
+  "tenants": [
+    {
+      "tenantId": "T1",
+      "label": "合成租户一",
+      "packageId": 901,
+      "departments": [
+        { "deptId": 1101, "parentDeptId": 1100, "name": "T1-研发部" },
+        { "deptId": 1102, "parentDeptId": 1101, "name": "T1-平台组（子树）" }
+      ],
+      "users": [
+        { "userId": 2101, "username": "shared-user", "deptId": 1102, "membershipId": "platform:T1:2101", "roles": ["t1-owner"], "expect": "允许" },
+        { "userId": 2100, "username": "t1-unassigned", "deptId": 1101, "membershipId": "platform:T1:2100", "roles": ["t1-nores"], "expect": "拒绝：无任何 ACL" }
+      ]
+    },
+    {
+      "tenantId": "T2",
+      "label": "合成租户二",
+      "packageId": 902,
+      "departments": [
+        { "deptId": 1201, "parentDeptId": 1200, "name": "T2-研发部" },
+        { "deptId": 1202, "parentDeptId": 1201, "name": "T2-平台组（子树）" }
+      ],
+      "users": [
+        { "userId": 2201, "username": "shared-user", "deptId": 1202, "membershipId": "platform:T2:2201", "roles": ["t2-owner"], "expect": "允许：仅 T2 资源" }
+      ]
+    }
+  ],
+  "sameUsernameDifferentIdentity": [
+    { "username": "shared-user", "tenantId": "T1", "userId": 2101, "membershipId": "platform:T1:2101" },
+    { "username": "shared-user", "tenantId": "T2", "userId": 2201, "membershipId": "platform:T2:2201" }
+  ],
+  "dataScopes": [
+    { "action": "kb.list", "role": "t1-owner", "scopeCode": 4, "scopeName": "本部门及子树", "expect": "T1 内 1102 子树" },
+    { "action": "kb.list", "role": "t2-owner", "scopeCode": 5, "scopeName": "仅本人", "expect": "T2 内仅 owner 为本人" },
+    { "action": "kb.read", "role": "t1-scope3", "scopeCode": 3, "scopeName": "本部门", "expect": "仅本部门资源" },
+    { "action": "kb.read", "role": "t1-custom", "scopeCode": 2, "scopeName": "自定义部门集合", "expect": "显式部门集合" },
+    { "action": "kb.read", "role": "t1-tenantall", "scopeCode": 1, "scopeName": "同租户全部", "expect": "仍需 AI ACL 交集" },
+    { "action": "kb.read", "role": "t1-subtree-or-self", "scopeCode": 6, "scopeName": "部门子树或本人", "expect": "并集" }
+  ],
+  "resources": [
+    {
+      "tenantId": "T1", "type": "KB", "id": "kb-t1-private-a", "ownerMemberId": "platform:T1:2101",
+      "ownerDeptId": 1102, "parentType": null, "parentId": null, "status": "ACTIVE", "resourceVersion": 1,
+      "acl": [ { "subjectType": "member", "subjectId": "platform:T1:2101", "action": "kb.read", "expiresAt": null } ],
+      "expect": "仅 U1 可读"
+    },
+    {
+      "tenantId": "T1", "type": "KB", "id": "kb-t1-public", "ownerMemberId": "platform:T1:2101",
+      "ownerDeptId": 1102, "parentType": null, "parentId": null, "status": "ACTIVE", "resourceVersion": 1,
+      "acl": [ { "subjectType": "tenant_all", "subjectId": "T1", "action": "kb.read", "expiresAt": null } ],
+      "expect": "T1 全员显式持久 grant（非 scope 空值）"
+    },
+    {
+      "tenantId": "T1", "type": "KB", "id": "kb-t1-deleted", "ownerMemberId": "platform:T1:2101",
+      "ownerDeptId": 1102, "parentType": null, "parentId": null, "status": "DELETED", "resourceVersion": 3,
+      "acl": [ { "subjectType": "tenant_all", "subjectId": "T1", "action": "kb.read", "expiresAt": null } ],
+      "expect": "tombstone 优先于 ACL：一律拒绝"
+    },
+    {
+      "tenantId": "T1", "type": "DOC", "id": "doc-t1-b", "ownerMemberId": "platform:T1:2101",
+      "ownerDeptId": 1102, "parentType": "KB", "parentId": "kb-t1-public", "status": "ACTIVE", "resourceVersion": 1,
+      "acl": [], "expect": "继承父 KB 授权；子可为私有收窄"
+    },
+    {
+      "tenantId": "T1", "type": "DOC", "id": "doc-t1-b-private", "ownerMemberId": "platform:T1:2101",
+      "ownerDeptId": 1102, "parentType": "KB", "parentId": "kb-t1-public", "status": "ACTIVE", "resourceVersion": 1,
+      "acl": [ { "subjectType": "member", "subjectId": "platform:T1:2101", "action": "document.read", "expiresAt": null } ],
+      "expect": "子资源收窄：tenant_all 父授权不使本文件对 T1 全员可见"
+    },
+    {
+      "tenantId": "T1", "type": "DOC", "id": "doc-t1-deleted", "ownerMemberId": "platform:T1:2101",
+      "ownerDeptId": 1102, "parentType": "KB", "parentId": "kb-t1-public", "status": "DELETED", "resourceVersion": 2,
+      "acl": [], "expect": "父允许但子 tombstone：不因父权限放行"
+    },
+    {
+      "tenantId": "T2", "type": "KB", "id": "kb-t2-same-selector", "ownerMemberId": "platform:T2:2201",
+      "ownerDeptId": 1202, "parentType": null, "parentId": null, "status": "ACTIVE", "resourceVersion": 1,
+      "acl": [ { "subjectType": "member", "subjectId": "platform:T2:2201", "action": "kb.read", "expiresAt": null } ],
+      "expect": "与 T1 使用相同资源选择符，但 tenant 不同：必须互不可见"
+    }
+  ],
+  "sameResourceSelectorAcrossTenants": [
+    { "selector": "kb-public-shared-name", "T1": "kb-t1-public", "T2": "kb-t2-same-selector" }
+  ],
+  "conversations": [
+    { "tenantId": "T1", "conversationId": "conv-t1-u1", "memberId": "platform:T1:2101", "messages": ["msg-t1-u1-1", "msg-t1-u1-2"], "expect": "仅本人可读" },
+    { "tenantId": "T1", "conversationId": "conv-t1-u0", "memberId": "platform:T1:2100", "messages": ["msg-t1-u0-1"], "expect": "u0 私有；u1 无权" }
+  ],
+  "memories": [
+    { "tenantId": "T1", "memberId": "platform:T1:2101", "memoryId": "mem-t1-u1", "sourceRefs": ["doc-t1-b"], "expect": "来源有效可读" },
+    { "tenantId": "T1", "memberId": "platform:T1:2101", "memoryId": "mem-t1-u1-revoked", "sourceRefs": ["doc-t1-deleted"], "expect": "来源撤权/删除后不输出" }
+  ],
+  "stateKeys": [
+    { "tenantId": "T1", "memberId": "platform:T1:2101", "sessionId": "sess-shared", "stateKey": "k1", "expect": "本成员可读写" },
+    { "tenantId": "T2", "memberId": "platform:T2:2201", "sessionId": "sess-shared", "stateKey": "k1", "expect": "与 T1 相同 session/key，不同 tenant：互不可见" }
+  ],
+  "runs": [
+    { "tenantId": "T1", "runId": "run-t1-1", "memberId": "platform:T1:2101", "events": [ { "seq": 1, "type": "started" } ], "expect": "仅 T1 可读" },
+    { "tenantId": "T2", "runId": "run-t2-1", "memberId": "platform:T2:2201", "events": [ { "seq": 1, "type": "started" } ], "expect": "仅 T2 可读" }
+  ],
+  "objects": [
+    { "tenantId": "T1", "key": "ai/T1/KB/kb-t1-private-a/1/random-a", "ownerMemberId": "platform:T1:2101", "expect": "私有；跨租户/无 ACL 一律 404" },
+    { "tenantId": "T2", "key": "ai/T2/KB/kb-t2-same-selector/1/random-b", "ownerMemberId": "platform:T2:2201", "expect": "私有；key 形状不可作为权限证明" }
+  ],
+  "vectors": [
+    { "tenantId": "T1", "collection": "rag_default_store", "documentId": "doc-t1-b", "chunkId": "chunk-t1-1", "expectedVector": [1.0, 0.0, 0.0], "expect": "T1 命中" },
+    { "tenantId": "T2", "collection": "rag_default_store", "documentId": "doc-t2-same-selector", "chunkId": "chunk-t2-1", "expectedVector": [0.0, 1.0, 0.0], "expect": "T2 命中；同物理表" }
+  ],
+  "unknownOwnership": [
+    { "table": "t_knowledge_base", "rowId": "kb-unknown-owner", "reason": "created_by 为用户名，无法映射到 sourceSystem/sourceTenant/sourceUserId", "expect": "隔离为不可访问，不得默认 tenant，不得因约束失败被删除" },
+    { "table": "t_message", "rowId": "msg-unknown-owner", "reason": "仅有裸 user_id，无可信归属", "expect": "隔离为不可访问" }
+  ],
+  "legacyTokens": [
+    { "kind": "legacy-ai-token", "expectedHttp": 404, "expectedErrorCode": "RESOURCE_NOT_FOUND_OR_FORBIDDEN", "expect": "旧 AI token 不得桥接为 canonical 主体" },
+    { "kind": "admin-token", "expectedHttp": 404, "expectedErrorCode": "RESOURCE_NOT_FOUND_OR_FORBIDDEN", "expect": "管理员 token 不是成员授权" },
+    { "kind": "platform-token", "expectedHttp": 404, "expectedErrorCode": "RESOURCE_NOT_FOUND_OR_FORBIDDEN", "expect": "浏览器 token 不直接进 AI" },
+    { "kind": "forged-identity-headers", "expectedHttp": 404, "expectedErrorCode": "RESOURCE_NOT_FOUND_OR_FORBIDDEN", "expect": "X-Tenant/X-User/body.userId 不参与主体选择" }
+  ],
+  "counts": {
+    "tenants": 2,
+    "departments": 4,
+    "platformUsers": 3,
+    "aiResources": 7,
+    "conversations": 2,
+    "memories": 2,
+    "stateKeys": 2,
+    "runs": 2,
+    "objects": 2,
+    "vectors": 2,
+    "legacyTokens": 4
+  },
+  "hashes": {
+    "note": "由 tools/p1-fixtures/generate.ps1 在 Validate/Generate 时重算并写入运行证据；此处不预置可漂移的常量。",
+    "algorithm": "SHA256",
+    "inputs": [
+      "tools/p1-fixtures/p1-fixture-spec.json",
+      "services/ai/rag/src/test/resources/p1/resources.sql",
+      "services/platform/ruoyi-modules/ruoyi-ai-integration/src/test/resources/p1/tenants.sql"
+    ]
+  }
+}

@@ -44,6 +44,15 @@ public class KnowledgeBaseCleanupEvent implements Serializable {
     private String kbId;
 
     /**
+     * 所属租户。
+     *
+     * <p>P1.3b：清理动作作用在<b>共享</b>的 ES 索引与 Milvus collection 上，必须有租户条件；
+     * 消费者是异步的、已无请求上下文，唯一可信来源就是投递时随事件带来的这个字段。
+     * 消费者侧缺该字段即拒绝执行，不做"默认租户"。
+     */
+    private String tenantId;
+
+    /**
      * 知识库 collection 名称（同时也是 bucket 名）
      */
     private String collectionName;

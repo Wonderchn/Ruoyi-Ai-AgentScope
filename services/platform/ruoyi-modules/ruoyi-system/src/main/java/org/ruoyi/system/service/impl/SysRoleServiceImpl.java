@@ -23,15 +23,19 @@ import org.ruoyi.common.core.utils.StringUtils;
 import org.ruoyi.common.mybatis.core.page.PageQuery;
 import org.ruoyi.common.mybatis.core.page.TableDataInfo;
 import org.ruoyi.common.satoken.utils.LoginHelper;
+import org.ruoyi.common.tenant.helper.TenantHelper;
+import org.ruoyi.system.aiidentity.AiPolicyMutationGuard;
 import org.ruoyi.system.domain.SysRole;
 import org.ruoyi.system.domain.SysRoleDept;
 import org.ruoyi.system.domain.SysRoleMenu;
+import org.ruoyi.system.domain.SysUser;
 import org.ruoyi.system.domain.SysUserRole;
 import org.ruoyi.system.domain.bo.SysRoleBo;
 import org.ruoyi.system.domain.vo.SysRoleVo;
 import org.ruoyi.system.mapper.SysRoleDeptMapper;
 import org.ruoyi.system.mapper.SysRoleMapper;
 import org.ruoyi.system.mapper.SysRoleMenuMapper;
+import org.ruoyi.system.mapper.SysUserMapper;
 import org.ruoyi.system.mapper.SysUserRoleMapper;
 import org.ruoyi.system.service.ISysRoleService;
 import org.springframework.cache.annotation.CacheEvict;
@@ -53,6 +57,21 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
     private final SysRoleMenuMapper roleMenuMapper;
     private final SysUserRoleMapper userRoleMapper;
     private final SysRoleDeptMapper roleDeptMapper;
+    private final SysUserMapper userMapper;
+    private final AiPolicyMutationGuard aiPolicyMutationGuard;
+
+    /**
+     * 提取记录的 tenant_id 集合（受影响租户必须显式可枚举）。
+     */
+    private static Set<String> tenantIdsOf(Collection<SysRole> roles) {
+        Set<String> tenantIds = new HashSet<>();
+        for (SysRole role : roles) {
+            if (StringUtils.isNotBlank(role.getTenantId())) {
+                tenantIds.add(role.getTenantId());
+            }
+        }
+        return tenantIds;
+    }
 
     /**
      * 分页查询角色列表
@@ -297,7 +316,13 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
         // 新增角色信息
         baseMapper.insert(role);
         bo.setRoleId(role.getRoleId());
-        return insertRoleMenu(bo);
+        int rows = insertRoleMenu(bo);
+        // P1.2b：同事务递增受影响租户的策略版本（租户取自插入后的记录）
+        SysRole inserted = baseMapper.selectById(role.getRoleId());
+        if (inserted != null) {
+            aiPolicyMutationGuard.bump(tenantIdsOf(List.of(inserted)));
+        }
+        return rows;
     }
 
     /**
@@ -314,11 +339,18 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
         if (SystemConstants.DISABLE.equals(role.getStatus()) && this.countUserRoleByRoleId(role.getRoleId()) > 0) {
             throw new ServiceException("角色已分配，不能禁用!");
         }
+        // 记录的租户（变更前读取，P1.2b 同事务 bump 需要）
+        SysRole existing = baseMapper.selectById(role.getRoleId());
         // 修改角色信息
         baseMapper.updateById(role);
         // 删除角色与菜单关联
         roleMenuMapper.delete(new LambdaQueryWrapper<SysRoleMenu>().eq(SysRoleMenu::getRoleId, role.getRoleId()));
-        return insertRoleMenu(bo);
+        int rows = insertRoleMenu(bo);
+        // P1.2b：角色-菜单变更 → 同事务递增该角色所属租户的策略版本
+        if (existing != null) {
+            aiPolicyMutationGuard.bump(tenantIdsOf(List.of(existing)));
+        }
+        return rows;
     }
 
     /**
@@ -329,14 +361,22 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
      * @return 结果
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public int updateRoleStatus(Long roleId, String status) {
         if (SystemConstants.DISABLE.equals(status) && this.countUserRoleByRoleId(roleId) > 0) {
             throw new ServiceException("角色已分配，不能禁用!");
         }
-        return baseMapper.update(null,
+        // 记录的租户（变更前读取）
+        SysRole existing = baseMapper.selectById(roleId);
+        int rows = baseMapper.update(null,
             new LambdaUpdateWrapper<SysRole>()
                 .set(SysRole::getStatus, status)
                 .eq(SysRole::getRoleId, roleId));
+        // P1.2b：角色启用/停用属于成员事实变更 → 同事务递增该租户的策略版本
+        if (rows > 0 && existing != null) {
+            aiPolicyMutationGuard.bump(tenantIdsOf(List.of(existing)));
+        }
+        return rows;
     }
 
     /**
@@ -350,12 +390,19 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
     @Transactional(rollbackFor = Exception.class)
     public int authDataScope(SysRoleBo bo) {
         SysRole role = MapstructUtils.convert(bo, SysRole.class);
+        // 记录的租户（变更前读取）
+        SysRole existing = baseMapper.selectById(role.getRoleId());
         // 修改角色信息
         baseMapper.updateById(role);
         // 删除角色与部门关联
         roleDeptMapper.delete(new LambdaQueryWrapper<SysRoleDept>().eq(SysRoleDept::getRoleId, role.getRoleId()));
         // 新增角色和部门信息（数据权限）
-        return insertRoleDept(bo);
+        int rows = insertRoleDept(bo);
+        // P1.2b：角色-部门（数据权限）变更 → 同事务递增该租户的策略版本
+        if (existing != null) {
+            aiPolicyMutationGuard.bump(tenantIdsOf(List.of(existing)));
+        }
+        return rows;
     }
 
     /**
@@ -410,11 +457,18 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int deleteRoleById(Long roleId) {
+        // 记录的租户（删除前读取，P1.2b 同事务 bump 需要）
+        SysRole existing = baseMapper.selectById(roleId);
         // 删除角色与菜单关联
         roleMenuMapper.delete(new LambdaQueryWrapper<SysRoleMenu>().eq(SysRoleMenu::getRoleId, roleId));
         // 删除角色与部门关联
         roleDeptMapper.delete(new LambdaQueryWrapper<SysRoleDept>().eq(SysRoleDept::getRoleId, roleId));
-        return baseMapper.deleteById(roleId);
+        int rows = baseMapper.deleteById(roleId);
+        // P1.2b：同事务递增受影响租户的策略版本
+        if (rows > 0 && existing != null) {
+            aiPolicyMutationGuard.bump(tenantIdsOf(List.of(existing)));
+        }
+        return rows;
     }
 
     /**
@@ -439,7 +493,12 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
         roleMenuMapper.delete(new LambdaQueryWrapper<SysRoleMenu>().in(SysRoleMenu::getRoleId, roleIds));
         // 删除角色与部门关联
         roleDeptMapper.delete(new LambdaQueryWrapper<SysRoleDept>().in(SysRoleDept::getRoleId, roleIds));
-        return baseMapper.deleteByIds(roleIds);
+        int rows = baseMapper.deleteByIds(roleIds);
+        // P1.2b：同事务递增受影响租户集合的策略版本（删除前已读出记录）
+        if (rows > 0) {
+            aiPolicyMutationGuard.bump(tenantIdsOf(roles));
+        }
+        return rows;
     }
 
     /**
@@ -449,6 +508,7 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
      * @return 结果
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public int deleteAuthUser(SysUserRole userRole) {
         if (LoginHelper.getUserId().equals(userRole.getUserId())) {
             throw new ServiceException("不允许修改当前用户角色!");
@@ -457,6 +517,8 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
             .eq(SysUserRole::getRoleId, userRole.getRoleId())
             .eq(SysUserRole::getUserId, userRole.getUserId()));
         if (rows > 0) {
+            // P1.2b：用户-角色变更 → 同事务递增该用户所属租户的策略版本
+            aiPolicyMutationGuard.bump(tenantIdsOfUsers(List.of(userRole.getUserId())));
             cleanOnlineUser(List.of(userRole.getUserId()));
         }
         return rows;
@@ -470,6 +532,7 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
      * @return 结果
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public int deleteAuthUsers(Long roleId, Long[] userIds) {
         List<Long> ids = List.of(userIds);
         if (ids.contains(LoginHelper.getUserId())) {
@@ -479,6 +542,8 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
             .eq(SysUserRole::getRoleId, roleId)
             .in(SysUserRole::getUserId, ids));
         if (rows > 0) {
+            // P1.2b：用户-角色变更 → 同事务递增出现过的租户集合的策略版本
+            aiPolicyMutationGuard.bump(tenantIdsOfUsers(ids));
             cleanOnlineUser(ids);
         }
         return rows;
@@ -492,6 +557,7 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
      * @return 结果
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public int insertAuthUsers(Long roleId, Long[] userIds) {
         // 新增用户与角色管理
         int rows = 1;
@@ -509,9 +575,28 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
             rows = userRoleMapper.insertBatch(list) ? list.size() : 0;
         }
         if (rows > 0) {
+            // P1.2b：用户-角色变更 → 同事务递增出现过的租户集合的策略版本
+            aiPolicyMutationGuard.bump(tenantIdsOfUsers(ids));
             cleanOnlineUser(ids);
         }
         return rows;
+    }
+
+    /**
+     * 提取用户记录的 tenant_id 集合（P1.2b：受影响租户显式可枚举；跨租户读取需忽略租户过滤）。
+     */
+    private Set<String> tenantIdsOfUsers(List<Long> userIds) {
+        Set<String> tenantIds = new HashSet<>();
+        if (CollUtil.isEmpty(userIds)) {
+            return tenantIds;
+        }
+        List<SysUser> users = TenantHelper.ignore(() -> userMapper.selectByIds(userIds));
+        for (SysUser user : users) {
+            if (StringUtils.isNotBlank(user.getTenantId())) {
+                tenantIds.add(user.getTenantId());
+            }
+        }
+        return tenantIds;
     }
 
     /**

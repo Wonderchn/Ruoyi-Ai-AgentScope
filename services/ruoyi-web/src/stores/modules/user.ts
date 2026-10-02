@@ -3,22 +3,37 @@ import { ElMessage } from 'element-plus';
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
+import { useChatStore } from './chat';
+import { useLoginFormStore } from './loginForm';
+import { useModelStore } from './model';
+import { useSessionStore } from './session';
 
 export const useUserStore = defineStore(
   'user',
   () => {
     const token = ref<string>();
+    const userInfo = ref<LoginUser>();
+    const authEpoch = ref(0);
+    const clearRuntimeState = () => {
+      authEpoch.value++;
+      useSessionStore().resetSessions();
+      useChatStore().resetChats();
+      useModelStore().resetModels();
+    };
     const router = useRouter();
     const loginRedirectPath = ref<string>('');
 
     const setToken = (value: string) => {
+      clearRuntimeState();
+      userInfo.value = void 0;
       token.value = value;
     };
     const clearToken = () => {
+      clearRuntimeState();
       token.value = void 0;
+      useLoginFormStore().tenantId = '';
     };
 
-    const userInfo = ref<LoginUser>();
     const setUserInfo = (value: LoginUser) => {
       userInfo.value = value;
     };
@@ -82,6 +97,7 @@ export const useUserStore = defineStore(
 
     return {
       token,
+      authEpoch,
       setToken,
       clearToken,
       userInfo,
@@ -100,6 +116,6 @@ export const useUserStore = defineStore(
     };
   },
   {
-    persist: true,
+    persist: { pick: ['token', 'userInfo'] },
   },
 );

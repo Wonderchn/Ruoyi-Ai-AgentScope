@@ -131,7 +131,9 @@ public class DefaultFileStorageService implements FileStorageService {
     public StoredFileDTO uploadAsset(byte[] content, String originalFilename, String contentType) {
         Assert.notNull(content, "上传内容不能为空");
         String detected = resolveContentType(originalFilename, contentType);
-        String key = randomKey(originalFilename);
+        // 资产 key 同样带租户前缀：否则 getPublicUrl 无从判定"这个 key 是否属于调用方"。
+        // 资产桶是公共读的，一旦 key 可猜或可泄漏，无前缀就意味着任何人拿到 key 即可长期直读。
+        String key = assetKey(originalFilename);
         objectStorageClient.streamPut(assetBucket, key, new ByteArrayInputStream(content), content.length, detected);
         return buildStoredFileDTO(key, originalFilename, detected, content.length);
     }
@@ -139,31 +141,83 @@ public class DefaultFileStorageService implements FileStorageService {
     @Override
     public InputStream openStream(String key) {
         Assert.notBlank(key, "对象 key 不能为空");
+        requireOwnership(key);
         return objectStorageClient.getObject(kbBucket, key);
     }
 
     @Override
     public void deleteByUrl(String key) {
         Assert.notBlank(key, "对象 key 不能为空");
+        requireOwnership(key);
         objectStorageClient.deleteObject(kbBucket, key);
     }
 
     @Override
     public String getPublicUrl(String key) {
         Assert.notBlank(key, "对象 key 不能为空");
+        requireOwnership(key);
+        // 公共 URL 只对资产桶对象有意义（资产键形如 {tenantId}/{uuid}.{ext}，恰好一个分隔符）。
+        // 知识库文档键（{tenantId}/{namespace}/{uuid}.{ext}）是客户私有内容：
+        // 绝不能凭 key 换取公共直链——私有内容只能走授权下载（openStream + 当前授权），
+        // 否则"是否公开"再次从授权判定滑回运维配置。
+        if (key.indexOf('/') != key.lastIndexOf('/')) {
+            log.warn("拒绝为知识库私有对象生成公共 URL: keyPrefix={}",
+                    key.length() > 24 ? key.substring(0, 24) : key);
+            throw new ServiceException("对象不存在或无权访问");
+        }
         return objectStorageClient.buildPublicUrl(assetBucket, key);
+    }
+
+    /**
+     * 校验 key 归属当前租户；不属于则拒绝。
+     *
+     * <p><b>为什么必须有这一步。</b>这三个方法的入参只有 key，没有资源标识可用于
+     * 走常规的 ACL 判定，因此在此之前 <b>key 本身就是唯一的访问凭据</b>：
+     * 任何能拿到 key 的地方（日志、导出、前端直链、共享链接）都等价于拿到读/删权限。
+     * key 形如 {@code {tenantId}/{namespace}/{uuid}.{ext}}，前缀即归属，
+     * 于是这里可以只用一次前缀比较把访问收回本租户。
+     *
+     * <p><b>为什么不"没前缀就放行"。</b>那样等于给历史 key 留一条永久后门：
+     * 任何绕过 upload 路径写进桶的对象都自动对所有租户可读。
+     * 本仓库的所有写入路径（{@link #documentKey} 与 {@link #assetKey}）都已带前缀，
+     * 因此"没有前缀"是异常状态而不是兼容状态，必须拒绝并点名。
+     *
+     * <p>无执行主体时同样拒绝（{@code PrincipalContext.require()} 抛异常），
+     * 绝不因为"没有主体"就放宽为"不校验"——与检索侧的 fail-closed 同一口径。
+     */
+    private void requireOwnership(String key) {
+        String tenantId = com.nageoffer.ai.ragent.framework.context.PrincipalContext.require().tenantId();
+        String prefix = tenantId + "/";
+        if (!key.startsWith(prefix)) {
+            log.warn("拒绝跨租户对象访问: tenantId={}, keyPrefix={}", tenantId,
+                    key.length() > 24 ? key.substring(0, 24) : key);
+            throw new ServiceException("对象不存在或无权访问");
+        }
+    }
+
+    /**
+     * 组装资产 key：{@code {tenantId}/{uuid}.{ext}}
+     *
+     * <p>与文档 key 同口径：租户只从可信执行主体取，不取请求参数。
+     */
+    private String assetKey(String originalFilename) {
+        String tenantId = com.nageoffer.ai.ragent.framework.context.PrincipalContext.require().tenantId();
+        return tenantId + "/" + randomKey(originalFilename);
     }
 
     @Override
     public void createKnowledgeSpace(String namespace) {
         validateNamespace(namespace);
-        String markerKey = namespace + "/";
+        // 标记对象与分布式锁都按租户作用域：namespace 只是租户内的目录名，
+        // 两个租户允许同名知识库，全局标记会让它们互相"已存在"，全局锁会互斥无关租户。
+        String tenantId = com.nageoffer.ai.ragent.framework.context.PrincipalContext.require().tenantId();
+        String markerKey = tenantScopedPrefix(tenantId, namespace);
         if (objectStorageClient.objectExists(kbBucket, markerKey)) {
             return;
         }
 
         // 集群下用分布式锁 + 双重检查保证目录只建一次，替代旧 createBucket 的冲突保证
-        RLock lock = redissonClient.getLock(LOCK_KEY_PREFIX + namespace);
+        RLock lock = redissonClient.getLock(LOCK_KEY_PREFIX + tenantId + ":" + namespace);
         boolean locked;
         try {
             locked = lock.tryLock(LOCK_WAIT_SECONDS, TimeUnit.SECONDS);
@@ -181,7 +235,7 @@ public class DefaultFileStorageService implements FileStorageService {
             }
             // 写一个 0 字节标记对象，使空知识库目录在控制台可见
             objectStorageClient.streamPut(kbBucket, markerKey, new ByteArrayInputStream(new byte[0]), 0, null);
-            log.info("知识库目录创建成功 bucket={}, namespace={}", kbBucket, namespace);
+            log.info("知识库目录创建成功 bucket={}, tenantId={}, namespace={}", kbBucket, tenantId, namespace);
         } finally {
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
@@ -191,15 +245,58 @@ public class DefaultFileStorageService implements FileStorageService {
 
     @Override
     public void deleteKnowledgeSpace(String namespace) {
+        // 同步路径：租户来自可信执行主体。
         validateNamespace(namespace);
-        objectStorageClient.deleteByPrefix(kbBucket, namespace + "/");
+        String tenantId = com.nageoffer.ai.ragent.framework.context.PrincipalContext.require().tenantId();
+        deleteKnowledgeSpaceForTenant(namespace, tenantId);
+    }
+
+    @Override
+    public void deleteKnowledgeSpaceForTenant(String namespace, String tenantId) {
+        // 异步消费者路径（KnowledgeBaseCleanupConsumer）：事件租户已在校验后传入。
+        // 前缀必须是 {tenantId}/{namespace}/——旧实现只拼 namespace，在新 key 格式下
+        // 既删不到本租户对象（它们带租户前缀），又会把任何恰有该裸前缀的他人对象划进删除范围。
+        validateNamespace(namespace);
+        requireTenantShape(tenantId);
+        objectStorageClient.deleteByPrefix(kbBucket, tenantScopedPrefix(tenantId, namespace));
+    }
+
+    /** 租户作用域前缀：{@code {tenantId}/{namespace}/}。 */
+    private String tenantScopedPrefix(String tenantId, String namespace) {
+        requireTenantShape(tenantId);
+        return tenantId + "/" + namespace + "/";
     }
 
     /**
-     * 组装知识库文档 key：{@code {namespace}/{uuid}.{ext}}
+     * namespace 是 key 的单个路径段：含分隔符即路径穿越/跨目录写入，一律拒绝。
+     */
+    private void validateNamespace(String namespace) {
+        Assert.notBlank(namespace, "namespace 不能为空");
+        Assert.isFalse(namespace.indexOf('/') >= 0 || namespace.indexOf('\\') >= 0,
+                "namespace 不能包含路径分隔符");
+    }
+
+    /** 租户形状校验：与 ExecutionPrincipal 契约一致（1..64、不含冒号/分隔符）。 */
+    private void requireTenantShape(String tenantId) {
+        Assert.notBlank(tenantId, "tenantId 不能为空");
+        Assert.isFalse(tenantId.length() > 64 || tenantId.indexOf(':') >= 0
+                || tenantId.indexOf('/') >= 0, "tenantId 形状非法");
+    }
+
+    /**
+     * 组装知识库文档 key：{@code {tenantId}/{namespace}/{uuid}.{ext}}
+     *
+     * <p><b>P1.3c：key 必须带租户。</b>对象存储是共享桶：key 不带租户时，
+     * "这个对象属于谁"在 key 上不可判定，而 {@code openStream} 只接受 key、不做授权判定，
+     * 于是 key 本身成了唯一的访问凭据——任何能读到 key 的地方（日志、导出、前端直连）
+     * 都等价于拿到读取权。租户进 key 之后，前缀即归属，
+     * {@code deleteByPrefix} 这类按前缀操作才有可能被约束在本租户内。
+     *
+     * <p>租户只从可信执行主体取，不取请求参数；无主体直接拒绝。
      */
     private String documentKey(String namespace, String originalFilename) {
-        return namespace + "/" + randomKey(originalFilename);
+        String tenantId = com.nageoffer.ai.ragent.framework.context.PrincipalContext.require().tenantId();
+        return tenantId + "/" + namespace + "/" + randomKey(originalFilename);
     }
 
     private String extractSuffix(String filename) {
@@ -215,10 +312,6 @@ public class DefaultFileStorageService implements FileStorageService {
         String suffix = extractSuffix(originalFilename);
         String key = UUID.randomUUID().toString().replace("-", "");
         return suffix.isBlank() ? key : key + "." + suffix;
-    }
-
-    private void validateNamespace(String namespace) {
-        Assert.notBlank(namespace, "namespace 不能为空");
     }
 
     private StoredFileDTO buildStoredFileDTO(String url, String originalFilename,

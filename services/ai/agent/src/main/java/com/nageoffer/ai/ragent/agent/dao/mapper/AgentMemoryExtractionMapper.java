@@ -37,9 +37,12 @@ public interface AgentMemoryExtractionMapper extends BaseMapper<AgentMemoryExtra
             SELECT max(to_message_id)
             FROM t_agent_memory_extraction
             WHERE user_id = #{userId}
+              AND tenant_id = #{tenantId} AND member_id = #{memberId}
               AND status IN ('WRITTEN', 'NOOP', 'DROPPED')
             """)
-    String selectWatermark(@Param("userId") String userId);
+    String selectWatermark(@Param("tenantId") String tenantId,
+                           @Param("memberId") String memberId,
+                           @Param("userId") String userId);
 
     /**
      * 覆盖某条用户消息的那次已结束抽取的状态，没有返回 null
@@ -49,12 +52,15 @@ public interface AgentMemoryExtractionMapper extends BaseMapper<AgentMemoryExtra
             SELECT status
             FROM t_agent_memory_extraction
             WHERE user_id = #{userId}
+              AND tenant_id = #{tenantId} AND member_id = #{memberId}
               AND status IN ('WRITTEN', 'NOOP', 'DROPPED')
               AND from_message_id <= #{messageId} AND to_message_id >= #{messageId}
             ORDER BY to_message_id DESC
             LIMIT 1
             """)
-    String selectSettledStatusCovering(@Param("userId") String userId,
+    String selectSettledStatusCovering(@Param("tenantId") String tenantId,
+                                       @Param("memberId") String memberId,
+                                       @Param("userId") String userId,
                                        @Param("messageId") String messageId);
 
     /**
@@ -80,10 +86,13 @@ public interface AgentMemoryExtractionMapper extends BaseMapper<AgentMemoryExtra
             UPDATE t_agent_memory_extraction
             SET status = 'CONFLICT', settle_time = CURRENT_TIMESTAMP
             WHERE user_id = #{userId}
+              AND tenant_id = #{tenantId} AND member_id = #{memberId}
               AND status = 'PROCESSING'
               AND create_time < CURRENT_TIMESTAMP - make_interval(mins => #{staleMinutes})
             """)
-    int recycleStale(@Param("userId") String userId,
+    int recycleStale(@Param("tenantId") String tenantId,
+                     @Param("memberId") String memberId,
+                     @Param("userId") String userId,
                      @Param("staleMinutes") int staleMinutes);
 
     /**
@@ -93,8 +102,11 @@ public interface AgentMemoryExtractionMapper extends BaseMapper<AgentMemoryExtra
             SELECT coalesce(max(attempt_count), 0)
             FROM t_agent_memory_extraction
             WHERE user_id = #{userId}
+              AND tenant_id = #{tenantId} AND member_id = #{memberId}
               AND to_message_id = #{toMessageId}
             """)
-    int selectSpentAttempts(@Param("userId") String userId,
+    int selectSpentAttempts(@Param("tenantId") String tenantId,
+                            @Param("memberId") String memberId,
+                            @Param("userId") String userId,
                             @Param("toMessageId") String toMessageId);
 }

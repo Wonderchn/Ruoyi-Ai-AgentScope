@@ -1,0 +1,38 @@
+{
+  "unit": "P1.2a",
+  "spec": "01-p1-first-unit-spec.md",
+  "baseline": "c2fdc73c67ca9156098ce4a1b1f2853486fc5aa1",
+  "assertedAbsentClasses": [
+    "org.ruoyi.controller.chat.ChatController",
+    "org.ruoyi.controller.chat.MediaGenerationController",
+    "org.ruoyi.controller.mcp.McpToolController",
+    "org.ruoyi.controller.mcp.McpMarketController",
+    "org.ruoyi.controller.coding.CodingHarnessController",
+    "org.ruoyi.controller.coding.CodingController",
+    "org.ruoyi.controller.agent.AgentController",
+    "org.ruoyi.controller.knowledge.KnowledgeInfoController",
+    "org.ruoyi.controller.shortdrama.ShortDramaController",
+    "org.ruoyi.agent.manager.TableSchemaInitializer",
+    "org.ruoyi.observability.LangChain4jObservabilityConfig",
+    "org.ruoyi.mcp.service.core.BuiltinToolRegistry",
+    "org.ruoyi.factory.VectorStoreStrategyFactory",
+    "org.ruoyi.service.coding.harness.approval.HarnessApprovalExpiryMonitor",
+    "org.ruoyi.service.coding.harness.recovery.HarnessStartupRecovery",
+    "org.ruoyi.workflow.controller.WorkflowController",
+    "org.ruoyi.workflow.controller.WorkflowRuntimeController",
+    "org.ruoyi.workflow.controller.admin.AdminWorkflowController"
+  ],
+  "removedSecurityExclusion": "/workflow/run",
+  "preservedSecurityExclusions": [
+    "/*.html",
+    "/**/*.html",
+    "/**/*.css",
+    "/**/*.js",
+    "/favicon.ico",
+    "/error",
+    "/*/api-docs",
+    "/*/api-docs/**",
+    "/warm-flow-ui/config"
+  ],
+  "preservedWorkflowArtifact": "ruoyi-workflow"
+}

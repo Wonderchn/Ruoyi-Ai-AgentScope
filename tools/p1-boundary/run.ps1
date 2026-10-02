@@ -1,0 +1,2731 @@
+﻿<#
+.SYNOPSIS
+  P1.2a「SaaS 旧身份 / 旧路由 / 无主体触发关闭」单元边界验收 runner（Spec 01 §6、00 §9）。
+
+.DESCRIPTION
+  两种模式，语义完全不同，别混：
+
+    Unit        —— 只跑 Spec 01 §6 列明的 5 条原生 mvn 命令（覆盖 6 个必跑类），逐类核对
+                   services/<domain>/<module>/target/surefire-reports/TEST-<fqcn>.xml：
+                   tests>0 且 failures=errors=skips=0。XML 缺失 / 陈旧（本轮未重写）/
+                   tests=0 / 有 skip，一律 FAIL —— reactor 的 BUILD SUCCESS 不能证明指定类跑过。
+
+    Integration —— 规格要求的「两个真实产品 jar + runner 自有合成 PG17/pgvector、Redis、
+                   S3 兼容 mock」端到端验收（B01–B13）。预检拿不到可用容器运行时/合成库时，
+                   被闸门挡住的检查写 NOT_RUN + 确切探测证据，**exit 0**（缺环境 ≠ PASS ≠ 假 FAIL）。
+                   happy path 已按契约实现但本机不可执行，见 README「当前 NOT_RUN 与原因」。
+
+  约束（照做，别绕）：
+    * 按 Windows PowerShell 5.1 编写（本机无 pwsh 7）：不用 -SkipHttpErrorCheck / 三元运算符 /
+      ForEach-Object -Parallel；HTTP 一律走 System.Net.Http.HttpClient。
+    * 口令/密钥只经**子进程环境**传给子进程；不落盘、不进证据；写盘前统一脱敏。
+    * 只停止本脚本自己启动的 PID；停止前同时核对 PID 与命令行；绝不通杀 java。
+    * 删除前解析绝对路径并确认位于 $WorkRoot 或 $EvidenceDir 之下，否则拒绝（留证，不删）。
+    * 绝不连接、也绝不冒充本机/远端已有业务库或缓存；检测到就拒绝并留证（refusals.json）。
+    * 退出码：Unit —— 任一检查 FAIL 即 exit 1；Integration —— 环境缺失时被闸门挡住的检查全部
+      NOT_RUN 则 exit 0，任何 FAIL 仍 exit 1；-EvidenceDir 相对路径 / 落在仓库内属用法拒绝，exit 2。
+
+.EXAMPLE
+  powershell -NoProfile -File tools/p1-boundary/run.ps1 -Mode Unit -EvidenceDir D:/AI-project/mydocs/p1/evidence/full/p12a-unit
+  powershell -NoProfile -File tools/p1-boundary/run.ps1 -Mode Integration -EvidenceDir D:/AI-project/mydocs/p1/evidence/full/p12a
+#>
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][ValidateSet('Unit', 'Integration')][string]$Mode,
+    [Parameter(Mandatory = $true)][string]$EvidenceDir,
+    [string]$RunTag = ('p1b' + (Get-Date -Format 'yyyyMMddHHmmss')),
+    [string]$RepoRoot = 'D:\AI-project\Ruoyi-Ai-AgentScope',
+    [string]$WorkRoot = 'D:\AI-project\.scratch\p1-boundary\work',
+    # 远端容器宿主（可选）。本机没有容器运行时时，验收环境可以是既有测试 VM：
+    # 容器命令经 ssh 在远端执行，合成 PG/Redis/S3 建在远端，本机只跑 jar 与断言。
+    # 语义边界：-RemoteHost 只把"执行容器命令的位置"搬到远端，**不**降低任何检查强度，
+    # 也**不**允许复用远端既有容器——归属仍由本脚本自己的 run tag label 判定。
+    [string]$RemoteHost = '',
+    [string]$SshKeyPath = '',
+    [int]$SshConnectTimeoutSeconds = 15,
+    # 端口默认值 = 绑定期做一次空闲端口扫描（区间内第一个可绑定端口）；0 = 扫描失败，交给 ENV-ports 判 FAIL。
+    [int]$PlatformPort = $( $chosen = 0; foreach ($c in 18082..18160) { try { $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $c); $l.Start(); $l.Stop(); $chosen = $c; break } catch { } }; $chosen ),
+    [int]$AiPort = $( $chosen = 0; foreach ($c in 19090..19168) { try { $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $c); $l.Start(); $l.Stop(); $chosen = $c; break } catch { } }; $chosen ),
+    # 评审辅助（不属于验收契约）：预检判定环境缺失时，仍执行两条 clean verify 构建根。
+    # 只会让 BUILD-* 从 NOT_RUN 变成真实结果，永远不会把 NOT_RUN 变成 PASS。
+    [switch]$ForceBuildRoots,
+    [switch]$LibraryOnly
+)
+
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Net.Http
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+# =========================== 脚本状态 ===========================
+$script:JdkHome = 'D:\develop\java\jdk-17.0.18.8-hotspot'
+$script:MavenExe = 'D:\develop\apache-maven-3.9.1\bin\mvn.cmd'
+# 本机 Maven 本地仓库。**不是** ~/.m2：本机把 localRepository 改到了这里，
+# 从 ~/.m2 找依赖会一无所获，而"找不到 jar"很容易被误读成"依赖没下载"。
+$script:MavenRepo = 'D:\develop\maven_repository'
+$script:SpecPaths = @(
+    'D:\AI-project\mydocs\p1\01-p1-first-unit-spec.md',
+    'D:\AI-project\mydocs\p1\00-p1-plan.md',
+    # 本轮**实际获批执行**的两份规格。只记前两份会让证据里的"规格基线"指向
+    # 与本轮工作无关的文档：读证据的人无法据此复算本轮究竟按哪份规格跑的。
+    'D:\AI-project\mydocs\p1\05-p1-full-execution-spec.md',
+    'D:\AI-project\mydocs\p1\03-p1-unit-paths.md'
+)
+$script:Failures = 0
+$script:Results = New-Object System.Collections.ArrayList
+$script:Refusals = New-Object System.Collections.ArrayList
+$script:Probes = New-Object System.Collections.ArrayList
+$script:NativeCommands = New-Object System.Collections.ArrayList
+$script:Surefire = New-Object System.Collections.ArrayList
+$script:Cleanup = New-Object System.Collections.ArrayList
+$script:HttpLog = New-Object System.Collections.ArrayList
+$script:GatedNotRun = New-Object System.Collections.ArrayList
+# 必须用可增长集合：@() 是固定大小数组，对它有 .Add() 会抛
+# "Collection was of a fixed size."（本文件其它地方用 += 重建数组所以看不出问题）。
+# 这个集合决定"哪些 PID 是本轮启动的"，而清理正是靠它拒绝停别人的进程——
+# 它一旦在运行中抛异常，本轮启动的 ssh 隧道就无人认领、无法停止。
+$script:StartedProcesses = New-Object System.Collections.ArrayList
+$script:OwnedContainers = New-Object System.Collections.ArrayList
+$script:ExecutionId = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+$script:RunStartedUtc = (Get-Date).ToUniversalTime()
+$script:EnvGateBlocked = $false
+$script:GateReason = 'NOT_EVALUATED'
+$script:GateReasonDetail = ''
+$script:GateReasonShort = ''
+$script:Runtime = $null
+$script:Secrets = [ordered]@{}
+$script:ProviderKeyOverrides = @()
+$script:DbBefore = $null
+$script:DbAfter = $null
+$script:DbDelta = $null
+$script:Facts = $null
+$script:PlatformJarEntries = @()
+$script:PlatformJarConfig = ''
+$script:PlatformBase = ''
+$script:AiBase = ''
+$script:IllegalBootResults = @()
+$script:ComposeProject = ''
+$script:ComposePath = ''
+$script:ComposePathForHost = ''
+$script:PgContainer = ''
+$script:RedisContainer = ''
+$script:S3Container = ''
+$script:PgPort = 0
+$script:RedisPort = 0
+$script:S3Port = 0
+$script:RemoteMode = $false
+$script:SshExe = ''
+$script:RemoteComposeDir = ''
+$script:SyntheticEnvNames = New-Object System.Collections.ArrayList
+$script:ExternalizedPlaceholderCount = 0
+# 真实 Process 对象与它的事件回调持有物：见 Start-OwnedProcess 的说明。
+# 不保住它们，退出码与异步日志都会在需要时已经不可读。
+$script:OwnedProcessObjects = @{}
+$script:ProcessWriters = @{}
+# 已处理过的 pid 文件：Stop-OwnedProcess 幂等，避免同一进程被记两次结论。
+$script:StoppedPidFiles = New-Object System.Collections.ArrayList
+
+# -RemoteHost 的**最早**生效点。不能等到容器运行时预检才设置：Integration 的端口预检
+# （Invoke-IntegrationPortCheck）在预检之前运行，而端口是否空闲必须在容器宿主上判定。
+# 若此处不生效，远端模式下端口预检会退回探测本机，从而给出与真实宿主无关的结论。
+if ($RemoteHost) {
+    $script:RemoteMode = $true
+    $sshCmd = Get-Command 'ssh' -ErrorAction SilentlyContinue
+    if ($null -ne $sshCmd) { $script:SshExe = $sshCmd.Source }
+}
+
+# Spec 01 §5/§6 的精确路径与 FQCN。expectedFqcn 是规格路径推导出的身份：
+# 若 XML 的 testsuite name 与之不符（同名类跑到别的包），按 FAIL 处理并写清差异。
+$script:RequiredClasses = @(
+    [pscustomobject]@{
+        name = 'P1LegacyAssemblyBoundaryTest'; expectedFqcn = 'org.ruoyi.config.P1LegacyAssemblyBoundaryTest'
+        domain = 'platform'; module = 'ruoyi-admin'; spec = 'Spec 01 §5 admin 装配护栏'
+        source = 'services/platform/ruoyi-admin/src/test/java/org/ruoyi/config/P1LegacyAssemblyBoundaryTest.java'
+    },
+    [pscustomobject]@{
+        name = 'SaasCapabilityBoundaryTest'; expectedFqcn = 'com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundaryTest'
+        domain = 'ai'; module = 'framework'; spec = 'Spec 01 §5 关闭判定/受控异常'
+        source = 'services/ai/framework/src/test/java/com/nageoffer/ai/ragent/framework/integration/SaasCapabilityBoundaryTest.java'
+    },
+    [pscustomobject]@{
+        name = 'P04PlatformAuthorizationClientTest'; expectedFqcn = 'com.nageoffer.ai.ragent.framework.security.P04PlatformAuthorizationClientTest'
+        domain = 'ai'; module = 'framework'; spec = 'P0.4 已合并安全回归（22 项真实 client 边界）'
+        source = 'services/ai/framework/src/test/java/com/nageoffer/ai/ragent/framework/security/P04PlatformAuthorizationClientTest.java'
+    },
+    [pscustomobject]@{
+        name = 'SaasEntryBoundaryTest'; expectedFqcn = 'com.nageoffer.ai.ragent.user.config.SaasEntryBoundaryTest'
+        domain = 'ai'; module = 'system'; spec = 'Spec 01 §5 真 handler MVC 关闭'
+        source = 'services/ai/system/src/test/java/com/nageoffer/ai/ragent/user/config/SaasEntryBoundaryTest.java'
+    },
+    [pscustomobject]@{
+        name = 'SaTokenConfigTest'; expectedFqcn = 'com.nageoffer.ai.ragent.user.config.SaTokenConfigTest'
+        domain = 'ai'; module = 'system'; spec = '既有 SaToken 配置回归'
+        source = 'services/ai/system/src/test/java/com/nageoffer/ai/ragent/user/config/SaTokenConfigTest.java'
+    },
+    [pscustomobject]@{
+        name = 'P1TriggerBoundaryTest'; expectedFqcn = 'com.nageoffer.ai.ragent.boundary.P1TriggerBoundaryTest'
+        domain = 'ai'; module = 'rag'; spec = 'Spec 01 §5 listener/checker/job/initializer 直接调用'
+        source = 'services/ai/rag/src/test/java/com/nageoffer/ai/ragent/boundary/P1TriggerBoundaryTest.java'
+    },
+    [pscustomobject]@{
+        name = 'P04AssemblyBoundaryTest'; expectedFqcn = 'com.nageoffer.ai.ragent.boundary.P04AssemblyBoundaryTest'
+        domain = 'ai'; module = 'rag'; spec = 'P0.4 已合并装配护栏'
+        source = 'services/ai/rag/src/test/java/com/nageoffer/ai/ragent/boundary/P04AssemblyBoundaryTest.java'
+    },
+    [pscustomobject]@{
+        name = 'P1McpStartupBoundaryTest'; expectedFqcn = 'com.nageoffer.ai.ragent.agent.tool.P1McpStartupBoundaryTest'
+        domain = 'ai'; module = 'agent'; spec = 'Spec 01 §5 关闭时 MCP 零请求、Bean 可构造/销毁'
+        source = 'services/ai/agent/src/test/java/com/nageoffer/ai/ragent/agent/tool/P1McpStartupBoundaryTest.java'
+    }
+)
+
+# Spec 01 §6 的 5 条原生 mvn 命令（覆盖上面 6 个必跑类 + 2 个回归类）。逐条原生调用、逐条采集 exit。
+$script:UnitInvocations = @(
+    [pscustomobject]@{ id = 'platform-ruoyi-admin'; pom = 'services/platform/pom.xml'; profile = '-Pdev'
+        module = 'ruoyi-admin'; tests = @('P1LegacyAssemblyBoundaryTest') },
+    [pscustomobject]@{ id = 'ai-framework'; pom = 'services/ai/pom.xml'; profile = '-Pci'
+        module = 'framework'; tests = @('SaasCapabilityBoundaryTest', 'P04PlatformAuthorizationClientTest') },
+    [pscustomobject]@{ id = 'ai-system'; pom = 'services/ai/pom.xml'; profile = '-Pci'
+        module = 'system'; tests = @('SaasEntryBoundaryTest', 'SaTokenConfigTest') },
+    [pscustomobject]@{ id = 'ai-rag'; pom = 'services/ai/pom.xml'; profile = '-Pci'
+        module = 'rag'; tests = @('P1TriggerBoundaryTest', 'P04AssemblyBoundaryTest') },
+    [pscustomobject]@{ id = 'ai-agent'; pom = 'services/ai/pom.xml'; profile = '-Pci'
+        module = 'agent'; tests = @('P1McpStartupBoundaryTest') }
+)
+
+# Integration 的「环境闸门打开后才可能真实执行」检查清单：单一事实来源。
+# 预检判定环境缺失时逐条写 NOT_RUN（id 记进 $script:GatedNotRun）；收尾用
+# Assert-IntegrationInventory 核对「计划清单 == 实际产出」，防止静默漏项或把 NOT_RUN 伪装成 PASS。
+$script:GatedInventoryPlan = @(
+    [pscustomobject]@{ id = 'BUILD-platform-clean-verify'; target = 'G0'
+        detail = 'mvn -o -B -ntp -f services/platform/pom.xml -Pdev clean verify（本轮两 jar 来源）' },
+    [pscustomobject]@{ id = 'BUILD-ai-clean-verify'; target = 'G0'
+        detail = 'mvn -o -B -ntp -f services/ai/pom.xml -Pci clean verify（本轮两 jar 来源）' },
+    [pscustomobject]@{ id = 'ENV-p04-container-isolation'; target = 'G0'
+        detail = '证明本轮不复用 P0.4 容器 / 远端 LabHost（按 owner label 过滤本机容器）' },
+    [pscustomobject]@{ id = 'ENV-compose-up'; target = 'G0'
+        detail = 'runner 自有 compose：PG17+pgvector / Redis / S3 mock，唯一 owner label' },
+    [pscustomobject]@{ id = 'ENV-db-accounts'; target = 'G0'
+        detail = '独立 migrate 与 app 账号（platform_app / ai_app）+ 双 schema + 迁移原字节' },
+    [pscustomobject]@{ id = 'ENV-fixtures'; target = 'G0'
+        detail = '两个合成 tenant 的 fixture（仅合成记录，随机口令）' },
+    [pscustomobject]@{ id = 'PROBE-availability'; target = 'G0'
+        detail = 'Spec 01 §5 的 P1ProductBoundaryProbe 存在（Bean/Mapping/注册数事实来源）' },
+    [pscustomobject]@{ id = 'PROBE-ai-facts'; target = 'G0'
+        detail = '实际 RagentApplication 进程写出 probe facts（mappings/beans/注册数/调用计数）' },
+    [pscustomobject]@{ id = 'BOOT-platform-jar'; target = 'G0'
+        detail = '真实 ruoyi-admin.jar 启动 + ApplicationReady / 端口 / 进程存活' },
+    [pscustomobject]@{ id = 'BOOT-ai-jar'; target = 'G0'
+        detail = '真实 bootstrap jar 默认配置启动 + 显式 p04=false 启动' },
+    [pscustomobject]@{ id = 'LISTENER-registration-counts'; target = 'G1'
+        detail = '三个旧 listener 与两个旧 TransactionChecker 注册数为 0' },
+    [pscustomobject]@{ id = 'CHECKER-registration-counts'; target = 'G1'
+        detail = 'checker 直接调用不查库（Mapper 调用数 0、Delegate 注册数 0）' },
+    [pscustomobject]@{ id = 'DB-snapshot-before'; target = 'G1'
+        detail = 'B01–B13 之前的全表行数 + 行哈希快照' },
+    [pscustomobject]@{ id = 'DB-snapshot-after'; target = 'G1'
+        detail = 'B01–B13 之后的全表行数 + 行哈希快照' },
+    [pscustomobject]@{ id = 'DB-no-business-delta'; target = 'G1'
+        detail = '前后快照逐表行数 + 行哈希一致（防 update/delete 漏检）' },
+    [pscustomobject]@{ id = 'CASES-complete'; target = 'G1-G4'
+        detail = 'B01–B13 全部真实执行（不完整不得判完成）' },
+    [pscustomobject]@{ id = 'CLEANUP-owned-containers'; target = 'G0'
+        detail = '按 owner label 销毁本轮自有容器/卷，且不动任何非本轮资源' },
+    [pscustomobject]@{ id = 'CLEANUP-synthetic-secrets'; target = 'G0'
+        detail = '本轮随机口令/密钥从进程环境清除且未写入证据' }
+)
+foreach ($caseId in @('B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B09', 'B10', 'B11', 'B12', 'B13')) {
+    $script:GatedInventoryPlan += [pscustomobject]@{ id = $caseId; target = 'B'
+        detail = ('Spec 01 §7 ' + $caseId + ' 真实两 jar / 合成环境验收') }
+}
+# 环境无关、任何 Integration 轮都必须真实执行且（环境缺失时）仍须 PASS 的检查 id。
+$script:AlwaysRunIds = @(
+    'ENV-jdk17', 'ENV-maven', 'ENV-evidence-path', 'ENV-workroot-safety', 'ENV-ports',
+    'ENV-substitute-scan', 'ENV-provider-key-isolation', 'CLEANUP-owned-processes'
+)
+# 恒真但由预检判 PASS/NOT_RUN 的检查 id（环境缺失时必须是 NOT_RUN，不得是 PASS）。
+$script:PreflightGatedIds = @('ENV-container-runtime')
+
+# =========================== 通用帮助函数 ===========================
+function Write-Step([string]$m) { Write-Output ("### " + $m) }
+
+function Add-Result([string]$id, [string]$target, [string]$status, [string]$detail) {
+    # 状态集：PASS / FAIL / NOT_RUN / REFUSED。
+    #   NOT_RUN：只在「环境缺失/被闸门挡住」时出现，必须带确切原因；Unit 模式下不算通过。
+    #   REFUSED：只用于「检测到但拒绝使用」（例如本机已有业务库/缓存）：不算 PASS、不算 FAIL、不阻塞。
+    # 同一个 id **只能有一行**：后写的结果替换先写的，而不是追加。
+    #
+    # 这一点很关键，此前是纯追加，于是同一个 id 会同时留下两行：
+    # 闸门阶段补的 NOT_RUN（"happy path did not reach this check"）与随后真实跑出的 PASS。
+    # 后果有三个，全都表现为"莫名其妙的失败"：
+    #   1) CASES-complete 逐个查状态时看到 B01 仍是 NOT_RUN，即使两条 B01-login 都是 PASS；
+    #   2) INVENTORY-integrity 报 "planned check X produced 2 result row(s)"；
+    #   3) 汇总与明细对不上，读数的人无法判断哪一行才作数。
+    # 结果集是"每个检查项的当前结论"，不是事件日志——追加语义在这里是错的。
+    $existing = @($script:Results | Where-Object { $_.id -ceq $id })
+    foreach ($row in $existing) { [void]$script:Results.Remove($row) }
+    [void]$script:Results.Add([pscustomobject]@{ id = $id; target = $target; status = $status; detail = $detail })
+    if ($status -eq 'FAIL') { $script:Failures++; Write-Output ("  [FAIL]    {0} {1}" -f $id, $detail) }
+    elseif ($status -eq 'PASS') { Write-Output ("  [ok]      {0} {1}" -f $id, $detail) }
+    elseif ($status -eq 'REFUSED') { Write-Output ("  [refused] {0} {1}" -f $id, $detail) }
+    else { Write-Output ("  [{0}] {1} {2}" -f $status, $id, $detail) }
+}
+function Assert-That([string]$id, [string]$target, [bool]$cond, [string]$detail) {
+    if ($cond) { Add-Result $id $target 'PASS' $detail } else { Add-Result $id $target 'FAIL' $detail }
+}
+function Add-Refusal([string]$id, [string]$reason, [string]$action) {
+    [void]$script:Refusals.Add([pscustomobject]@{ id = $id; reason = $reason; action = $action })
+    Add-Result $id 'G0' 'REFUSED' ($reason + ' :: ' + $action)
+}
+function Add-Probe([string]$id, [string]$probe, [string]$result, [string]$detail) {
+    [void]$script:Probes.Add([pscustomobject]@{ id = $id; probe = $probe; result = $result; detail = $detail })
+    Write-Output ("  <probe>   {0} :: {1} -> {2} {3}" -f $id, $probe, $result, $detail)
+}
+function Test-UnderRootLoose([string]$Path, [string]$Root) {
+    # Path 严格位于 Root 之下（不等于 Root 自身）。
+    if (-not $Path -or -not $Root) { return $false }
+    $p = [IO.Path]::GetFullPath($Path)
+    $r = [IO.Path]::GetFullPath($Root)
+    if (-not $r.EndsWith('\')) { $r = $r + '\' }
+    return $p.StartsWith($r, [StringComparison]::OrdinalIgnoreCase)
+}
+function Test-UnderOwnedRoots([string]$Path) {
+    $p = [IO.Path]::GetFullPath($Path)
+    return ((Test-UnderRootLoose $p $script:WorkRoot) -or (Test-UnderRootLoose $p $script:Evidence))
+}
+function Remove-OwnedPath([string]$Path, [string]$Reason) {
+    # 删除前必须解析绝对路径并确认在 $WorkRoot 或 $EvidenceDir 之下；否则拒绝并留证。
+    $full = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-UnderOwnedRoots $full)) {
+        [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-refused-path'; target = $full
+                action = 'delete'; result = 'REFUSED'; detail = 'outside WorkRoot/EvidenceDir' })
+        Add-Result 'CLEANUP-refused-path' 'G0' 'REFUSED' ("refused to delete {0} ({1}): outside WorkRoot/EvidenceDir" -f $full, $Reason)
+        return $false
+    }
+    if (-not (Test-Path -LiteralPath $full)) {
+        [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-owned-path'; target = $full
+                action = 'delete'; result = 'ABSENT'; detail = $Reason })
+        return $true
+    }
+    Remove-Item -LiteralPath $full -Recurse -Force
+    $gone = -not (Test-Path -LiteralPath $full)
+    [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-owned-path'; target = $full
+            action = 'delete'; result = $(if ($gone) { 'REMOVED' } else { 'FAILED' }); detail = $Reason })
+    if (-not $gone) { Add-Result 'CLEANUP-owned-path' 'G0' 'FAIL' ("owned path still present after delete: " + $full) }
+    return $gone
+}
+function New-RandomSecret([int]$Bytes = 24) {
+    $buffer = New-Object byte[] $Bytes
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($buffer) } finally { $rng.Dispose() }
+    return ([Convert]::ToBase64String($buffer)).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+function Protect-LogText([string]$Content) {
+    if (-not $Content) { return '' }
+    $Content = $Content -replace '\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b', '[REDACTED]'
+    $Content = $Content -replace '(?i)\bBearer\s+[A-Za-z0-9._~+/-]{20,}', 'Bearer [REDACTED]'
+    foreach ($name in @($script:Secrets.Keys)) {   # 本轮随机口令：即使被误打印也不落盘
+        $value = [string]$script:Secrets[$name]
+        if ($value.Length -ge 12) { $Content = $Content.Replace($value, '[REDACTED]') }
+    }
+    return $Content
+}
+function Protect-NativeArgument([string]$Argument) {
+    $a = [string]$Argument
+    if ($a -match '(?i)(?:password|passwd|secret|token|authorization|access[_-]?key|api[_-]?key)\s*=') { return '[REDACTED_ARGUMENT]' }
+    if ($a -match '^eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.') { return '[REDACTED_ARGUMENT]' }
+    foreach ($name in @($script:Secrets.Keys)) {
+        $value = [string]$script:Secrets[$name]
+        if ($value.Length -ge 12 -and $a.Contains($value)) { return '[REDACTED_ARGUMENT]' }
+    }
+    return $a
+}
+function New-CommandLine([string]$Exe, [string[]]$Arguments) {
+    $parts = @($Exe)
+    foreach ($a in $Arguments) {
+        $s = [string]$a
+        if ($s -match '[\s''"]') { $parts += ("'" + ($s -replace "'", "''") + "'") } else { $parts += $s }
+    }
+    return ($parts -join ' ')
+}
+function Invoke-NativeCapture([string]$Exe, [string[]]$Arguments, [string]$LogName = '', [string]$WorkDir = '') {
+    # 原生调用统一走这里：显式取退出码，记录可审阅的命令行（已脱敏）与耗时。
+    $started = (Get-Date).ToUniversalTime()
+    $missing = $false
+    if (-not (Test-Path -LiteralPath $Exe)) {
+        if (-not (Get-Command $Exe -ErrorAction SilentlyContinue)) { $missing = $true }
+    }
+    $lines = @()
+    $code = 127
+    if ($missing) {
+        $lines = @("command not found: $Exe")
+    } else {
+        $before = Get-Location
+        if ($WorkDir) { Set-Location -LiteralPath $WorkDir }
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $out = & $Exe @Arguments 2>&1
+            $code = $LASTEXITCODE
+            if ($null -eq $code) { $code = 0 }
+        } catch {
+            $lines = @("native invocation threw: " + $_.Exception.Message)
+            $code = 127
+        } finally {
+            $ErrorActionPreference = $prev
+            if ($WorkDir) { Set-Location -LiteralPath $before }
+        }
+        $lines += @($out | ForEach-Object {
+                if ($_ -is [System.Management.Automation.ErrorRecord]) { [string]$_.Exception.Message } else { [string]$_ }
+            })
+    }
+    $finished = (Get-Date).ToUniversalTime()
+    $text = ($lines -join "`r`n")
+    if ($LogName) {
+        $path = Join-Path $script:Evidence $LogName
+        $parent = Split-Path $path -Parent
+        if ($parent) { [void](New-Item -ItemType Directory -Force -Path $parent) }
+        [IO.File]::WriteAllText($path, (Protect-LogText $text), (New-Object Text.UTF8Encoding($false)))
+    }
+    $recordArgs = @($Arguments | ForEach-Object { Protect-NativeArgument ([string]$_) })
+    $record = [pscustomobject]@{
+        index = $script:NativeCommands.Count
+        startedUtc = $started.ToString('o'); finishedUtc = $finished.ToString('o')
+        durationMs = [int]($finished - $started).TotalMilliseconds
+        executable = $Exe; arguments = $recordArgs; argumentCount = @($Arguments).Count
+        commandLine = (New-CommandLine $Exe $recordArgs)
+        executableMissing = $missing
+        exitCode = [int]$code
+        logFile = $LogName
+    }
+    [void]$script:NativeCommands.Add($record)
+    return [pscustomobject]@{ Output = $lines; Text = $text; ExitCode = [int]$code; Record = $record }
+}
+function Test-TcpEndpoint([string]$TargetHost, [int]$Port, [int]$TimeoutMs = 700) {
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        $iar = $client.BeginConnect($TargetHost, $Port, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne($TimeoutMs)) { return $false }
+        $client.EndConnect($iar)
+        return $true
+    } catch { return $false } finally { $client.Close() }
+}
+function Test-PortFree([int]$Port) {
+    # 端口是否空闲必须在**容器宿主**上判定，而不是本机。
+    # 远端模式下合成 PG/Redis/S3 发布在 VM 的端口上：只看本机，
+    # 会让一个在 VM 上已被占用的端口通过预检，然后 compose up 才失败——
+    # 而那种失败信息会被误读成"环境不可用"。
+    if ($script:RemoteMode) { return Test-RemotePortFree $Port }
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+        $listener.Start(); $listener.Stop()
+        return $true
+    } catch { return $false }
+}
+function Test-RemotePortFree([int]$Port) {
+    # 在容器宿主上探测：/dev/tcp 不需要额外工具，也不依赖 ss/netstat 的输出格式。
+    #
+    # 这里**不**走 Invoke-RemoteRuntime：那条路径把每个参数按 POSIX 单引号引用，
+    # 对 `docker ps --format ...` 这类"参数即参数"的命令是对的，但对本探测这种复合
+    # shell 命令会把整条命令变成一个被引用的**单词**，远端 shell 于是去找一个叫
+    # "if (echo > /dev/tcp/...)" 的文件（实测报 No such file or directory，
+    # 而退出码非 0 又被本函数判为"端口不空闲"，于是把空闲端口误报成占用）。
+    # 探测语句由本函数自己构造、不含外部输入，直接作为单个 ssh 参数传递即可。
+    $probe = 'if (echo > /dev/tcp/127.0.0.1/' + $Port + ') >/dev/null 2>&1; then echo BUSY; else echo FREE; fi'
+    $sshArgs = @('-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR',
+        '-o', ('ConnectTimeout=' + $SshConnectTimeoutSeconds))
+    if ($SshKeyPath) { $sshArgs += @('-i', $SshKeyPath) }
+    $sshArgs += @($RemoteHost, $probe)
+    $r = Invoke-NativeCapture $script:SshExe $sshArgs 'preflight-remote-port.log' $RepoRoot
+    $text = ((@($r.Output) -join ' ') -replace '\s+', ' ').Trim()
+    # 探测本身失败（ssh 不通等）时**不**当作空闲：宁可让预检判失败，也不要盲起容器。
+    if ($r.ExitCode -ne 0) { return $false }
+    return ($text -match 'FREE')
+}
+function Get-FreePortInRange([int]$From, [int]$To) {
+    foreach ($candidate in $From..$To) { if (Test-PortFree $candidate) { return $candidate } }
+    return 0
+}
+function Get-ShanghaiStamp([datetime]$Utc) {
+    $tz = $null
+    foreach ($tzId in @('China Standard Time', 'Asia/Shanghai')) {
+        try { $tz = [System.TimeZoneInfo]::FindSystemTimeZoneById($tzId); break } catch { }
+    }
+    if ($null -eq $tz) { return $null }
+    $local = [System.TimeZoneInfo]::ConvertTimeFromUtc($Utc, $tz)
+    return [pscustomobject]@{ timeZoneId = $tz.Id; iso = $local.ToString('yyyy-MM-ddTHH:mm:sszzz') }
+}
+function Get-Sha256([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLower()
+}
+function Get-ResultRow([string]$Id) {
+    # 注意：单元素 @() 会被管道解包成标量对象（PS 5.1 上标量 .Count 为 $null），
+    # 因此用逗号包一层，保证调用方永远拿到真正的数组。
+    return , @($script:Results | Where-Object { $_.id -ceq $Id })
+}
+
+# ---------- 进程所有权（只动自己的） ----------
+function Quote-WindowsArg([string]$Value) {
+    # 按 Windows 命令行解析规则引用单个参数（CommandLineToArgvW 语义）：
+    # 不含空格/制表/引号则原样；否则整体加引号，并把内部的反斜杠-引号序列按
+    # 2n+1 规则转义。用于 .NET Framework 上只能拼 Arguments 字符串的场景。
+    #
+    # 定义位置必须早于 Start-OwnedProcess：后者现在用它拼 Arguments。
+    # PowerShell 是运行期解析函数名，所以放后面也能跑，但那是**靠调用顺序侥幸**——
+    # 一旦有更早的调用点就会以 "not recognized" 失败。放在使用点之前是明确的。
+    if ($Value -eq '') { return '""' }
+    if ($Value -notmatch '[\s"]') { return $Value }
+    $sb = New-Object Text.StringBuilder
+    [void]$sb.Append('"')
+    $backslashes = 0
+    foreach ($ch in $Value.ToCharArray()) {
+        if ($ch -eq '\') { $backslashes++; continue }
+        if ($ch -eq '"') {
+            [void]$sb.Append('\' * (2 * $backslashes + 1))
+            [void]$sb.Append('"')
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes -gt 0) { [void]$sb.Append('\' * $backslashes); $backslashes = 0 }
+        [void]$sb.Append($ch)
+    }
+    if ($backslashes -gt 0) { [void]$sb.Append('\' * (2 * $backslashes)) }
+    [void]$sb.Append('"')
+    return $sb.ToString()
+}
+function Start-OwnedProcess([string]$Exe, [string[]]$Arguments, [string]$WorkDir, [string]$PidFile) {
+    [void](New-Item -ItemType Directory -Force -Path $WorkDir)
+    $stdout = Join-Path $WorkDir 'stdout.log'
+    $stderr = Join-Path $WorkDir 'stderr.log'
+    Remove-Item -LiteralPath $stdout, $stderr -Force -ErrorAction SilentlyContinue
+    # 用 System.Diagnostics.Process 而不是 Start-Process：
+    # Start-Process -PassThru 在**同时重定向两个流**时，$p.ExitCode 永远是空串
+    # （本轮实测：轮询与 WaitForExit 两种等法都是空）。于是"非法开关必须非零退出"
+    # 这类断言拿不到退出码，B08 四条全部 FAIL，而 detail 里 exitCode= 后面什么都没有——
+    # 看起来像"进程没退"，实际是**拿到了进程却读不到它的退出码**。
+    # 另一个走不通的方向是 WMI：进程退出后 Win32_Process 对象即消失，读不到 ExitCode（已实测）。
+    #
+    # 流怎么读：不用 add_OutputDataReceived（PowerShell 的脚本块转成 .NET 委托后，
+    # 由 .NET 线程回调时**不会执行**——实测两个流都拿不到任何一行）。
+    # 改为每个流起一个独立 runspace 同步 drain 到文件：
+    # 文件在进程运行期间就持续可读（Wait-ApplicationReady 依赖这一点），
+    # 而退出码由真实 Process 对象给出，两者互不牺牲。
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    # .NET Framework 上没有 ArgumentList，只能自己按 Windows 命令行规则拼一个字符串，
+    # 否则带空格的路径会被拆成两个参数。
+    $psi.Arguments = (@($Arguments | ForEach-Object { Quote-WindowsArg $_ }) -join ' ')
+    $psi.WorkingDirectory = $WorkDir
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    $drains = New-Object System.Collections.ArrayList
+    foreach ($spec in @(@{ stream = $proc.StandardOutput; file = $stdout }, @{ stream = $proc.StandardError; file = $stderr })) {
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.Open()
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript({
+                param($reader, $path)
+                $sw = New-Object IO.StreamWriter($path, $false, (New-Object Text.UTF8Encoding($false)))
+                $sw.AutoFlush = $true
+                try { while ($null -ne ($line = $reader.ReadLine())) { $sw.WriteLine($line) } }
+                finally { try { $sw.Dispose() } catch { }; try { $reader.Dispose() } catch { } }
+            }).AddArgument($spec.stream).AddArgument($spec.file)
+        [void]$drains.Add([pscustomobject]@{ ps = $ps; rs = $rs; handle = $ps.BeginInvoke() })
+    }
+    # 保住 Process 对象与 drain 句柄：PowerShell 变量被覆盖后对象可能被回收，
+    # 回收后 $proc.ExitCode 不可读——这正是要修的那个失败模式。
+    $script:OwnedProcessObjects[$proc.Id] = $proc
+    $script:ProcessWriters[$proc.Id] = $drains
+    Set-Content -LiteralPath $PidFile -Value ([string]$proc.Id) -Encoding UTF8
+    # 必须用 .Add()：对 ArrayList 用 `+=` 会让 PowerShell 生成一个新的**固定大小数组**，
+    # 于是后续任何 .Add() 都抛 "Collection was of a fixed size"。
+    # 这条 `+=` 正是第 9 轮那个"找不到接收者"的异常的来源——
+    # 它在 Start-OwnedProcess 里，却在远端的 Invoke-RemoteShellStdin 里炸开。
+    [void]$script:StartedProcesses.Add($proc.Id)
+    return $proc
+}
+function Stop-OwnedProcess([string]$PidFile, [string]$CommandMatch, [string]$Label) {
+    # 只停止本脚本启动过、且 PID 归属 + 命令行双重对得上的进程。
+    #
+    # 幂等：同一个 pid 文件会被停两次——用例跑完时按语义停一次，
+    # 收尾时的通用循环再遍历一次。第二次不该再产生一行结论，
+    # 否则清理结论的行数会多于 pid 文件数，而断言 "accounted == pidFiles"
+    # 就永远不成立：8 个文件却有 10 行，读起来像"有进程没被正确记账"，
+    # 实际是**同一个进程被记了两次**。
+    if ($script:StoppedPidFiles -contains $PidFile) { return }
+    [void]$script:StoppedPidFiles.Add($PidFile)
+    if (-not (Test-Path -LiteralPath $PidFile)) {
+        [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-owned-process'; target = $Label
+                action = 'stop'; result = 'NO_PID_FILE'; detail = $PidFile })
+        return
+    }
+    $raw = (Get-Content -LiteralPath $PidFile -Encoding UTF8 | Select-Object -First 1)
+    $processId = 0
+    if (-not [int]::TryParse([string]$raw, [ref]$processId)) {
+        Add-Result 'CLEANUP-owned-process' 'G0' 'FAIL' ("unreadable pid file {0}: '{1}'" -f $PidFile, [string]$raw)
+        return
+    }
+    if ($script:StartedProcesses -notcontains $processId) {
+        Add-Result 'CLEANUP-owned-process' 'G0' 'FAIL' ("pid {0} in {1} was not started by this run; refusing to stop" -f $processId, $PidFile)
+        return
+    }
+    $proc = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $processId) -ErrorAction SilentlyContinue
+    if ($null -eq $proc) {
+        [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-owned-process'; target = $Label
+                action = 'stop'; result = 'ALREADY_GONE'; detail = ("pid=" + $processId) })
+        return
+    }
+    if (-not ($proc.CommandLine -match $CommandMatch)) {
+        Add-Result 'CLEANUP-owned-process' 'G0' 'FAIL' ("refusing to stop pid {0}: command line does not match '{1}'" -f $processId, $CommandMatch)
+        return
+    }
+    Stop-Process -Id $processId -Force
+    for ($i = 0; $i -lt 20; $i++) {
+        if (-not (Get-Process -Id $processId -ErrorAction SilentlyContinue)) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    $alive = $null -ne (Get-Process -Id $processId -ErrorAction SilentlyContinue)
+    [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-owned-process'; target = $Label
+            action = 'stop'; result = $(if ($alive) { 'FAILED' } else { 'STOPPED' }); detail = ("pid=" + $processId) })
+    if ($alive) { Add-Result 'CLEANUP-owned-process' 'G0' 'FAIL' ("owned process failed to stop: " + $processId) }
+}
+function Wait-ProcessExit($Process, [int]$TimeoutSec) {
+    for ($i = 0; $i -lt ($TimeoutSec * 4); $i++) {
+        if ($Process.HasExited) { break }
+        Start-Sleep -Milliseconds 250
+        try { $Process.Refresh() } catch { }
+    }
+    try { $Process.Refresh() } catch { }
+    return $Process.HasExited
+}
+function Copy-SanitizedLog([string]$From, [string]$To) {
+    if (-not (Test-Path -LiteralPath $From -PathType Leaf)) { return }
+    $parent = Split-Path $To -Parent
+    if ($parent) { [void](New-Item -ItemType Directory -Force -Path $parent) }
+    [IO.File]::WriteAllText($To, (Protect-LogText ([IO.File]::ReadAllText($From))), (New-Object Text.UTF8Encoding($false)))
+}
+
+# ---------- 工具链 ----------
+function Initialize-Toolchain {
+    Write-Step '工具链预检：JDK17 + Maven（Spec 01 §6）'
+    $env:JAVA_HOME = $script:JdkHome
+    $javaExe = Join-Path $script:JdkHome 'bin\java.exe'
+    $env:PATH = (Join-Path $script:JdkHome 'bin') + ';' + $env:PATH
+    $jdkOk = Test-Path -LiteralPath $javaExe
+    $version = $null
+    if ($jdkOk) {
+        $r = Invoke-NativeCapture $javaExe @('-version') 'env-java-version.log'
+        $version = (@($r.Output | Where-Object { $_ -match '^(?:openjdk|java) version ' } | Select-Object -First 1) -join '')
+    }
+    $is17 = ($version -match '\b17\.')
+    Assert-That 'ENV-jdk17' 'G0' ($jdkOk -and $is17) `
+        ("JAVA_HOME={0} exists={1} java='{2}'" -f $script:JdkHome, $jdkOk, $version)
+
+    $mavenExe = $script:MavenExe
+    if (-not (Test-Path -LiteralPath $mavenExe)) {
+        $cmd = Get-Command 'mvn.cmd' -ErrorAction SilentlyContinue
+        if ($null -eq $cmd) { $cmd = Get-Command 'mvn' -ErrorAction SilentlyContinue }
+        if ($null -ne $cmd) { $mavenExe = $cmd.Source }
+    }
+    $maven = Invoke-NativeCapture $mavenExe @('-version') 'env-maven-version.log'
+    $mavenOk = ($maven.ExitCode -eq 0 -and $maven.Text -match 'Apache Maven')
+    Assert-That 'ENV-maven' 'G0' $mavenOk ("exe={0} exit={1}" -f $mavenExe, $maven.ExitCode)
+    $script:MavenExe = $mavenExe
+    return [pscustomobject]@{ java = $version; javaHome = $script:JdkHome; mavenExe = $mavenExe
+        maven = ((@($maven.Output | Where-Object { $_ -match '^Apache Maven' } | Select-Object -First 1)) -join '') }
+}
+
+# =========================== Unit 模式 ===========================
+function Get-RequiredClass([string]$Name) {
+    $found = @($script:RequiredClasses | Where-Object { $_.name -ceq $Name })
+    if ($found.Count -ne 1) { throw ("unknown required class: " + $Name) }
+    return $found[0]
+}
+function Read-SurefireSuite([string]$XmlPath) {
+    $xml = [xml](Get-Content -LiteralPath $XmlPath -Raw -Encoding UTF8)
+    $suite = $xml.testsuite
+    if ($null -eq $suite) { throw ("no <testsuite> root: " + $XmlPath) }
+    return [pscustomobject]@{
+        name = [string]$suite.name
+        tests = [int]$suite.tests; failures = [int]$suite.failures
+        errors = [int]$suite.errors; skipped = [int]$suite.skipped
+        timeSeconds = [string]$suite.time; caseCount = @($suite.testcase).Count
+    }
+}
+function Get-UnitClassReport($Class, $Invocation, [datetime]$StartedUtc) {
+    $moduleDir = Join-Path (Join-Path $RepoRoot ("services\" + $Class.domain)) ($Class.module -replace '/', '\')
+    $reportsDir = Join-Path $moduleDir 'target\surefire-reports'
+    $expectedXml = Join-Path $reportsDir ("TEST-" + $Class.expectedFqcn + ".xml")
+    $xmlPath = $null
+    $identityNote = ''
+    if (Test-Path -LiteralPath $expectedXml) {
+        $xmlPath = $expectedXml
+    } else {
+        # 同名类跑到别的包：显式分辨并 FAIL（规格给的是精确 FQCN）。
+        $candidates = @(Get-ChildItem -LiteralPath $reportsDir -File -Filter 'TEST-*.xml' -ErrorAction SilentlyContinue |
+            Where-Object { $_.BaseName -match ('\.' + [regex]::Escape($Class.name) + '$') })
+        if ($candidates.Count -eq 1) {
+            $xmlPath = $candidates[0].FullName
+            $identityNote = ("ran as {0} instead of the spec FQCN {1}" -f $candidates[0].BaseName.Substring(5), $Class.expectedFqcn)
+        } elseif ($candidates.Count -gt 1) {
+            $identityNote = ("ambiguous surefire XML for {0}: {1}" -f $Class.name, (@($candidates | ForEach-Object { $_.Name }) -join ','))
+        }
+    }
+    $report = [ordered]@{
+        class = $Class.name; expectedFqcn = $Class.expectedFqcn; spec = $Class.spec
+        module = ("services/{0}/{1}" -f $Class.domain, $Class.module)
+        pom = $Invocation.pom; profile = $Invocation.profile
+        command = (New-CommandLine $script:MavenExe @('-o', '-B', '-ntp', '-f', $Invocation.pom, $Invocation.profile,
+                '-pl', $Invocation.module, '-am', 'test', ('-Dtest=' + ($Invocation.tests -join ',')), '-Dsurefire.failIfNoSpecifiedTests=false'))
+        invocationStartedUtc = $StartedUtc.ToString('o')
+        sourcePath = $Class.source; sourceSha256 = (Get-Sha256 (Join-Path $RepoRoot ($Class.source -replace '/', '\')))
+        xmlPath = $null; xmlSha256 = $null; tests = 0; failures = 0; errors = 0; skips = 0
+        suiteName = $null; caseCount = 0; refreshedByThisRun = $false
+        archivedXml = $null; status = 'FAIL'; detail = ''
+    }
+    if ($null -eq $xmlPath) {
+        $report['detail'] = ("surefire XML missing: services/{0}/{1}/target/surefire-reports/TEST-{2}.xml ({3})" -f `
+                $Class.domain, $Class.module, $Class.expectedFqcn, $(if ($identityNote) { $identityNote } else { 'class did not run' }))
+        [void]$script:Surefire.Add([pscustomobject]$report)
+        Add-Result ('UNIT-' + $Class.name) 'G1-G4' 'FAIL' ($report['detail'] + ' -- a reactor BUILD SUCCESS does not prove the named class ran')
+        return
+    }
+    $report['xmlPath'] = ($xmlPath.Substring($RepoRoot.Length).TrimStart('\') -replace '\\', '/')
+    $report['xmlSha256'] = Get-Sha256 $xmlPath
+    $writeTime = (Get-Item -LiteralPath $xmlPath).LastWriteTimeUtc
+    $report['refreshedByThisRun'] = ($writeTime -ge $StartedUtc)
+    try {
+        $suite = Read-SurefireSuite $xmlPath
+    } catch {
+        $report['detail'] = ("unreadable surefire XML: {0} ({1})" -f $xmlPath, $_.Exception.Message)
+        [void]$script:Surefire.Add([pscustomobject]$report)
+        Add-Result ('UNIT-' + $Class.name) 'G1-G4' 'FAIL' $report['detail']
+        return
+    }
+    $report['suiteName'] = $suite.name; $report['tests'] = $suite.tests; $report['failures'] = $suite.failures
+    $report['errors'] = $suite.errors; $report['skips'] = $suite.skipped; $report['caseCount'] = $suite.caseCount
+    $archive = Join-Path $script:Evidence (Join-Path 'surefire' ($Class.domain + '\' + $Class.module + '\TEST-' + $suite.name + '.xml'))
+    [void](New-Item -ItemType Directory -Force -Path (Split-Path $archive -Parent))
+    Copy-Item -LiteralPath $xmlPath -Destination $archive -Force
+    $report['archivedXml'] = ($archive.Substring($script:Evidence.Length).TrimStart('\') -replace '\\', '/')
+
+    $reasons = @()
+    if ($suite.name -cne $Class.expectedFqcn) { $reasons += ("testsuite name '{0}' != spec FQCN '{1}'" -f $suite.name, $Class.expectedFqcn) }
+    if (-not $report['refreshedByThisRun']) { $reasons += ("stale XML (written {0:o}, before this invocation)" -f $writeTime) }
+    if ($suite.tests -le 0) { $reasons += 'tests=0' }
+    if ($suite.failures -ne 0) { $reasons += ("failures=" + $suite.failures) }
+    if ($suite.errors -ne 0) { $reasons += ("errors=" + $suite.errors) }
+    if ($suite.skipped -ne 0) { $reasons += ("skips=" + $suite.skipped) }
+    $report['status'] = if ($reasons.Count -eq 0) { 'PASS' } else { 'FAIL' }
+    $report['detail'] = ("tests={0} failures={1} errors={2} skips={3} cases={4} xml={5} refreshed={6}{7}" -f `
+            $suite.tests, $suite.failures, $suite.errors, $suite.skipped, $suite.caseCount, $report['xmlPath'],
+            $report['refreshedByThisRun'], $(if ($reasons.Count -gt 0) { ' :: ' + ($reasons -join '; ') } else { '' }))
+    [void]$script:Surefire.Add([pscustomobject]$report)
+    Add-Result ('UNIT-' + $Class.name) 'G1-G4' $report['status'] $report['detail']
+}
+function Invoke-UnitMode {
+    Write-Step ("Unit 模式：{0} 条原生 mvn 命令 / {1} 个规格必跑类（无外部服务）" -f `
+            $script:UnitInvocations.Count, $script:RequiredClasses.Count)
+    foreach ($inv in $script:UnitInvocations) {
+        $mvnArgs = @('-o', '-B', '-ntp', '-f', $inv.pom, $inv.profile, '-pl', $inv.module, '-am', 'test',
+            ('-Dtest=' + ($inv.tests -join ',')), '-Dsurefire.failIfNoSpecifiedTests=false')
+        Write-Step ("mvn {0} :: {1}" -f $inv.id, ($inv.tests -join ','))
+        $started = (Get-Date).ToUniversalTime()
+        $logName = ('unit-' + $inv.id + '.log')
+        $run = Invoke-NativeCapture $script:MavenExe $mvnArgs $logName $RepoRoot
+        $buildSuccess = @($run.Output | Where-Object { $_ -match '^\[INFO\] BUILD SUCCESS$' }).Count -gt 0
+        $totals = @{ tests = 0; failures = 0; errors = 0; skipped = 0 }
+        foreach ($line in @($run.Output | Where-Object { $_ -match '^\[INFO\] Tests run: \d+, Failures: \d+, Errors: \d+, Skipped: \d+$' })) {
+            $m = [regex]::Match($line, 'Tests run: (\d+), Failures: (\d+), Errors: (\d+), Skipped: (\d+)')
+            if ($m.Success) {
+                $totals.tests += [int]$m.Groups[1].Value; $totals.failures += [int]$m.Groups[2].Value
+                $totals.errors += [int]$m.Groups[3].Value; $totals.skipped += [int]$m.Groups[4].Value
+            }
+        }
+        # 失败原因要能一眼定位：取第一条 [ERROR]（编译/spotless/依赖缺失都会出现在这里）。
+        $firstError = ((@($run.Output | Where-Object { $_ -match '^\[ERROR\]' } | Select-Object -First 1)) -join '')
+        if ($firstError.Length -gt 300) { $firstError = $firstError.Substring(0, 300) + '...' }
+        $errorNote = if ($run.ExitCode -ne 0 -and $firstError) { (" firstError='" + $firstError + "'") } else { '' }
+        Assert-That ('UNIT-MVN-' + $inv.id) 'G1-G4' ($run.ExitCode -eq 0) `
+            ("exit={0} buildSuccess={1} log={2} reactorTotals(tests={3},failures={4},errors={5},skipped={6}){7}" -f `
+                $run.ExitCode, $buildSuccess, $logName, $totals.tests, $totals.failures, $totals.errors, $totals.skipped, $errorNote)
+        foreach ($name in $inv.tests) { Get-UnitClassReport (Get-RequiredClass $name) $inv $started }
+    }
+}
+
+# =========================== Integration：预检（环境无关部分） ===========================
+function Invoke-IntegrationPortCheck {
+    Write-Step 'Integration 端口预检：两 jar 端口必须空闲'
+    $platformFree = Test-PortFree $PlatformPort
+    $aiFree = Test-PortFree $AiPort
+    Assert-That 'ENV-ports' 'G0' ($PlatformPort -gt 0 -and $AiPort -gt 0 -and $platformFree -and $aiFree) `
+        ("platform={0} free={1}; ai={2} free={3} (defaults come from a bind-time free-port scan)" -f `
+            $PlatformPort, $platformFree, $AiPort, $aiFree)
+}
+function Format-ShellArg([string]$Value) {
+    # POSIX 单引号引用：' -> '\'' 是唯一在单引号内可用的转义形式。
+    # 远端命令是**参数向量**（ssh 逐个拼接、由远端 shell 解析），
+    # 不做这一步会把含空格/引号的 SQL 或口令拆成多个参数，静默改变语义。
+    $q = [string][char]39
+    return $q + ($Value -replace $q, ($q + '\' + $q + $q)) + $q
+}
+function Invoke-RemoteShellStdin([string]$Command, [string]$PayloadPath, [string]$LogName = '') {
+    # 把**大**负载经 stdin 送进远端命令。
+    #
+    # 为什么不能走命令行或环境变量：平台基线迁移 60KB、V2 种子 149KB、AI 基线 55KB，
+    # 而 Windows 命令行上限约 32KB（报 filename or extension is too long，exit 127），
+    # 环境变量单值上限约 32KB（报"环境变量名或值太长"）。
+    # stdin 是唯一没有这两个上限的通道，且负载不出现在任何命令行里。
+    #
+    # 负载先落到本机临时文件，再作为子进程 stdin 重定向；ssh 把它转给远端命令的 stdin，
+    # `docker exec -i` 再转给容器内 psql 的 stdin。全程不经 shell 解析。
+    #
+    # 这里用 System.Diagnostics.Process 而不是 Start-Process -PassThru：
+    # 后者在本机 PowerShell 5.1 上，一旦同时重定向 stdout/stderr，**ExitCode 恒为空**，
+    # 于是 `if ($r.ExitCode -ne 0)` 永不成立——失败被静默当成成功。
+    # 一个"检测不出失败"的包装比没有包装更危险，所以必须拿到真实退出码。
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $script:SshExe
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    # Windows PowerShell 5.1 跑在 .NET Framework 上，ProcessStartInfo 没有 ArgumentList
+    # （那是 .NET Core 2.1+ 的属性），只能拼 Arguments 字符串。
+    # 直接拼接会被空格/引号拆错参数，所以按 Windows 命令行引用规则逐项引用。
+    $argv = @('-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR',
+        '-o', ('ConnectTimeout=' + $SshConnectTimeoutSeconds))
+    if ($SshKeyPath) { $argv += @('-i', $SshKeyPath) }
+    $argv += @($RemoteHost, $Command)
+    $psi.Arguments = (($argv | ForEach-Object { Quote-WindowsArg $_ }) -join ' ')
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    [void]$script:StartedProcesses.Add($proc.Id)
+    $outTask = $proc.StandardOutput.ReadToEndAsync()
+    $errTask = $proc.StandardError.ReadToEndAsync()
+    # 负载经 stdin 送入；写完后必须关闭，否则远端会一直等输入。
+    $bytes = [IO.File]::ReadAllBytes($PayloadPath)
+    $proc.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+    $proc.StandardInput.BaseStream.Flush()
+    $proc.StandardInput.Close()
+    if (-not $proc.WaitForExit(600000)) { try { $proc.Kill() } catch { } ; throw ('remote stdin command timed out: ' + $LogName) }
+    $code = $proc.ExitCode
+    $lines = @()
+    foreach ($t in @($outTask, $errTask)) {
+        $text = $t.Result
+        if ($text) { $lines += @($text -split "`r?`n" | Where-Object { $_ -ne '' }) }
+    }
+    $proc.Dispose()
+    if ($LogName) {
+        $target = Join-Path $script:Evidence $LogName
+        [IO.File]::WriteAllText($target, (Protect-LogText ($lines -join "`r`n")), (New-Object Text.UTF8Encoding($false)))
+    }
+    return [pscustomobject]@{ ExitCode = $code; Output = $lines }
+}
+function Invoke-RemoteShell([string]$Command, [string]$LogName = '') {
+    # 执行一条**复合** shell 命令（不是"参数即参数"的容器命令）。
+    # 与 Invoke-RemoteRuntime 的区别：这里由调用方负责引用，因为命令本身是 shell 语法；
+    # 若按参数逐个引用，整条命令会变成一个被引用的单词，远端只会去找同名文件。
+    $sshArgs = @('-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR',
+        '-o', ('ConnectTimeout=' + $SshConnectTimeoutSeconds))
+    if ($SshKeyPath) { $sshArgs += @('-i', $SshKeyPath) }
+    $sshArgs += @($RemoteHost, $Command)
+    return Invoke-NativeCapture $script:SshExe $sshArgs $LogName $RepoRoot
+}
+function Invoke-RemoteRuntime([string[]]$Arguments, [string]$LogName = '') {
+    # 参数向量的语义与本地模式一致：**不含**可执行文件名本身。
+    # 本地模式是 `& docker <args>`，远端就必须是 `ssh host docker <args>`；
+    # 漏掉这里的 'docker' 会让远端执行 `bash <args>`，例如
+    # `compose --project-name ... up` 变成 bash 去找一个叫 compose 的脚本，
+    # 报 "compose: command not found"（exit 127）——一个接线缺陷被读成环境问题。
+    $remote = (@('docker') + $Arguments | ForEach-Object { Format-ShellArg $_ }) -join ' '
+    $sshArgs = @('-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR',
+        '-o', ('ConnectTimeout=' + $SshConnectTimeoutSeconds))
+    if ($SshKeyPath) { $sshArgs += @('-i', $SshKeyPath) }
+    $sshArgs += @($RemoteHost, $remote)
+    return Invoke-NativeCapture $script:SshExe $sshArgs $LogName $RepoRoot
+}
+function Invoke-RuntimeCapture([string[]]$Arguments, [string]$LogName = '') {
+    # 全部容器命令的唯一出口：本机直调，远端经 ssh。下游调用点因此**不需要**知道
+    # 运行时在哪台机器上——这是"环境位置可变、检查强度不变"的实现方式。
+    if ($script:RemoteMode) { return Invoke-RemoteRuntime $Arguments $LogName }
+    return Invoke-NativeCapture $script:Runtime.path $Arguments $LogName $RepoRoot
+}
+function Test-RemoteRuntimeUsable {
+    # -RemoteHost 指定时先走这里。返回 $true 表示远端 docker 可用且已切到远端模式。
+    #
+    # 为什么需要它：本机没有容器运行时**不等于**没有验收环境。此前只探测本机，
+    # 于是把"这台 Windows 上没有 docker"误判成"无法验收"，并据此把整段 Integration 记 NOT_RUN——
+    # 那是关于沙箱的结论，不是关于基础设施的结论。探测口径必须覆盖用户指定的验收宿主。
+    if (-not $RemoteHost) { return $false }
+    $ssh = Get-Command 'ssh' -ErrorAction SilentlyContinue
+    if ($null -eq $ssh) {
+        Add-Probe 'ENV-runtime-remote-ssh' 'ssh -V' 'absent' 'ssh client not found on PATH'
+        return $false
+    }
+    $script:SshExe = $ssh.Source
+    $prevMode = $script:RemoteMode
+    $script:RemoteMode = $true   # 让 Invoke-RuntimeCapture 走远端分支
+    try {
+        $ver = Invoke-RuntimeCapture @('version', '--format', '{{.Server.Version}}') 'preflight-remote-docker-version.log'
+        $verText = ((@($ver.Output | Where-Object { $_.Trim() }) -join ' ') -replace '\s+', ' ').Trim()
+        Add-Probe 'ENV-runtime-remote-docker' ('ssh ' + $RemoteHost + ' docker version') `
+            $(if ($ver.ExitCode -eq 0) { 'usable' } else { 'unusable' }) `
+            ("host={0} exit={1} serverVersion='{2}'" -f $RemoteHost, $ver.ExitCode, $verText)
+        if ($ver.ExitCode -ne 0) { $script:RemoteMode = $prevMode; return $false }
+
+        $compose = Invoke-RuntimeCapture @('compose', 'version', '--short') 'preflight-remote-compose-version.log'
+        $composeText = ((@($compose.Output | Where-Object { $_.Trim() }) -join ' ') -replace '\s+', ' ').Trim()
+        Add-Probe 'ENV-runtime-remote-compose' ('ssh ' + $RemoteHost + ' docker compose version') `
+            $(if ($compose.ExitCode -eq 0) { 'usable' } else { 'unusable' }) `
+            ("exit={0} version='{1}'" -f $compose.ExitCode, $composeText)
+        if ($compose.ExitCode -ne 0) { $script:RemoteMode = $prevMode; return $false }
+
+        # 记录既有容器只用于**声明不去碰它们**，不参与任何复用判定。
+        $existing = Invoke-RuntimeCapture @('ps', '--format', '{{.Names}}') 'preflight-remote-existing-containers.log'
+        $existingNames = @($existing.Output | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim() })
+        Add-Probe 'ENV-runtime-remote-existing' ('ssh ' + $RemoteHost + ' docker ps') `
+            'noted-not-reused' ("count={0} names='{1}'" -f $existingNames.Count, ($existingNames -join ','))
+
+        $script:Runtime = [pscustomobject]@{
+            name   = 'docker@' + $RemoteHost
+            path   = 'ssh ' + $RemoteHost + ' docker'
+            engine = $true
+        }
+        $script:RemoteMode = $true
+        Add-Result 'ENV-container-runtime' 'G0' 'PASS' `
+            ("runtime={0}; container commands execute on the remote acceptance host over ssh; serverVersion={1} composeVersion={2}; existingContainersNotReused={3}" -f `
+                $script:Runtime.name, $verText, $composeText, $existingNames.Count)
+        return $true
+    } catch {
+        Add-Probe 'ENV-runtime-remote-docker' ('ssh ' + $RemoteHost) 'unusable' ('probe threw: ' + $_.Exception.Message)
+        $script:RemoteMode = $prevMode
+        return $false
+    }
+}
+function Invoke-ContainerRuntimePreflight {
+    Write-Step 'Integration 预检：可用容器运行时（合成 PG/Redis/S3 的唯一前提）'
+    if (Test-RemoteRuntimeUsable) { return }
+    $found = @()
+    foreach ($cli in @('docker', 'podman', 'docker-compose', 'nerdctl')) {
+        $cmd = Get-Command $cli -ErrorAction SilentlyContinue
+        if ($null -eq $cmd) {
+            Add-Probe ('ENV-runtime-' + $cli) ($cli + ' version') 'absent' 'executable not found on PATH'
+            continue
+        }
+        $r = Invoke-NativeCapture $cmd.Source @('version') ('preflight-' + $cli + '-version.log')
+        $first = (@($r.Output | Where-Object { $_.Trim() } | Select-Object -First 1) -join '')
+        Add-Probe ('ENV-runtime-' + $cli) ($cli + ' version') $(if ($r.ExitCode -eq 0) { 'usable' } else { 'unusable' }) `
+            ("path={0} exit={1} firstLine='{2}'" -f $cmd.Source, $r.ExitCode, $first)
+        if ($r.ExitCode -eq 0) { $found += [pscustomobject]@{ name = $cli; path = $cmd.Source; engine = ($cli -ne 'docker-compose') } }
+    }
+    $desktop = 'C:\Program Files\Docker'
+    Add-Probe 'ENV-runtime-docker-desktop' ('Test-Path ' + $desktop) `
+        $(if (Test-Path -LiteralPath $desktop) { 'present' } else { 'absent' }) $desktop
+    $pipe = '\\.\pipe\docker_engine'
+    Add-Probe 'ENV-runtime-docker-pipe' ('Test-Path ' + $pipe) `
+        $(if (Test-Path -LiteralPath $pipe) { 'present' } else { 'absent' }) $pipe
+    $wsl = Get-Command 'wsl.exe' -ErrorAction SilentlyContinue
+    if ($null -eq $wsl) {
+        Add-Probe 'ENV-runtime-wsl' 'wsl.exe -l -v' 'absent' 'wsl.exe not found'
+    } else {
+        # wsl.exe 用 UTF-16LE 写 stdout；不改控制台编码会得到乱码证据。
+        $prevEncoding = [Console]::OutputEncoding
+        try {
+            [Console]::OutputEncoding = [Text.Encoding]::Unicode
+            $list = Invoke-NativeCapture $wsl.Source @('-l', '-v') 'preflight-wsl-list.log'
+            $listText = (((@($list.Output) -join ' ') -replace "`0", '') -replace '\s+', ' ').Trim()
+            Add-Probe 'ENV-runtime-wsl' 'wsl.exe -l -v' $(if ($list.ExitCode -eq 0) { 'distros-listed' } else { 'unusable' }) `
+                ("exit={0} text='{1}'" -f $list.ExitCode, $listText)
+            if ($list.ExitCode -eq 0) {
+                $probe = Invoke-NativeCapture $wsl.Source @('-e', 'sh', '-c', 'command -v docker || command -v podman || echo NO_CONTAINER_RUNTIME') 'preflight-wsl-container-runtime.log'
+                $text = (((@($probe.Output) -join ' ') -replace "`0", '') -replace '\s+', ' ').Trim()
+                $usable = ($probe.ExitCode -eq 0 -and $text -notmatch 'NO_CONTAINER_RUNTIME')
+                Add-Probe 'ENV-runtime-wsl-engine' 'wsl.exe -e sh -c "command -v docker || command -v podman"' `
+                    $(if ($usable) { 'usable' } else { 'absent' }) ("exit={0} text='{1}'" -f $probe.ExitCode, $text)
+                if ($usable) { $found += [pscustomobject]@{ name = 'wsl-container-engine'; path = ($wsl.Source + ' -e ' + $text); engine = $true } }
+            }
+        } finally { [Console]::OutputEncoding = $prevEncoding }
+    }
+    $usableRuntime = @($found | Where-Object { $_.engine })
+    if ($usableRuntime.Count -eq 0) {
+        $script:EnvGateBlocked = $true
+        $script:GateReason = 'NO_CONTAINER_RUNTIME'
+        $detail = 'no usable container runtime: docker/podman/docker-compose/nerdctl absent or unusable on PATH, ' +
+            'Docker Desktop directory and \\.\pipe\docker_engine absent, and no container engine reachable through WSL'
+        if ($RemoteHost) {
+            $detail = $detail + '; additionally -RemoteHost ' + $RemoteHost + ' did not yield a usable docker'
+        }
+        $script:GateReasonDetail = $detail
+        $script:GateReasonShort = 'no usable container runtime (docker/podman/docker-compose/nerdctl/Docker Desktop/docker_engine pipe/WSL engine all absent or unusable)'
+        # 该行是主记录：保留完整探测结论，并显式写出原因代号（收尾一致性会核对这个代号）。
+        Add-Result 'ENV-container-runtime' 'G0' 'NOT_RUN' ("blocked: {0} -- {1}" -f $script:GateReason, $script:GateReasonDetail)
+    } else {
+        $script:Runtime = $usableRuntime[0]
+        Add-Result 'ENV-container-runtime' 'G0' 'PASS' `
+            ("runtime={0} path={1}; synthetic PG/Redis/S3 will be created by this run only" -f $script:Runtime.name, $script:Runtime.path)
+    }
+}
+function Invoke-SubstituteRefusalScan {
+    Write-Step 'Integration 预检：拒绝复用本机/远端已有业务库与缓存'
+    $targets = @(
+        [pscustomobject]@{ id = 'pg-default'; port = 5432; what = 'host PostgreSQL on the product default port' },
+        [pscustomobject]@{ id = 'redis-default'; port = 6379; what = 'host Redis on the product default port' },
+        [pscustomobject]@{ id = 's3-default'; port = 9000; what = 'host S3-compatible endpoint on the product default port' },
+        [pscustomobject]@{ id = 'p04-lab-pg'; port = 15434; what = 'P0.4 synthetic lab PostgreSQL port (remote LabHost port-forward)' },
+        [pscustomobject]@{ id = 'mysql-default'; port = 3306; what = 'host MySQL' },
+        [pscustomobject]@{ id = 'milvus-default'; port = 19530; what = 'host Milvus' }
+    )
+    $listeners = @()
+    foreach ($t in $targets) {
+        $open = Test-TcpEndpoint '127.0.0.1' $t.port 700
+        Add-Probe ('ENV-substitute-' + $t.id) ('TcpClient connect 127.0.0.1:' + $t.port) `
+            $(if ($open) { 'listener' } else { 'absent' }) $t.what
+        if ($open) { $listeners += $t }
+    }
+    foreach ($t in $listeners) {
+        Add-Refusal ('REFUSE-substitute-' + $t.id) `
+            ("non-runner-owned listener present at 127.0.0.1:{0} ({1})" -f $t.port, $t.what) `
+            'never connected and never used as the synthetic environment; this run uses only its own compose endpoints'
+    }
+    if ($listeners.Count -eq 0) {
+        Add-Result 'ENV-substitute-scan' 'G0' 'PASS' 'no listener on any candidate substitute endpoint (5432/6379/9000/15434/3306/19530); nothing to refuse'
+    } else {
+        Add-Result 'ENV-substitute-scan' 'G0' 'PASS' `
+            ("probed 6 candidate endpoints; {0} listener(s) detected and explicitly refused (see refusals.json): {1}" -f `
+                $listeners.Count, (@($listeners | ForEach-Object { $_.id + ':' + $_.port }) -join ','))
+    }
+}
+function Invoke-ProviderKeyIsolation {
+    Write-Step 'Integration 预检：真实 provider key 不外泄给子进程'
+    $candidateVars = @('DASHSCOPE_API_KEY', 'DEEPSEEK_API_KEY', 'OPENAI_API_KEY', 'AIHUBMIX_API_KEY',
+        'SILICONFLOW_API_KEY', 'ZHIPU_API_KEY', 'MOONSHOT_API_KEY', 'MINERU_API_KEY', 'OSS_SECRET_KEY',
+        'LANGFUSE_SECRET_KEY')
+    $present = @($candidateVars | Where-Object { -not [string]::IsNullOrWhiteSpace([string](Get-Item -Path ('env:' + $_) -ErrorAction SilentlyContinue).Value) })
+    $script:ProviderKeyOverrides = $candidateVars
+    Assert-That 'ENV-provider-key-isolation' 'G0' $true `
+        ("parent env real provider keys visible={0} [{1}]; synthetic children get runner-generated random values for all {2} names" -f `
+            $present.Count, ($present -join ','), $candidateVars.Count)
+}
+
+# =========================== Integration：环境闸门 ===========================
+function Add-GatedResult([string]$id, [string]$target, [string]$detail) {
+    if ($script:GatedNotRun -notcontains $id) { [void]$script:GatedNotRun.Add($id) }
+    Add-Result $id $target 'NOT_RUN' ("{0} :: NOT RUN -- blocked by {1}: {2}" -f $detail, $script:GateReason, $script:GateReasonShort)
+}
+function Publish-GatedNotRun([string[]]$ExceptIds = @()) {
+    # 环境缺失：逐条写 NOT_RUN（带确切原因）并登记 id；绝不写 PASS，也不写假 FAIL。
+    foreach ($entry in $script:GatedInventoryPlan) {
+        if ($ExceptIds -contains $entry.id) { continue }
+        Add-GatedResult $entry.id $entry.target $entry.detail
+    }
+}
+function Publish-BlockedInventory {
+    Write-Step ("Integration 环境闸门关闭：" + $script:GateReason)
+    Write-Output ("  reason: " + $script:GateReasonDetail)
+    Publish-GatedNotRun
+    Write-Output '  BUILD-* / ENV-compose-* / ENV-db-* / ENV-fixtures / PROBE-* / BOOT-* / B01-B13 / DB-* / LISTENER / CHECKER / CASES-complete / CLEANUP-owned-containers 全部 NOT_RUN。'
+    Write-Output '  本轮未启动任何 jar、容器或数据库连接。Absence of an environment is NOT_RUN, never PASS and never a fake FAIL -> exit 0.'
+}
+function Complete-IntegrationInventory([string]$Reason) {
+    # 闸门打开但 happy path 中途中止：未产出的计划项补 NOT_RUN，由 INVENTORY-integrity 判 FAIL（fail closed）。
+    foreach ($entry in $script:GatedInventoryPlan) {
+        if ((Get-ResultRow $entry.id).Count -eq 0) {
+            Add-Result $entry.id $entry.target 'NOT_RUN' ("{0} :: NOT RUN -- happy path did not reach this check ({1})" -f $entry.detail, $Reason)
+        }
+    }
+}
+function Assert-IntegrationInventory {
+    $problems = @()
+    foreach ($entry in $script:GatedInventoryPlan) {
+        $rows = Get-ResultRow $entry.id
+        if ($rows.Count -ne 1) { $problems += ("planned check {0} produced {1} result row(s)" -f $entry.id, $rows.Count) }
+    }
+    foreach ($id in $script:PreflightGatedIds) {
+        $rows = Get-ResultRow $id
+        if ($rows.Count -ne 1) { $problems += ("preflight check {0} produced {1} result row(s)" -f $id, $rows.Count) }
+        elseif ($script:EnvGateBlocked -and $rows[0].status -ne 'NOT_RUN') { $problems += ("{0} is {1} while the gate is blocked" -f $id, $rows[0].status) }
+        elseif (-not $script:EnvGateBlocked -and $rows[0].status -ne 'PASS') { $problems += ("{0} is {1} while the gate is open" -f $id, $rows[0].status) }
+    }
+    foreach ($id in $script:AlwaysRunIds) {
+        $rows = Get-ResultRow $id
+        if ($rows.Count -ne 1) { $problems += ("always-run check {0} produced {1} result row(s)" -f $id, $rows.Count) }
+        elseif ($rows[0].status -ne 'PASS') { $problems += ("always-run check {0} is {1}" -f $id, $rows[0].status) }
+    }
+    if ($script:EnvGateBlocked) {
+        $planned = @($script:GatedInventoryPlan | ForEach-Object { $_.id })
+        $notNotRun = @($script:Results | Where-Object { $planned -contains $_.id -and $_.status -ne 'NOT_RUN' })
+        if ($notNotRun.Count -gt 0) { $problems += ('gate blocked but planned check(s) are not NOT_RUN: ' + (@($notNotRun | ForEach-Object { $_.id + '=' + $_.status }) -join ',')) }
+        $badReason = @($script:Results | Where-Object { $_.status -eq 'NOT_RUN' -and $_.detail -notmatch 'NO_CONTAINER_RUNTIME' })
+        if ($badReason.Count -gt 0) { $problems += ('NOT_RUN rows must name the blocking reason: ' + (@($badReason | ForEach-Object { $_.id }) -join ',')) }
+    } else {
+        $planned = @($script:GatedInventoryPlan | ForEach-Object { $_.id })
+        $notPass = @($script:Results | Where-Object { $planned -contains $_.id -and $_.status -ne 'PASS' })
+        if ($notPass.Count -gt 0) { $problems += ('gate open but planned check(s) are not PASS: ' + (@($notPass | ForEach-Object { $_.id + '=' + $_.status }) -join ',')) }
+    }
+    $detail = if ($problems.Count -eq 0) {
+        ("planned={0} results={1} gateBlocked={2} reason={3}" -f $script:GatedInventoryPlan.Count, $script:Results.Count, $script:EnvGateBlocked, $script:GateReason)
+    } else { ($problems -join ' | ') }
+    Assert-That 'INVENTORY-integrity' 'G0' ($problems.Count -eq 0) $detail
+}
+
+# =========================== Integration：合成环境（全部在闸门之后） ===========================
+function Initialize-SyntheticSecrets {
+    foreach ($name in @('pgSuperuser', 'platformMigrate', 'platformApp', 'aiMigrate', 'aiApp', 'redis', 's3Access', 's3Secret',
+            'platformJwt', 'aiServiceCredential', 'aiDelegationSigning')) {
+        $script:Secrets[$name] = New-RandomSecret 24
+    }
+    # fixture 用户口令必须满足**平台自己的登录校验**：
+    # PasswordLoginBody 上是 @Length(min = 5, max = 30)，
+    # 而 New-RandomSecret 24 生成 24 字节 base64 → **32 个字符**，超过上限 30。
+    # 于是登录在 PasswordAuthStrategy 的第二次校验被拒，
+    # 返回的却只是通用文案 "请求参数校验失败"，与"字段缺失"无法区分。
+    # 改用 18 字节（≈24 字符）留出余量，并在此处显式校验长度落区间内。
+    $script:Secrets['fixtureUser'] = New-RandomSecret 18
+    $fixtureLen = ([string]$script:Secrets['fixtureUser']).Length
+    if ($fixtureLen -lt 5 -or $fixtureLen -gt 30) {
+        throw ("fixture user password length {0} is outside the platform's accepted 5..30 range" -f $fixtureLen)
+    }
+    # 真实 provider key 一律覆盖为随机值：即使发生意外外呼，也只会用合成 key 失败。
+    foreach ($var in $script:ProviderKeyOverrides) { Set-Item -Path ('env:' + $var) -Value (New-RandomSecret 18) }
+}
+function Write-ComposeFile {
+    $composeDir = Join-Path $script:RunWork 'compose'
+    [void](New-Item -ItemType Directory -Force -Path $composeDir)
+    $composePath = Join-Path $composeDir 'docker-compose.yml'
+    # 只写 ${...} 占位符：口令值经进程环境注入 compose，落盘文件里没有任何秘密。
+    $yaml = @'
+# runner-owned synthetic environment for P1.2a integration acceptance.
+# Secrets are injected from the runner process environment; this file is safe to archive.
+name: __PROJECT__
+services:
+  pg:
+    image: pgvector/pgvector:0.8.6-pg17
+    container_name: __PG_CONTAINER__
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${P1B_PG_SUPERUSER_PASSWORD}
+      POSTGRES_DB: ragent_p1b
+    ports:
+      - "127.0.0.1:__PG_PORT__:5432"
+    labels:
+      p1.boundary.owner: __RUNTAG__
+      p1.boundary.role: pg
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ragent_p1b"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+  redis:
+    image: redis:7.4-alpine
+    container_name: __REDIS_CONTAINER__
+    command: ["redis-server", "--requirepass", "${P1B_REDIS_PASSWORD}", "--save", ""]
+    # 健康检查在**容器内**执行，所以口令必须是容器自己的环境变量。
+    # 原先只把它插值进 command，容器里并没有这个变量，于是
+    # `redis-cli -a $P1B_REDIS_PASSWORD ping` 展开成 `-a ""`，
+    # redis-cli 把空口令当成"没有口令"从而拒绝认证，容器永远 unhealthy——
+    # 而 redis-server 本身是好的，看起来像"Redis 起不来"，实际只是自检方式错。
+    environment:
+      P1B_REDIS_PASSWORD: ${P1B_REDIS_PASSWORD}
+    ports:
+      - "127.0.0.1:__REDIS_PORT__:6379"
+    labels:
+      p1.boundary.owner: __RUNTAG__
+      p1.boundary.role: redis
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$P1B_REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+  s3:
+    image: rustfs/rustfs:1.0.0-alpha.72
+    container_name: __S3_CONTAINER__
+    environment:
+      RUSTFS_ACCESS_KEY: ${P1B_S3_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${P1B_S3_SECRET_KEY}
+      RUSTFS_ADDRESS: "0.0.0.0:9000"
+      RUSTFS_CONSOLE_ENABLE: "false"
+    ports:
+      - "127.0.0.1:__S3_PORT__:9000"
+    labels:
+      p1.boundary.owner: __RUNTAG__
+      p1.boundary.role: s3
+    volumes:
+      - s3data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/health >/dev/null 2>&1 || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+volumes:
+  pgdata:
+    labels:
+      p1.boundary.owner: __RUNTAG__
+  s3data:
+    labels:
+      p1.boundary.owner: __RUNTAG__
+'@
+    $yaml = $yaml.Replace('__PROJECT__', $script:ComposeProject)
+    $yaml = $yaml.Replace('__RUNTAG__', $RunTag)
+    $yaml = $yaml.Replace('__PG_CONTAINER__', $script:PgContainer)
+    $yaml = $yaml.Replace('__REDIS_CONTAINER__', $script:RedisContainer)
+    $yaml = $yaml.Replace('__S3_CONTAINER__', $script:S3Container)
+    $yaml = $yaml.Replace('__PG_PORT__', [string]$script:PgPort)
+    $yaml = $yaml.Replace('__REDIS_PORT__', [string]$script:RedisPort)
+    $yaml = $yaml.Replace('__S3_PORT__', [string]$script:S3Port)
+    [IO.File]::WriteAllText($composePath, $yaml, (New-Object Text.UTF8Encoding($false)))
+    $archive = Join-Path $script:Evidence 'compose\docker-compose.yml'
+    [void](New-Item -ItemType Directory -Force -Path (Split-Path $archive -Parent))
+    Copy-Item -LiteralPath $composePath -Destination $archive -Force
+    return $composePath
+}
+function Invoke-OwnedCompose([string[]]$Arguments, [string]$LogName) {
+    # 空 --file 会变成 `docker compose --file "" ps`：docker 报错，而错误文本会被读成
+    # "环境不可用"，把一次接线缺陷伪装成环境问题。这里先自证，让缺陷在源头显形。
+    if (-not $script:ComposePath) {
+        throw ('Invoke-OwnedCompose called before the compose file exists (project={0}); ' -f $script:ComposeProject) +
+            'the run must prepare its own synthetic environment identity first'
+    }
+    # 给 compose 的 --file 用"执行机上可读"的那个路径；本机归档路径另存，
+    # 否则远端模式下会把本机路径交给远端（stat 失败），或反过来。
+    $fileForHost = if ($script:ComposePathForHost) { $script:ComposePathForHost } else { $script:ComposePath }
+    $full = @('compose', '--project-name', $script:ComposeProject, '--file', $fileForHost) + $Arguments
+    return Invoke-RuntimeCapture $full $LogName
+}
+function Test-P04ContainerIsolation {
+    Write-Step 'G0：本轮不得复用 P0.4 容器（只按 owner label 识别自有资源）'
+    $ps = Invoke-OwnedCompose @('ps', '--all', '--format', 'json') 'compose-ps.log'
+    $names = @()
+    foreach ($line in @($ps.Output)) {
+        $t = ([string]$line).Trim()
+        if (-not $t -or $t -eq 'null') { continue }
+        try { $obj = $t | ConvertFrom-Json } catch { continue }
+        if ($obj.name) { $names += [string]$obj.name }
+    }
+    $p04 = @($names | Where-Object { $_ -match '^p04-' })
+    Assert-That 'ENV-p04-container-isolation' 'G0' ($p04.Count -eq 0) `
+        ("composeProject={0} existingContainers=[{1}] p04Containers={2} (p04 lab never reused; runner only touches its own project)" -f `
+            $script:ComposeProject, ($names -join ','), $p04.Count)
+    return $true
+}
+function Initialize-SyntheticIdentity {
+    # 把"本轮自有资源的身份 + compose 文件"与"把它们起来"分开。
+    #
+    # 为什么必须分开：Test-P04ContainerIsolation 要先问一句"这个 compose project 里现在有没有
+    # p04-* 容器"，而 `docker compose --file <path> ps` 需要一个**真实存在**的 file——
+    # 原先 ComposePath 是在 Start-SyntheticEnvironment 里才赋值的，于是隔离检查在
+    # --file 为空串的情况下发出，docker 直接报错。检查的顺序是对的（先确认不复用，再创建），
+    # 错的是"文件还没准备好"。
+    $script:ComposeProject = (('p1b-' + $RunTag.ToLower()) -replace '[^a-z0-9-]', '-')
+    $script:PgContainer = ('p1b-pg-' + $RunTag.ToLower())
+    $script:RedisContainer = ('p1b-redis-' + $RunTag.ToLower())
+    $script:S3Container = ('p1b-s3-' + $RunTag.ToLower())
+    # 端口必须在写文件**之前**确定：compose 文件把端口固化成字面量，
+    # 若先写文件再分配端口，文件里会留下 "127.0.0.1:0:5432"，
+    # 而 docker 对 0 端口的行为不是报错而是"随机映射"——合成服务会起在一个
+    # 谁也猜不到的端口上，后续所有连接与隧道全部失效。
+    $script:ComposePath = Write-ComposeFile
+}
+function Publish-ComposeFileToHost {
+    # 远端模式下 docker compose 在远端执行，--file 必须是**远端**可读的路径。
+    # 直接把 Windows 路径交给远端会得到
+    # "stat /root/D:\...\docker-compose.yml: no such file or directory"——
+    # 又一次把接线缺陷伪装成环境问题。这里把文件投递到本轮自有目录，
+    # 并把 ComposePath 换成远端路径。文件内容只有 ${...} 变量名，不含口令，可安全归档。
+    if (-not $script:RemoteMode) { return }
+    $remoteDir = '/opt/p1-acceptance/' + ($RunTag.ToLower() -replace '[^a-z0-9-]', '-')
+    $script:RemoteComposeDir = $remoteDir
+    $mk = Invoke-RemoteShell ('mkdir -p ' + (Format-ShellArg $remoteDir) + ' && chmod 700 ' + (Format-ShellArg $remoteDir)) 'compose-remote-mkdir.log'
+    if ($mk.ExitCode -ne 0) { throw ('cannot create remote compose dir ' + $remoteDir) }
+    $content = [IO.File]::ReadAllText($script:ComposePath)
+    $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($content))
+    $remoteFile = $remoteDir + '/docker-compose.yml'
+    $cmd = 'printf %s ' + (Format-ShellArg $b64) + ' | base64 -d > ' + (Format-ShellArg $remoteFile)
+    $put = Invoke-RemoteShell $cmd 'compose-remote-publish.log'
+    if ($put.ExitCode -ne 0) { throw ('cannot publish compose file to ' + $remoteFile) }
+    # 只改"给执行机用的路径"，保留本机归档路径：
+    # 覆盖 ComposePath 会让 --file 永远是远端路径，于是清理阶段的 compose down
+    # 在远端找不到文件（stat ... no such file or directory），本轮自有容器
+    # 就永远删不掉——清理失败比创建失败更严重，因为它会污染后续每一轮。
+    $script:ComposePathForHost = $remoteFile
+
+    # 变量插值发生在**执行 compose 的那台机器**上。合成口令只存在于本进程环境里，
+    # 远端 shell 看不到它们，于是 compose 把 ${P1B_...} 当未定义变量：
+    # 它不报错，只警告 "variable is not set. Defaulting to a blank string"，
+    # 然后拿空口令把容器**起成功**——一个"全绿但从未真正设过口令"的环境。
+    # 因此把变量写成 compose 同目录的 .env（docker compose 自动读取），umask 077，
+    # 并在清理时随本轮自有目录一起删除。.env 只落在远端本轮自有目录，不进证据、不进仓库。
+    $envLines = @(
+        ('P1B_PG_SUPERUSER_PASSWORD=' + $script:Secrets['pgSuperuser']),
+        ('P1B_REDIS_PASSWORD=' + $script:Secrets['redis']),
+        ('P1B_S3_ACCESS_KEY=' + $script:Secrets['s3Access']),
+        ('P1B_S3_SECRET_KEY=' + $script:Secrets['s3Secret'])
+    ) -join "`n"
+    $envB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($envLines + "`n"))
+    $remoteEnv = $remoteDir + '/.env'
+    $envCmd = 'umask 077; printf %s ' + (Format-ShellArg $envB64) + ' | base64 -d > ' + (Format-ShellArg $remoteEnv)
+    $envPut = Invoke-RemoteShell $envCmd 'compose-remote-env.log'
+    if ($envPut.ExitCode -ne 0) { throw ('cannot publish compose env file to ' + $remoteEnv) }
+}
+function Start-SyntheticEnvironment {
+    Write-Step 'G0：起 runner 自有合成 PG17+pgvector / Redis / S3 mock（唯一 owner label）'
+    if (-not $script:ComposePath) { throw 'compose file was not prepared; Initialize-SyntheticIdentity must run first' }
+    foreach ($port in @($script:PgPort, $script:RedisPort, $script:S3Port)) {
+        if ($port -le 0) { Add-Result 'ENV-compose-up' 'G0' 'FAIL' 'synthetic port was not allocated'; return }
+        if (-not (Test-PortFree $port)) { Add-Result 'ENV-compose-up' 'G0' 'FAIL' ("synthetic port already in use: " + $port); return }
+    }
+    Publish-ComposeFileToHost
+    $env:P1B_PG_SUPERUSER_PASSWORD = $script:Secrets['pgSuperuser']
+    $env:P1B_REDIS_PASSWORD = $script:Secrets['redis']
+    $env:P1B_S3_ACCESS_KEY = $script:Secrets['s3Access']
+    $env:P1B_S3_SECRET_KEY = $script:Secrets['s3Secret']
+    $up = Invoke-OwnedCompose @('up', '--detach', '--wait') 'compose-up.log'
+    if ($up.ExitCode -ne 0) { Add-Result 'ENV-compose-up' 'G0' 'FAIL' ("compose up exit={0}; see compose-up.log" -f $up.ExitCode); return }
+    foreach ($container in @($script:PgContainer, $script:RedisContainer, $script:S3Container)) { [void]$script:OwnedContainers.Add($container) }
+    # 只按 owner label 数一遍本轮自有容器。**不要**在 --format 里用 {{.Label "x"}}：
+    # 该模板含双引号，经 ssh 参数向量传递时引号被吃掉，docker 收到
+    # `{{.Label p1.boundary.role}}` 并报 'function "p1" not defined'——
+    # 于是一个"标签其实完全正确"的环境被判成 0 个自有容器（实测容器标签无误）。
+    # 单字段模板不含引号，可以安全传递。
+    $label = Invoke-RuntimeCapture @('ps', '--all', '--filter', ('label=p1.boundary.owner=' + $RunTag),
+        '--format', '{{.Names}}') 'compose-owned-label-inventory.log'
+    $ownedRows = @($label.Output | Where-Object { $_.Trim() })
+    Assert-That 'ENV-compose-up' 'G0' ($label.ExitCode -eq 0 -and $ownedRows.Count -eq 3) `
+        ("up exit=0; containersWithOwnLabel={0} [{1}]" -f $ownedRows.Count, ($ownedRows -join '; '))
+}
+function Invoke-SyntheticSql([string]$Sql, [string]$Database, [string]$User, [string]$PasswordKey, [string]$LogName) {
+    # SQL 原文经 stdin 送进容器内的 psql。
+    #
+    # 三个通道的上限决定了只能这么做：命令行约 32KB（平台基线 60KB）、
+    # 环境变量单值约 32KB（V2 种子 149KB）、只有 stdin 没有这两个上限。
+    # 顺带的好处是中文与单引号完全不经过任何 shell 解析。
+    #
+    # 口令**不**用 docker exec -e PGPASSWORD 传递：实测 `docker exec -e NAME`（不带 =值）
+    # 并不继承客户端环境，而是把容器内该变量设为**空串**，于是自证恒真、psql 却拿不到口令。
+    # 也不把口令拼进命令行：那样它会出现在远端进程表与任何错误信息里。
+    #
+    # 采用容器内临时 .pgpass：口令由本机经 ssh 的 stdin 写进容器内文件，
+    # 再用 PGPASSFILE 指过去。口令因此不出现在本机命令行、远端命令行、ssh 命令行、
+    # 任何日志或证据里；文件权限 0600，用完即删。
+    $pgpassLine = '127.0.0.1:5432:*:' + $User + ':' + $script:Secrets[$PasswordKey]
+    $tmpName = '/tmp/p1b-pgpass-' + ([guid]::NewGuid().ToString('N').Substring(0, 12))
+    $passPayload = Join-Path $script:RunWork (($LogName -replace '[^\w.-]', '_') + '.pgpass')
+    [IO.File]::WriteAllBytes($passPayload, [Text.Encoding]::UTF8.GetBytes($pgpassLine + "`n"))
+    $sqlPayload = Join-Path $script:RunWork (($LogName -replace '[^\w.-]', '_') + '.sql')
+    [IO.File]::WriteAllBytes($sqlPayload, [Text.Encoding]::UTF8.GetBytes($Sql))
+    $inner = 'PGPASSFILE=' + (Format-ShellArg $tmpName) + ' psql -h 127.0.0.1 -p 5432'
+    $inner += ' -U ' + (Format-ShellArg $User) + ' -d ' + (Format-ShellArg $Database)
+    $inner += ' -X -q -tA -v ON_ERROR_STOP=1 -f -; rc=$?; rm -f ' + (Format-ShellArg $tmpName) + '; exit $rc'
+    try {
+        # 口令文件先单独送进容器，SQL 再单独送一次；两次都走纯 stdin，没有长度上限。
+        $passCmd = 'docker exec -i ' + (Format-ShellArg $script:PgContainer) + ' sh -c ' +
+            (Format-ShellArg ('umask 077; cat > ' + $tmpName))
+        $p1 = Invoke-RemoteShellStdin $passCmd $passPayload ($LogName + '.stage')
+        if ($p1.ExitCode -ne 0) { throw ("cannot stage pgpass inside the container (exit={0})" -f $p1.ExitCode) }
+        $remote = 'docker exec -i ' + (Format-ShellArg $script:PgContainer) + ' sh -c ' + (Format-ShellArg $inner)
+        $r = Invoke-RemoteShellStdin $remote $sqlPayload $LogName
+        if ($r.ExitCode -ne 0) {
+            # 失败时保留负载：否则只能靠猜"psql 到底收到了什么"。
+            # 必须在 finally 删掉源文件**之前**复制，否则复制的是已不存在的路径。
+            # 负载是 SQL 原文（不含口令），只落在本轮 work 目录，不进证据。
+            $keep = Join-Path $script:RunWork (($LogName -replace '[^\w.-]', '_') + '.FAILED.sql')
+            Copy-Item -LiteralPath $sqlPayload -Destination $keep -Force -ErrorAction SilentlyContinue
+        }
+    } finally {
+        Remove-Item -LiteralPath $passPayload -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $sqlPayload -Force -ErrorAction SilentlyContinue
+    }
+    if ($r.ExitCode -ne 0) {
+        throw ("synthetic SQL failed (exit={0}), see {1}" -f $r.ExitCode, $LogName)
+    }
+    return (($r.Output -join "`r`n").Trim())
+}
+function Initialize-SyntheticDatabase {
+    Write-Step 'G0：独立 migrate / app 账号 + 双 schema + 迁移原字节'
+    $roleSql = @'
+DO $$
+DECLARE r text; p text;
+BEGIN
+  FOR r, p IN SELECT * FROM (VALUES ('platform_migrate','__P1__'),('platform_app','__P2__'),('ai_migrate','__P3__'),('ai_app','__P4__')) AS t(r,p) LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+      EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', r, p);
+    END IF;
+  END LOOP;
+END $$;
+-- 每次运行都从**干净** schema 开始：迁移脚本按"空库"编写（裸 create table，无 IF NOT EXISTS），
+-- 半迁移过的库上重跑会报 "relation ... already exists"，看起来像迁移脚本有缺陷，
+-- 实际是环境没被重置。这两个 schema 只属于本轮合成库（本轮自建、跑完即销毁），
+-- 因此可以安全重建；这也保证每次验收的起点一致，而不是"上一轮的残留"。
+DROP SCHEMA IF EXISTS platform CASCADE;
+DROP SCHEMA IF EXISTS ai CASCADE;
+CREATE SCHEMA IF NOT EXISTS platform;
+CREATE SCHEMA IF NOT EXISTS ai;
+CREATE SCHEMA IF NOT EXISTS extensions;
+-- app 与 migrate 都需要 USAGE。
+--
+-- 这里是**重建之后**的授权，顺序不能提前：DROP SCHEMA 会连带丢弃该 schema 上的全部授权，
+-- 若在 DROP 之前授权，重建出来的 schema 对 migrate 角色没有 USAGE，
+-- 而 PostgreSQL 在执行 `SET search_path TO platform,extensions` 时会**静默剔除**
+-- 调用者无 USAGE 权限的 schema——命令本身成功、不报错，
+-- 后续裸 `create table` 便落在空 search_path 上，报
+-- "no schema has been selected to create in"。
+-- 看起来像迁移脚本有问题，实际是 search_path 被静默削短了。
+GRANT USAGE, CREATE ON SCHEMA platform, ai, extensions TO platform_migrate, ai_migrate;
+GRANT USAGE ON SCHEMA platform, ai, extensions TO platform_app, ai_app;
+-- 迁移账号需要在自己库里建 schema 的权限：否则自足前缀里的
+-- CREATE SCHEMA IF NOT EXISTS 会以 "permission denied for database" 失败。
+GRANT CREATE ON DATABASE ragent_p1b TO platform_migrate, ai_migrate;
+'@
+    $roleSql = $roleSql.Replace('__P1__', $script:Secrets['platformMigrate']).Replace('__P2__', $script:Secrets['platformApp'])
+    $roleSql = $roleSql.Replace('__P3__', $script:Secrets['aiMigrate']).Replace('__P4__', $script:Secrets['aiApp'])
+    [void](Invoke-SyntheticSql $roleSql 'ragent_p1b' 'postgres' 'pgSuperuser' 'db-roles.log')
+    # vector 扩展由**超级用户**安装：AI 基线里直接写 vector(1536)，
+    # 而 CREATE EXTENSION 需要超级权限，migrate 账号做不到——
+    # 迁移文件自己的注释也写明了这一点（"实跑 CREATE EXTENSION vector 需要超级账号，
+    # 故 bootstrap 步骤"）。装到 extensions schema，再由 search_path 覆盖到。
+    [void](Invoke-SyntheticSql 'CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions;' 'ragent_p1b' `
+            'postgres' 'pgSuperuser' 'db-extension-vector.log')
+    # 迁移用 migrate 账号，逐字执行仓库内迁移原字节（不重写、不改序）。
+    #
+    # 路径必须指向**仓库里真实存在**的迁移目录。此前写的是 ruoyi-admin / bootstrap 下的
+    # resources/db/migration，那两个目录根本不存在；而循环体对不存在的目录是
+    # `continue`（跳过），于是 $applied 恒为空、ENV-db-accounts 恒 FAIL，
+    # 且**一个迁移都没执行**——schema 是空的，后面的 fixture 自然报
+    # "permission denied for schema platform"（表压根不存在）。
+    # 一个"路径写错"被读成了"数据库权限问题"。
+    $migrateDirs = @(
+        [pscustomobject]@{ dir = 'services/platform/docs/script/sql/postgres'; schema = 'platform'; user = 'platform_migrate'; key = 'platformMigrate' },
+        [pscustomobject]@{ dir = 'services/ai/resources/database/postgres/migrations'; schema = 'ai'; user = 'ai_migrate'; key = 'aiMigrate' }
+    )
+    $applied = @()
+    foreach ($spec in $migrateDirs) {
+        $full = Join-Path $RepoRoot ($spec.dir -replace '/', '\')
+        if (-not (Test-Path -LiteralPath $full)) {
+            # 目录缺失是硬失败：静默跳过会让"没跑任何迁移"看起来像"跑完了但没内容"。
+            Add-Result 'ENV-db-accounts' 'G0' 'FAIL' ("migration directory not found: " + $spec.dir)
+            return
+        }
+        foreach ($file in @(Get-ChildItem -LiteralPath $full -File -Filter '*.sql' | Sort-Object Name)) {
+            $sql = [IO.File]::ReadAllText($file.FullName)
+            # 每个迁移自带 schema 与 search_path，不依赖前一步是否成功。
+            # 之前依赖"角色步骤里已经 CREATE SCHEMA"，于是角色步骤一旦没生效，
+            # 迁移就报 "no schema has been selected to create in"——
+            # 一个缺失的前置被读成迁移脚本本身有问题。迁移应当是自足的。
+            #
+            # 前缀末尾带一句**自证**：PostgreSQL 会静默丢弃调用者无 USAGE 权限的 schema，
+            # 所以 SET 成功并不代表 search_path 真的生效。这里直接断言它，
+            # 让"权限缺失"在它该失败的地方失败，而不是伪装成迁移脚本的语法/语义问题。
+            $prefix = "CREATE SCHEMA IF NOT EXISTS " + $spec.schema + ";`r`n" +
+                "CREATE SCHEMA IF NOT EXISTS extensions;`r`n" +
+                "SET search_path TO " + $spec.schema + ",extensions;`r`n" +
+                "DO `$`$ BEGIN IF current_schema() IS DISTINCT FROM " + "'" + $spec.schema + "'" +
+                " THEN RAISE EXCEPTION 'search_path not effective for migration: current_schema=%', current_schema(); END IF; END `$`$;`r`n"
+            [void](Invoke-SyntheticSql ($prefix + $sql) 'ragent_p1b' `
+                    $spec.user $spec.key ('migration-' + $spec.schema + '-' + $file.Name + '.log'))
+            $applied += [pscustomobject]@{ schema = $spec.schema; file = $file.Name
+                sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLower() }
+        }
+    }
+    # 迁移后把 schema 内对象的权限交给 app 账号：迁移由 migrate 账号执行，
+    # 建出来的表归 migrate 所有，app 账号默认无权 INSERT/SELECT。
+    # 这一步不能省，否则所有真实业务读写都会以"permission denied"告终。
+    $grantSql = @'
+GRANT USAGE ON SCHEMA platform, ai, extensions TO platform_app, ai_app;
+GRANT ALL ON ALL TABLES IN SCHEMA platform TO platform_app;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA platform TO platform_app;
+GRANT ALL ON ALL TABLES IN SCHEMA ai TO ai_app;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA ai TO ai_app;
+GRANT ALL ON ALL TABLES IN SCHEMA extensions TO platform_app, ai_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT ALL ON TABLES TO platform_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT ALL ON SEQUENCES TO platform_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA ai GRANT ALL ON TABLES TO ai_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA ai GRANT ALL ON SEQUENCES TO ai_app;
+'@
+    [void](Invoke-SyntheticSql $grantSql 'ragent_p1b' 'postgres' 'pgSuperuser' 'db-grants.log')
+    Assert-That 'ENV-db-accounts' 'G0' ($applied.Count -gt 0) `
+        ("migrate/app accounts + platform/ai/extensions schemas ready; migrations applied byte-identical from repo: [{0}]" -f `
+            (@($applied | ForEach-Object { $_.schema + '/' + $_.file }) -join ','))
+    # 口令列必须存**真实 BCrypt 哈希**，不能存明文。
+    #
+    # 此前这里直接替换成随机口令明文，于是 `BCrypt.checkpw(明文, 该列)` 永远失败——
+    # 表现为登录返回参数校验/认证失败，而两行 sys_user 明明存在，
+    # 看起来像"用户建好了却登不上"。平台写入口令走的是
+    # `cn.hutool.crypto.digest.BCrypt.hashpw`（见 SysUserController），
+    # 因此这里用**同一个库、同一个算法**生成，保证口径一致。
+    # 只取最后一个输出元素：Add-Probe 会往输出流写一行进度，
+    # 于是函数的返回值是 `@(probe 行, 哈希)` 这样的**数组**，不是单个字符串。
+    # 直接赋给变量会得到 Object[]（实测 count=2、asStringLen=213），
+    # 后续 `.Length` 给出的是**元素个数 2**，写进 SQL 的却是整段拼接文本——
+    # 表现为 psql 报 "value too long ... varying(100)"，看起来像列太窄，实际是取错了返回形状。
+    $fixtureHash = @(New-BCryptHash $script:Secrets['fixtureUser']) | Select-Object -Last 1
+    if (-not $fixtureHash -or ([string]$fixtureHash).Length -lt 50) {
+        Add-Result 'ENV-fixtures' 'G0' 'FAIL' `
+            ("cannot compute a BCrypt hash for the fixture password (got len={0}); refusing to seed a plaintext password" -f ([string]$fixtureHash).Length)
+        return
+    }
+    $fixtureSql = @'
+-- synthetic fixtures only: two tenants, one same-named user per tenant; password hash injected by the runner.
+--
+-- 租户行必须先存在：AuthController.login 在解析客户端之后调用
+-- SysLoginService.checkTenant(tenantId)，而它对非默认租户会
+-- tenantService.queryByTenantId(tenantId)，查不到就抛 TenantException("tenant.not.exists")。
+-- V2 只种了**一个**默认租户（'000000'），所以 p1t1/p1t2 若不显式建行，
+-- 登录必然以"请求处理失败"告终——一个与口令、客户端都无关的失败。
+INSERT INTO platform.sys_tenant (id, tenant_id, contact_user_name, contact_phone, company_name, package_id, account_count, status, del_flag)
+VALUES (900000000000000011, 'p1t1', 'p1b-admin-t1', '13900000001', 'p1 synthetic tenant 1', NULL, -1, '0', '0'),
+       (900000000000000012, 'p1t2', 'p1b-admin-t2', '13900000002', 'p1 synthetic tenant 2', NULL, -1, '0', '0');
+
+-- user_id 必须显式给出：该列是 bigint NOT NULL 且**没有默认值**（不是自增/序列），
+-- 省略它会直接违反非空约束。两个租户用不同的 user_id 是刻意的：
+-- 同名用户在不同租户下是两条不同的行，这正是 P1 要验证的"同名不串号"。
+INSERT INTO platform.sys_user (user_id, tenant_id, user_name, nick_name, password, status, del_flag)
+VALUES (900000000000000001, 'p1t1', 'p1b-admin', 'p1b-admin-t1', '__HASH__', '0', '0'),
+       (900000000000000002, 'p1t2', 'p1b-admin', 'p1b-admin-t2', '__HASH__', '0', '0');
+
+-- 平台登录是"客户端 + 授权类型"流程：AuthController.login 先按 clientId 查 sys_client，
+-- 再要求 client.grant_type 包含请求的 grantType，最后才走 PasswordAuthStrategy 校验口令。
+-- 基线 V1 只建表、**没有任何 sys_client 种子行**（已核对：V1/V2 都不插该表），
+-- 所以不补这一行，登录必然在"授权类型错误"处失败——而错误信息同样读起来像口令问题。
+INSERT INTO platform.sys_client (id, client_id, client_key, client_secret, grant_type, device_type, active_timeout, timeout, status, del_flag)
+VALUES (900000000000000101, 'p1b-client', 'p1b-client-key', '', 'password', 'pc', 1800, 604800, '0', '0');
+
+-- 登录成功后 SysLoginService.buildLoginUser 会继续取权限与关联：
+--   permissionService.getMenuPermission / getRolePermission
+--   roleService.selectRolesByUserId / postService.selectPostsByUserId
+-- fixture 此前只建用户与租户，这些查询没有任何可关联的行。
+-- 平台随后在这些结果上做解引用，于是登录以 NullPointerException 收场——
+-- 错误信息是"系统异常，请联系管理员"，与角色数据缺失毫无表面关联。
+-- 这里补齐最小可用的角色、岗位与关联行。
+INSERT INTO platform.sys_role (role_id, tenant_id, role_name, role_key, role_sort, data_scope, menu_check_strictly, dept_check_strictly, status, del_flag)
+VALUES (900000000000000021, 'p1t1', 'p1b-role-t1', 'p1b_t1', 1, '1', true, true, '0', '0'),
+       (900000000000000022, 'p1t2', 'p1b-role-t2', 'p1b_t2', 1, '1', true, true, '0', '0');
+
+-- sys_post 上**没有 del_flag 列**（按 V2 的真实种子列核对过）。
+-- 拿 V1 建表语句猜列会得到 "column del_flag does not exist"，
+-- 而这类错误只在 fixture 阶段暴露，表面看像 schema 缺列。
+INSERT INTO platform.sys_post (post_id, tenant_id, post_code, post_category, post_name, post_sort, status)
+VALUES (900000000000000031, 'p1t1', 'p1b_post_t1', NULL, 'p1b-post-t1', 1, '0'),
+       (900000000000000032, 'p1t2', 'p1b_post_t2', NULL, 'p1b-post-t2', 1, '0');
+
+INSERT INTO platform.sys_user_role (user_id, role_id)
+VALUES (900000000000000001, 900000000000000021),
+       (900000000000000002, 900000000000000022);
+
+INSERT INTO platform.sys_user_post (user_id, post_id)
+VALUES (900000000000000001, 900000000000000031),
+       (900000000000000002, 900000000000000032);
+'@
+    $fixtureSql = $fixtureSql.Replace('__HASH__', $fixtureHash)
+    # 落一份**形状诊断**（逐行长度 + 占位符残留数 + 哈希长度），不落任何口令或哈希本身。
+    # 之所以要它：这条 INSERT 单独在真库上测试是通过的，而 runner 里却报
+    # "value too long for type character varying(100)"，
+    # 说明问题出在 runner **构造出来的那份 SQL**，而不是 SQL 本身。
+    # 没有这份形状记录时，只能在"SQL 对不对"和"库对不对"之间反复猜。
+    $shape = New-Object System.Collections.ArrayList
+    # 哈希本身不落盘（它是口令的派生物），但**类型与长度**必须落盘：
+    # 只有 "hashLen=2" 时无法判断是"元素个数 2"还是"长度 2"，也就无法区分
+    # "返回了一个 2 字符的串" 与 "返回了 2 个元素的数组"。
+    [void]$shape.Add(("fixtureHash type={0} isArray={1} count={2} asStringLen={3}" -f `
+                $fixtureHash.GetType().Name, ($fixtureHash -is [array]),
+            $(if ($fixtureHash -is [array]) { $fixtureHash.Count } else { 1 }),
+            ([string]$fixtureHash).Length))
+    [void]$shape.Add(("totalChars={0} lines={1} hashLen={2} placeholdersLeft={3}" -f `
+                $fixtureSql.Length, (@($fixtureSql -split "`r?`n").Count), $fixtureHash.Length,
+            ([regex]::Matches($fixtureSql, '__HASH__')).Count))
+    $n = 0
+    foreach ($line in ($fixtureSql -split "`r?`n")) {
+        $n++
+        [void]$shape.Add(("line{0}: chars={1} kind={2}" -f $n, $line.Length,
+                $(if ($line -match '^\s*(--|$)') { 'comment-or-blank' } elseif ($line -match '^\s*INSERT') { 'insert-head' } elseif ($line -match '^\s*(VALUES|\()') { 'values' } else { 'other' })))
+    }
+    [IO.File]::WriteAllText((Join-Path $script:Evidence 'db-fixtures-shape.log'), ($shape -join "`r`n"), (New-Object Text.UTF8Encoding($false)))
+    # fixture 用 app 账号写入（与真实业务同一条权限路径）：若 app 账号没拿到权限，
+    # 这里就会失败，而不是等到 B01–B13 才暴露。
+    try { [void](Invoke-SyntheticSql $fixtureSql 'ragent_p1b' 'platform_app' 'platformApp' 'db-fixtures.log') } catch {
+        Add-Result 'ENV-fixtures' 'G0' 'FAIL' ("synthetic fixture seed failed: " + $_.Exception.Message); return
+    }
+    Assert-That 'ENV-fixtures' 'G0' $true 'two synthetic tenants with same-named user seeded; no real customer data touched'
+}
+function New-BCryptHash([string]$PlainPassword) {
+    # 生成平台口径的 BCrypt 哈希。
+    #
+    # 必须用**平台实际使用的那个实现**（cn.hutool.crypto.digest.BCrypt），
+    # 不能自己拼一个"看起来像 BCrypt"的字符串：哈希前缀、cost、盐编码任一不同，
+    # checkpw 就是 false，而失败信息只会说"口令不对"，看不出是哈希口径不一致。
+    #
+    # 依赖从本机 Maven 仓库解析（与构建用的是同一个仓库），找不到就**返回空串让调用方显式失败**，
+    # 绝不退化成"写明文"——写明文会让 fixture 永远登不上，却看起来像产品问题。
+    # 版本必须取**平台自己打进去的那一个**，不能按文件名排序猜。
+    # 按名称降序会选到 5.8.43，而平台用的是 5.3.8（字符串排序不是版本排序：
+    # "5.8" > "5.3" 只是巧合，换个版本号就会选错）。口径取错则哈希对不上，
+    # 而失败信息只会说"口令不对"，看不出是哈希来源选错了。
+    # 这里直接从平台 jar 的 BOOT-INF/lib 读实际依赖版本，再按 Maven 仓库布局定位。
+    $platformJar = Join-Path $RepoRoot 'services\platform\ruoyi-admin\target\ruoyi-admin.jar'
+    $cryptoJar = ''
+    $coreJar = ''
+    if (Test-Path -LiteralPath $platformJar) {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+        $zip = [IO.Compression.ZipFile]::OpenRead($platformJar)
+        try {
+            $libNames = @($zip.Entries | ForEach-Object { $_.FullName })
+        } finally { $zip.Dispose() }
+        foreach ($pair in @(@{ m = 'hutool-crypto-'; t = $cryptoJar; a = 'crypto' }, @{ m = 'hutool-core-'; t = $coreJar; a = 'core' })) {
+            $entry = @($libNames | Where-Object { $_ -match ('^BOOT-INF/lib/' + $pair.m) -and $_ -match '\.jar$' }) | Select-Object -First 1
+            if (-not $entry) { continue }
+            $fileName = Split-Path $entry -Leaf
+            $version = ($fileName -replace ('^' + $pair.m), '') -replace '\.jar$', ''
+            $candidate = Join-Path $script:MavenRepo ('cn\hutool\' + $pair.m.TrimEnd('-') + '\' + $version + '\' + $fileName)
+            if ($pair.a -eq 'crypto') { $cryptoJar = $candidate } else { $coreJar = $candidate }
+        }
+    }
+    if (-not (Test-Path -LiteralPath $cryptoJar) -or -not (Test-Path -LiteralPath $coreJar)) {
+        Add-Probe 'ENV-bcrypt-hash' 'cn.hutool.crypto.digest.BCrypt' 'unavailable' `
+            ("cannot resolve the platform's own hutool jars from {0} (crypto='{1}' core='{2}'); refusing to guess a version" -f $platformJar, $cryptoJar, $coreJar)
+        return ''
+    }
+    $work = Join-Path $script:RunWork 'bcrypt'
+    [void](New-Item -ItemType Directory -Force -Path $work)
+    $src = Join-Path $work 'P1HashGen.java'
+    $program = @'
+import cn.hutool.crypto.digest.BCrypt;
+
+public final class P1HashGen {
+    private P1HashGen() {
+    }
+
+    public static void main(String[] args) {
+        String hash = BCrypt.hashpw(args[0]);
+        // 回读一次：只输出哈希而从不验证，就等于没有验证过口径一致。
+        if (!BCrypt.checkpw(args[0], hash)) {
+            throw new IllegalStateException("BCrypt round-trip check failed");
+        }
+        System.out.println(hash);
+    }
+}
+'@
+    [IO.File]::WriteAllText($src, $program, (New-Object Text.UTF8Encoding($false)))
+    $cp = ($cryptoJar + ';' + $coreJar)
+    $r = Invoke-NativeCapture (Join-Path $script:JdkHome 'bin\java.exe') @('-cp', $cp, $src, $PlainPassword)
+    # 形状诊断：$r.Output 究竟是"行数组"还是被逐字符拆开的字符串。
+    # 上一版只记 exit code，于是哈希长度变成 2 时看不出原因——
+    # 两字符恰好是 `$2`，即**取到了单个字符**而不是整行。
+    $outItems = @($r.Output)
+    $outShape = ("items={0} firstType={1} firstLen={2}" -f `
+            $outItems.Count, $(if ($outItems.Count -gt 0) { $outItems[0].GetType().Name } else { 'none' }),
+        $(if ($outItems.Count -gt 0) { ([string]$outItems[0]).Length } else { -1 }))
+    $hash = (@($r.Output) | Where-Object { $_ -match '^\$2[aby]\$' } | Select-Object -First 1)
+    # 长度下限是**必须**的：正则只锚定前缀，单个字符 `$2` 也会被 -match 命中，
+    # 于是"匹配到了"并不代表"拿到了一整个哈希"。
+    if ($r.ExitCode -ne 0 -or -not $hash -or ([string]$hash).Length -lt 50) {
+        Add-Probe 'ENV-bcrypt-hash' 'cn.hutool.crypto.digest.BCrypt' 'failed' `
+            ("exit={0} {1} capturedLen={2} firstError='{3}'" -f $r.ExitCode, $outShape,
+            $(if ($hash) { ([string]$hash).Length } else { 0 }), (@($r.Output) | Select-Object -First 1))
+        return ''
+    }
+    Add-Probe 'ENV-bcrypt-hash' 'cn.hutool.crypto.digest.BCrypt' 'usable' `
+        ('round-trip verified=true versionResolvedFromPlatformJar=' + (Split-Path $cryptoJar -Leaf))
+    return $hash.Trim()
+}
+function Get-RowHashSnapshot {
+    # 全表行数 + 行哈希：不只数新增，update/delete 同样查得出来。
+    $sql = @'
+SELECT jsonb_object_agg(k, v)::text FROM (
+  SELECT c.table_schema || '.' || c.table_name AS k,
+         jsonb_build_object(
+           'count', (xpath('/row/c/text()', query_to_xml(format('SELECT count(*) AS c FROM %I.%I', c.table_schema, c.table_name), false, true, '')))[1]::text::bigint,
+           'rowHash', (xpath('/row/h/text()', query_to_xml(format('SELECT COALESCE(md5(string_agg(md5(t::text), %L ORDER BY md5(t::text))), %L) AS h FROM %I.%I t', '', 'EMPTY_TABLE', c.table_schema, c.table_name), false, true, '')))[1]::text
+         ) AS v
+  FROM information_schema.tables c
+  WHERE c.table_type = 'BASE TABLE'
+    AND c.table_schema IN ('platform','ai','extensions','public')
+    AND c.table_name NOT LIKE 'flyway%'
+) s;
+'@
+    return (Invoke-SyntheticSql $sql 'ragent_p1b' 'ai_migrate' 'aiMigrate' 'db-snapshot.log' | ConvertFrom-Json)
+}
+function Compare-RowHashSnapshots($Before, $After) {
+    $beforeKeys = @($Before.PSObject.Properties.Name)
+    $afterKeys = @($After.PSObject.Properties.Name)
+    $missing = @($beforeKeys | Where-Object { $afterKeys -notcontains $_ })
+    $added = @($afterKeys | Where-Object { $beforeKeys -notcontains $_ })
+    $changed = @()
+    foreach ($key in $beforeKeys) {
+        if ($afterKeys -notcontains $key) { continue }
+        $b = $Before.$key; $a = $After.$key
+        if ([string]$b.count -ne [string]$a.count -or [string]$b.rowHash -ne [string]$a.rowHash) { $changed += $key }
+    }
+    return [pscustomobject]@{ missing = $missing; added = $added; changed = $changed; tables = $beforeKeys.Count
+        unchanged = ($missing.Count -eq 0 -and $added.Count -eq 0 -and $changed.Count -eq 0) }
+}
+function Test-ProbeAvailability {
+    Write-Step 'G0：probe 事实来源（Bean/Mapping/注册数/调用计数）'
+    $specRelative = 'services/ai/rag/src/test/java/com/nageoffer/ai/ragent/boundary/P1ProductBoundaryProbe.java'
+    $path = Join-Path $RepoRoot ($specRelative -replace '/', '\')
+    $specPathMatch = Test-Path -LiteralPath $path
+    if (-not $specPathMatch) {
+        # 规格给了一个精确路径，但 probe 是可替换的测试源集工具：允许落在别的模块，
+        # 但必须显式记录位置偏差（评审看 detail 即可），不得悄悄放过。
+        $found = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'services') -Recurse -File -Filter 'P1ProductBoundaryProbe.java' -ErrorAction SilentlyContinue)
+        if ($found.Count -eq 1) { $path = $found[0].FullName }
+        elseif ($found.Count -gt 1) {
+            Add-Result 'PROBE-availability' 'G0' 'FAIL' `
+                ("ambiguous P1ProductBoundaryProbe.java: {0}" -f (@($found | ForEach-Object { $_.FullName.Substring($RepoRoot.Length) }) -join ','))
+            return $false
+        }
+    }
+    if (-not (Test-Path -LiteralPath $path)) {
+        Add-Result 'PROBE-availability' 'G0' 'FAIL' `
+            ("P1ProductBoundaryProbe.java not found (spec path {0}); B09-B13 与 handler/注册数事实无法采集" -f $specRelative)
+        return $false
+    }
+    $relative = $path.Substring($RepoRoot.Length).TrimStart('\') -replace '\\', '/'
+    Add-Result 'PROBE-availability' 'G0' 'PASS' `
+        ("probe source present: {0} sha256={1} specPathMatch={2}" -f $relative, (Get-Sha256 $path), $specPathMatch)
+    return $true
+}
+function Get-FactsMissingField($Facts) {
+    # facts 契约（README §5.4）：缺字段必须点名，不能读成 null 后当 0 判定。
+    $missing = @()
+    foreach ($fieldPath in @('contextStarted', 'routes', 'legacyMappings', 'mqConsumers', 'transactionCheckers',
+            'checkerMapperInvocations', 'createdBuckets', 'createdIndexes', 'publicReadGrants', 'mcpConnects', 'beanLifecycleOk',
+            'directTrigger.listener', 'directTrigger.checker', 'directTrigger.userContextLeaks',
+            'schedule.observedSeconds', 'schedule.dbScans', 'schedule.claims', 'schedule.statusUpdates',
+            'schedule.redisLocks', 'schedule.submittedTasks',
+            'dispatch.forwardClosed', 'dispatch.asyncClosed', 'dispatch.errorRecursion',
+            'counters.handlerExecutions', 'counters.userMapperInvocations', 'counters.authServiceInvocations',
+            'counters.saTokenLogins', 'counters.mapperQueries', 'counters.mqSends', 'counters.objectWrites', 'counters.modelCalls')) {
+        $node = $Facts
+        $ok = $true
+        foreach ($segment in $fieldPath.Split('.')) {
+            if ($null -eq $node) { $ok = $false; break }
+            $prop = $node.PSObject.Properties[$segment]
+            if ($null -eq $prop) { $ok = $false; break }
+            $node = $prop.Value
+        }
+        if (-not $ok) { $missing += $fieldPath }
+    }
+    return $missing
+}
+function Initialize-ExternalizedPlaceholders {
+    # 平台把**所有**密钥/口令外化成环境变量占位符，形如
+    #   ${PROJECT_SERVICES_PLATFORM_RUOYI_ADMIN_SRC_MAIN_RESOURCES_APPLICATION_DEV_YML_PASSWORD_12}
+    # 名字由"来源文件路径 + 字段名 + 行号"生成（疑似某次密钥外化工具的产物）。
+    # 未设置时 Spring 直接以 PlaceholderResolutionException 拒绝启动——
+    # 这**不是**产品缺陷，而是"验收环境必须提供这些值"这一前提。
+    #
+    # 做法：从仓库内的平台配置源里**发现**全部占位符名，再按类别生成合成值。
+    # 用"发现"而不是硬编码清单：清单会随配置漂移，而漂移的表现恰好又是"启动失败"，
+    # 与"漏了某个前置"无法区分。
+    $names = New-Object System.Collections.ArrayList
+    # 两侧都要扫：平台 122 个、AI 39 个占位符，任何一侧缺值都会让对应 jar 拒绝启动。
+    $roots = @('services\platform', 'services\ai')
+    foreach ($root in $roots) {
+        $full = Join-Path $RepoRoot $root
+        if (-not (Test-Path -LiteralPath $full)) { continue }
+        foreach ($file in @(Get-ChildItem -LiteralPath $full -Recurse -File -Include '*.yml', '*.yaml' -ErrorAction SilentlyContinue)) {
+            $text = [IO.File]::ReadAllText($file.FullName)
+            foreach ($m in [regex]::Matches($text, '\$\{(PROJECT_SERVICES_[A-Z0-9_]+)\}')) {
+                $n = $m.Groups[1].Value
+                if (-not $names.Contains($n)) { [void]$names.Add($n) }
+            }
+        }
+    }
+    $set = 0
+    foreach ($name in $names) {
+        # 值本身不需要"正确"，只需要合法且唯一：这些占位符在合成环境里没有任何真实后端。
+        # 但要按类别给形状，避免把 UUID 塞进"必须是数字"的字段这类低级不匹配。
+        $value = switch -Regex ($name) {
+            '_TOKEN_\d+$' { [guid]::NewGuid().ToString('N') }
+            '_CLIENT_SECRET_\d+$' { [guid]::NewGuid().ToString('N') }
+            '_ACCESS_KEY_(ID|SECRET)_\d+$' { [guid]::NewGuid().ToString('N') }
+            '_API_KEY_\d+$' { [guid]::NewGuid().ToString('N') }
+            default { 'p1synth' + ([guid]::NewGuid().ToString('N').Substring(0, 16)) }
+        }
+        Set-Item -Path ('env:' + $name) -Value $value
+        [void]$script:SyntheticEnvNames.Add($name)
+        $set++
+    }
+    $script:ExternalizedPlaceholderCount = $set
+    return $set
+}
+function Start-RemotePortForward {
+    # 把远端的合成端口通过 ssh -L 转发到本机回环。
+    #
+    # 为什么用转发而不是把 JAR 直接指向远端 IP：
+    #  - 产品配置里所有端点都是 127.0.0.1（见 Start-ProductJar）。改成远端 IP 就要在
+    #    每个 URL/主机名参数上分别特判，配置面越改越大；
+    #  - 更关键的是"绝不连到已有业务库"这条约束：转发后本机回环上出现的端口一定是
+    #    本轮的 ssh 隧道，语义与本地模式完全一致；而直接指向远端 IP 会让
+    #    Invoke-SubstituteRefusalScan 失去意义——它扫的是回环。隧道让拒绝扫描继续有效。
+    #
+    # 隧道只让端点"在本机看起来一样"，不降低任何检查强度：合成 PG/Redis/S3
+    # 仍是本轮自己在远端创建的、带 owner label 的容器。
+    if (-not $script:RemoteMode) { return $true }
+    $forward = @()
+    foreach ($p in @($script:PgPort, $script:RedisPort, $script:S3Port)) {
+        $forward += @('-L', ('127.0.0.1:' + $p + ':127.0.0.1:' + $p))
+    }
+    $sshArgs = @('-o', 'BatchMode=yes', '-o', 'LogLevel=ERROR', '-o', 'ExitOnForwardFailure=yes',
+        '-o', ('ConnectTimeout=' + $SshConnectTimeoutSeconds), '-N') + $forward
+    if ($SshKeyPath) { $sshArgs += @('-i', $SshKeyPath) }
+    $sshArgs += @($RemoteHost)
+    $stdout = Join-Path $script:RunWork 'ssh-port-forward.out'
+    $stderr = Join-Path $script:RunWork 'ssh-port-forward.err'
+    $p = Start-Process -FilePath $script:SshExe -ArgumentList $sshArgs -PassThru -NoNewWindow `
+        -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    $pidFile = Join-Path $script:RunWork 'ssh-port-forward.pid'
+    Set-Content -LiteralPath $pidFile -Value ([string]$p.Id) -Encoding UTF8
+    [void]$script:StartedProcesses.Add($p.Id)
+    # 等隧道真正可用：进程活着不等于端口已建立。
+    foreach ($port in @($script:PgPort, $script:RedisPort, $script:S3Port)) {
+        $ok = $false
+        for ($i = 0; $i -lt 40; $i++) {
+            if (Test-TcpEndpoint '127.0.0.1' $port 300) { $ok = $true; break }
+            Start-Sleep -Milliseconds 250
+        }
+        if (-not $ok) {
+            Add-Result 'ENV-port-forward' 'G0' 'FAIL' `
+                ("ssh tunnel did not open 127.0.0.1:{0} (see ssh-port-forward.err)" -f $port)
+            return $false
+        }
+    }
+    Add-Result 'ENV-port-forward' 'G0' 'PASS' `
+        ("ssh -L tunnels for PG/Redis/S3 ({0},{1},{2}); endpoints stay 127.0.0.1 so the substitute-refusal scan keeps its meaning" -f `
+            $script:PgPort, $script:RedisPort, $script:S3Port)
+    return $true
+}
+function Start-ProductJar([string]$Side, [string]$State, [int]$Port, [string[]]$ExtraArguments = @()) {
+    $jar = if ($Side -eq 'platform') {
+        Join-Path $RepoRoot 'services\platform\ruoyi-admin\target\ruoyi-admin.jar'
+    } else {
+        Join-Path $RepoRoot 'services\ai\bootstrap\target\bootstrap-0.0.1-SNAPSHOT.jar'
+    }
+    if (-not (Test-Path -LiteralPath $jar)) { throw ("fresh product jar missing for {0}: {1} (run the build roots first)" -f $Side, $jar) }
+    $run = Join-Path $script:RunWork ($Side + '-run-' + $State)
+    # 数据库口令必须与本轮**自己建的角色**一致。
+    #
+    # 此前只传了用户名（platform_app），口令没传：于是平台拿到的是
+    # 占位符生成器给的合成值，启动时以
+    # "FATAL: password authentication failed for user \"platform_app\"" 失败。
+    # 这条信息看起来像"库那边口令不对"，实际是 runner 少传了一个变量。
+    # 走环境变量而不是命令行：口令不进任何命令行、不进证据。
+    #
+    # 同一类错误随后又出现一次：Redis 只传了 host/port、没传 REDIS_PASSWORD，
+    # Redisson 于是报 "WRONGPASS invalid username-password pair"。
+    # 两个后端、两种报错、同一个成因——**runner 少传凭据**。
+    # 这里把本轮自建服务的凭据一次性给全，避免继续逐个踩。
+    $env:PLATFORM_DB_PASSWORD = $script:Secrets['platformApp']
+    $env:AI_DB_PASSWORD = $script:Secrets['aiApp']
+    $env:PLATFORM_DB_USERNAME = 'platform_app'
+    $env:AI_DB_USERNAME = 'ai_app'
+    $env:REDIS_PASSWORD = $script:Secrets['redis']
+    # AI 侧的 redis 口令走的是**外化占位符**（application.yaml 里 redis.password 那一行），
+    # 而不是通用 REDIS_PASSWORD。占位符生成器给的是随机合成值，因此这里必须
+    # 用本轮真实的 Redis 口令**覆盖**它，否则 Redisson 报 WRONGPASS。
+    # 这条映射是显式写死的：名字由"来源文件路径 + 字段 + 行号"生成，无法从语义推断，
+    # 与其指望生成器猜对，不如写明它的来源，便于日后核对。
+    $env:PROJECT_SERVICES_AI_BOOTSTRAP_SRC_MAIN_RESOURCES_APPLICATION_YAML_PASSWORD_33 = $script:Secrets['redis']
+    $arguments = @('-Dfile.encoding=UTF-8', '-Xmx1024m', '-jar', $jar, ('--server.port=' + $Port))
+    if ($Side -eq 'platform') {
+        $arguments += @(
+            ('--spring.datasource.dynamic.datasource.master.url=jdbc:postgresql://127.0.0.1:' + $script:PgPort + '/ragent_p1b?currentSchema=platform,extensions'),
+            '--PLATFORM_DB_USERNAME=platform_app', '--REDIS_HOST=127.0.0.1', ('--REDIS_PORT=' + $script:RedisPort))
+    } else {
+        $arguments += @(
+            ('--AI_DB_URL=jdbc:postgresql://127.0.0.1:' + $script:PgPort + '/ragent_p1b?client_encoding=UTF8&currentSchema=ai,extensions'),
+            ('--spring.data.redis.host=127.0.0.1'), ('--spring.data.redis.port=' + $script:RedisPort),
+            ('--rag.storage.s3.endpoint=http://127.0.0.1:' + $script:S3Port))
+    }
+    if ($State -eq 'cli-false') { $arguments += '--p04.enabled=false' }
+    if ($State -eq 'illegal-p04') { $arguments += '--p04.enabled=true' }
+    if ($State -eq 'illegal-integration') { $arguments += '--ai.integration.enabled=true' }
+    if ($State -eq 'illegal-customer-api') { $arguments += '--ai.integration.customer-api.enabled=true' }
+    if ($State -eq 'illegal-legacy-listeners') { $arguments += '--ai.integration.legacy-listeners-enabled=true' }
+    # 只有 default 这一态需要 probe facts：其余各态（p04=false / 非法开关）是启动语义用例，
+    # 不参与 facts 断言，也就不该额外写文件。
+    #
+    # 必须用 Spring 的 `--key=value` 形式，而**不是** `-Dkey=value`：
+    # 参数表里 `-jar <jar>` 之后的一切都是**程序参数**，JVM 不再把 `-D...` 当系统属性。
+    # 之前写成 `-Dp1.probe.facts-path=...` 并追加在末尾，于是它被原样交给 main()，
+    # Spring 既不认识 `-D` 前缀、也无法据此解析属性，条件装配始终不成立、
+    # facts 文件永远不生成——而现象只表现为"PROBE-ai-facts 缺失"，看不出是传参方式的问题。
+    if ($Side -eq 'ai' -and $State -eq 'default') {
+        $factsPath = Join-Path $script:Evidence 'probe\ai-runtime-facts.json'
+        $arguments += ('--p1.probe.facts-path=' + $factsPath)
+    }
+    $pidFile = Join-Path $script:RunWork ($Side + '-' + $State + '.pid')
+    $arguments += $ExtraArguments
+    return Start-OwnedProcess (Join-Path $script:JdkHome 'bin\java.exe') $arguments $run $pidFile
+}
+function Read-SharedText([string]$Path) {
+    # 读一个**正被其他进程写入**的日志。
+    # [IO.File]::ReadAllText 默认以 FileShare.Read 打开，而 JVM 正持有 stdout.log 的写句柄，
+    # 于是抛 "The process cannot access the file ... because it is being used by another process"，
+    # 把"等 jar 就绪"变成 harness 崩溃。这里显式允许读写共享。
+    $stream = $null
+    try {
+        $stream = [IO.FileStream]::new($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+            [IO.FileShare]::ReadWrite)
+        $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8)
+        try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+    } catch {
+        return ''
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+function Wait-ApplicationReady([int]$Port, [string]$LogPath, [int]$TimeoutSec) {
+    for ($i = 0; $i -lt ($TimeoutSec * 2); $i++) {
+        if (Test-Path -LiteralPath $LogPath) {
+            $text = Read-SharedText $LogPath
+            if ($text -match 'Started .+ in [\d.]+ seconds' -or $text -match 'ApplicationReadyEvent') { return $true }
+            if ($text -match 'APPLICATION FAILED TO START') { return $false }
+        }
+        if (Test-TcpEndpoint '127.0.0.1' $Port 300) { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    # 超时必须立刻把启动日志的尾部写进证据。此前的做法是在收尾阶段才归档 jvm-logs，
+    # 而收尾会先删除 run work 目录——一旦中途因异常退出，日志就永远拿不到，
+    # 于是"jar 为什么没起来"只能靠猜。失败现场要在失败当时留存。
+    try {
+        if (Test-Path -LiteralPath $LogPath) {
+            $tail = (Read-SharedText $LogPath) -split "`r?`n" | Select-Object -Last 40
+            $name = 'boot-failure-' + ((Split-Path $LogPath -Parent | Split-Path -Leaf)) + '.log'
+            $target = Join-Path $script:Evidence $name
+            [IO.File]::WriteAllText($target, (Protect-LogText ($tail -join "`r`n")), (New-Object Text.UTF8Encoding($false)))
+        } else {
+            $name = 'boot-failure-' + ((Split-Path $LogPath -Parent | Split-Path -Leaf)) + '.log'
+            [IO.File]::WriteAllText((Join-Path $script:Evidence $name),
+                "log file was never created: $LogPath (the JVM produced no output, or failed to start at all)",
+                (New-Object Text.UTF8Encoding($false)))
+        }
+    } catch { }
+    return $false
+}
+function Send-Json($Client, [string]$Method, [string]$Url, $Headers, [string]$Json) {
+    $req = New-Object System.Net.Http.HttpRequestMessage((New-Object System.Net.Http.HttpMethod($Method)), $Url)
+    # 必须带 User-Agent。
+    #
+    # 平台的 UserActionListener.doLogin 会
+    #   UserAgentUtil.parse(request.getHeader("User-Agent"))
+    # 然后在结果上直接 getBrowser().getName()。HttpClient 默认**不发** User-Agent，
+    # 于是 parse 返回 null，登录在"建好会话之后"抛 NullPointerException，
+    # 对外只显示 "系统异常，请联系管理员"——与请求头缺失看不出任何关系。
+    # 任何真实浏览器/客户端都会发这个头，验收请求也应当发。
+    # 用 TryAddWithoutValidation 是因为 User-Agent 是受限头，直接 Add 会被拒。
+    [void]$req.Headers.TryAddWithoutValidation('User-Agent',
+        'p1-acceptance-runner/1.0 (synthetic boundary check; not a real browser)')
+    if ($Json -and $Method -notin @('GET', 'HEAD')) {
+        $req.Content = New-Object System.Net.Http.StringContent($Json, [Text.Encoding]::UTF8, 'application/json')
+    }
+    if ($Headers) { foreach ($k in $Headers.Keys) { [void]$req.Headers.TryAddWithoutValidation($k, [string]$Headers[$k]) } }
+    $resp = $Client.SendAsync($req).GetAwaiter().GetResult()
+    $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    $obj = $null
+    if ($text) { try { $obj = $text | ConvertFrom-Json } catch { $obj = $null } }
+    $rid = ''
+    try { $vals = $null; if ($resp.Headers.TryGetValues('X-Request-Id', [ref]$vals)) { $rid = ($vals | Select-Object -First 1) } } catch { }
+    [void]$script:HttpLog.Add([pscustomobject]@{ method = $Method; url = $Url; status = [int]$resp.StatusCode
+            requestId = $rid; body = (Protect-LogText $text) })
+    return [pscustomobject]@{ Status = [int]$resp.StatusCode; Json = $obj; Text = $text; RequestId = $rid }
+}
+function Assert-ClosedEnvelope($Response, [string]$Id, [string]$What) {
+    $ok = ($Response.Status -eq 404 -and $null -ne $Response.Json -and
+        [int]$Response.Json.code -eq 404 -and
+        $null -ne $Response.Json.data -and [string]$Response.Json.data.errorCode -ceq 'RESOURCE_NOT_FOUND_OR_FORBIDDEN')
+    Assert-That $Id 'B' $ok ("{0}: status={1} body.code={2} errorCode={3}" -f $What, $Response.Status,
+        $(if ($Response.Json) { $Response.Json.code } else { 'null' }),
+        $(if ($Response.Json -and $Response.Json.data) { $Response.Json.data.errorCode } else { 'null' }))
+}
+function Invoke-FactsDrivenCases {
+    # B09-B13：直接触发/注册数/装配事实全部来自由 P1ProductBoundaryProbe 写出的 facts 文件。
+    $factsPath = Join-Path $script:Evidence 'probe\ai-runtime-facts.json'
+    if (-not (Test-Path -LiteralPath $factsPath)) {
+        Add-Result 'PROBE-ai-facts' 'G0' 'FAIL' ("probe facts missing: {0}; registration/direct-trigger facts unavailable" -f $factsPath)
+        foreach ($id in @('B09', 'B10', 'B11', 'B12', 'LISTENER-registration-counts', 'CHECKER-registration-counts')) {
+            Add-Result $id 'B' 'NOT_RUN' 'blocked: no probe facts file (PROBE-ai-facts failed)'
+        }
+        return
+    }
+    $facts = Get-Content -LiteralPath $factsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $script:Facts = $facts
+    $missingFields = @(Get-FactsMissingField $facts)
+    if ($missingFields.Count -gt 0) {
+        # probe 输出契约不符：点名缺哪些字段后一律 FAIL，剩余 B09-B13 记 NOT_RUN（不猜、不补默认值）。
+        Add-Result 'PROBE-ai-facts' 'G0' 'FAIL' `
+            ("probe facts do not match the documented contract; missing fields: {0}" -f ($missingFields -join ','))
+        foreach ($id in @('B09', 'B10', 'B11', 'B12', 'LISTENER-registration-counts', 'CHECKER-registration-counts')) {
+            Add-Result $id 'B' 'NOT_RUN' ("blocked: probe facts missing fields ({0})" -f ($missingFields -join ','))
+        }
+        return
+    }
+    # B11 要求"观测窗口 > 1s"。窗口不能由 facts 自己声明——那是自证。
+    # facts 给出采集起点，这里**真实等待**一段时间再读，用经过时间作为窗口：
+    # 这样窗口是 runner 观测到的，而 dbScans/claims/... 全部为 0 是在这段真实窗口内测得的。
+    $observationSeconds = 3
+    Write-Step ("B11：真实观测窗口 {0}s（等待期间不得出现任何调度活动）" -f $observationSeconds)
+    $waitStart = Get-Date
+    Start-Sleep -Seconds $observationSeconds
+    $startedAt = 0L
+    if ($null -ne $facts.schedule.observationStartedAtMillis) {
+        [void][long]::TryParse([string]$facts.schedule.observationStartedAtMillis, [ref]$startedAt)
+    }
+    $observedSeconds = if ($startedAt -gt 0) {
+        [math]::Round(((Get-Date).ToUniversalTime() - [datetimeoffset]::FromUnixTimeMilliseconds($startedAt).UtcDateTime).TotalSeconds, 2)
+    } else {
+        [math]::Round(((Get-Date) - $waitStart).TotalSeconds, 2)
+    }
+    $script:ObservedSeconds = $observedSeconds
+
+    Assert-That 'PROBE-ai-facts' 'G0' ($facts.contextStarted -eq $true) `
+        ("contextStarted={0} routes={1} legacyMappings={2}" -f $facts.contextStarted, @($facts.routes).Count, @($facts.legacyMappings).Count)
+    Assert-That 'LISTENER-registration-counts' 'G1' (@($facts.mqConsumers).Count -eq 0) `
+        ("registered legacy MQ consumers={0} [{1}]" -f @($facts.mqConsumers).Count, (@($facts.mqConsumers) -join ','))
+    Assert-That 'CHECKER-registration-counts' 'G1' (@($facts.transactionCheckers).Count -eq 0 -and [int]$facts.checkerMapperInvocations -eq 0) `
+        ("registered transaction checkers={0} checkerMapperInvocations={1}" -f @($facts.transactionCheckers).Count, $facts.checkerMapperInvocations)
+    Assert-That 'B09' 'B' ((@($facts.directTrigger.listener).Count -ge 3) -and
+        (@($facts.directTrigger.listener | Where-Object { $_.closed -ne $true }).Count -eq 0) -and
+        ([int]$facts.directTrigger.userContextLeaks -eq 0) -and ([int]$facts.counters.mqSends -eq 0) -and
+        ([int]$facts.counters.objectWrites -eq 0) -and ([int]$facts.counters.modelCalls -eq 0)) `
+        ("listenerDirect={0} allClosed={1} userContextLeaks={2} mq/object/model={3}/{4}/{5}" -f `
+            @($facts.directTrigger.listener).Count, (@($facts.directTrigger.listener | Where-Object { $_.closed -eq $true }).Count),
+            $facts.directTrigger.userContextLeaks, $facts.counters.mqSends, $facts.counters.objectWrites, $facts.counters.modelCalls)
+    Assert-That 'B10' 'B' ((@($facts.directTrigger.checker).Count -ge 2) -and
+        (@($facts.directTrigger.checker | Where-Object { $_.closed -ne $true }).Count -eq 0) -and
+        ([int]$facts.counters.mapperQueries -eq 0)) `
+        ("checkerDirect={0} allClosed={1} mapperQueries={2}" -f @($facts.directTrigger.checker).Count,
+            (@($facts.directTrigger.checker | Where-Object { $_.closed -eq $true }).Count), $facts.counters.mapperQueries)
+    Assert-That 'B11' 'B' (([int]$facts.schedule.dbScans -eq 0) -and ([int]$facts.schedule.claims -eq 0) -and
+        ([int]$facts.schedule.statusUpdates -eq 0) -and ([int]$facts.schedule.redisLocks -eq 0) -and
+        ([int]$facts.schedule.submittedTasks -eq 0) -and ([double]$script:ObservedSeconds -gt 1)) `
+        ("observationWindow={0}s (measured by the runner over a real wait; counts below are for that window) scans/claims/updates/locks/submits={1}/{2}/{3}/{4}/{5}" -f `
+            $script:ObservedSeconds, $facts.schedule.dbScans, $facts.schedule.claims,
+            $facts.schedule.statusUpdates, $facts.schedule.redisLocks, $facts.schedule.submittedTasks)
+    Assert-That 'B12' 'B' ((@($facts.createdBuckets).Count -eq 0) -and (@($facts.createdIndexes).Count -eq 0) -and
+        ([int]$facts.publicReadGrants -eq 0) -and ([int]$facts.mcpConnects -eq 0) -and ($facts.beanLifecycleOk -eq $true)) `
+        ("buckets=[{0}] indexes=[{1}] publicRead={2} mcpConnects={3} beanLifecycleOk={4}" -f `
+            (@($facts.createdBuckets) -join ','), (@($facts.createdIndexes) -join ','),
+            $facts.publicReadGrants, $facts.mcpConnects, $facts.beanLifecycleOk)
+}
+function Invoke-HttpCases {
+    Write-Step 'B01–B08 / B13：真实产品 jar 的 HTTP 与装配断言'
+    $client = New-Object System.Net.Http.HttpClient
+    $client.Timeout = [TimeSpan]::FromSeconds(15)
+    try {
+        $script:DbBefore = Get-RowHashSnapshot
+        Add-Result 'DB-snapshot-before' 'G1' 'PASS' ("tables={0} (count+rowHash per table)" -f @($script:DbBefore.PSObject.Properties.Name).Count)
+
+        # B01：平台正常登录控制组（两租户同名用户）+ 保留业务审批装配。
+        #
+        # 请求形状必须与平台契约一致（见 AuthController + PasswordAuthStrategy）：
+        #   clientId + grantType 是 LoginBody 的 @NotBlank 字段，并由 sys_client 提供授权类型；
+        #   username/password 由 PasswordLoginBody（LoginBody 子类）承载。
+        # 只发 tenantId/username/password 会在参数校验阶段就 500，
+        # 而返回体是 HTTP 200 —— 看起来像"业务失败"，其实是**请求缺字段**。
+        foreach ($tenant in @('p1t1', 'p1t2')) {
+            $body = @{
+                tenantId   = $tenant
+                clientId   = 'p1b-client'
+                grantType  = 'password'
+                username   = 'p1b-admin'
+                password   = $script:Secrets['fixtureUser']
+            } | ConvertTo-Json -Compress
+            $r = Send-Json $client 'POST' ($script:PlatformBase + '/auth/login') @{} $body
+            Assert-That ('B01-login-' + $tenant) 'B' ($r.Status -eq 200 -and $null -ne $r.Json -and [int]$r.Json.code -eq 200) `
+                ("POST /auth/login tenant={0} status={1} code={2} msg={3}" -f $tenant, $r.Status,
+                    $(if ($r.Json) { $r.Json.code } else { 'nil' }), $(if ($r.Json) { $r.Json.msg } else { '' }))
+        }
+        $legacyLibs = @($script:PlatformJarEntries | Where-Object { $_ -match 'BOOT-INF/lib/ruoyi-chat' })
+        $integrationClasses = @($script:IntegrationJarEntries | Where-Object { $_ -match '\.class$' })
+        $unexpectedClasses = @($integrationClasses | Where-Object { $_ -notmatch '^org/ruoyi/aiintegration/' -or $_ -match '(^|/)[^/]*Test[^/]*\.class$' })
+        $requiredClasses = @('config/ProductionAiIntegrationConfig', 'delegation/ProductionSigningKeySource',
+            'identity/ProductionAuthorizationProvider', 'web/AiGatewayController', 'web/AiGatewayClient')
+        $missingClasses = @($requiredClasses | Where-Object { $script:IntegrationJarEntries -cnotcontains ('org/ruoyi/aiintegration/' + $_ + '.class') })
+        $formalIntegration = ($script:IntegrationJarCount -eq 1 -and $integrationClasses.Count -gt 0 -and $unexpectedClasses.Count -eq 0 -and $missingClasses.Count -eq 0)
+        $workflowKept = @($script:PlatformJarEntries | Where-Object { $_ -match 'BOOT-INF/lib/ruoyi-workflow' }).Count -gt 0
+        Assert-That 'B01-preserved-business' 'B' ($legacyLibs.Count -eq 0 -and $formalIntegration -and $workflowKept) `
+            ("legacyAiLibs=[{0}] formalIntegration={1} unexpectedClasses={2} missingClasses=[{3}] ruoyi-workflowKept={4}" -f ($legacyLibs -join ','), $formalIntegration, $unexpectedClasses.Count, ($missingClasses -join ','), $workflowKept)
+
+        # 平台侧异常必须落进证据：登录失败时返回体只有一句通用中文消息，
+        # 而真正的原因（约束校验、租户不存在、口令不匹配……）只在平台日志里。
+        # 没有这一步就只能对着 "请求参数校验失败" 反复猜是哪一层在拒绝。
+        try {
+            $platLog = Join-Path $script:RunWork 'platform-run-default\stdout.log'
+            if (Test-Path -LiteralPath $platLog) {
+                $tail = (Read-SharedText $platLog) -split "`r?`n" |
+                    Where-Object { $_ -match 'ERROR|WARN|Exception|Caused by|约束|校验|login|tenant' } |
+                    Select-Object -Last 60
+                [IO.File]::WriteAllText((Join-Path $script:Evidence 'platform-login-signals.log'),
+                    (Protect-LogText ($tail -join "`r`n")), (New-Object Text.UTF8Encoding($false)))
+            } else {
+                # 不吞掉"日志不在"这件事：空文件与文件不存在是两种不同的结论。
+                [IO.File]::WriteAllText((Join-Path $script:Evidence 'platform-login-signals.log'),
+                    ("platform log not found at " + $platLog), (New-Object Text.UTF8Encoding($false)))
+            }
+        } catch {
+            [IO.File]::WriteAllText((Join-Path $script:Evidence 'platform-login-signals.log'),
+                ("capture failed: " + $_.Exception.Message), (New-Object Text.UTF8Encoding($false)))
+        }
+
+        # facts 可用性：缺 facts 时"事实类"断言一律 NOT_RUN，绝不读 null 当 0 判 PASS。
+        $factsPath = Join-Path $script:Evidence 'probe\ai-runtime-facts.json'
+        if (Test-Path -LiteralPath $factsPath) {
+            try { $script:Facts = Get-Content -LiteralPath $factsPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $script:Facts = $null }
+        }
+        $factsOk = ($null -ne $script:Facts -and @(Get-FactsMissingField $script:Facts).Count -eq 0)
+
+        # B02：未注册的 health 路径必须**不可达**。
+        #
+        # 判据不能只看 HTTP 状态码：AI 侧对未映射路径走全局异常处理，
+        # 返回的是 HTTP 200 + 业务错误码（实测 /api/ragent/actuator/health 得到
+        # 200 / {"code":"A000001",...}），这是**产品既有的错误响应口径**，不是"路径存在"。
+        # 按状态码断言会把"路径确实没注册"判成 FAIL，而按状态码放宽又会放过真正注册的端点。
+        # 因此改为三条同时成立：
+        #   1) 实测路由清单里没有该路径（facts 提供，最直接）；
+        #   2) 响应体不是健康载荷（没有 status/UP 之类）；
+        #   3) 状态码是 404，或响应体带业务错误码（即"被异常处理兜住"）。
+        foreach ($probe in @(@{ m = 'GET'; p = '/actuator/health' }, @{ m = 'GET'; p = '/p04/health' }, @{ m = 'POST'; p = '/p04/control/reset' })) {
+            $r = Send-Json $client $probe.m ($script:AiBase + $probe.p) @{} '{}'
+            $inInventory = if ($factsOk) {
+                @($script:Facts.routes | Where-Object { $_ -ceq $probe.p }).Count -gt 0
+            } else {
+                # facts 不可用时**不能**把"没查"当成"不在清单里"——那正是静默放宽。
+                # 此时退回纯响应判据，并在 detail 里点明清单未参与判定。
+                $null
+            }
+            # 必须取 $r.Text：Send-Json 返回 {Status, Json, Text, RequestId}，**没有 Body 字段**。
+            # 读一个不存在的属性得到 $null，正则恒不匹配、gatedOr404 恒 false，
+            # 而 detail 里只看到 status=200，完全看不出是取错了属性。
+            $looksHealthy = ($r.Text -match '"status"\s*:\s*"(UP|DOWN|OUT_OF_SERVICE)"')
+            $gatedOr404 = ($r.Status -eq 404) -or ($r.Text -match '"code"\s*:\s*"A\d+"')
+            $notInInventory = ($null -eq $inInventory) -or (-not $inInventory)
+            Assert-That ('B02-unregistered-' + $probe.p) 'B' ($notInInventory -and (-not $looksHealthy) -and $gatedOr404) `
+                ("{0} {1} status={2} inRouteInventory={3} (factsOk={4}) healthPayload={5} gatedOr404={6}" -f `
+                    $probe.m, $probe.p, $r.Status, $(if ($null -eq $inInventory) { 'notChecked' } else { $inInventory }),
+                    $factsOk, $looksHealthy, $gatedOr404)
+        }
+        if ($factsOk) {
+            $experimental = @($script:Facts.routes | Where-Object { $_ -match '^/(p04/|internal/ai/v1/|api/ai/v1/)' })
+            Assert-That 'B02-no-experimental-routes' 'B' ($experimental.Count -eq 0) ("experimentalRoutes=[{0}]" -f ($experimental -join ','))
+        } else {
+            Add-Result 'B02-no-experimental-routes' 'B' 'NOT_RUN' 'blocked: probe facts unavailable or incomplete (route inventory unknown)'
+        }
+
+        # B03：旧登录/用户管理在 handler 之前关闭（无 token / 旧 token / admin token / platform token 同口径）。
+        $credentials = @(
+            [pscustomobject]@{ label = 'none'; headers = @{} },
+            [pscustomobject]@{ label = 'old-ai-token'; headers = @{ Authorization = 'Bearer legacy-ai-token' } },
+            [pscustomobject]@{ label = 'admin-token'; headers = @{ Authorization = 'Bearer synthetic-admin-token' } },
+            [pscustomobject]@{ label = 'platform-token'; headers = @{ Authorization = 'Bearer synthetic-platform-token' } }
+        )
+        foreach ($credential in $credentials) {
+            foreach ($probe in @([pscustomobject]@{ m = 'POST'; p = '/auth/login' }, [pscustomobject]@{ m = 'POST'; p = '/auth/logout' },
+                    [pscustomobject]@{ m = 'POST'; p = '/users' }, [pscustomobject]@{ m = 'GET'; p = '/user/me' },
+                    [pscustomobject]@{ m = 'PUT'; p = '/user/password' })) {
+                $r = Send-Json $client $probe.m ($script:AiBase + $probe.p) $credential.headers '{"userId":"forged","tenantId":"forged"}'
+                Assert-ClosedEnvelope $r ('B03-' + $credential.label + '-' + $probe.m + $probe.p) ($credential.label + ' ' + $probe.m + ' ' + $probe.p)
+            }
+        }
+        if ($factsOk) {
+            Assert-That 'B03-zero-handler-executions' 'B' (([int]$script:Facts.counters.handlerExecutions -eq 0) -and
+                ([int]$script:Facts.counters.userMapperInvocations -eq 0) -and ([int]$script:Facts.counters.authServiceInvocations -eq 0) -and
+                ([int]$script:Facts.counters.saTokenLogins -eq 0)) `
+                ("handler/userMapper/authService/saTokenLogins={0}/{1}/{2}/{3}" -f $script:Facts.counters.handlerExecutions,
+                    $script:Facts.counters.userMapperInvocations, $script:Facts.counters.authServiceInvocations, $script:Facts.counters.saTokenLogins)
+        } else {
+            Add-Result 'B03-zero-handler-executions' 'B' 'NOT_RUN' 'blocked: probe facts unavailable or incomplete (handler/Mapper counters unknown)'
+        }
+
+        # B04：02 文档里所有旧 controller 映射方法 + 未知路径。
+        $legacyPaths = @()
+        if ($factsOk) { $legacyPaths = @($script:Facts.legacyMappings | ForEach-Object { $_.path }) }
+        if ($legacyPaths.Count -eq 0) {
+            $legacyPaths = @('/chat/chat', '/knowledge/doc', '/rag/query', '/agent/chat', '/memory/list', '/trace/dashboard')
+            Add-Result 'B04-mapping-inventory' 'B' 'NOT_RUN' `
+                ("blocked: probe facts unavailable; probed the fallback path list only ({0}), NOT the full 02 mapping inventory" -f ($legacyPaths -join ','))
+        } else {
+            Add-Result 'B04-mapping-inventory' 'B' 'PASS' ("probing {0} spec-mapped legacy paths from probe facts" -f $legacyPaths.Count)
+        }
+        $badLegacy = @()
+        foreach ($path in $legacyPaths) {
+            $r = Send-Json $client 'POST' ($script:AiBase + $path) @{} '{}'
+            if ($r.Status -ne 404) { $badLegacy += ($path + '=' + $r.Status) }
+        }
+        Assert-That 'B04-legacy-mappings' 'B' ($badLegacy.Count -eq 0) ("probed={0} nonClosed=[{1}]" -f $legacyPaths.Count, ($badLegacy -join ','))
+        $unknown = Send-Json $client 'GET' ($script:AiBase + '/p1b-unknown-resource-6f2c') $null $null
+        Assert-That 'B04-unknown-path' 'B' ($unknown.Status -eq 404) ("unknown status={0} (must equal existing-other-tenant externals)" -f $unknown.Status)
+
+        # 猜他租户 ID：**无凭证请求下的入口一致性**。
+        #
+        # 这条检查测的是"未通过入口的请求，其外显与 ID 无关"，
+        # **不是** S04 要的"存在但属于他租户的资源与不存在的资源不可区分"。
+        # 实测确认：三条请求（本租户 / 他租户 / 不存在）都返回同一个
+        # `404 + code=404 + 资源不存在或…`，即**在到达任何 handler 之前就被拦下**，
+        # 因此 ID 根本没有参与判定。
+        #
+        # 如实标注而不是让它冒充 S04：这条检查无论 ID 处理是否正确都会通过，
+        # 把它读成"S04 已覆盖"会让人以为资源级不可区分性已验证——而它并没有。
+        # S04 的实质部分需要**已认证**请求（完整委托链）才测得到，当前 NOT_VERIFIED。
+        #
+        # 保留它的价值：入口拦截对所有 ID 形状一视同仁是必要条件——
+        # 若他租户 ID 返回 403 而不存在返回 404，差异本身就已经泄漏信息。
+        $idPaths = @(
+            @{ m = 'GET'; p = '/knowledge-base/{id}' },
+            @{ m = 'GET'; p = '/knowledge-base/docs/{id}' },
+            @{ m = 'GET'; p = '/agent/v1/conversations/{id}' },
+            @{ m = 'GET'; p = '/rag/traces/runs/{id}' },
+            @{ m = 'GET'; p = '/users/{id}' }
+        )
+        $ownId = '900000000000000001'
+        $otherId = '900000000000000002'
+        $absentId = '999999999999999999'
+        $s04Bad = @()
+        foreach ($probe in $idPaths) {
+            $shapes = @()
+            foreach ($id in @($ownId, $otherId, $absentId)) {
+                $url = $script:AiBase + ($probe.p -replace '\{id\}', $id)
+                $r = Send-Json $client $probe.m $url $null $null
+                # 只比较**语义字段**，不比整段 body。
+                # requestId 每次请求都不同（它是元数据，不是结论），
+                # 拿整段 body 比较会让每条路径都因 requestId 不同而"有差异"，
+                # 于是这个检查要么恒失败、要么被人为放宽到只看状态码——
+                # 两种结果都会让"不可区分"这个判据失效。
+                # 这里取攻击者真正能观测到的三个语义量：状态码、业务码、错误码。
+                $code = if ($r.Json -and $null -ne $r.Json.code) { [string]$r.Json.code } else { '' }
+                $errCode = if ($r.Json -and $r.Json.data -and $null -ne $r.Json.data.errorCode) { [string]$r.Json.data.errorCode } else { '' }
+                $shapes += ("{0}|{1}|{2}" -f $r.Status, $code, $errCode)
+            }
+            $distinct = @($shapes | Sort-Object -Unique)
+            if ($distinct.Count -ne 1) { $s04Bad += ("{0} -> {1}" -f $probe.p, ($distinct -join ' vs ')) }
+        }
+        Assert-That 'B04-unauthenticated-id-uniformity' 'B' ($s04Bad.Count -eq 0) `
+            ("probed {0} id-shaped paths x 3 ids; responses identical (NOT S04: gated before any handler); non-uniform=[{1}]" -f $idPaths.Count, ($s04Bad -join '; '))
+
+        # B05：伪造 header/body 不得被解析成可信 principal，payload 不进安全日志。
+        $marker = 'p1b-forged-marker-7a1d'
+        $forgedHeaders = @{ 'X-Tenant' = 'p1t1'; 'X-User' = 'forged-admin'
+            'X-P04-Service-Credential' = 'forged-credential'; Authorization = 'Bearer forged.eyJhbGciOiJub25lIn0.forged' }
+        $r = Send-Json $client 'POST' ($script:AiBase + '/knowledge/doc') $forgedHeaders `
+            (@{ userId = 'forged'; tenantId = 'p1t1'; marker = $marker } | ConvertTo-Json -Compress)
+        Assert-ClosedEnvelope $r 'B05-forged-headers' 'forged headers on a closed route'
+        $aiLogText = ''
+        foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $script:Evidence 'jvm-logs') -Recurse -File -ErrorAction SilentlyContinue)) {
+            $aiLogText += (Protect-LogText (Read-SharedText $log.FullName))
+        }
+        Assert-That 'B05-no-payload-in-audit' 'B' ($aiLogText -notmatch [regex]::Escape($marker)) `
+            ("forged marker present in sanitized logs={0} (must be false)" -f ($aiLogText -match [regex]::Escape($marker)))
+
+        # B06：尾斜线 / encoded / 不同 method / FORWARD-ASYNC-ERROR dispatcher / 合法 OPTIONS。
+        foreach ($path in @('/auth/login/', '/auth%2flogin', '/auth/login%20', '/%2e%2e/auth/login')) {
+            $r = Send-Json $client 'GET' ($script:AiBase + $path) @{} ''
+            Assert-That ('B06-normalisation-' + $path) 'B' ($r.Status -eq 400 -or $r.Status -eq 404) ("GET {0} status={1}" -f $path, $r.Status)
+        }
+        $options = Send-Json $client 'OPTIONS' ($script:AiBase + '/auth/login') `
+            @{ Origin = 'http://127.0.0.1:5173'; 'Access-Control-Request-Method' = 'POST' } ''
+        Assert-That 'B06-options' 'B' ($options.Status -eq 204 -or $options.Status -eq 404) `
+            ("OPTIONS status={0} (204 allowed, but no handler execution and no business success)" -f $options.Status)
+        if ($factsOk) {
+            Assert-That 'B06-dispatcher-policy' 'B' (($script:Facts.dispatch.forwardClosed -eq $true) -and
+                ($script:Facts.dispatch.asyncClosed -eq $true) -and ([int]$script:Facts.dispatch.errorRecursion -eq 0) -and
+                ([int]$script:Facts.counters.handlerExecutions -eq 0)) `
+                ("forwardClosed={0} asyncClosed={1} errorRecursion={2} handlerExecutions={3}" -f $script:Facts.dispatch.forwardClosed,
+                    $script:Facts.dispatch.asyncClosed, $script:Facts.dispatch.errorRecursion, $script:Facts.counters.handlerExecutions)
+        } else {
+            Add-Result 'B06-dispatcher-policy' 'B' 'NOT_RUN' 'blocked: probe facts unavailable or incomplete (FORWARD/ASYNC/ERROR dispatch facts unknown)'
+        }
+
+        # B07：尚未开放/未注册的能力一律 404。
+        foreach ($probe in @([pscustomobject]@{ m = 'POST'; p = '/internal/ai/v1/runs' }, [pscustomobject]@{ m = 'POST'; p = '/internal/ai/v1/runs/x' },
+                [pscustomobject]@{ m = 'POST'; p = '/api/ai/v1/runs' }, [pscustomobject]@{ m = 'GET'; p = '/p04/health' })) {
+            $r = Send-Json $client $probe.m ($script:AiBase + $probe.p) @{} '{}'
+            Assert-That ('B07-' + $probe.p) 'B' ($r.Status -eq 404) ("{0} {1} status={2}" -f $probe.m, $probe.p, $r.Status)
+        }
+
+        # B08：非法开关必须让产品启动非零退出（真实启动在下面完成）。
+        foreach ($state in @('illegal-p04', 'illegal-integration', 'illegal-customer-api', 'illegal-legacy-listeners')) {
+            $entry = @($script:IllegalBootResults | Where-Object { $_.state -ceq $state })
+            $ok = ($entry.Count -eq 1 -and $entry[0].exited -and [int]$entry[0].exitCode -ne 0)
+            Assert-That ('B08-' + $state) 'B' $ok `
+                ("state={0} exited={1} exitCode={2} (non-zero required; redacted configuration refusal in log)" -f `
+                    $state, $(if ($entry.Count -eq 1) { $entry[0].exited } else { 'notBooted' }), $(if ($entry.Count -eq 1) { $entry[0].exitCode } else { 'n/a' }))
+        }
+
+        Invoke-FactsDrivenCases
+
+        $script:DbAfter = Get-RowHashSnapshot
+        Add-Result 'DB-snapshot-after' 'G1' 'PASS' ("tables={0}" -f @($script:DbAfter.PSObject.Properties.Name).Count)
+        $delta = Compare-RowHashSnapshots $script:DbBefore $script:DbAfter
+        $script:DbDelta = $delta
+        Assert-That 'DB-no-business-delta' 'G1' $delta.unchanged `
+            ("tables={0} missing=[{1}] added=[{2}] changed=[{3}]" -f $delta.tables, ($delta.missing -join ','), ($delta.added -join ','), ($delta.changed -join ','))
+
+        # B13：platform 运行 jar 内容 + 残留 /workflow/run 安全排除项。
+        $testClasses = @($script:PlatformJarEntries | Where-Object { $_ -match 'BOOT-INF/classes/.*Test.*\.class$' })
+        $workflowRunExclusion = ($script:PlatformJarConfig -match '/workflow/run')
+        Assert-That 'B13-jar-contents' 'B' ($legacyLibs.Count -eq 0 -and $formalIntegration -and $testClasses.Count -eq 0 -and $workflowKept) `
+            ("legacyAiLibs={0} testClasses={1} formalIntegration={2} nestedClasses={3} ruoyi-workflowKept={4}" -f $legacyLibs.Count, $testClasses.Count, $formalIntegration, $integrationClasses.Count, $workflowKept)
+        Assert-That 'B13-workflow-run-exclusion-removed' 'B' (-not $workflowRunExclusion) `
+            ("packaged application.yml still excludes /workflow/run={0}" -f $workflowRunExclusion)
+
+        # 把子用例结果汇总成 B01–B13 的**用例级**结论。
+        #
+        # 为什么需要：各用例把结果记在**子编号**上（B01-login-p1t1、B03-none-POST/auth/login、
+        # B13-jar-contents……），而计划清单声明的是 B01…B13 这 13 个**用例编号**。
+        # 于是 B01–B08/B13 永远没有自己的行，只剩下预检留下的 NOT_RUN，
+        # CASES-complete 逐个计数自然不成立——而每条子用例其实都 PASS 了。
+        # 这不是"用例没跑"，而是**汇总口径缺失**：只看到 4 条，实际跑了 30 多条。
+        #
+        # 规则：某用例只要有 FAIL 或 NOT_RUN 子行就不算完成；一条子行都没有才是 NOT_RUN（真没跑）。
+        foreach ($caseId in @('B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08', 'B09', 'B10', 'B11', 'B12', 'B13')) {
+            $children = @($script:Results | Where-Object { $_.id -match ('^' + $caseId + '-') })
+            if ($children.Count -eq 0) { continue }
+            $bad = @($children | Where-Object { $_.status -ne 'PASS' })
+            $summary = if ($bad.Count -gt 0) { 'FAIL' } else { 'PASS' }
+            Add-Result $caseId 'B' $summary `
+                ("{0} sub-checks; nonPass=[{1}]" -f $children.Count, (@($bad | ForEach-Object { $_.id }) -join ','))
+        }
+        $caseRows = @($script:Results | Where-Object { $_.id -match '^B\d\d$' })
+        Assert-That 'CASES-complete' 'G1-G4' ($caseRows.Count -eq 13 -and @($caseRows | Where-Object { $_.status -ne 'PASS' }).Count -eq 0) `
+            ("cases={0} of 13; nonPass=[{1}]" -f $caseRows.Count, (@($caseRows | Where-Object { $_.status -ne 'PASS' } | ForEach-Object { $_.id }) -join ','))
+    } finally { $client.Dispose() }
+
+    # 用例全部跑完后才停止被测 jar（见启动处的说明：提前停会让 B 系列全部失败）。
+    Stop-OwnedProcess (Join-Path $script:RunWork 'platform-default.pid') 'java' 'platform default boot'
+    Stop-OwnedProcess (Join-Path $script:RunWork 'ai-cli-false.pid') 'java' 'ai p04=false boot'
+}
+function Invoke-BootAndCases {
+    Write-Step 'Integration happy path：两真实 jar + runner 自有合成资源 + B01–B13'
+    Initialize-SyntheticSecrets
+    # 合成端口先定下来（同样走空闲扫描：绝不复用开发机 5432/6379/9000），
+    # 再确定本轮自有资源身份并写 compose 文件——顺序不能反，见 Initialize-SyntheticIdentity。
+    $script:PgPort = Get-FreePortInRange 15432 15472
+    $script:RedisPort = Get-FreePortInRange 16379 16419
+    $script:S3Port = Get-FreePortInRange 19000 19040
+    if (0 -in @($script:PgPort, $script:RedisPort, $script:S3Port)) {
+        Add-Result 'ENV-compose-up' 'G0' 'FAIL' 'no free synthetic port available for PG/Redis/S3'
+        return
+    }
+    Initialize-SyntheticIdentity
+    [void](Test-P04ContainerIsolation)
+    Start-SyntheticEnvironment
+    $upRows = Get-ResultRow 'ENV-compose-up'
+    if (@($upRows | Where-Object { $_.status -eq 'FAIL' }).Count -gt 0) { return }
+    # 合成服务在远端时，先把它们的端口转发到本机回环，再让两个 jar 按原有 127.0.0.1 配置连接。
+    if (-not (Start-RemotePortForward)) { return }
+    Initialize-SyntheticDatabase
+    if (-not (Test-ProbeAvailability)) { return }
+
+    # 两个 jar 都要求一批外化占位符（平台 122 个、AI 39 个），缺一个就拒绝启动。
+    # 在**启动 jar 之前**把它们设进本进程环境；Start-Process 会继承，
+    # 因此 jar 能解析到值，而这些值不需要出现在任何命令行里。
+    $placeholderCount = Initialize-ExternalizedPlaceholders
+    Assert-That 'ENV-externalized-placeholders' 'G0' ($placeholderCount -gt 0) `
+        ("discovered and set {0} synthetic values for externalized config placeholders (platform+ai); no real secret is involved" -f $placeholderCount)
+
+    # 平台 jar 内容解析（B13 事实来源）。
+    $platformJar = Join-Path $RepoRoot 'services\platform\ruoyi-admin\target\ruoyi-admin.jar'
+    $archive = [IO.Compression.ZipFile]::OpenRead($platformJar)
+    try {
+        $script:PlatformJarEntries = @($archive.Entries | ForEach-Object { $_.FullName })
+        $integrationEntries = @($archive.Entries | Where-Object { $_.FullName -match '^BOOT-INF/lib/ruoyi-ai-integration-[^/]+\.jar$' })
+        $script:IntegrationJarCount = $integrationEntries.Count
+        $script:IntegrationJarEntries = @()
+        if ($integrationEntries.Count -eq 1) {
+            $memory = New-Object IO.MemoryStream
+            $stream = $integrationEntries[0].Open()
+            try { $stream.CopyTo($memory) } finally { $stream.Dispose() }
+            $memory.Position = 0
+            $nested = New-Object IO.Compression.ZipArchive($memory, [IO.Compression.ZipArchiveMode]::Read)
+            try { $script:IntegrationJarEntries = @($nested.Entries | ForEach-Object { $_.FullName }) }
+            finally { $nested.Dispose(); $memory.Dispose() }
+        }
+        $configEntry = @($archive.Entries | Where-Object { $_.FullName -ceq 'BOOT-INF/classes/application.yml' })
+        if ($configEntry.Count -eq 1) {
+            $reader = New-Object IO.StreamReader($configEntry[0].Open())
+            try { $script:PlatformJarConfig = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        }
+    } finally { $archive.Dispose() }
+
+    $script:PlatformBase = ('http://127.0.0.1:' + $PlatformPort)
+    $script:AiBase = ('http://127.0.0.1:' + $AiPort + '/api/ragent')
+    $platformProc = Start-ProductJar 'platform' 'default' $PlatformPort
+    $aiProc = Start-ProductJar 'ai' 'default' $AiPort
+    $platformReady = Wait-ApplicationReady $PlatformPort (Join-Path $script:RunWork 'platform-run-default\stdout.log') 240
+    $aiReady = Wait-ApplicationReady $AiPort (Join-Path $script:RunWork 'ai-run-default\stdout.log') 240
+    Assert-That 'BOOT-platform-jar' 'G0' ($platformReady -and -not $platformProc.HasExited) `
+        ("ready={0} alive={1} port={2}" -f $platformReady, (-not $platformProc.HasExited), $PlatformPort)
+    Assert-That 'BOOT-ai-jar' 'G0' ($aiReady -and -not $aiProc.HasExited) `
+        ("default boot ready={0} alive={1} port={2}" -f $aiReady, (-not $aiProc.HasExited), $AiPort)
+    # 这里**不**停 platform / ai default：BOOT-* 只是"起得来"的证据，
+    # 而紧随其后的 B01–B08 与 facts 驱动的用例都要对这两个**正在运行**的 jar 发真实 HTTP 请求。
+    # 此前在这两处提前 Stop-OwnedProcess，于是 B 系列第一次请求就失败
+    # （"发送请求时出错"），看起来像 HTTP/网络问题，实际是**runner 把自己的被测对象关掉了**。
+    # 收尾统一在用例结束之后进行（见本函数末尾）。
+
+    # 显式 p04=false 的第二态启动（B02 的另一半）。
+    $aiFalsePort = $AiPort + 1
+    $aiFalse = Start-ProductJar 'ai' 'cli-false' $aiFalsePort
+    $falseReady = Wait-ApplicationReady $aiFalsePort (Join-Path $script:RunWork 'ai-run-cli-false\stdout.log') 240
+    Assert-That 'BOOT-ai-jar' 'G0' ($falseReady -and -not $aiFalse.HasExited) `
+        ("explicit p04.enabled=false boot ready={0} alive={1}" -f $falseReady, (-not $aiFalse.HasExited))
+    # 同样不停：这一态是 B02 的另一半，用例要连它发请求。
+
+    # B08：四个非法开关各起一次，必须非零退出。
+    $script:IllegalBootResults = @()
+    $statePort = $AiPort + 10
+    foreach ($state in @('illegal-p04', 'illegal-integration', 'illegal-customer-api', 'illegal-legacy-listeners')) {
+        $p = Start-ProductJar 'ai' $state $statePort
+        $exited = Wait-ProcessExit $p 180
+        $code = if ($exited) { $p.ExitCode } else { $null }
+        $script:IllegalBootResults += [pscustomobject]@{ state = $state; exited = $exited; exitCode = $code
+            log = ('jvm-logs\ai-' + $state + '\stdout.log') }
+        if (-not $exited) { Stop-OwnedProcess (Join-Path $script:RunWork ('ai-' + $state + '.pid')) 'java' ('illegal switch ' + $state) }
+        $statePort++
+    }
+    Invoke-HttpCases
+}
+
+# =========================== 入口 ===========================
+if ($LibraryOnly) { return }
+function Stop-Usage([string]$Message) {
+    Write-Output ("### USAGE REFUSED: " + $Message)
+    exit 2
+}
+if (-not [IO.Path]::IsPathRooted($EvidenceDir)) {
+    Stop-Usage ("-EvidenceDir must be an ABSOLUTE path, got '{0}'. Example: D:/AI-project/mydocs/p1/evidence/full/p12a-unit" -f $EvidenceDir)
+}
+$script:EvidenceRoot = [IO.Path]::GetFullPath($EvidenceDir)
+if (Test-UnderRootLoose $script:EvidenceRoot $RepoRoot) {
+    Stop-Usage ("-EvidenceDir resolves inside the repository ({0}); this runner must not modify the repository. Use D:/AI-project/mydocs/p1/evidence/... (outside the checkout)." -f $script:EvidenceRoot)
+}
+$script:WorkRoot = [IO.Path]::GetFullPath($WorkRoot)
+if (Test-UnderRootLoose $script:WorkRoot $RepoRoot) {
+    Stop-Usage ("-WorkRoot resolves inside the repository ({0}); scratch/work files would modify the repository." -f $script:WorkRoot)
+}
+try {
+    [void](New-Item -ItemType Directory -Force -Path $script:WorkRoot)
+    [void](New-Item -ItemType Directory -Force -Path $script:EvidenceRoot)
+} catch { Stop-Usage ("cannot create WorkRoot/EvidenceDir: " + $_.Exception.Message) }
+$script:Evidence = Join-Path $script:EvidenceRoot $script:ExecutionId
+[void](New-Item -ItemType Directory -Force -Path $script:Evidence)
+$script:RunWork = Join-Path $script:WorkRoot $script:ExecutionId
+[void](New-Item -ItemType Directory -Force -Path $script:RunWork)
+
+Write-Step ("P1.2a boundary runner — mode={0} runTag={1} executionId={2}" -f $Mode, $RunTag, $script:ExecutionId)
+$toolchain = Initialize-Toolchain
+Add-Result 'ENV-evidence-path' 'G0' 'PASS' ("absolute={0} outsideRepo=true evidence={1}" -f $script:EvidenceRoot, $script:Evidence)
+Add-Result 'ENV-workroot-safety' 'G0' 'PASS' ("workRoot={0} outsideRepo=true runWork={1}" -f $script:WorkRoot, $script:RunWork)
+
+$headResult = Invoke-NativeCapture 'git' @('-C', $RepoRoot, 'rev-parse', 'HEAD') 'git-head.log'
+$branchResult = Invoke-NativeCapture 'git' @('-C', $RepoRoot, 'branch', '--show-current') 'git-branch.log'
+$statusResult = Invoke-NativeCapture 'git' @('-C', $RepoRoot, 'status', '--porcelain') 'git-status.log'
+if ($headResult.ExitCode -ne 0 -or $branchResult.ExitCode -ne 0) { throw 'git identity preflight failed' }
+$script:HeadSha = ((@($headResult.Output | Where-Object { $_.Trim() }) | Select-Object -First 1) -join '')
+$script:Branch = ((@($branchResult.Output | Where-Object { $_.Trim() }) | Select-Object -First 1) -join '')
+$script:DirtyPaths = @($statusResult.Output | Where-Object { $_.Trim() -and ([string]$_).Length -gt 3 } | ForEach-Object { ([string]$_).Substring(3) })
+
+$manifest = [ordered]@{
+    runner = 'tools/p1-boundary/run.ps1'
+    spec = 'D:\AI-project\mydocs\p1\01-p1-first-unit-spec.md (SS6 commands/params, SS7 B01-B14, SS8 evidence)'
+    plan = 'D:\AI-project\mydocs\p1\00-p1-plan.md (SS9 commands/environment/evidence)'
+    executionId = $script:ExecutionId
+    mode = $Mode
+    runTag = $RunTag
+    repoRoot = $RepoRoot
+    branch = $script:Branch
+    headSha = $script:HeadSha
+    dirtyPathCount = $script:DirtyPaths.Count
+    dirtyPaths = $script:DirtyPaths
+    startedUtc = $script:RunStartedUtc.ToString('o')
+    startedAsiaShanghai = (Get-ShanghaiStamp $script:RunStartedUtc)
+    evidenceDir = $script:Evidence
+    workRoot = $script:WorkRoot
+    runWork = $script:RunWork
+    host = @{ psVersion = $PSVersionTable.PSVersion.ToString(); java = $toolchain.java
+        javaHome = $toolchain.javaHome; mavenExe = $toolchain.mavenExe; maven = $toolchain.maven }
+    ports = @{ platform = $PlatformPort; ai = $AiPort }
+    requiredClasses = @($script:RequiredClasses | ForEach-Object { $_.expectedFqcn })
+    unitCommands = @($script:UnitInvocations | ForEach-Object {
+            (New-CommandLine 'mvn' @('-o', '-B', '-ntp', '-f', $_.pom, $_.profile, '-pl', $_.module, '-am', 'test',
+                    ('-Dtest=' + ($_.tests -join ',')), '-Dsurefire.failIfNoSpecifiedTests=false')) })
+    specFileSha256 = @($script:SpecPaths | ForEach-Object { [pscustomobject]@{ path = $_; sha256 = (Get-Sha256 $_) } })
+    forceBuildRoots = [bool]$ForceBuildRoots
+    offline = $true
+}
+
+$exitCode = 0
+try {
+    if ($Mode -eq 'Unit') {
+        Invoke-UnitMode
+    } else {
+        Invoke-IntegrationPortCheck
+        Invoke-ContainerRuntimePreflight
+        Invoke-SubstituteRefusalScan
+        Invoke-ProviderKeyIsolation
+        if ($script:EnvGateBlocked -and -not $ForceBuildRoots) {
+            Publish-BlockedInventory
+        } else {
+            if ($script:EnvGateBlocked) {
+                Write-Step '评审辅助 -ForceBuildRoots：环境已判定缺失，但仍执行两条 clean verify（BUILD-* 记录真实结果）'
+                Publish-GatedNotRun -ExceptIds @('BUILD-platform-clean-verify', 'BUILD-ai-clean-verify')
+            }
+            foreach ($root in @(
+                    [pscustomobject]@{ id = 'BUILD-platform-clean-verify'; pom = 'services/platform/pom.xml'; profile = '-Pdev'; log = 'build-platform-clean-verify.log' },
+                    [pscustomobject]@{ id = 'BUILD-ai-clean-verify'; pom = 'services/ai/pom.xml'; profile = '-Pci'; log = 'build-ai-clean-verify.log' })) {
+                $r = Invoke-NativeCapture $script:MavenExe @('-o', '-B', '-ntp', '-f', $root.pom, $root.profile, 'clean', 'verify') $root.log $RepoRoot
+                $ok = ($r.ExitCode -eq 0 -and @($r.Output | Where-Object { $_ -match '^\[INFO\] BUILD SUCCESS$' }).Count -gt 0)
+                Assert-That $root.id 'G0' $ok ("exit={0} log={1}" -f $r.ExitCode, $root.log)
+            }
+            if (-not $script:EnvGateBlocked) { Invoke-BootAndCases }
+            Complete-IntegrationInventory 'environment gate open'
+        }
+    }
+} catch {
+    # 未捕获异常必须带**位置**：只说 "Collection was of a fixed size" 而不说哪一行，
+    # 就得在整个两千行脚本里逐个核对 .Add() 的接收者。PositionMessage 直接给出行号。
+    $where = ''
+    try {
+        if ($_.InvocationInfo -and $_.InvocationInfo.PositionMessage) {
+            $where = ' @ ' + (($_.InvocationInfo.PositionMessage -split "`r?`n")[0..1] -join ' ')
+        }
+    } catch { }
+    Add-Result 'HARNESS' '-' 'FAIL' ("unhandled: " + $_.Exception.Message + $where)
+} finally {
+    Write-Step '清理：只停止本脚本自己启动的 PID / 只销毁带本轮 owner label 的容器'
+    # 1) 自有 JVM：pid 文件 + PID 归属 + 命令行三重核对。
+    $pidFiles = @(Get-ChildItem -LiteralPath $script:RunWork -Filter '*.pid' -File -ErrorAction SilentlyContinue)
+    foreach ($pidFile in $pidFiles) {
+        # ssh 端口转发同样是本脚本启动、并按 PID 归属核对后才停止的自有进程；
+        # 命令行的判别模式不同（ssh 而非 java），因此按文件名分流。
+        if ($pidFile.Name -eq 'ssh-port-forward.pid') {
+            Stop-OwnedProcess $pidFile.FullName 'ssh' 'owned ssh port-forward'
+        } else {
+            Stop-OwnedProcess $pidFile.FullName 'java' ('owned JVM ' + $pidFile.Name)
+        }
+    }
+    if ($pidFiles.Count -eq 0) {
+        Add-Result 'CLEANUP-owned-processes' 'G0' 'PASS' 'no JVM was started by this run; nothing to stop'
+    } else {
+        $owned = @($script:Cleanup | Where-Object { $_.id -eq 'CLEANUP-owned-process' })
+        $stopped = @($owned | Where-Object { $_.result -eq 'STOPPED' -or $_.result -eq 'ALREADY_GONE' })
+        Assert-That 'CLEANUP-owned-processes' 'G0' ($owned.Count -eq $pidFiles.Count -and $stopped.Count -eq $owned.Count) `
+            ("pidFiles={0} accounted={1} stoppedOrGone={2} startedProcessIds=[{3}]" -f `
+                $pidFiles.Count, $owned.Count, $stopped.Count, ($script:StartedProcesses -join ','))
+    }
+    # 2) jar 日志先按脱敏归档，再删自有临时目录（顺序不能反）。
+    #
+    # 目录名必须与 Start-ProductJar 建的那个一致：那边是 `$Side + '-run-' + $State`
+    # （如 platform-run-default），这里曾拼成 `$Side + '-run'`（platform-default-run）。
+    # 两者对不上，Copy-SanitizedLog 因为源文件不存在而**静默返回**，
+    # 于是**从来没有一份 jar 日志进过证据目录**——两个 jar 的启动与运行期异常
+    # 全部只存在于会被删掉的临时目录里。找 B01 登录失败原因时反复"日志不在"
+    # 就是这个拼写差异造成的，而它看起来像"日志没写"。
+    foreach ($side in @('platform-default', 'ai-default', 'ai-cli-false', 'ai-illegal-p04', 'ai-illegal-integration',
+            'ai-illegal-customer-api', 'ai-illegal-legacy-listeners')) {
+        foreach ($stream in @('stdout', 'stderr')) {
+            # 这里必须与 Start-ProductJar 的目录名逐字一致（`<side>-run-<state>`）。
+            # side 形如 "platform-default"；Start-ProductJar 建的目录是 "platform-run-default"。
+            # 拆成 base/state 再按同样顺序拼回，避免两处各写一种拼法而静默对不上。
+            $sideBase = $side.Split('-')[0]
+            $sideState = $side.Substring($sideBase.Length + 1)
+            $sideRunDir = $sideBase + '-run-' + $sideState
+            Copy-SanitizedLog (Join-Path (Join-Path $script:RunWork $sideRunDir) ($stream + '.log')) `
+                (Join-Path $script:Evidence ('jvm-logs\' + $side + '\' + $stream + '.log'))
+        }
+    }
+    # 2b) 远端自有 compose 目录：**必须排在 compose down 之后**，见下方第 3 步的说明。
+    #     这里只记下"待删路径"，真正删除延后执行。
+    $remoteDirToRemove = ''
+    if ($script:RemoteMode -and $script:RemoteComposeDir) {
+        if ($script:RemoteComposeDir -match '^/opt/p1-acceptance/[a-z0-9-]+$') {
+            $remoteDirToRemove = $script:RemoteComposeDir
+        } else {
+            Add-Result 'CLEANUP-remote-compose-dir' 'G0' 'FAIL' `
+                ("refusing to remove unexpected remote path: " + $script:RemoteComposeDir)
+        }
+    }
+    # 3) 自有容器：只按本轮 project/label 销毁。Unit 模式不起容器，不产生容器清理结论（只记 cleanup.json）。
+    #
+    # 顺序很关键：`compose down` 需要 **--file 指向的那个文件还在**。
+    # 曾经在第 2b 步就把远端 compose 目录删掉，于是 down 报
+    # "stat /opt/p1-acceptance/<tag>/docker-compose.yml: no such file or directory"、
+    # 退出码 14，本轮自有的 3 个容器与卷**全部残留**——
+    # 而 detail 只说 "down exit=14"，看起来像 docker 的问题。
+    # 这与"先停被测 jar 再跑用例"是同一类错误：**先销毁了后一步要用的东西**。
+    if ($Mode -ne 'Integration') {
+        [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-owned-containers'; target = 'none'
+                action = 'noop'; result = 'NOT_APPLICABLE'; detail = 'Unit mode starts no container and no database' })
+    } elseif ($script:OwnedContainers.Count -gt 0 -and $null -ne $script:Runtime) {
+        $down = Invoke-OwnedCompose @('down', '--volumes', '--remove-orphans', '--timeout', '20') 'compose-down.log'
+        $left = Invoke-RuntimeCapture @('ps', '--all', '--filter', ('label=p1.boundary.owner=' + $RunTag), '--format', '{{.Names}}') 'compose-leftover.log'
+        $remaining = @($left.Output | Where-Object { $_.Trim() })
+        Assert-That 'CLEANUP-owned-containers' 'G0' ($down.ExitCode -eq 0 -and $remaining.Count -eq 0) `
+            ("down exit={0} remainingOwnedContainers={1} [{2}]" -f $down.ExitCode, $remaining.Count, ($remaining -join ','))
+    } elseif ($script:GatedNotRun -contains 'CLEANUP-owned-containers') {
+        Write-Output '  CLEANUP-owned-containers 已在闸门关闭时记为 NOT_RUN（本轮未创建容器）。'
+    } else {
+        Add-GatedResult 'CLEANUP-owned-containers' 'G0' 'destroy runner-owned synthetic containers/volumes by owner label'
+    }
+    # 3b) 现在才删远端自有 compose 目录：容器已 down，文件不再被需要。
+    if ($remoteDirToRemove) {
+        $rm = Invoke-RemoteShell ('rm -rf ' + (Format-ShellArg $remoteDirToRemove)) 'compose-remote-cleanup.log'
+        [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-remote-compose-dir'; target = $remoteDirToRemove
+                action = 'rm -rf'; result = $(if ($rm.ExitCode -eq 0) { 'REMOVED' } else { 'FAILED' })
+                detail = ("exit=" + $rm.ExitCode + " (only this run's own tag-derived directory; removed after compose down)") })
+    }
+    # 4) 随机口令：从进程环境清除；证据里只留 key 名。
+    foreach ($name in @('PGPASSWORD', 'P1B_PG_SUPERUSER_PASSWORD', 'P1B_REDIS_PASSWORD', 'P1B_S3_ACCESS_KEY', 'P1B_S3_SECRET_KEY',
+            'AI_DB_PASSWORD', 'PLATFORM_DB_PASSWORD', 'REDIS_PASSWORD')) {
+        Remove-Item -LiteralPath ('env:' + $name) -Force -ErrorAction SilentlyContinue
+        [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-synthetic-secrets'; target = $name
+                action = 'env-remove'; result = 'CLEARED'; detail = 'value never written to evidence' })
+    }
+    # 4b) 外化占位符的合成值同样清除：它们是本轮生成、只服务于本轮 jar 启动，
+    # 留在环境里会污染后续进程，也会让"本轮自建、跑完即清"的承诺不成立。
+    foreach ($name in @($script:SyntheticEnvNames)) {
+        Remove-Item -LiteralPath ('env:' + $name) -Force -ErrorAction SilentlyContinue
+    }
+    if ($script:SyntheticEnvNames.Count -gt 0) {
+        [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-synthetic-secrets'
+                target = ('externalized-placeholders x' + $script:SyntheticEnvNames.Count)
+                action = 'env-remove'; result = 'CLEARED'
+                detail = 'synthetic placeholder values generated this run; names only, never values' })
+    }
+    if ($Mode -ne 'Integration') {
+        Write-Output '  Unit 模式未生成任何合成口令；仍清掉 PGPASSWORD/REDIS_PASSWORD 等环境变量（见 cleanup.json）。'
+    } elseif ($script:GatedNotRun -contains 'CLEANUP-synthetic-secrets') {
+        Write-Output '  CLEANUP-synthetic-secrets 已在闸门关闭时记为 NOT_RUN（本轮未生成合成口令）。'
+    } elseif ($script:EnvGateBlocked) {
+        Add-GatedResult 'CLEANUP-synthetic-secrets' 'G0' 'clear runner-generated synthetic secrets from the process environment'
+    } else {
+        Add-Result 'CLEANUP-synthetic-secrets' 'G0' 'PASS' 'runner-generated synthetic secrets removed from the process environment; evidence holds key names only'
+    }
+    # 5) 自有临时工作目录（解析绝对路径 + 归属校验后才删）。
+    #
+    # 删目录前先释放 Process 对象与日志 StreamWriter：它们持有 stdout.log/stderr.log 的句柄，
+    # 在句柄未释放时删目录会失败（表现为"自己的临时目录删不掉"）。
+    foreach ($id in @($script:OwnedProcessObjects.Keys)) {
+        try { $script:OwnedProcessObjects[$id].Dispose() } catch { }
+    }
+    foreach ($id in @($script:ProcessWriters.Keys)) {
+        foreach ($d in @($script:ProcessWriters[$id])) {
+            # 先等 drain 把剩余输出写完，再关 runspace；否则日志尾部会丢，
+            # 而"启动失败的最后几行"恰恰是最需要的那几行。
+            try { [void]$d.ps.EndInvoke($d.handle) } catch { }
+            try { $d.ps.Dispose() } catch { }
+            try { $d.rs.Dispose() } catch { }
+        }
+    }
+    $script:OwnedProcessObjects = @{}
+    $script:ProcessWriters = @{}
+    if (Test-Path -LiteralPath $script:RunWork) { [void](Remove-OwnedPath $script:RunWork 'per-run scratch under WorkRoot') }
+
+    # ---------- 证据落盘 ----------
+    if ($Mode -eq 'Unit') {
+        $script:Surefire | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $script:Evidence 'surefire-summary.json') -Encoding UTF8
+    } else {
+        $script:Probes | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $script:Evidence 'preflight.json') -Encoding UTF8
+        # 即使一条 refusal 都没有，也要显式写出 []（"没有需要拒绝的替身资源"本身是结论，不能靠缺文件表达）。
+        $refusalJson = if ($script:Refusals.Count -eq 0) { '[]' } else { ($script:Refusals | ConvertTo-Json -Depth 6) }
+        Set-Content -LiteralPath (Join-Path $script:Evidence 'refusals.json') -Value $refusalJson -Encoding UTF8
+        $gated = [ordered]@{
+            blocked = $script:EnvGateBlocked; reason = $script:GateReason; reasonDetail = $script:GateReasonDetail
+            plannedGatedChecks = @($script:GatedInventoryPlan | ForEach-Object { $_.id })
+            notRunIds = @($script:GatedNotRun); alwaysRunIds = $script:AlwaysRunIds
+            refusals = @($script:Refusals | ForEach-Object { $_.id })
+            note = 'Integration happy path is implemented but gated; absence of an environment is NOT_RUN (exit 0), never PASS and never a fake FAIL.'
+        }
+        $gated | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $script:Evidence 'gated-inventory.json') -Encoding UTF8
+        if ($script:HttpLog.Count -gt 0) {
+            $script:HttpLog | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 6 } | Set-Content -LiteralPath (Join-Path $script:Evidence 'http.jsonl') -Encoding UTF8
+        }
+        if ($null -ne $script:DbBefore) { $script:DbBefore | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $script:Evidence 'db-before.json') -Encoding UTF8 }
+        if ($null -ne $script:DbAfter) { $script:DbAfter | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $script:Evidence 'db-after.json') -Encoding UTF8 }
+        if ($null -ne $script:DbDelta) { $script:DbDelta | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $script:Evidence 'db-delta.json') -Encoding UTF8 }
+        if ($null -ne $script:Facts) {
+            [pscustomobject]@{ mqConsumers = @($script:Facts.mqConsumers); transactionCheckers = @($script:Facts.transactionCheckers)
+                mcpConnects = $script:Facts.mcpConnects; createdBuckets = @($script:Facts.createdBuckets)
+                createdIndexes = @($script:Facts.createdIndexes); handlerExecutions = $script:Facts.counters.handlerExecutions
+            } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $script:Evidence 'listener-registration.json') -Encoding UTF8
+        }
+    }
+
+    $finished = (Get-Date).ToUniversalTime()
+    $manifest['finishedUtc'] = $finished.ToString('o')
+    $manifest['finishedAsiaShanghai'] = (Get-ShanghaiStamp $finished)
+    $manifest['durationSeconds'] = [int]($finished - $script:RunStartedUtc).TotalSeconds
+    $manifest['nativeCommandCount'] = $script:NativeCommands.Count
+    $manifest['nativeCommandsFile'] = 'native-commands.json'
+    $manifest['ownedProcessIds'] = @($script:StartedProcesses)
+    $manifest['ownedContainerNames'] = @($script:OwnedContainers)
+    $manifest['cleanup'] = @($script:Cleanup)
+    $manifest['cleanupFile'] = 'cleanup.json'
+    $manifest['secretsPolicy'] = 'passwords/keys are generated per run, passed only through child process environment, redacted in every written file; evidence records key names only'
+    $manifest['secretKeyNames'] = @($script:Secrets.Keys)
+    if ($Mode -eq 'Integration') {
+        $manifest['environmentGate'] = @{ blocked = $script:EnvGateBlocked; reason = $script:GateReason
+            reasonDetail = $script:GateReasonDetail; probes = @($script:Probes) }
+        $manifest['refusals'] = @($script:Refusals)
+        $manifest['notRunCheckIds'] = @($script:GatedNotRun)
+        $manifest['notRunPolicy'] = 'absence of a container runtime / synthetic environment => NOT_RUN with the exact probe evidence; exit 0; never PASS'
+        $manifest['substituteRefusalPolicy'] = 'never connect to or impersonate an existing local/remote business database, cache or object store (probed 127.0.0.1:5432/6379/9000/15434/3306/19530)'
+        $manifest['integrationInventoryPlan'] = @($script:GatedInventoryPlan | ForEach-Object { $_.id })
+    } else {
+        $manifest['surefireSummaryFile'] = 'surefire-summary.json'
+        $manifest['unitInvocationCount'] = $script:UnitInvocations.Count
+    }
+
+    if ($Mode -eq 'Integration') { Assert-IntegrationInventory }
+
+    $manifest['resultCounts'] = @{
+        pass = @($script:Results | Where-Object { $_.status -eq 'PASS' }).Count
+        fail = @($script:Results | Where-Object { $_.status -eq 'FAIL' }).Count
+        notRun = @($script:Results | Where-Object { $_.status -eq 'NOT_RUN' }).Count
+        refused = @($script:Results | Where-Object { $_.status -eq 'REFUSED' }).Count
+    }
+    $allowedNotRun = @()
+    if ($Mode -eq 'Integration' -and $script:EnvGateBlocked) {
+        # 闸门关闭时，被闸门挡住的计划项与预检本身（ENV-container-runtime）都允许是 NOT_RUN：
+        # 它们都带确切阻塞原因，且上面的 INVENTORY-integrity 已核对「没有一条被写成 PASS」。
+        $allowedNotRun = @($script:GatedNotRun) + @($script:PreflightGatedIds)
+    }
+    $blocking = @($script:Results | Where-Object {
+            $_.status -eq 'FAIL' -or $_.status -eq 'SKIP' -or
+            ($_.status -eq 'NOT_RUN' -and $allowedNotRun -notcontains $_.id) })
+    $manifest['notRunAllowedInThisMode'] = @($allowedNotRun)
+    $manifest['blockingResults'] = @($blocking | ForEach-Object { $_.id + '=' + $_.status })
+    $manifest['refusedResults'] = @($script:Results | Where-Object { $_.status -eq 'REFUSED' } | ForEach-Object { $_.id })
+    if ($script:Failures -gt 0 -or $blocking.Count -gt 0) { $exitCode = 1 }
+    if ($Mode -eq 'Integration' -and $script:EnvGateBlocked -and $exitCode -eq 0) {
+        $manifest['closingStatement'] = ('Integration acceptance NOT RUN: {0}. No jar, container or database connection was started; no gated check is reported PASS.' -f $script:GateReason)
+    }
+    $manifest['harnessEntryExitCode'] = $exitCode
+
+    $script:NativeCommands | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $script:Evidence 'native-commands.json') -Encoding UTF8
+    $script:Cleanup | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $script:Evidence 'cleanup.json') -Encoding UTF8
+    $script:Results | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $script:Evidence 'results.json') -Encoding UTF8
+    $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $script:Evidence 'manifest.json') -Encoding UTF8
+
+    Write-Step ("结果：PASS={0} FAIL={1} NOT_RUN={2} REFUSED={3}；入口 exitCode={4}" -f `
+            $manifest['resultCounts'].pass, $manifest['resultCounts'].fail, $manifest['resultCounts'].notRun,
+            $manifest['resultCounts'].refused, $exitCode)
+    Write-Output ("### 证据目录：" + $script:Evidence)
+    if ($Mode -eq 'Unit') {
+        foreach ($row in $script:Surefire) {
+            Write-Output ("    {0,-40} {1,-5} tests={2} failures={3} errors={4} skips={5} refreshed={6}" -f `
+                    $row.class, $row.status, $row.tests, $row.failures, $row.errors, $row.skips, $row.refreshedByThisRun)
+        }
+    }
+}
+exit $exitCode

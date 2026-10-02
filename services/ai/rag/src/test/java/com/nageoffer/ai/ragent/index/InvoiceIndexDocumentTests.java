@@ -24,8 +24,12 @@ import com.nageoffer.ai.ragent.rag.config.RAGDefaultProperties;
 import com.nageoffer.ai.ragent.framework.convention.ChatMessage;
 import com.nageoffer.ai.ragent.framework.convention.ChatRequest;
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.security.AuthorizedResourceScope;
 import com.nageoffer.ai.ragent.infra.chat.LLMService;
 import com.nageoffer.ai.ragent.infra.embedding.EmbeddingService;
+import com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope;
+import com.nageoffer.ai.ragent.rag.core.retrieval.RetrieveRequest;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorRetrieverService;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.service.vector.request.InsertReq;
@@ -47,6 +51,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -88,7 +93,13 @@ public class InvoiceIndexDocumentTests {
     @Test
     public void chatLlmQuery() {
         String question = "阿里发票抬头";
-        List<RetrievedChunk> retrievedChunks = retrieverService.retrieve(question, 5);
+        // 手工联调用例（需要真实向量库与模型）：作用域按"默认逻辑库已授权"构造，
+        // 不带 collectionNames 表示仍限于已授权集合，而不是查全库
+        List<RetrievedChunk> retrievedChunks = retrieverService.retrieve(liveScope(),
+                RetrieveRequest.builder()
+                        .query(question)
+                        .topK(5)
+                        .build());
 
         if (retrievedChunks == null || retrievedChunks.isEmpty()) {
             System.out.println("未检索到与问题相关的文档内容，请尝试换一个问法。");
@@ -135,6 +146,22 @@ public class InvoiceIndexDocumentTests {
 
         String chat = llmService.chat(req);
         System.out.println(chat);
+    }
+
+    /**
+     * 手工联调用的授权作用域：默认逻辑库视为已授权。
+     * <p>
+     * 不是 {@code denied()}——空作用域按新契约会直接返回空集，联调用例就查不到任何东西了。
+     */
+    private AuthorizedRetrievalScope liveScope() {
+        String collection = ragDefaultProperties.getCollectionName();
+        List<String> collections = List.of(collection);
+        ExecutionPrincipal principal = new ExecutionPrincipal("tenant-local", "1001",
+                ExecutionPrincipal.canonicalMembershipId("tenant-local", "1001"),
+                1, 1, Set.of(), "jti-live-1", "live-test", 0L, 0L);
+        AuthorizedResourceScope resourceScope = AuthorizedResourceScope.granted(
+                principal, "kb.retrieve", collections, System.currentTimeMillis());
+        return AuthorizedRetrievalScope.of(resourceScope, collections, List.of(), List.of(), collections);
     }
 
     private String extractText(String filePath) throws TikaException, IOException {

@@ -65,6 +65,12 @@
             <artifactId>ruoyi-system</artifactId>
         </dependency>
 
+        <!-- P1.2b：platform 生产身份/授权接线——admin 实现 integration 的身份 SPI -->
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>ruoyi-ai-integration</artifactId>
+        </dependency>
+
         <!--  工作流模块  -->
         <dependency>
             <groupId>org.ruoyi</groupId>

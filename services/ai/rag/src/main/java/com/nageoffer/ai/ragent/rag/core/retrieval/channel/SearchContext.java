@@ -17,6 +17,8 @@
 
 package com.nageoffer.ai.ragent.rag.core.retrieval.channel;
 
+import com.nageoffer.ai.ragent.framework.exception.ClientException;
+import com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope;
 import com.nageoffer.ai.ragent.rag.core.retrieval.RetrievalBudget;
 import com.nageoffer.ai.ragent.rag.dto.SubQuestionIntent;
 import lombok.Builder;
@@ -67,10 +69,44 @@ public class SearchContext {
     private RetrievalScope retrievalScope;
 
     /**
+     * P1.3b 已授权检索作用域（由检索入口的授权器解析一次，各通道共读）。
+     *
+     * <p>刻意<b>默认未设置</b>：未设置表示"这次检索没有经过授权解析"。
+     * 通道必须用 {@link #getAuthorizedScope()} / {@link #requireAuthorizedScope()} 取用——
+     * 缺作用域即拒绝或返回空集，绝不能把 null 理解成"没有限制，那就查全库"。
+     */
+    private AuthorizedRetrievalScope authorizedScope;
+
+    /**
      * 扩展元数据
      */
     @Builder.Default
     private Map<String, Object> metadata = new HashMap<>();
+
+    /**
+     * 取已授权检索作用域；<b>未设置即返回"无授权"</b>（不是 null）。
+     *
+     * <p>这是检索链上"缺作用域 ⇒ 空集合"的唯一出处。返回 {@code denied()} 而不是抛错，
+     * 是因为"没有授权"本身是一个正常且必须被正确处理的业务结果（list 空页 / 指定 404）。
+     */
+    public AuthorizedRetrievalScope getAuthorizedScope() {
+        return authorizedScope == null ? AuthorizedRetrievalScope.denied() : authorizedScope;
+    }
+
+    /**
+     * 取已授权检索作用域；未设置即抛错。
+     *
+     * <p>用在"必须已经过授权解析"的位置（如向量检索的直连入口）：这里的缺失属于接线错误，
+     * 应当立刻失败而不是悄悄返回空结果——否则"忘了接线"会被伪装成"没有命中"。
+     *
+     * @throws ClientException 未设置作用域
+     */
+    public AuthorizedRetrievalScope requireAuthorizedScope() {
+        if (authorizedScope == null) {
+            throw new ClientException("search context carries no authorized retrieval scope");
+        }
+        return authorizedScope;
+    }
 
     /**
      * 获取主问题（优先使用重写后的问题）

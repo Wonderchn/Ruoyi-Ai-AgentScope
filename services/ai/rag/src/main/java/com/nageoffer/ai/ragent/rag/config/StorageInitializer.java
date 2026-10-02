@@ -18,12 +18,14 @@
 package com.nageoffer.ai.ragent.rag.config;
 
 import com.nageoffer.ai.ragent.framework.exception.ServiceException;
+import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
 import com.nageoffer.ai.ragent.rag.core.storage.ObjectStorageClient;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.util.concurrent.TimeUnit;
@@ -37,8 +39,11 @@ import java.util.concurrent.TimeUnit;
  *   <li>资产桶 {@code rag.storage.asset-bucket}：公共读，PDF 抽出的图片等需被浏览器匿名直连预览</li>
  * </ul>
  * 集群环境下用 Redisson 分布式锁保证只建一次：先判断是否存在 → 拿锁 → 双重检查 → 建桶
- * <p>
- * 失败策略：快速失败，存储 / Redis 不可用时让异常向上抛，启动即暴露问题
+ *
+ * <p>P1.2a：本初始化器属于<b>未批准旧能力</b>。它在 {@link #initBuckets()} 的
+ * <b>第一次远端调用之前</b>短路关闭，因此默认启动不会建桶、不会下发资产桶公共读，
+ * 也不会触碰 Redis 锁。Bean 保留（其他 service 构造器仍可解析依赖），
+ * 索引/桶结构由未来专门能力批准后恢复。
  */
 @Slf4j
 @Component
@@ -51,9 +56,50 @@ public class StorageInitializer {
     private final ObjectStorageClient objectStorageClient;
     private final RedissonClient redissonClient;
     private final RagStorageProperties properties;
+    /**
+     * 旧能力关闭判定；缺席按关闭处理（不默认放行）。
+     */
+    private final ObjectProvider<SaasCapabilityBoundary> capabilityBoundary;
 
     @PostConstruct
     public void initBuckets() {
+        // 启动期初始化在"旧能力关闭"时必须**跳过**，而不是把异常抛出去。
+        //
+        // 这里曾经直接把受控异常抛到 Spring：@PostConstruct 抛异常会让整个
+        // ApplicationContext 启动失败，于是"关闭旧能力"变成"应用起不来"。
+        // 两者是不同的事：关闭能力的要求是"不发生任何对象存储/Redis 调用"，
+        // 而不是"拒绝启动"——尤其因为启动阶段根本没有请求可拒绝，
+        // 该失败语义属于**请求路径**，不属于装配路径。
+        // 显式重载 initBuckets(boundary) 仍然抛异常，那是给请求/命令路径用的。
+        try {
+            runStartupInit(capabilityBoundary == null ? null : capabilityBoundary.getIfAvailable());
+        } catch (SaasCapabilityBoundary.ClosedCapabilityException e) {
+            log.warn("对象存储桶初始化已跳过：旧能力关闭（capability={}）。"
+                    + "本次启动未创建任何桶、未下发公共读、未获取 Redis 锁。", e.capability());
+        }
+    }
+
+    /**
+     * 启动期专用包装：与显式重载同名会造成自递归（`@PostConstruct` 版本又调回自己），
+     * 同时也会让"显式版本必须抛异常"的契约失效。两者必须分开命名。
+     */
+    private void runStartupInit(SaasCapabilityBoundary boundary) {
+        initBuckets(boundary);
+    }
+
+    /**
+     * 显式边界版本：关闭时抛受控异常，且不发生任何对象存储/Redis 调用。
+     *
+     * <p>public 而非包内可见：这是"关闭即失败"的<b>请求/命令路径契约</b>，
+     * 与 {@link #initBuckets()} 的"启动期跳过"是两件事，两者都需要被跨包断言。
+     */
+    public void initBuckets(SaasCapabilityBoundary boundary) {
+        if (boundary == null) {
+            throw new SaasCapabilityBoundary.ClosedCapabilityException(
+                    SaasCapabilityBoundary.LegacyCapability.STORAGE_INITIALIZER);
+        }
+        boundary.requireOpen(SaasCapabilityBoundary.LegacyCapability.STORAGE_INITIALIZER);
+
         ensureBucket(properties.getKbBucket(), false);
         ensureBucket(properties.getAssetBucket(), true);
     }

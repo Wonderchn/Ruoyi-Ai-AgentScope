@@ -45,9 +45,12 @@ const stream = openRunStream(
 
 try {
   for await (const message of stream.messages) {
-    if (message.isComment) continue;            // 心跳，不渲染
-    if (message.type === 'run.output_delta') append((message.parsed?.payload as any)?.text ?? '');
-    if (message.type === 'run.terminal') break; // 只有终态才算结束
+    if (message.isComment)
+      continue; // 心跳，不渲染
+    if (message.type === 'run.output_delta')
+      append((message.parsed?.payload as any)?.text ?? '');
+    if (message.type === 'run.terminal')
+      break; // 只有终态才算结束
   }
 }
 catch (error) {

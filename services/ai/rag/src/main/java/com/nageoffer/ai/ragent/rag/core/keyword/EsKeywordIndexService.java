@@ -19,20 +19,24 @@ package com.nageoffer.ai.ragent.rag.core.keyword;
 
 import cn.hutool.core.collection.CollUtil;
 import co.elastic.clients.elasticsearch._types.ElasticsearchException;
+import co.elastic.clients.elasticsearch._types.FieldValue;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch.core.BulkRequest;
 import co.elastic.clients.elasticsearch.core.BulkResponse;
 import com.nageoffer.ai.ragent.core.chunk.model.EmbeddedChunk;
+import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
 import com.nageoffer.ai.ragent.rag.config.KeywordProperties;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 基于 Elasticsearch 的关键词索引服务，{@code rag.keyword.type=es} 时才装配
@@ -40,6 +44,10 @@ import java.util.Map;
  * 只写关键词文本与检索所需元信息，不写向量；文档主键 {@code _id} 取 chunkId，与向量库主键对齐才能保证
  * 跨模态去重与融合一致；所有知识库写同一物理索引、以 {@code collection_name} 区分，与向量库共享
  * collection 同构
+ *
+ * <p>P1.2a 只关<b>启动期</b>的共享索引自动创建（{@link #initSharedIndex()}）：
+ * 默认启动不对 ES 发起任何请求。检索/写入方向的租户与授权 filter 由 P1.3b 负责，
+ * 不因本单元关闭而假装已经隔离。
  */
 @Slf4j
 @Service
@@ -51,17 +59,34 @@ public class EsKeywordIndexService implements KeywordIndexService {
 
     private final ElasticsearchClient esClient;
     private final KeywordProperties keywordProperties;
+    /**
+     * 旧能力关闭判定；缺席按关闭处理（不默认放行）。
+     */
+    private final ObjectProvider<SaasCapabilityBoundary> capabilityBoundary;
 
     /**
-     * 启动即幂等确保共享索引存在，与向量共享 collection 的启动初始化对称
+     * 启动即幂等确保共享索引存在，与向量共享 collection 的启动初始化对称。
+     *
+     * <p>P1.2a：默认关闭，不做 {@code indices().exists()/create()} 任何远端调用。
      */
     @PostConstruct
     public void initSharedIndex() {
+        initSharedIndex(capabilityBoundary == null ? null : capabilityBoundary.getIfAvailable());
+    }
+
+    /** 显式边界版本：关闭时抛受控异常，且不含任何 ES 请求。 */
+    void initSharedIndex(SaasCapabilityBoundary boundary) {
+        if (boundary == null) {
+            throw new SaasCapabilityBoundary.ClosedCapabilityException(
+                    SaasCapabilityBoundary.LegacyCapability.ES_SHARED_INDEX_INITIALIZER);
+        }
+        boundary.requireOpen(SaasCapabilityBoundary.LegacyCapability.ES_SHARED_INDEX_INITIALIZER);
         ensureSharedIndex();
     }
 
     @Override
-    public void indexDocumentChunks(String collectionName, String docId, List<EmbeddedChunk> chunks) {
+    public void indexDocumentChunks(String tenantId, String collectionName, String docId, List<EmbeddedChunk> chunks) {
+        KeywordIndexService.requireTenant(tenantId);
         if (CollUtil.isEmpty(chunks)) {
             return;
         }
@@ -71,100 +96,138 @@ public class EsKeywordIndexService implements KeywordIndexService {
         BulkRequest.Builder bulk = new BulkRequest.Builder();
         for (EmbeddedChunk chunk : chunks) {
             String chunkId = chunk.chunkId();
-            Map<String, Object> doc = buildDocument(collectionName, docId, chunk);
+            Map<String, Object> doc = buildDocument(tenantId, collectionName, docId, chunk);
             bulk.operations(op -> op.index(idx -> idx.index(index).id(chunkId).document(doc)));
         }
 
         try {
             BulkResponse resp = esClient.bulk(bulk.build());
             if (resp.errors()) {
-                log.warn("ES 关键词索引部分失败, collection={}, docId={}", collectionName, docId);
+                log.warn("ES 关键词索引部分失败, tenant={}, collection={}, docId={}", tenantId, collectionName, docId);
             } else {
-                log.info("ES 关键词索引写入成功, collection={}, docId={}, rows={}", collectionName, docId, chunks.size());
+                log.info("ES 关键词索引写入成功, tenant={}, collection={}, docId={}, rows={}",
+                        tenantId, collectionName, docId, chunks.size());
             }
         } catch (Exception e) {
-            throw new RuntimeException("ES 关键词索引写入失败, collection=" + collectionName + ", docId=" + docId, e);
+            throw new RuntimeException("ES 关键词索引写入失败, tenant=" + tenantId
+                    + ", collection=" + collectionName + ", docId=" + docId, e);
         }
     }
 
     @Override
-    public void updateChunk(String collectionName, String docId, EmbeddedChunk chunk) {
-        indexDocumentChunks(collectionName, docId, List.of(chunk));
+    public void updateChunk(String tenantId, String collectionName, String docId, EmbeddedChunk chunk) {
+        indexDocumentChunks(tenantId, collectionName, docId, List.of(chunk));
     }
 
     @Override
-    public void deleteDocumentIndex(String collectionName, String docId) {
+    public void deleteDocumentIndex(String tenantId, String collectionName, String docId) {
+        KeywordIndexService.requireTenant(tenantId);
         try {
             esClient.deleteByQuery(d -> d
                     .index(sharedIndex())
                     .ignoreUnavailable(true)
                     .allowNoIndices(true)
                     .query(q -> q.bool(b -> b
+                            .filter(f -> f.term(t -> t.field("tenant_id").value(tenantId)))
                             .filter(f -> f.term(t -> t.field("collection_name").value(collectionName)))
                             .filter(f -> f.term(t -> t.field("doc_id").value(docId))))));
-            log.info("ES 关键词索引按文档删除成功, collection={}, docId={}", collectionName, docId);
+            log.info("ES 关键词索引按文档删除成功, tenant={}, collection={}, docId={}", tenantId, collectionName, docId);
         } catch (Exception e) {
             if (isNotFound(e)) {
-                log.info("ES 共享索引不存在，跳过按文档删除, collection={}, docId={}", collectionName, docId);
+                log.info("ES 共享索引不存在，跳过按文档删除, tenant={}, collection={}, docId={}",
+                        tenantId, collectionName, docId);
                 return;
             }
-            throw new RuntimeException("ES 关键词索引删除失败, collection=" + collectionName + ", docId=" + docId, e);
+            throw new RuntimeException("ES 关键词索引删除失败, tenant=" + tenantId
+                    + ", collection=" + collectionName + ", docId=" + docId, e);
         }
     }
 
     @Override
-    public void deleteChunkById(String collectionName, String chunkId) {
-        // chunkId 为全局唯一雪花主键，直接按 _id 删除，无需再限定 collection_name
+    public void deleteChunkById(String tenantId, String collectionName, String chunkId) {
+        KeywordIndexService.requireTenant(tenantId);
+        // 用 delete-by-query 而不是按 _id 直删：ES 的 delete API 只接受 _id，无法附加租户条件。
+        // 单条删除也必须带租户条件——"chunkId 全局唯一"是主键属性、不是授权依据，
+        // 一旦 id 生成方变化（迁移/导入/换 ID 策略），仅按 id 删除就会跨租户删数据。
         try {
-            esClient.delete(d -> d.index(sharedIndex()).id(chunkId));
-            log.info("ES 关键词索引按 chunk 删除成功, collection={}, chunkId={}", collectionName, chunkId);
+            int deleted = deleteChunks(tenantId, List.of(chunkId));
+            log.info("ES 关键词索引按 chunk 删除成功, tenant={}, collection={}, chunkId={}, deleted={}",
+                    tenantId, collectionName, chunkId, deleted);
         } catch (Exception e) {
             if (isNotFound(e)) {
-                log.info("ES 共享索引或 chunk 不存在，跳过按 chunk 删除, collection={}, chunkId={}", collectionName, chunkId);
+                log.info("ES 共享索引不存在，跳过按 chunk 删除, tenant={}, chunkId={}", tenantId, chunkId);
                 return;
             }
-            throw new RuntimeException("ES 关键词索引删除失败, collection=" + collectionName + ", chunkId=" + chunkId, e);
+            throw new RuntimeException("ES 关键词索引删除失败, tenant=" + tenantId
+                    + ", collection=" + collectionName + ", chunkId=" + chunkId, e);
         }
     }
 
     @Override
-    public void deleteChunksByIds(String collectionName, List<String> chunkIds) {
+    public void deleteChunksByIds(String tenantId, String collectionName, List<String> chunkIds) {
+        KeywordIndexService.requireTenant(tenantId);
         if (CollUtil.isEmpty(chunkIds)) {
             return;
         }
-        String index = sharedIndex();
-        BulkRequest.Builder bulk = new BulkRequest.Builder();
-        for (String chunkId : chunkIds) {
-            bulk.operations(op -> op.delete(del -> del.index(index).id(chunkId)));
-        }
         try {
-            esClient.bulk(bulk.build());
-            log.info("ES 关键词索引批量删除成功, collection={}, count={}", collectionName, chunkIds.size());
+            int deleted = deleteChunks(tenantId, chunkIds);
+            log.info("ES 关键词索引批量删除成功, tenant={}, collection={}, count={}, deleted={}",
+                    tenantId, collectionName, chunkIds.size(), deleted);
         } catch (Exception e) {
             if (isNotFound(e)) {
-                log.info("ES 共享索引不存在，跳过批量删除, collection={}, count={}", collectionName, chunkIds.size());
+                log.info("ES 共享索引不存在，跳过批量删除, tenant={}, count={}", tenantId, chunkIds.size());
                 return;
             }
-            throw new RuntimeException("ES 关键词索引批量删除失败, collection=" + collectionName, e);
+            throw new RuntimeException("ES 关键词索引批量删除失败, tenant=" + tenantId
+                    + ", collection=" + collectionName, e);
         }
     }
 
     @Override
-    public void deleteByCollection(String collectionName) {
+    public void deleteByCollection(String tenantId, String collectionName) {
+        KeywordIndexService.requireTenant(tenantId);
         try {
             esClient.deleteByQuery(d -> d
                     .index(sharedIndex())
                     .ignoreUnavailable(true)
                     .allowNoIndices(true)
-                    .query(q -> q.term(t -> t.field("collection_name").value(collectionName))));
-            log.info("ES 关键词索引按知识库删除成功, collection={}", collectionName);
+                    .query(q -> q.bool(b -> b
+                            .filter(f -> f.term(t -> t.field("tenant_id").value(tenantId)))
+                            .filter(f -> f.term(t -> t.field("collection_name").value(collectionName))))));
+            log.info("ES 关键词索引按知识库删除成功, tenant={}, collection={}", tenantId, collectionName);
         } catch (Exception e) {
             if (isNotFound(e)) {
-                log.info("ES 共享索引不存在，跳过按知识库删除, collection={}", collectionName);
+                log.info("ES 共享索引不存在，跳过按知识库删除, tenant={}, collection={}", tenantId, collectionName);
                 return;
             }
-            throw new RuntimeException("ES 关键词索引按知识库删除失败, collection=" + collectionName, e);
+            throw new RuntimeException("ES 关键词索引按知识库删除失败, tenant=" + tenantId
+                    + ", collection=" + collectionName, e);
         }
+    }
+
+    /**
+     * 按 chunkId 删除，且**恒定**带租户条件。
+     *
+     * <p>为什么不用 bulk 的 delete 操作：ES 的 delete 以 {@code _id} 定位，无法附带过滤条件，
+     * 而 {@code _id} 取的是 chunkId。要用租户条件约束删除，就只能在 query 语义里做，
+     * 所以这里统一走 delete-by-query，写入侧与删除侧的租户口径因此不可能出现分叉。
+     *
+     * @return 实际删除的文档数
+     */
+    private int deleteChunks(String tenantId, List<String> chunkIds) throws Exception {
+        var resp = esClient.deleteByQuery(d -> d
+                .index(sharedIndex())
+                .ignoreUnavailable(true)
+                .allowNoIndices(true)
+                .refresh(true)
+                .query(q -> q.bool(b -> b
+                        .filter(f -> f.term(t -> t.field("tenant_id").value(tenantId)))
+                        .filter(f -> f.terms(t -> t.field("_id")
+                                .terms(v -> v.value(chunkIds.stream()
+                                        .map(FieldValue::of)
+                                        .collect(Collectors.toList()))))))));
+        Long deleted = resp.deleted();
+        return deleted == null ? 0 : deleted.intValue();
     }
 
     private boolean isNotFound(Exception e) {
@@ -202,6 +265,7 @@ public class EsKeywordIndexService implements KeywordIndexService {
                     .index(index)
                     .mappings(m -> m
                             .properties("content", p -> p.text(t -> t.analyzer(analyzer).searchAnalyzer(searchAnalyzer)))
+                            .properties("tenant_id", p -> p.keyword(k -> k))
                             .properties("collection_name", p -> p.keyword(k -> k))
                             .properties("doc_id", p -> p.keyword(k -> k))
                             .properties("chunk_index", p -> p.integer(i -> i))));
@@ -216,7 +280,7 @@ public class EsKeywordIndexService implements KeywordIndexService {
         }
     }
 
-    private Map<String, Object> buildDocument(String collectionName, String docId, EmbeddedChunk chunk) {
+    private Map<String, Object> buildDocument(String tenantId, String collectionName, String docId, EmbeddedChunk chunk) {
         String content = chunk.content() == null ? "" : chunk.content();
         if (content.length() > MAX_CONTENT_LENGTH) {
             content = content.substring(0, MAX_CONTENT_LENGTH);
@@ -224,6 +288,9 @@ public class EsKeywordIndexService implements KeywordIndexService {
 
         Map<String, Object> doc = new HashMap<>();
         doc.put("content", content);
+        // 租户写进文档体，删除的 delete-by-query 才能按它过滤；
+        // 只加字段不加写入，会让所有删除条件静默匹配不到任何行（漏删），比误删更难发现。
+        doc.put("tenant_id", tenantId);
         doc.put("collection_name", collectionName);
         doc.put("doc_id", docId);
         doc.put("chunk_index", chunk.index());

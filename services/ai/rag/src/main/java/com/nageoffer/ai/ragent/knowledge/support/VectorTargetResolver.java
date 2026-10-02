@@ -18,6 +18,8 @@
 package com.nageoffer.ai.ragent.knowledge.support;
 
 import com.nageoffer.ai.ragent.core.ingest.VectorTarget;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.knowledge.dao.entity.KnowledgeBaseDO;
 import com.nageoffer.ai.ragent.rag.config.RAGDefaultProperties;
@@ -26,11 +28,14 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 /**
- * 向量落点派生：知识库配置（L2）+ 部署配置（L1）→ {@link VectorTarget}
+ * 向量落点派生：当前可信主体（tenant）+ 知识库配置（L2）+ 部署配置（L1）→ {@link VectorTarget}
  * <p>
  * 单独成一个组件是为了让"落点身份怎么算出来"只有一个产生地。原先每个写向量的调用点各自从知识库
  * 取模型、各自决定要不要回落系统默认，于是上传路径用知识库配置的模型、管道路径用系统默认模型，
  * 同一个分区里混进了两种语义空间的向量
+ *
+ * <p>P1.3b：租户同样在这里落定，且<b>只</b>来自执行主体，不来自请求参数或知识库行上的
+ * {@code created_by}（那是展示审计，不是归属）。缺主体直接拒绝——没有主体就没有可执行的向量写。
  */
 @Component
 @RequiredArgsConstructor
@@ -39,9 +44,20 @@ public class VectorTargetResolver {
     private final RAGDefaultProperties ragDefaultProperties;
 
     /**
-     * 派生落点，缺配置直接失败而不是回落默认值
+     * 派生落点，缺配置直接失败而不是回落默认值。
+     *
+     * @throws ClientException 无执行主体、知识库为空或缺少嵌入模型/维度
      */
     public VectorTarget resolve(KnowledgeBaseDO kbDO) {
+        return resolve(PrincipalContext.get(), kbDO);
+    }
+
+    /** 显式主体版本，便于在已解构主体的调用链里复用同一份判定。 */
+    public VectorTarget resolve(ExecutionPrincipal principal, KnowledgeBaseDO kbDO) {
+        if (principal == null) {
+            // 无主体时不得默认某个租户：向量写入必须能回答"这些行属于谁"
+            throw new ClientException("缺少执行主体，无法确定向量落点的租户归属");
+        }
         if (kbDO == null) {
             throw new ClientException("知识库不存在");
         }
@@ -52,6 +68,6 @@ public class VectorTargetResolver {
         if (dimension == null || dimension <= 0) {
             throw new ClientException("部署未配置向量维度 rag.default.dimension");
         }
-        return new VectorTarget(kbDO.getCollectionName(), kbDO.getEmbeddingModel(), dimension);
+        return new VectorTarget(principal.tenantId(), kbDO.getCollectionName(), kbDO.getEmbeddingModel(), dimension);
     }
 }

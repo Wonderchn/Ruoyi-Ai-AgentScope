@@ -27,6 +27,13 @@ import java.util.Date;
 @Data
 public class AgentMemoryControlDO {
 
+    /**
+     * P1.3d：主键 (tenant_id, member_id)（V5 换键）；userId 仅展示/legacy
+     */
+    private String tenantId;
+
+    private String memberId;
+
     private String userId;
 
     /**

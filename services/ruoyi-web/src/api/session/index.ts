@@ -6,8 +6,20 @@ import type {
 } from './types';
 import { del, get, post, put } from '@/utils/request';
 
-export function get_session_list(params: GetSessionListParams) {
-  return get<ChatSessionVo[]>('/system/session/list', params).json();
+interface ConversationView { conversationId: string; title: string; lastTime: string }
+
+export async function get_session_list(params: GetSessionListParams) {
+  const limit = Math.min(200, Math.max(1, params.pageSize ?? 25));
+  const response = await get<{ data: ConversationView[] }>('/api/ai/v1/conversations', {
+    offset: (Math.max(1, params.pageNum ?? 1) - 1) * limit,
+    limit,
+  }).json();
+  const rows: ChatSessionVo[] = (response.data ?? []).map((row: ConversationView) => ({
+    id: row.conversationId,
+    sessionTitle: row.title,
+    createTime: new Date(row.lastTime),
+  }));
+  return { rows };
 }
 
 export function create_session(data: CreateSessionDTO) {
@@ -18,8 +30,12 @@ export function update_session(data: ChatSessionVo) {
   return put('/system/session', data).json();
 }
 
-export function get_session(id: string) {
-  return get<ChatSessionVo>(`/system/session/${id}`).json();
+export async function get_session(id: string) {
+  const response = await get<{ data: ConversationView }>(`/api/ai/v1/conversations/${encodeURIComponent(id)}`).json();
+  const row = response.data;
+  if (!row)
+    return { data: null };
+  return { data: { id: row.conversationId, sessionTitle: row.title, createTime: new Date(row.lastTime) } as ChatSessionVo };
 }
 
 export function delete_session(ids: string[]) {

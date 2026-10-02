@@ -35,6 +35,22 @@ import java.util.List;
 @RequiredArgsConstructor
 public class ConversationGroupServiceImpl implements ConversationGroupService {
 
+    private boolean tenantScopeRequired;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureScope(@org.springframework.beans.factory.annotation.Value("${ai.integration.enabled:false}") boolean required) {
+        tenantScopeRequired = required;
+    }
+
+    private <T> com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<T> scoped(Class<T> type) {
+        var query = Wrappers.lambdaQuery(type);
+        if (tenantScopeRequired) {
+            var principal = com.nageoffer.ai.ragent.framework.context.PrincipalContext.require();
+            query.apply("tenant_id={0} AND member_id={1}", principal.tenantId(), principal.membershipId());
+        }
+        return query;
+    }
+
     private final ConversationMessageMapper messageMapper;
     private final ConversationSummaryMapper summaryMapper;
     private final ConversationMapper conversationMapper;
@@ -45,7 +61,7 @@ public class ConversationGroupServiceImpl implements ConversationGroupService {
             return List.of();
         }
         return messageMapper.selectList(
-                Wrappers.lambdaQuery(ConversationMessageDO.class)
+                scoped(ConversationMessageDO.class)
                         .eq(ConversationMessageDO::getConversationId, conversationId)
                         .eq(ConversationMessageDO::getUserId, userId)
                         .eq(ConversationMessageDO::getRole, "user")
@@ -60,7 +76,7 @@ public class ConversationGroupServiceImpl implements ConversationGroupService {
         if (StrUtil.isBlank(conversationId) || StrUtil.isBlank(userId)) {
             return List.of();
         }
-        var query = Wrappers.lambdaQuery(ConversationMessageDO.class)
+        var query = scoped(ConversationMessageDO.class)
                 .eq(ConversationMessageDO::getConversationId, conversationId)
                 .eq(ConversationMessageDO::getUserId, userId)
                 .in(ConversationMessageDO::getRole, "user", "assistant")
@@ -82,7 +98,7 @@ public class ConversationGroupServiceImpl implements ConversationGroupService {
             return null;
         }
         ConversationMessageDO record = messageMapper.selectOne(
-                Wrappers.lambdaQuery(ConversationMessageDO.class)
+                scoped(ConversationMessageDO.class)
                         .eq(ConversationMessageDO::getConversationId, conversationId)
                         .eq(ConversationMessageDO::getUserId, userId)
                         .eq(ConversationMessageDO::getDeleted, 0)
@@ -99,7 +115,7 @@ public class ConversationGroupServiceImpl implements ConversationGroupService {
             return 0;
         }
         return messageMapper.selectCount(
-                Wrappers.lambdaQuery(ConversationMessageDO.class)
+                scoped(ConversationMessageDO.class)
                         .eq(ConversationMessageDO::getConversationId, conversationId)
                         .eq(ConversationMessageDO::getUserId, userId)
                         .eq(ConversationMessageDO::getRole, "user")
@@ -113,7 +129,7 @@ public class ConversationGroupServiceImpl implements ConversationGroupService {
             return null;
         }
         return summaryMapper.selectOne(
-                Wrappers.lambdaQuery(ConversationSummaryDO.class)
+                scoped(ConversationSummaryDO.class)
                         .eq(ConversationSummaryDO::getConversationId, conversationId)
                         .eq(ConversationSummaryDO::getUserId, userId)
                         .eq(ConversationSummaryDO::getDeleted, 0)
@@ -128,7 +144,7 @@ public class ConversationGroupServiceImpl implements ConversationGroupService {
             return null;
         }
         return conversationMapper.selectOne(
-                Wrappers.lambdaQuery(ConversationDO.class)
+                scoped(ConversationDO.class)
                         .eq(ConversationDO::getConversationId, conversationId)
                         .eq(ConversationDO::getUserId, userId)
                         .eq(ConversationDO::getDeleted, 0)

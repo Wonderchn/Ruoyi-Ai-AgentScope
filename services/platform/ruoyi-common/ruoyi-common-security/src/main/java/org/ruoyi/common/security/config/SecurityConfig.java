@@ -52,6 +52,7 @@ public class SecurityConfig implements WebMvcConfigurer {
         // 注册路由拦截器，自定义验证规则
         registry.addInterceptor(new SaInterceptor(handler -> {
                 HttpServletRequest request = ServletUtils.getRequest();
+                if (Boolean.TRUE.equals(request.getAttribute("ai.service.authenticated"))) { return; }
                 // 异步线程中 SaToken 上下文不存在，跳过检查
                 // 这避免了 SSE 流式响应完成后 emitter.complete() 触发的问题
                 if (request.getDispatcherType() != DispatcherType.REQUEST
