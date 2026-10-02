@@ -31,6 +31,7 @@ import org.springframework.mock.web.MockMultipartFile;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -249,7 +250,9 @@ class P1ObjectOwnershipTest {
         properties.setKbBucket("ragent-sources");
         properties.setAssetBucket("ragent-assets");
         when(client.objectExists(eq("ragent-sources"), anyString())).thenReturn(false);
-        when(redisson.getLock(anyString())).thenReturn(mock(RLock.class));
+        RLock lock = mock(RLock.class);
+        when(redisson.getLock(anyString())).thenReturn(lock);
+        when(lock.tryLock(anyLong(), any(TimeUnit.class))).thenReturn(true);
         asTenant(TENANT_A);
 
         newService().createKnowledgeSpace("kb-1");

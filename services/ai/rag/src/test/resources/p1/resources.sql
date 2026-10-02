@@ -1,6 +1,14 @@
 -- =====================================================================================
 -- P1.1b/P1.3a 合成 fixture（AI 域）：资源归属、持久 ACL、epoch、state/memory、向量与 run
 -- =====================================================================================
+-- STAGE V3–V5 已冻结并在合成库完整应用（2026-10-02 授权）；本文件在 runner 完整应用
+-- V1–V5 之后装载——所有语句可执行，不再保留注释模板。
+--
+-- 未知归属负例（kb_unknown_owner 一类）：在**迁移阶段**由 V4/V5 归属守卫以 P1001
+-- 明确拒绝（见 P1TableTenantAttributionTest 与 schema-acceptance 的守卫用例）；
+-- 本文件在完整迁移后装载，此时业务表 tenant_id 已 NOT NULL——任何无归属 INSERT
+-- 都会被约束拒绝。**不得默认 tenant，不得删除数据来通过约束**：该机制已在真实 PG 上
+-- 实测（P1001 → 迁移中止 → 数据原样保留）。
 -- 用途：为 P1 的隔离验收提供可复算的合成输入。装载时机：runner 在**完整应用
 -- V1–V5 迁移之后**执行本文件（V3–V5 已存在，本文件不再是注释模板）。
 --
@@ -48,6 +56,8 @@ INSERT INTO ai_resource (tenant_id, resource_type, resource_id, owner_member_id,
   ('T1', 'DOC', 'doc-t1-deleted',  'platform:T1:2101', '1102', 'KB', 'kb-t1-public', 'TOMBSTONED', 2),
   ('T2', 'KB',  'kb-t2-same-selector', 'platform:T2:2201', '1202', NULL, NULL, 'ACTIVE', 1);
 
+-- 持久 ACL 的 subject_type 用 DDL 的枚举大写（MEMBER/DEPT/ROLE/TENANT_ALL）；
+-- 旧 fixture 的 tenant_all 小写口径属于模板期，执行层以迁移 CHECK 为准。
 -- ---------------------------------------------------------------- 持久 ACL
 INSERT INTO ai_resource_acl (id, tenant_id, resource_type, resource_id, subject_type, subject_id, action, granted_by) VALUES
   ('acl-0001', 'T1', 'KB',  'kb-t1-private-a',   'MEMBER',     'platform:T1:2101', 'kb.read',       'platform:T1:2101'),

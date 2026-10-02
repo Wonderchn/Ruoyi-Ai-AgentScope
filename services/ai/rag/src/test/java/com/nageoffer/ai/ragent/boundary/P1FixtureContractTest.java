@@ -335,13 +335,17 @@ class P1FixtureContractTest {
                     "platform SQL 缺少 P1 动作权限 " + permission + "；菜单授权与 05 §4.2 必须一致");
         }
 
-        // AI 侧 SQL：必须覆盖 registry/ACL/epoch 的删除段与关键反例说明
+        // AI 侧 SQL：必须覆盖 registry/ACL/epoch 的关键标记与未知归属处置说明
         for (String marker : List.of("ai_resource", "ai_resource_acl", "ai_acl_epoch",
                 "tenant_all", "kb-t2-same-selector", "kb_unknown_owner")) {
             assertTrue(aiSql.contains(marker), "AI 域 SQL 缺少关键标记：" + marker);
         }
-        assertTrue(aiSql.contains("STAGE V3"),
-                "AI 域 SQL 必须按迁移阶段分段：V3 未冻结前不得写出已装库的假证据");
+        // 2026-10-02 判据演进：V3–V5 迁移已在专属合成库冻结并实际应用，
+        // fixture 由 runner 在完整迁移之后装载，因此"STAGE 注释模板"不再是隔离证据；
+        // 新判据是 fixture 显式声明其装载时机（完整迁移之后），且未知归属
+        // 的拒绝发生在迁移守卫（P1001），不默认 tenant、不删数据。
+        assertTrue(aiSql.contains("STAGE V3") && aiSql.contains("完整应用"),
+                "AI 域 SQL 必须记录迁移阶段状态与冻结事实（STAGE V3–V5 已冻结并完整应用）");
         assertTrue(aiSql.contains("不得默认 tenant"),
                 "AI 域 SQL 必须写明未知归属不得默认 tenant");
 
