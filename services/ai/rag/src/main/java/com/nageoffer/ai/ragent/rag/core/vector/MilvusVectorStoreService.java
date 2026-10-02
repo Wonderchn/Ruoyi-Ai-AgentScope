@@ -56,7 +56,7 @@ import java.util.List;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-@ConditionalOnProperty(name = "rag.vector.type", havingValue = "milvus", matchIfMissing = true)
+@ConditionalOnProperty(name = "rag.vector.type", havingValue = "milvus", matchIfMissing = false)
 public class MilvusVectorStoreService implements VectorStoreService {
 
     private static final Gson GSON = new Gson();

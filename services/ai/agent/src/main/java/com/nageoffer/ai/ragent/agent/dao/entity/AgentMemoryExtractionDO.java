@@ -42,6 +42,13 @@ public class AgentMemoryExtractionDO {
     @TableId(type = IdType.ASSIGN_ID)
     private String id;
 
+    /**
+     * P1.3d：归属（V3/V4 列契约）；claim 唯一索引含 (tenant_id, member_id)
+     */
+    private String tenantId;
+
+    private String memberId;
+
     private String userId;
 
     private String conversationId;

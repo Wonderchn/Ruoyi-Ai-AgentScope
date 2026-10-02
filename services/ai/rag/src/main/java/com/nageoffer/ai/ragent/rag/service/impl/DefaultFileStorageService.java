@@ -156,6 +156,15 @@ public class DefaultFileStorageService implements FileStorageService {
     public String getPublicUrl(String key) {
         Assert.notBlank(key, "对象 key 不能为空");
         requireOwnership(key);
+        // 公共 URL 只对资产桶对象有意义（资产键形如 {tenantId}/{uuid}.{ext}，恰好一个分隔符）。
+        // 知识库文档键（{tenantId}/{namespace}/{uuid}.{ext}）是客户私有内容：
+        // 绝不能凭 key 换取公共直链——私有内容只能走授权下载（openStream + 当前授权），
+        // 否则"是否公开"再次从授权判定滑回运维配置。
+        if (key.indexOf('/') != key.lastIndexOf('/')) {
+            log.warn("拒绝为知识库私有对象生成公共 URL: keyPrefix={}",
+                    key.length() > 24 ? key.substring(0, 24) : key);
+            throw new ServiceException("对象不存在或无权访问");
+        }
         return objectStorageClient.buildPublicUrl(assetBucket, key);
     }
 
@@ -199,13 +208,16 @@ public class DefaultFileStorageService implements FileStorageService {
     @Override
     public void createKnowledgeSpace(String namespace) {
         validateNamespace(namespace);
-        String markerKey = namespace + "/";
+        // 标记对象与分布式锁都按租户作用域：namespace 只是租户内的目录名，
+        // 两个租户允许同名知识库，全局标记会让它们互相"已存在"，全局锁会互斥无关租户。
+        String tenantId = com.nageoffer.ai.ragent.framework.context.PrincipalContext.require().tenantId();
+        String markerKey = tenantScopedPrefix(tenantId, namespace);
         if (objectStorageClient.objectExists(kbBucket, markerKey)) {
             return;
         }
 
         // 集群下用分布式锁 + 双重检查保证目录只建一次，替代旧 createBucket 的冲突保证
-        RLock lock = redissonClient.getLock(LOCK_KEY_PREFIX + namespace);
+        RLock lock = redissonClient.getLock(LOCK_KEY_PREFIX + tenantId + ":" + namespace);
         boolean locked;
         try {
             locked = lock.tryLock(LOCK_WAIT_SECONDS, TimeUnit.SECONDS);
@@ -223,7 +235,7 @@ public class DefaultFileStorageService implements FileStorageService {
             }
             // 写一个 0 字节标记对象，使空知识库目录在控制台可见
             objectStorageClient.streamPut(kbBucket, markerKey, new ByteArrayInputStream(new byte[0]), 0, null);
-            log.info("知识库目录创建成功 bucket={}, namespace={}", kbBucket, namespace);
+            log.info("知识库目录创建成功 bucket={}, tenantId={}, namespace={}", kbBucket, tenantId, namespace);
         } finally {
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
@@ -233,8 +245,42 @@ public class DefaultFileStorageService implements FileStorageService {
 
     @Override
     public void deleteKnowledgeSpace(String namespace) {
+        // 同步路径：租户来自可信执行主体。
         validateNamespace(namespace);
-        objectStorageClient.deleteByPrefix(kbBucket, namespace + "/");
+        String tenantId = com.nageoffer.ai.ragent.framework.context.PrincipalContext.require().tenantId();
+        deleteKnowledgeSpaceForTenant(namespace, tenantId);
+    }
+
+    @Override
+    public void deleteKnowledgeSpaceForTenant(String namespace, String tenantId) {
+        // 异步消费者路径（KnowledgeBaseCleanupConsumer）：事件租户已在校验后传入。
+        // 前缀必须是 {tenantId}/{namespace}/——旧实现只拼 namespace，在新 key 格式下
+        // 既删不到本租户对象（它们带租户前缀），又会把任何恰有该裸前缀的他人对象划进删除范围。
+        validateNamespace(namespace);
+        requireTenantShape(tenantId);
+        objectStorageClient.deleteByPrefix(kbBucket, tenantScopedPrefix(tenantId, namespace));
+    }
+
+    /** 租户作用域前缀：{@code {tenantId}/{namespace}/}。 */
+    private String tenantScopedPrefix(String tenantId, String namespace) {
+        requireTenantShape(tenantId);
+        return tenantId + "/" + namespace + "/";
+    }
+
+    /**
+     * namespace 是 key 的单个路径段：含分隔符即路径穿越/跨目录写入，一律拒绝。
+     */
+    private void validateNamespace(String namespace) {
+        Assert.notBlank(namespace, "namespace 不能为空");
+        Assert.isFalse(namespace.indexOf('/') >= 0 || namespace.indexOf('\\') >= 0,
+                "namespace 不能包含路径分隔符");
+    }
+
+    /** 租户形状校验：与 ExecutionPrincipal 契约一致（1..64、不含冒号/分隔符）。 */
+    private void requireTenantShape(String tenantId) {
+        Assert.notBlank(tenantId, "tenantId 不能为空");
+        Assert.isFalse(tenantId.length() > 64 || tenantId.indexOf(':') >= 0
+                || tenantId.indexOf('/') >= 0, "tenantId 形状非法");
     }
 
     /**
@@ -266,10 +312,6 @@ public class DefaultFileStorageService implements FileStorageService {
         String suffix = extractSuffix(originalFilename);
         String key = UUID.randomUUID().toString().replace("-", "");
         return suffix.isBlank() ? key : key + "." + suffix;
-    }
-
-    private void validateNamespace(String namespace) {
-        Assert.notBlank(namespace, "namespace 不能为空");
     }
 
     private StoredFileDTO buildStoredFileDTO(String url, String originalFilename,

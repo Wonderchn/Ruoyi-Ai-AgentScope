@@ -41,7 +41,7 @@ import org.springframework.context.annotation.Configuration;
  * </pre>
  */
 @Configuration
-@ConditionalOnProperty(name = "rag.vector.type", havingValue = "milvus", matchIfMissing = true)
+@ConditionalOnProperty(name = "rag.vector.type", havingValue = "milvus", matchIfMissing = false)
 public class MilvusConfig {
 
     /**

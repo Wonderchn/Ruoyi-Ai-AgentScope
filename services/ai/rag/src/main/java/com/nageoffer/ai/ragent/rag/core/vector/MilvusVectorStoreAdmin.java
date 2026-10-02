@@ -39,7 +39,7 @@ import java.util.Map;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-@ConditionalOnProperty(name = "rag.vector.type", havingValue = "milvus", matchIfMissing = true)
+@ConditionalOnProperty(name = "rag.vector.type", havingValue = "milvus", matchIfMissing = false)
 public class MilvusVectorStoreAdmin implements VectorStoreAdmin {
 
     private final MilvusClientV2 milvusClient;

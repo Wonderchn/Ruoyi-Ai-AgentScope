@@ -124,6 +124,15 @@ select 9201, menu_id from sys_menu where menu_id between 9500 and 9512;
 insert into sys_role_menu (role_id, menu_id) values (9102, 9500), (9301, 9502), (9302, 9502);
 
 -- ---------------------------------------------------------------------------
+-- 5.1 policyVersion：与 platform V4 的 sys_ai_policy_revision 对齐。
+--     无行的租户必须被授权链拒绝（不默认 1），因此合成租户显式建行。
+--     T1=7 / T2=7：与 AI 域 resources.sql 的 ai_run.policy_version=7、
+--     ai_acl_epoch（T1=3, T2=1）同源一致。
+-- ---------------------------------------------------------------------------
+delete from sys_ai_policy_revision where tenant_id in ('T1', 'T2');
+insert into sys_ai_policy_revision (tenant_id, version) values ('T1', 7), ('T2', 7);
+
+-- ---------------------------------------------------------------------------
 -- 6. 期望归属与计数（供 loader 装载后核对；与 fixture manifest 的 counts 对齐）
 -- ---------------------------------------------------------------------------
 -- tenants            : T1, T2                                     → 2

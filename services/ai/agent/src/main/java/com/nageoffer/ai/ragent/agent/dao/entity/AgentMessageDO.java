@@ -49,6 +49,13 @@ public class AgentMessageDO {
 
     private String conversationId;
 
+    /**
+     * P1.3d：归属（V3/V4 列契约）；权威主体引用是 memberId，userId 仅展示/legacy
+     */
+    private String tenantId;
+
+    private String memberId;
+
     private String userId;
 
     /**

@@ -97,7 +97,7 @@ public class KnowledgeBaseCleanupConsumer implements RocketMQListener<MessageWra
         }
 
         try {
-            fileStorageService.deleteKnowledgeSpace(collectionName);
+            fileStorageService.deleteKnowledgeSpaceForTenant(collectionName, tenantId);
         } catch (Exception e) {
             allSucceeded = false;
             log.error("删除知识库存储目录失败，namespace={}", collectionName, e);

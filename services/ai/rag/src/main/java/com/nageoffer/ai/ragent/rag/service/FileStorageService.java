@@ -113,4 +113,16 @@ public interface FileStorageService {
      * @param namespace 知识库命名空间（collectionName）
      */
     void deleteKnowledgeSpace(String namespace);
+
+    /**
+     * 删除知识库空间（异步消费者路径）：租户来自已校验的清理事件而非执行主体。
+     *
+     * <p>清理消费者运行在异步线程上、没有执行主体，但事件缺租户已被消费者拒绝；
+     * 前缀固定为 {@code {tenantId}/{namespace}/}，与执行主体路径同一形状——
+     * 前缀即授权边界，不允许任何调用方绕过租户段。
+     *
+     * @param namespace 知识库命名空间（collectionName）
+     * @param tenantId  事件携带并已校验的租户
+     */
+    void deleteKnowledgeSpaceForTenant(String namespace, String tenantId);
 }

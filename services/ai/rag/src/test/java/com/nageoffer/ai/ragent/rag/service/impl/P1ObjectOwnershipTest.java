@@ -25,6 +25,7 @@ import com.nageoffer.ai.ragent.rag.core.storage.ObjectStorageClient;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.mock.web.MockMultipartFile;
 
@@ -40,6 +41,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -212,5 +214,86 @@ class P1ObjectOwnershipTest {
         assertThatThrownBy(() -> newService().upload("kb-1", file))
                 .isInstanceOfAny(ServiceException.class, com.nageoffer.ai.ragent.framework.exception.ClientException.class);
         verify(client, never()).streamPut(anyString(), anyString(), any(), anyLong(), anyString());
+    }
+
+    // ---------------------------------------------------------------- 空间删除的租户作用域
+
+    @Test
+    @DisplayName("deleteKnowledgeSpace：前缀必须是 {tenantId}/{namespace}/，不再裸 namespace 全局删")
+    void deleteKnowledgeSpaceIsTenantScoped() {
+        asTenant(TENANT_A);
+
+        newService().deleteKnowledgeSpace("kb-1");
+
+        verify(client).deleteByPrefix("ragent-sources", TENANT_A + "/kb-1/");
+        verify(client, never()).deleteByPrefix(anyString(), eq("kb-1/"));
+    }
+
+    @Test
+    @DisplayName("deleteKnowledgeSpaceForTenant：清理消费者路径用事件租户，形状非法即拒绝")
+    void deleteKnowledgeSpaceForTenantUsesEventTenant() {
+        // 事件租户合法：按 {tenantId}/{namespace}/ 删除
+        newService().deleteKnowledgeSpaceForTenant("kb-1", TENANT_B);
+        verify(client).deleteByPrefix("ragent-sources", TENANT_B + "/kb-1/");
+
+        // 租户形状非法（含冒号/超长）：拒绝且零删除
+        verify(client, never()).deleteByPrefix(anyString(), eq("platform:t2:1/"));
+        assertThatThrownBy(() -> newService().deleteKnowledgeSpaceForTenant("kb-1", "bad:tenant"))
+                .isInstanceOf(IllegalArgumentException.class);
+        verify(client, times(1)).deleteByPrefix(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("createKnowledgeSpace：标记对象按租户作用域，两租户同名知识库互不冲突")
+    void createKnowledgeSpaceMarkerIsTenantScoped() throws Exception {
+        properties.setKbBucket("ragent-sources");
+        properties.setAssetBucket("ragent-assets");
+        when(client.objectExists(eq("ragent-sources"), anyString())).thenReturn(false);
+        when(redisson.getLock(anyString())).thenReturn(mock(RLock.class));
+        asTenant(TENANT_A);
+
+        newService().createKnowledgeSpace("kb-1");
+
+        verify(client).streamPut(eq("ragent-sources"), eq(TENANT_A + "/kb-1/"),
+                any(), eq(0L), any());
+    }
+
+    // ---------------------------------------------------------------- 私有内容不得换公共 URL
+
+    @Test
+    @DisplayName("getPublicUrl：知识库文档键（两段以上路径）即使属于本租户也不得换公共 URL")
+    void publicUrlRejectedForPrivateDocumentKeys() {
+        asTenant(TENANT_A);
+        String privateDoc = TENANT_A + "/kb-1/doc.txt";
+
+        assertThatThrownBy(() -> newService().getPublicUrl(privateDoc))
+                .isInstanceOf(ServiceException.class);
+        verify(client, never()).buildPublicUrl(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("getPublicUrl：单段资产键正常放行（现有图片解析调用方的合法路径）")
+    void publicUrlAllowedForAssetKeys() {
+        asTenant(TENANT_A);
+        String assetKey = TENANT_A + "/logo.png";
+        when(client.buildPublicUrl(eq("ragent-assets"), eq(assetKey))).thenReturn("https://s3/" + assetKey);
+
+        assertThat(newService().getPublicUrl(assetKey)).isEqualTo("https://s3/" + assetKey);
+    }
+
+    // ---------------------------------------------------------------- 路径穿越
+
+    @Test
+    @DisplayName("namespace 含路径分隔符即拒绝：目录名只是租户内的单一路径段")
+    void namespaceTraversalIsRejected() {
+        asTenant(TENANT_A);
+
+        assertThatThrownBy(() -> newService().deleteKnowledgeSpace("other/../escape"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> newService().deleteKnowledgeSpace("a/b"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> newService().deleteKnowledgeSpace("a\\b"))
+                .isInstanceOf(IllegalArgumentException.class);
+        verify(client, never()).deleteByPrefix(anyString(), anyString());
     }
 }
