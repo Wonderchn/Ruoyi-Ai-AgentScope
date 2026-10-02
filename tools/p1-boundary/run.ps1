@@ -2158,13 +2158,20 @@ function Invoke-HttpCases {
         $unknown = Send-Json $client 'GET' ($script:AiBase + '/p1b-unknown-resource-6f2c') $null $null
         Assert-That 'B04-unknown-path' 'B' ($unknown.Status -eq 404) ("unknown status={0} (must equal existing-other-tenant externals)" -f $unknown.Status)
 
-        # S04：猜他租户 ID。
+        # 猜他租户 ID：**无凭证请求下的入口一致性**。
         #
-        # 判据是**不可区分**，不是"也返回 404"：若"资源存在但属于别人"与"资源根本不存在"
-        # 在状态码、body.code、errorCode 或响应长度上留下任何差异，
-        # 攻击者就能靠这个差异**枚举出别的租户有哪些资源 ID**——即使一个字节数据都拿不到。
-        # 因此对同一形状的路径分别请求三种 ID（本租户 / 他租户 / 不存在），
-        # 要求三者外显**完全一致**。
+        # 这条检查测的是"未通过入口的请求，其外显与 ID 无关"，
+        # **不是** S04 要的"存在但属于他租户的资源与不存在的资源不可区分"。
+        # 实测确认：三条请求（本租户 / 他租户 / 不存在）都返回同一个
+        # `404 + code=404 + 资源不存在或…`，即**在到达任何 handler 之前就被拦下**，
+        # 因此 ID 根本没有参与判定。
+        #
+        # 如实标注而不是让它冒充 S04：这条检查无论 ID 处理是否正确都会通过，
+        # 把它读成"S04 已覆盖"会让人以为资源级不可区分性已验证——而它并没有。
+        # S04 的实质部分需要**已认证**请求（完整委托链）才测得到，当前 NOT_VERIFIED。
+        #
+        # 保留它的价值：入口拦截对所有 ID 形状一视同仁是必要条件——
+        # 若他租户 ID 返回 403 而不存在返回 404，差异本身就已经泄漏信息。
         $idPaths = @(
             @{ m = 'GET'; p = '/knowledge-base/{id}' },
             @{ m = 'GET'; p = '/knowledge-base/docs/{id}' },
@@ -2194,8 +2201,8 @@ function Invoke-HttpCases {
             $distinct = @($shapes | Sort-Object -Unique)
             if ($distinct.Count -ne 1) { $s04Bad += ("{0} -> {1}" -f $probe.p, ($distinct -join ' vs ')) }
         }
-        Assert-That 'B04-cross-tenant-id-indistinguishable' 'B' ($s04Bad.Count -eq 0) `
-            ("probed {0} id-shaped paths x 3 ids (own/other-tenant/absent); non-uniform=[{1}]" -f $idPaths.Count, ($s04Bad -join '; '))
+        Assert-That 'B04-unauthenticated-id-uniformity' 'B' ($s04Bad.Count -eq 0) `
+            ("probed {0} id-shaped paths x 3 ids; responses identical (NOT S04: gated before any handler); non-uniform=[{1}]" -f $idPaths.Count, ($s04Bad -join '; '))
 
         # B05：伪造 header/body 不得被解析成可信 principal，payload 不进安全日志。
         $marker = 'p1b-forged-marker-7a1d'
