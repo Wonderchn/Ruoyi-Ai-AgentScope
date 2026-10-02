@@ -2158,6 +2158,45 @@ function Invoke-HttpCases {
         $unknown = Send-Json $client 'GET' ($script:AiBase + '/p1b-unknown-resource-6f2c') $null $null
         Assert-That 'B04-unknown-path' 'B' ($unknown.Status -eq 404) ("unknown status={0} (must equal existing-other-tenant externals)" -f $unknown.Status)
 
+        # S04：猜他租户 ID。
+        #
+        # 判据是**不可区分**，不是"也返回 404"：若"资源存在但属于别人"与"资源根本不存在"
+        # 在状态码、body.code、errorCode 或响应长度上留下任何差异，
+        # 攻击者就能靠这个差异**枚举出别的租户有哪些资源 ID**——即使一个字节数据都拿不到。
+        # 因此对同一形状的路径分别请求三种 ID（本租户 / 他租户 / 不存在），
+        # 要求三者外显**完全一致**。
+        $idPaths = @(
+            @{ m = 'GET'; p = '/knowledge-base/{id}' },
+            @{ m = 'GET'; p = '/knowledge-base/docs/{id}' },
+            @{ m = 'GET'; p = '/agent/v1/conversations/{id}' },
+            @{ m = 'GET'; p = '/rag/traces/runs/{id}' },
+            @{ m = 'GET'; p = '/users/{id}' }
+        )
+        $ownId = '900000000000000001'
+        $otherId = '900000000000000002'
+        $absentId = '999999999999999999'
+        $s04Bad = @()
+        foreach ($probe in $idPaths) {
+            $shapes = @()
+            foreach ($id in @($ownId, $otherId, $absentId)) {
+                $url = $script:AiBase + ($probe.p -replace '\{id\}', $id)
+                $r = Send-Json $client $probe.m $url $null $null
+                # 只比较**语义字段**，不比整段 body。
+                # requestId 每次请求都不同（它是元数据，不是结论），
+                # 拿整段 body 比较会让每条路径都因 requestId 不同而"有差异"，
+                # 于是这个检查要么恒失败、要么被人为放宽到只看状态码——
+                # 两种结果都会让"不可区分"这个判据失效。
+                # 这里取攻击者真正能观测到的三个语义量：状态码、业务码、错误码。
+                $code = if ($r.Json -and $null -ne $r.Json.code) { [string]$r.Json.code } else { '' }
+                $errCode = if ($r.Json -and $r.Json.data -and $null -ne $r.Json.data.errorCode) { [string]$r.Json.data.errorCode } else { '' }
+                $shapes += ("{0}|{1}|{2}" -f $r.Status, $code, $errCode)
+            }
+            $distinct = @($shapes | Sort-Object -Unique)
+            if ($distinct.Count -ne 1) { $s04Bad += ("{0} -> {1}" -f $probe.p, ($distinct -join ' vs ')) }
+        }
+        Assert-That 'B04-cross-tenant-id-indistinguishable' 'B' ($s04Bad.Count -eq 0) `
+            ("probed {0} id-shaped paths x 3 ids (own/other-tenant/absent); non-uniform=[{1}]" -f $idPaths.Count, ($s04Bad -join '; '))
+
         # B05：伪造 header/body 不得被解析成可信 principal，payload 不进安全日志。
         $marker = 'p1b-forged-marker-7a1d'
         $forgedHeaders = @{ 'X-Tenant' = 'p1t1'; 'X-User' = 'forged-admin'
