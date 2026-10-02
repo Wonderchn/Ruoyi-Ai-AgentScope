@@ -83,6 +83,161 @@ public class AiResourceController {
         this.writeService = writeService;
     }
 
+    private AuthorizedDownloadService downloads;
+    private AuthorizedExportService exports;
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private TenantConversationReadRepository conversations;
+    private TenantRunReadRepository runs;
+    private TenantEventReadRepository events;
+    private com.nageoffer.ai.ragent.framework.security.RevocationGuard revocations;
+    private org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.rag.core.vector.PgVectorRetrieverService> retrievers;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureExecution(com.nageoffer.ai.ragent.framework.security.RevocationGuard revocations,
+            org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.rag.core.vector.PgVectorRetrieverService> retrievers){
+        this.revocations=revocations;this.retrievers=retrievers;
+    }
+
+    private <T> ResponseEntity<ApiEnvelope<T>> reply(String action,String ref,T data) {
+        if(revocations==null){throw new ServiceException("delivery permit unavailable");}
+        var operation=revocations.enter(PrincipalContext.require(),action,ref);
+        try {
+            return ResponseEntity.ok().header("Cache-Control","no-store")
+                    .header("X-AI-Delivery-Permit",operation.permitId()).header("X-AI-Delivery-Operation",operation.operationId())
+                    .body(ApiEnvelope.ok(data));
+        }catch(RuntimeException e){operation.close();throw e;}
+    }
+
+    @GetMapping("/conversations")
+    public ResponseEntity<ApiEnvelope<List<TenantConversationReadRepository.ConversationRow>>> listConversations(
+            @RequestParam(defaultValue="0") long offset,@RequestParam(defaultValue="100") int limit){
+        var principal=PrincipalContext.require();authorization.requireFunction(principal,"conversation.read","tenant:conversations");
+        var rows=conversations.listConversations(principal.tenantId(),principal.membershipId(),offset,limit).stream()
+                .filter(row->authorization.check(principal,"conversation.read","conv:"+row.conversationId())==Verdict.GRANT).toList();
+        return reply("conversation.read","tenant:conversations",rows);
+    }
+
+    @GetMapping("/conversations/{conversationId}")
+    public ResponseEntity<ApiEnvelope<TenantConversationReadRepository.ConversationRow>> getConversation(@PathVariable String conversationId){
+        var principal=PrincipalContext.require();requireGrant(principal,"conversation.read","conv:"+conversationId);
+        var row=conversations.findConversation(principal.tenantId(),principal.membershipId(),conversationId)
+                .orElseThrow(()->new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
+        return reply("conversation.read","conv:"+conversationId,row);
+    }
+
+    @GetMapping("/conversations/{conversationId}/messages")
+    public ResponseEntity<ApiEnvelope<List<TenantConversationReadRepository.MessageRow>>> getMessages(@PathVariable String conversationId,
+            @RequestParam(defaultValue="0") long offset,@RequestParam(defaultValue="100") int limit){
+        var principal=PrincipalContext.require();requireGrant(principal,"conversation.read","conv:"+conversationId);
+        if(conversations.findConversation(principal.tenantId(),principal.membershipId(),conversationId).isEmpty()){
+            throw new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);}
+        return reply("conversation.read","conv:"+conversationId,conversations.listMessages(principal.tenantId(),principal.membershipId(),conversationId,offset,limit));
+    }
+
+    @GetMapping("/memories")
+    public ResponseEntity<ApiEnvelope<List<Map<String,Object>>>> getMemories(@RequestParam(defaultValue="0") long offset,
+            @RequestParam(defaultValue="100") int limit){
+        var principal=PrincipalContext.require();authorization.requireFunction(principal,"memory.read","member:memories");
+        if(offset<0 || limit<1 || limit>200){throw new P04AiException(P04AiErrorCode.BAD_REQUEST);}
+        List<Map<String,Object>> rows=jdbc.query("SELECT id,content,source_refs,source_policy_version,source_acl_version FROM t_agent_memory"
+                +" WHERE tenant_id=? AND member_id=? AND invalid_at IS NULL ORDER BY create_time,id LIMIT ? OFFSET ?",(rs,n)->{
+                    if(!authorization.sourcesCurrent(principal,rs.getString("source_refs"),rs.getInt("source_policy_version"),rs.getInt("source_acl_version"))){return null;}
+                    return Map.<String,Object>of("id",rs.getString("id"),"content",rs.getString("content"));
+                },principal.tenantId(),principal.membershipId(),limit,offset).stream().filter(java.util.Objects::nonNull).toList();
+        return reply("memory.read","member:memories",rows);
+    }
+
+    private TenantRunReadRepository.RunRow visibleRun(ExecutionPrincipal principal,String runId,String action){
+        authorization.requireFunction(principal,action,"run:"+runId);
+        requireGrant(principal,action,"run:"+runId);
+        var row=runs.findRun(principal.tenantId(),runId).orElseThrow(()->new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
+        if(!authorization.sourcesCurrent(principal,row.resourceRefs(),row.policyVersion(),row.aclVersion())){
+            throw new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);}
+        return row;
+    }
+
+    @GetMapping("/runs/{runId}")
+    public ResponseEntity<ApiEnvelope<Map<String,Object>>> getRun(@PathVariable String runId){
+        var row=visibleRun(PrincipalContext.require(),runId,"run.get");
+        return reply("run.get","run:"+runId,Map.of("runId",row.runId(),"action",row.action(),"status",row.status(),"createdAt",row.createdAt()));
+    }
+
+    @GetMapping("/runs/{runId}/event-records")
+    public ResponseEntity<ApiEnvelope<List<TenantEventReadRepository.EventRow>>> getEvents(@PathVariable String runId,
+            @RequestParam(defaultValue="0") long afterSeq,@RequestParam(defaultValue="100") int limit){
+        var principal=PrincipalContext.require();visibleRun(principal,runId,"run.events");
+        return reply("run.events","run:"+runId,events.listEvents(principal.tenantId(),runId,afterSeq,limit));
+    }
+
+    public record RetrievalRequest(String query,List<String> requestedKbIds,int topK) { }
+
+    @PostMapping("/knowledge-bases/retrievals")
+    public ResponseEntity<ApiEnvelope<List<com.nageoffer.ai.ragent.framework.convention.RetrievedChunk>>> retrieve(@RequestBody RetrievalRequest request){
+        if(request==null || request.query()==null || request.query().isBlank() || request.query().length()>4096
+                || request.topK()<1 || request.topK()>100 || request.requestedKbIds()!=null && request.requestedKbIds().size()>200){throw new P04AiException(P04AiErrorCode.BAD_REQUEST);}
+        var principal=PrincipalContext.require();
+        var requested=request.requestedKbIds()==null?List.<String>of():request.requestedKbIds().stream().map(id->"kb:"+id).toList();
+        var scope=authorization.toRetrievalScope(authorization.resolve(principal,"kb.retrieve",requested));
+        if(scope.isEmpty() && !requested.isEmpty()){throw new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);}
+        if(scope.isEmpty() || scope.publishedChunkRefs().isEmpty()){return reply("kb.retrieve","tenant:retrieval",List.of());}
+        var retriever=retrievers.getIfAvailable();if(retriever==null){throw new ServiceException("authorized PG retrieval unavailable");}
+        var operation=revocations.enter(principal,"kb.retrieve","tenant:retrieval");
+        try{
+            var data=retriever.retrieve(scope,com.nageoffer.ai.ragent.rag.core.retrieval.RetrieveRequest.builder().query(request.query()).topK(request.topK()).build());
+            // Transfer ownership of the same active lease to final delivery without an unprotected gap.
+            return ResponseEntity.ok().header("Cache-Control","no-store").header("X-AI-Delivery-Permit",operation.permitId())
+                    .header("X-AI-Delivery-Operation",operation.operationId()).body(ApiEnvelope.ok(data));
+        }catch(RuntimeException e){operation.close();throw e;}
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureReadPaths(AuthorizedDownloadService downloads,AuthorizedExportService exports,
+            org.springframework.jdbc.core.JdbcTemplate jdbc,TenantConversationReadRepository conversations,
+            TenantRunReadRepository runs,TenantEventReadRepository events) {
+        this.downloads=downloads;this.exports=exports;this.jdbc=jdbc;this.conversations=conversations;this.runs=runs;this.events=events;
+    }
+
+    private ResponseEntity<byte[]> delivery(byte[] bytes,String contentType,
+            com.nageoffer.ai.ragent.framework.security.RevocationGuard.Operation operation,String range) {
+        try {
+            int from=0,to=bytes.length-1,status=200;
+            if(range!=null){
+                if(!range.matches("bytes=([0-9]+-[0-9]*|-[0-9]+)")){throw new P04AiException(P04AiErrorCode.BAD_REQUEST);}
+                String[] parts=range.substring(6).split("-",-1);
+                long start=parts[0].isEmpty()?Math.max(0,bytes.length-Long.parseLong(parts[1])):Long.parseLong(parts[0]);
+                long end=parts[1].isEmpty()||parts[0].isEmpty()?bytes.length-1:Long.parseLong(parts[1]);
+                if(start<0 || start>=bytes.length || end<start){throw new P04AiException(P04AiErrorCode.BAD_REQUEST);}
+                from=(int)start;to=(int)Math.min(end,bytes.length-1);status=206;
+            }
+            var builder=ResponseEntity.status(status).contentType(org.springframework.http.MediaType.parseMediaType(contentType))
+                    .header("Cache-Control","no-store").header("Accept-Ranges","bytes")
+                    .header("X-AI-Delivery-Permit",operation.permitId()).header("X-AI-Delivery-Operation",operation.operationId());
+            if(status==206){builder.header("Content-Range","bytes "+from+"-"+to+"/"+bytes.length);}
+            return builder.body(java.util.Arrays.copyOfRange(bytes,from,to+1));
+        } catch(RuntimeException e){operation.close();throw e;}
+    }
+
+    @GetMapping("/documents/{docId}/content")
+    public ResponseEntity<byte[]> download(@PathVariable String docId,
+            @org.springframework.web.bind.annotation.RequestHeader(value="Range",required=false) String range) {
+        var document=downloads.openLeasedDocument(docId);
+        byte[] bytes;
+        try(var source=document.source()){
+            bytes=source.readNBytes(4*1024*1024+1);
+            if(bytes.length>4*1024*1024){throw new ServiceException("文档超出单次交付上限");}
+        }catch(Exception e){
+            try{document.source().close();document.operation().close();}catch(Exception close){/* keep ACTIVE if source stop/release unconfirmed */}
+            throw new ServiceException("文档读取未完成");
+        }
+        return delivery(bytes,document.mimeType()==null?"application/octet-stream":document.mimeType(),document.operation(),range);
+    }
+
+    @GetMapping("/conversations/{conversationId}/export")
+    public ResponseEntity<byte[]> export(@PathVariable String conversationId) {
+        var export=exports.exportLeased(conversationId);
+        return delivery(export.bytes(),"application/x-ndjson",export.operation(),null);
+    }
+
     // ------------------------------------------------------------ DTO（嵌套 record，无归属字段可由 body 提供）
 
     /** KB 创建请求：刻意没有 tenant/owner 字段——归属只来自执行主体。 */
@@ -106,7 +261,7 @@ public class AiResourceController {
             writeService.findKnowledgeBase(principal.tenantId(), kbId)
                     .ifPresent(view -> data.add(kbView(view)));
         }
-        return ResponseEntity.ok(ApiEnvelope.ok(data));
+        return reply("kb.list","tenant:resources",data);
     }
 
     /** 单个 KB：跨租户/无权/不存在一律 404。 */
@@ -119,7 +274,7 @@ public class AiResourceController {
                 .map(this::kbView)
                 .orElseThrow(() -> new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
         data.put("documentRefs", authorization.childResourceRefs(principal.tenantId(), ref));
-        return ResponseEntity.ok(ApiEnvelope.ok(data));
+        return reply("kb.read",ref,data);
     }
 
     // ------------------------------------------------------------ KB 写入
@@ -203,7 +358,7 @@ public class AiResourceController {
                     return view;
                 })
                 .orElseThrow(() -> new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
-        return ResponseEntity.ok(ApiEnvelope.ok(data));
+        return reply("document.read",ref,data);
     }
 
     // ------------------------------------------------------------ 判定收敛

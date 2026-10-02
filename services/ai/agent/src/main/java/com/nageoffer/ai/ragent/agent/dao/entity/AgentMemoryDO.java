@@ -48,6 +48,9 @@ public class AgentMemoryDO {
     private String tenantId;
 
     private String memberId;
+    private String sourceRefs;
+    private Integer sourcePolicyVersion;
+    private Integer sourceAclVersion;
 
     private String userId;
 

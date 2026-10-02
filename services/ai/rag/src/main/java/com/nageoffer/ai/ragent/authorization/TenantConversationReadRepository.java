@@ -82,6 +82,14 @@ public class TenantConversationReadRepository {
     }
 
     /** 会话计数：统计必须与列表同范围，不允许全库分母。 */
+    public List<ConversationRow> listConversations(String tenantId,String memberId,long offset,int limit) {
+        requireScope(tenantId,memberId);
+        if(offset<0 || limit<1 || limit>200){throw new ClientException("分页参数非法");}
+        return jdbc.query("SELECT conversation_id,title,last_time FROM t_conversation WHERE tenant_id=? AND member_id=?"
+                +" AND deleted=0 ORDER BY last_time DESC,conversation_id LIMIT ? OFFSET ?",
+                (rs,n)->new ConversationRow(rs.getString(1),rs.getString(2),rs.getTimestamp(3)),tenantId,memberId,limit,offset);
+    }
+
     public long countConversations(String tenantId, String memberId) {
         requireScope(tenantId, memberId);
         Long count = jdbc.queryForObject(

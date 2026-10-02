@@ -244,6 +244,7 @@ class P1PreModelAuthorizationTest {
         AuthorizedResourceScope resourceScope =
                 AuthorizedResourceScope.granted(principal, RetrievalScopeAuthorizer.ACTION_KB_RETRIEVE,
                         kbRefs, 1_700_000_000_000L);
-        return AuthorizedRetrievalScope.of(resourceScope, kbRefs, List.of(), List.of(), collections);
+        return AuthorizedRetrievalScope.of(resourceScope,kbRefs.stream().map(ref->ref.startsWith("kb:")?ref:"kb:"+ref).toList(),
+                List.of("doc:doc-1"),List.of("chunk:chunk-1"),collections);
     }
 }

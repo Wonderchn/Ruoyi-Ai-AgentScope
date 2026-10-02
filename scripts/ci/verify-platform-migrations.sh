@@ -3,13 +3,13 @@
 # PostgreSQL files on a throwaway database, and fail unless every DB2 invariant holds.
 #
 # Why this exists: DB2 was verified once, by hand, against a lab VM. Without this check the
-# three SQL files stay outside CI, so any later edit to a migration is unverified. The
+# four SQL files stay outside CI, so any later edit to a migration is unverified. The
 # assertions encode findings that cost a full round each to discover:
 #  * PG rolls a failed migration back whole and records NO failed row, so a broken migration
 #    is judged by exit code plus "nothing landed", never by reading history for failures.
 #  * Flyway exits 0 and claims success when it finds zero migration files, and it prints
 #  "up to date" in that case too, so the first round must match
-#    "Successfully applied 3 migrations" and history must be counted by version, not by
+#    "Successfully applied 4 migrations" and history must be counted by version, not by
 #    count(*) (Flyway also writes a version=NULL row when it creates the schema).
 #  * bootstrap objects (CREATE EXTENSION vector, the implicit varchar->timestamptz cast)
 #    need superuser/type owner, so they are not migrations and must be applied separately.
@@ -27,6 +27,9 @@ DB_HOST=${DB_HOST:-127.0.0.1}
 DB_PORT=${DB_PORT:-5432}
 DB_NAME=${DB_NAME:-ci_platform}
 WORK=${WORK:-/tmp/dbci-verify}
+PG_CONTAINER=${PG_CONTAINER:-dbci-pg-$$}
+PG_OWNER=${PG_OWNER:-dbci-$$}
+[[ "$PG_CONTAINER" =~ ^[a-z0-9-]+$ && "$PG_OWNER" =~ ^[a-z0-9-]+$ ]] || { echo 'invalid owned container identity'; exit 2; }
 REPO_ROOT=${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 SQL_SRC=$REPO_ROOT/services/platform/docs/script/sql/postgres
 
@@ -65,18 +68,20 @@ as_user() { local password; case "$1" in migrate) password=$MIGRATE_PW;; app) pa
 run_bootstrap() { PGPASSWORD=$PG_SUPER docker run --rm -i --net host -e PGPASSWORD -e PLATFORM_MIGRATE_PASSWORD -e PLATFORM_APP_PASSWORD "${PSQL_VOLS[@]}" $PG_IMAGE \
         psql "host=$DB_HOST port=$DB_PORT dbname=$DB_NAME user=postgres" -X -q -v ON_ERROR_STOP=1 -f "$1"; }
 flyway() { docker run --rm --net host "${FLYWAY_ENV[@]}" -v $WORK/sql:/flyway/sql:ro $FLYWAY_IMAGE "$@"; }
-guard_first_migrate() { grep -Eq "Successfully applied 3 migrations" "$1"; }
+guard_first_migrate() { grep -Eq "Successfully applied 4 migrations" "$1"; }
 guard_round_two()     { grep -Eq 'Schema "platform" is up to date' "$1"; }
-history_versions()    { q "select count(*) from platform.flyway_schema_history_platform where version in ('1','2','3')"; }
+history_versions()    { q "select count(*) from platform.flyway_schema_history_platform where version in ('1','2','3','4')"; }
 
 echo "### 1. throwaway PostgreSQL (image pinned by digest)"
 # Limits are conservative and overridable: `--cpus 2` is refused outright on a 1-vCPU host,
 # which looks like "container failed to start" rather than a resource error.
-docker rm -f dbci-pg >/dev/null 2>&1
-docker run -d --name dbci-pg --cpus "${PG_CPUS:-1}" --memory "${PG_MEM:-768m}" -p 127.0.0.1:$DB_PORT:5432 \
+if docker inspect "$PG_CONTAINER" >/dev/null 2>&1; then echo 'owned container name collision; refusing reuse'; exit 2; fi
+docker run -d --name "$PG_CONTAINER" --label "p1.boundary.owner=$PG_OWNER" --cpus "${PG_CPUS:-1}" --memory "${PG_MEM:-768m}" -p 127.0.0.1:$DB_PORT:5432 \
   -e POSTGRES_PASSWORD -e POSTGRES_DB -e POSTGRES_USER $PG_IMAGE >/dev/null || { bad 'container failed to start'; exit 1; }
 cleanup() {
-  docker rm -f dbci-pg >/dev/null 2>&1 || true
+  if [ "$(docker inspect --format '{{index .Config.Labels "p1.boundary.owner"}}' "$PG_CONTAINER" 2>/dev/null)" = "$PG_OWNER" ]; then
+    docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+  fi
   [ "${KEEP_WORK:-0}" = 1 ] || rm -rf $WORK
 }
 trap cleanup EXIT
@@ -86,7 +91,7 @@ for i in $(seq 1 90); do
     pg_isready -h $DB_HOST -p $DB_PORT -U postgres -d $DB_NAME >/dev/null 2>&1 && { READY=$i; break; }
   sleep 1
 done
-[ "$READY" -gt 0 ] && ok "ready after ${READY}s" || { bad 'database never became ready'; docker logs dbci-pg | tail -20; exit 1; }
+[ "$READY" -gt 0 ] && ok "ready after ${READY}s" || { bad 'database never became ready'; docker logs "$PG_CONTAINER" | tail -20; exit 1; }
 # Always tear the throwaway container down, including on the early `exit 1` paths above and
 # any future one - a CI runner that leaks a bound port fails the next job for the wrong reason.
 
@@ -127,16 +132,16 @@ assert_eq 'app role search_path' 'platform, extensions' "$(q "select split_part(
 
 echo "### 5. Flyway applies the repository baseline and seeds"
 flyway migrate > $WORK/fly1.txt 2>&1; RC=$?
-if [ $RC -eq 0 ] && guard_first_migrate $WORK/fly1.txt; then ok 'migrate exit 0 and applied count = 3'
+if [ $RC -eq 0 ] && guard_first_migrate $WORK/fly1.txt; then ok 'migrate exit 0 and applied count = 4'
 else bad "migrate rc=$RC guard=$(guard_first_migrate $WORK/fly1.txt && echo yes || echo no)"; tail -8 $WORK/fly1.txt; fi
-assert_eq 'history rows for v1..v3' 3 "$(history_versions)"
+assert_eq 'history rows for v1..v4' 4 "$(history_versions)"
 assert_eq 'failed rows (PG records none)' 0 "$(q "select count(*) from platform.flyway_schema_history_platform where not success")"
-assert_eq 'domain base tables' 32 "$(q "select count(*) from information_schema.tables where table_schema='platform' and table_type='BASE TABLE' and table_name != 'flyway_schema_history_platform'")"
-assert_eq 'tables with primary key' 32 "$(q "select count(distinct table_name) from information_schema.table_constraints where table_schema='platform' and constraint_type='PRIMARY KEY' and table_name != 'flyway_schema_history_platform'")"
+assert_eq 'domain base tables' 35 "$(q "select count(*) from information_schema.tables where table_schema='platform' and table_type='BASE TABLE' and table_name != 'flyway_schema_history_platform'")"
+assert_eq 'tables with primary key' 35 "$(q "select count(distinct table_name) from information_schema.table_constraints where table_schema='platform' and constraint_type='PRIMARY KEY' and table_name != 'flyway_schema_history_platform'")"
 assert_eq 'sys_user columns' 23 "$(q "select count(*) from information_schema.columns where table_schema='platform' and table_name='sys_user'")"
 assert_eq 'user_balance definition' 'numeric|20|2|YES|0.00' "$(q "select data_type||'|'||numeric_precision||'|'||numeric_scale||'|'||is_nullable||'|'||column_default from information_schema.columns where table_schema='platform' and table_name='sys_user' and column_name='user_balance'")"
 assert_eq 'deliberately excluded objects' 0 "$(q "select count(*) from information_schema.tables where table_schema='platform' and table_name in ('gen_table','gen_table_column','test_demo','test_tree','test_leave')")"
-assert_eq 'seed counts via the app identity' 'menu=203 role=5 role_menu=220 dict_data=74 config=19 dept=11 tenant=1 client=3' \
+assert_eq 'seed counts via the app identity' 'menu=217 role=5 role_menu=220 dict_data=74 config=19 dept=11 tenant=1 client=3' \
   "$(as_user app platform_app -tAc "select 'menu='||(select count(*) from sys_menu)||' role='||(select count(*) from sys_role)||' role_menu='||(select count(*) from sys_role_menu)||' dict_data='||(select count(*) from sys_dict_data)||' config='||(select count(*) from sys_config)||' dept='||(select count(*) from sys_dept)||' tenant='||(select count(*) from sys_tenant)||' client='||(select count(*) from sys_client)")"
 
 echo "### 6. no drift on a second pass; applied baseline is immutable"
@@ -179,7 +184,7 @@ docker run --rm --net host "${FLYWAY_ENV[@]}" \
 assert_eq 'Flyway exits 0 when it finds no migration files' 0 "$RC"          # the hazard, documented
 guard_first_migrate $WORK/fly4.txt && bad 'guard missed the zero-migration case' || ok 'guard rejects a zero-migration run'
 assert_eq 'no versions recorded in that run' 0 "$(PGPASSWORD=$PG_SUPER docker run --rm -i --net host -e PGPASSWORD $PG_IMAGE \
-  psql "host=$DB_HOST port=$DB_PORT dbname=ci_scratch user=postgres" -X -q -tAc "select count(*) from platform.flyway_schema_history_platform where version in ('1','2','3')" | tr -d '[:space:]')"
+  psql "host=$DB_HOST port=$DB_PORT dbname=ci_scratch user=postgres" -X -q -tAc "select count(*) from platform.flyway_schema_history_platform where version in ('1','2','3','4')" | tr -d '[:space:]')"
 # Self-contained content: copying V3 here made this case fail for the wrong reason in the
 # "migration file removed" mutation.
 printf 'SELECT 1;

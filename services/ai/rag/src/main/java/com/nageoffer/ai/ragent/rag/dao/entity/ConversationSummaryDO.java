@@ -41,6 +41,11 @@ import java.util.Date;
 @Accessors(chain = true)
 @TableName("t_conversation_summary")
 public class ConversationSummaryDO {
+    private String tenantId;
+    private String memberId;
+    private String sourceRefs;
+    private Integer sourcePolicyVersion;
+    private Integer sourceAclVersion;
 
     /**
      * 主键 ID

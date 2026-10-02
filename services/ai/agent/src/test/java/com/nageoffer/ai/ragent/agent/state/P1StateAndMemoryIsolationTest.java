@@ -125,7 +125,7 @@ class P1StateAndMemoryIsolationTest {
 
         assertThat(statements)
                 .as("AgentStateMapper 的语句数：upsert/selectPayload/exists/deleteBySession/deleteByKey/selectSessionIds")
-                .hasSize(6);
+                .hasSize(7);
 
         String upsert = statementContaining(statements, "INSERT INTO t_agent_state");
         // 冲突目标必须是完整复合键：键里少任何一维，两个租户的同名数据就会互相覆盖

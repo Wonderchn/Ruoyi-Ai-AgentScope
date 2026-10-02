@@ -238,6 +238,42 @@ class P1CurrentAuthorizationTest {
     }
 
     @Test
+    void mixedCandidatesUseCurrentFactsWithoutSharingThemAcrossRequests() {
+        class CurrentFacts extends StubSubjectMatchSource {
+            int subjectReads;
+            int orgReads;
+            Set<String> subjects = Set.of("member:platform:T1:42", "role:8", "department:7");
+            @Override public Set<String> currentSubjects(String tenant, String subject, String action) {
+                subjectReads++;
+                return subjects;
+            }
+            @Override public Optional<SubjectOrgFacts> orgFacts(String tenant, String subject) {
+                orgReads++;
+                return super.orgFacts(tenant, subject);
+            }
+        }
+        var facts = new CurrentFacts();
+        var beans = new StaticListableBeanFactory();
+        beans.addBean("identity", new StubIdentitySource());
+        beans.addBean("facts", facts);
+        var controller = new OrganizationMatchController(beans.getBeanProvider(PlatformIdentitySource.class),
+                beans.getBeanProvider(OrganizationMatchController.SubjectMatchSource.class), CREDENTIAL);
+        var candidates = List.of("member:platform:T1:42", "role:8", "department:7", "member:platform:T2:42").stream()
+                .map(ref -> new OrganizationMatchController.MatchCandidate(null, null, List.of(ref))).toList();
+        var request = new OrganizationMatchController.MatchRequest("T1", "42", "platform:T1:42", 3, "kb.read", candidates);
+        var response = controller.match(CREDENTIAL, request);
+        assertEquals(200, status(response));
+        assertEquals(List.of(true, true, true, false), ((OrganizationMatchController.MatchResponse) response.getBody().data()).matches());
+        assertEquals(1, facts.subjectReads);
+        assertEquals(1, facts.orgReads);
+        facts.subjects = Set.of("member:platform:T1:42");
+        response = controller.match(CREDENTIAL, request);
+        assertEquals(List.of(true, false, false, false), ((OrganizationMatchController.MatchResponse) response.getBody().data()).matches());
+        assertEquals(2, facts.subjectReads);
+        assertEquals(2, facts.orgReads);
+    }
+
+    @Test
     void matchRejectsMalformedCandidateIdsStrictly() {
         var controller = matchController();
         // ownerMemberId 格式不合法 → 400（不是 false）

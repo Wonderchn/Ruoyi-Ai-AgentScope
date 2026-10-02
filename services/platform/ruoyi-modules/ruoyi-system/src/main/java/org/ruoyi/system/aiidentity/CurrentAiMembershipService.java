@@ -128,7 +128,6 @@ public class CurrentAiMembershipService {
             boolean userEnabled = SystemConstants.NORMAL.equals(user.getStatus());
 
             Set<Long> enabledRoleIds = resolveEnabledRoleIds(tenantId, userId);
-            Set<String> menuPerms = resolveMenuPerms(enabledRoleIds);
 
             boolean packageEnabled = false;
             Set<Long> packageMenuIds = new HashSet<>();
@@ -142,6 +141,7 @@ public class CurrentAiMembershipService {
             }
 
             Integer policyVersion = policyRevisionService.currentVersion(tenantId).orElse(null);
+            Set<String> menuPerms=packageEnabled?resolveMenuPerms(enabledRoleIds,packageMenuIds):Set.of();
             return new CurrentAiMembership(tenantId, userId, tenantEnabled, userEnabled,
                 enabledRoleIds, menuPerms, packageEnabled, packageMenuIds, policyVersion);
         });
@@ -169,7 +169,7 @@ public class CurrentAiMembershipService {
     /**
      * 菜单功能权限：启用角色 → sys_role_menu → sys_menu(status='0') 的 perms 集合。
      */
-    private Set<String> resolveMenuPerms(Set<Long> enabledRoleIds) {
+    private Set<String> resolveMenuPerms(Set<Long> enabledRoleIds,Set<Long> packageMenuIds) {
         if (CollUtil.isEmpty(enabledRoleIds)) {
             return Set.of();
         }
@@ -178,7 +178,8 @@ public class CurrentAiMembershipService {
         if (CollUtil.isEmpty(roleMenus)) {
             return Set.of();
         }
-        List<Long> menuIds = StreamUtils.toList(roleMenus, SysRoleMenu::getMenuId);
+        List<Long> menuIds = roleMenus.stream().map(SysRoleMenu::getMenuId).filter(packageMenuIds::contains).distinct().toList();
+        if(menuIds.isEmpty()){return Set.of();}
         Set<String> menuPerms = new HashSet<>();
         for (SysMenu menu : menuMapper.selectByIds(menuIds)) {
             if (SystemConstants.NORMAL.equals(menu.getStatus()) && StringUtils.isNotBlank(menu.getPerms())) {
@@ -198,11 +199,11 @@ public class CurrentAiMembershipService {
         }
         return TenantHelper.ignore(() -> {
             SysUser user = userMapper.selectById(userId);
-            if (ObjectUtil.isNull(user) || !tenantId.equals(user.getTenantId()) || ObjectUtil.isNull(user.getDeptId())) {
+            if (ObjectUtil.isNull(user) || !tenantId.equals(user.getTenantId()) || !SystemConstants.NORMAL.equals(user.getStatus()) || ObjectUtil.isNull(user.getDeptId())) {
                 return Optional.<SubjectOrgFacts>empty();
             }
             SysDept dept = deptMapper.selectById(user.getDeptId());
-            if (ObjectUtil.isNull(dept)) {
+            if (ObjectUtil.isNull(dept) || !tenantId.equals(dept.getTenantId()) || !SystemConstants.NORMAL.equals(dept.getStatus())) {
                 return Optional.<SubjectOrgFacts>empty();
             }
             List<Long> ancestors = new ArrayList<>();

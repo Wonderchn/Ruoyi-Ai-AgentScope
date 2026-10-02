@@ -80,6 +80,20 @@ public class DefaultRevocationGuard implements RevocationGuard {
         this.jdbc = jdbc;
     }
 
+    private org.springframework.beans.factory.ObjectProvider<DefaultRevocationGuard> self;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureSelf(org.springframework.beans.factory.ObjectProvider<DefaultRevocationGuard> self) {
+        this.self = self;
+    }
+
+    @Override
+    public Operation enter(com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal principal,
+            String action, String resourceRef) {
+        // Invoke acquire/release through the Spring proxy: interface-default self calls bypass transactions.
+        return RevocationGuard.enterUsing(self == null ? this : self.getObject(), principal, action, resourceRef);
+    }
+
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public PermitGrant acquire(PermitRequest request) {
@@ -199,6 +213,16 @@ public class DefaultRevocationGuard implements RevocationGuard {
             Thread.currentThread().interrupt();
             throw new ServiceException("平台 permit 中断");
         } catch (Exception e) { throw new ServiceException("平台 permit 不可用"); }
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
+    public void releaseDelivery(String tenantId, String memberId, String permitId, String operationId) {
+        Long owned=jdbc.queryForObject("SELECT count(*) FROM ai_execution_permit WHERE tenant_id=? AND member_id=?"
+                + " AND permit_id=? AND operation_id=? AND action IN ('document.download','conversation.export','kb.list','kb.read','document.read','conversation.read','memory.read','run.get','run.events','kb.retrieve')",
+                Long.class,tenantId,memberId,permitId,operationId);
+        if(owned==null || owned!=1){throw new ClientException("delivery identity mismatch");}
+        release(permitId,operationId);
     }
 
     @Override

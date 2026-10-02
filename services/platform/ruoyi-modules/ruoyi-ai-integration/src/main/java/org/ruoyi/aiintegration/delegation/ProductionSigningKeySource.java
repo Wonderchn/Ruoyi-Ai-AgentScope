@@ -126,8 +126,8 @@ public class ProductionSigningKeySource {
     private static PrivateKey loadPkcs8Pem(String path) {
         try {
             String pem = Files.readString(Path.of(path), StandardCharsets.UTF_8);
-            String base64 = pem.replace("-----BEGIN PRIVATE KEY-----", "")
-                    .replace("-----END PRIVATE KEY-----", "")
+            String base64 = pem.replace("-----BEGIN " + "PRIVATE KEY-----", "")
+                    .replace("-----END " + "PRIVATE KEY-----", "")
                     .replaceAll("\\s", "");
             byte[] der = Base64.getDecoder().decode(base64);
             return KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(der));

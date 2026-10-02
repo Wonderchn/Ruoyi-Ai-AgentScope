@@ -48,6 +48,14 @@ import java.util.Set;
 public class PgAgentStateStore implements AgentStateStore {
 
     private final AgentStateMapper agentStateMapper;
+    private boolean provenanceRequired;
+    private com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService sourceAuthorization;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureSources(@org.springframework.beans.factory.annotation.Value("${ai.integration.enabled:false}") boolean required,
+            org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService> sources) {
+        this.provenanceRequired=required; this.sourceAuthorization=sources.getIfAvailable();
+    }
 
     @Override
     public void save(String userId, String sessionId, String key, State value) {
@@ -113,6 +121,13 @@ public class PgAgentStateStore implements AgentStateStore {
 
     private String queryPayload(String userId, String sessionId, String key) {
         Scope scope = requireScope();
+        if(provenanceRequired){
+            var provenance=agentStateMapper.selectProvenance(scope.tenantId(),scope.memberId(),sessionId,key);
+            if(sourceAuthorization==null || provenance==null || !sourceAuthorization.sourcesCurrent(PrincipalContext.require(),
+                    provenance.sourceRefs(),provenance.policyVersion()==null?0:provenance.policyVersion(),
+                    provenance.aclVersion()==null?0:provenance.aclVersion())){return null;}
+            return provenance.payload();
+        }
         return agentStateMapper.selectPayload(scope.tenantId(), scope.memberId(), sessionId, key);
     }
 

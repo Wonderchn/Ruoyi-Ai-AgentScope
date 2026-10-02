@@ -53,6 +53,35 @@ import static org.mockito.Mockito.when;
  */
 class P1RevocationRaceTest {
 
+    @Test
+    void operationEntryAndCloseUseRealTransactionalProxy() {
+        var jdbc=jdbcWithEpoch(3,List.of());
+        when(jdbc.update(anyString(),any(Object[].class))).thenAnswer(invocation->{
+            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isTrue();
+            return 1;
+        });
+        var transactions=new org.springframework.transaction.support.AbstractPlatformTransactionManager(){
+            @Override protected Object doGetTransaction(){return new Object();}
+            @Override protected void doBegin(Object transaction,org.springframework.transaction.TransactionDefinition definition){}
+            @Override protected void doCommit(org.springframework.transaction.support.DefaultTransactionStatus status){}
+            @Override protected void doRollback(org.springframework.transaction.support.DefaultTransactionStatus status){}
+        };
+        var target=new DefaultRevocationGuard(jdbc);
+        var factory=new org.springframework.aop.framework.ProxyFactory(target);factory.setProxyTargetClass(true);
+        factory.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(transactions,
+                new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource()));
+        var proxy=(DefaultRevocationGuard)factory.getProxy();
+        var beans=new org.springframework.beans.factory.support.StaticListableBeanFactory();beans.addBean("guard",proxy);
+        target.configureSelf(beans.getBeanProvider(DefaultRevocationGuard.class));
+        var principal=new com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal(TENANT,"2101","platform:T1:2101",7,3,
+                java.util.Set.of("kb.read"),"test-jti","platform",0,Long.MAX_VALUE);
+        var operation=proxy.enter(principal,"kb.read","kb:test");
+        assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+        operation.close();
+        verify(jdbc).update(contains("INSERT INTO ai_execution_permit"),any(Object[].class));
+        verify(jdbc).update(contains("SET status = 'RELEASED'"),any(Object[].class));
+    }
+
     private static final String TENANT = "T1";
 
     private static PermitRequest request(int aclVersion) {

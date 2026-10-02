@@ -50,7 +50,7 @@ public class TenantRunReadRepository {
         if (tenantId == null || tenantId.isBlank() || runId == null || runId.isBlank()) {
             throw new ClientException("tenantId/runId 均不能为空");
         }
-        String sql = "SELECT run_id, member_id, action, status, policy_version, acl_version, created_at"
+        String sql = "SELECT run_id, member_id, action, status, policy_version, acl_version, created_at, resource_refs"
                 + " FROM ai_run WHERE tenant_id = ? AND run_id = ?";
         return jdbc.query(sql, (rs, rowNum) -> new RunRow(
                         rs.getString("run_id"),
@@ -59,11 +59,14 @@ public class TenantRunReadRepository {
                         rs.getString("status"),
                         rs.getInt("policy_version"),
                         rs.getInt("acl_version"),
-                        rs.getTimestamp("created_at")),
+                        rs.getTimestamp("created_at"),rs.getString("resource_refs")),
                 tenantId, runId).stream().findFirst();
     }
 
     public record RunRow(String runId, String memberId, String action, String status,
-                         int policyVersion, int aclVersion, Timestamp createdAt) {
+                         int policyVersion, int aclVersion, Timestamp createdAt,String resourceRefs) {
+        public RunRow(String runId,String memberId,String action,String status,int policyVersion,int aclVersion,Timestamp createdAt){
+            this(runId,memberId,action,status,policyVersion,aclVersion,createdAt,null);
+        }
     }
 }

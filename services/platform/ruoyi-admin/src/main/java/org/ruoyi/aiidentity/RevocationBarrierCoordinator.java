@@ -49,7 +49,7 @@ import java.util.Optional;
 @Slf4j
 @Component
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
-public class RevocationBarrierCoordinator {
+public class RevocationBarrierCoordinator implements org.ruoyi.system.aiidentity.AiPolicyMutationGuard.BarrierPort {
 
     /** 单次 drain 的等待上限（P1 不承诺 5s SLA，只承诺"不虚假成功"）。 */
     static final long DRAIN_TIMEOUT_MILLIS = 30_000;
@@ -80,6 +80,43 @@ public class RevocationBarrierCoordinator {
      * @param remaining    未排空的活跃 permit 数（附带节点的最小值）
      */
     public record DrainResult(boolean closed, int newVersion, long remaining, String detail) {
+    }
+
+    @Override
+    public void prepareAndDrain(String tenantId, String barrierId) {
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("prepare/drain must suspend the business transaction");
+        }
+        transactionTemplate.executeWithoutResult(status -> {
+            lockRevision(tenantId);
+            int prepared=jdbc.update("INSERT INTO sys_ai_tenant_barrier(tenant_id,status,barrier_id,reason,updated_at)"
+                    + " VALUES(?,'PENDING',?,'policy mutation',now()) ON CONFLICT(tenant_id) DO UPDATE"
+                    + " SET status='PENDING',barrier_id=EXCLUDED.barrier_id,updated_at=now()"
+                    + " WHERE sys_ai_tenant_barrier.status='OPEN' OR sys_ai_tenant_barrier.barrier_id=EXCLUDED.barrier_id",tenantId,barrierId);
+            if(prepared!=1){throw new IllegalStateException("another policy barrier is pending");}
+        });
+        Optional<Long> closed=aiBarrierPort.close(tenantId,barrierId,"policy mutation");
+        if(closed.isEmpty() || closed.get()<0){throw new IllegalStateException("AI close unconfirmed; policy remains PENDING");}
+        long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(DRAIN_TIMEOUT_MILLIS);
+        while(true){
+            Optional<Long> active=aiBarrierPort.activePermitCount(tenantId);
+            if(active.isEmpty() || active.get()<0){throw new IllegalStateException("AI active set unknown; policy remains PENDING");}
+            if(Math.max(countActivePermits(tenantId),active.get())==0){return;}
+            if(System.nanoTime()>=deadline){throw new IllegalStateException("policy drain timeout; PENDING retained");}
+            try{Thread.sleep(POLL_INTERVAL_MILLIS);}catch(InterruptedException e){Thread.currentThread().interrupt();throw new IllegalStateException("policy drain interrupted",e);}
+        }
+    }
+
+    @Override
+    public void reopen(String tenantId, String barrierId) {
+        // This callback runs after the facts/version transaction has committed.
+        aiBarrierPort.open(tenantId,barrierId);
+        transactionTemplate.executeWithoutResult(status -> {
+            lockRevision(tenantId);
+            int changed=jdbc.update("UPDATE sys_ai_tenant_barrier SET status='OPEN',updated_at=now()"
+                    + " WHERE tenant_id=? AND barrier_id=? AND status='CLOSED'",tenantId,barrierId);
+            if(changed!=1){throw new IllegalStateException("policy OPEN acknowledgement lost");}
+        });
     }
 
     /**

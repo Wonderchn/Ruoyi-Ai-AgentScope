@@ -100,6 +100,14 @@ public class AgentMemoryRepository {
     private final AgentMemoryControlMapper controlMapper;
     private final AgentMessageMapper messageMapper;
     private final AgentMemoryProperties memoryProperties;
+    private boolean provenanceRequired;
+    private com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService sourceAuthorization;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureSources(@org.springframework.beans.factory.annotation.Value("${ai.integration.enabled:false}") boolean required,
+            org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService> sources) {
+        this.provenanceRequired=required; this.sourceAuthorization=sources.getIfAvailable();
+    }
 
     /**
      * 读一次记忆视图；长期记忆开关关闭与读库异常一律回空快照，注入侧据此透传
@@ -144,6 +152,9 @@ public class AgentMemoryRepository {
 
     private List<AgentMemoryItem> listActiveItems(Scope scope, String userId) {
         return listActive(scope, userId).stream()
+                .filter(row -> !provenanceRequired || (sourceAuthorization!=null
+                        && sourceAuthorization.sourcesCurrent(PrincipalContext.require(),row.getSourceRefs(),
+                        row.getSourcePolicyVersion()==null?0:row.getSourcePolicyVersion(),row.getSourceAclVersion()==null?0:row.getSourceAclVersion())))
                 .map(row -> new AgentMemoryItem(row.getId(), row.getContent()))
                 .toList();
     }

@@ -41,7 +41,8 @@ public interface AgentStateMapper {
             INSERT INTO t_agent_state (tenant_id, member_id, user_id, session_id, state_key, payload, create_time, update_time)
             VALUES (#{tenantId}, #{memberId}, #{userId}, #{sessionId}, #{stateKey}, #{payload}::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT (tenant_id, member_id, session_id, state_key)
-            DO UPDATE SET payload = EXCLUDED.payload, update_time = CURRENT_TIMESTAMP
+            DO UPDATE SET payload = EXCLUDED.payload, source_refs=NULL, source_policy_version=NULL,
+              source_acl_version=NULL, update_time = CURRENT_TIMESTAMP
             """)
     void upsert(@Param("tenantId") String tenantId,
                 @Param("memberId") String memberId,
@@ -60,6 +61,16 @@ public interface AgentStateMapper {
                          @Param("memberId") String memberId,
                          @Param("sessionId") String sessionId,
                          @Param("stateKey") String stateKey);
+
+    record Provenance(String sourceRefs, Integer policyVersion, Integer aclVersion, String payload) { }
+
+    @Select("""
+            SELECT source_refs::text AS source_refs, source_policy_version AS policy_version, source_acl_version AS acl_version, payload::text AS payload
+            FROM t_agent_state WHERE tenant_id = #{tenantId} AND member_id = #{memberId}
+              AND session_id = #{sessionId} AND state_key = #{stateKey}
+            """)
+    Provenance selectProvenance(@Param("tenantId") String tenantId,@Param("memberId") String memberId,
+            @Param("sessionId") String sessionId,@Param("stateKey") String stateKey);
 
     @Select("""
             SELECT EXISTS (

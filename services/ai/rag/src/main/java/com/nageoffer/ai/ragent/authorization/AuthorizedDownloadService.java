@@ -92,6 +92,26 @@ public class AuthorizedDownloadService {
      * @throws P04AiException 404=无权/不存在、409=版本过期、503=授权事实源不可用
      */
     public InputStream openDocumentStream(String documentId) {
+        LeasedDocument document=openLeasedDocument(documentId);
+        return new java.io.FilterInputStream(document.source()) {
+            private boolean closed;
+            @Override public synchronized int read() throws java.io.IOException {
+                if(closed){throw new java.io.IOException("stream is closed");}return in.read();
+            }
+            @Override public synchronized int read(byte[] b,int offset,int length) throws java.io.IOException {
+                if(closed){throw new java.io.IOException("stream is closed");}return in.read(b,offset,length);
+            }
+            @Override public synchronized void close() throws java.io.IOException {
+                if(closed){return;}super.close();document.operation().close();closed=true;
+            }
+        };
+    }
+
+    public record LeasedDocument(InputStream source, String mimeType,
+            com.nageoffer.ai.ragent.framework.security.RevocationGuard.Operation operation) { }
+
+    /** The gateway, rather than the upstream response body, owns the final delivery acknowledgement. */
+    public LeasedDocument openLeasedDocument(String documentId) {
         if (documentId == null || documentId.isBlank()) {
             throw new P04AiException(P04AiErrorCode.BAD_REQUEST);
         }
@@ -134,24 +154,7 @@ public class AuthorizedDownloadService {
         var operation = revocations.enter(principal, ACTION_DOCUMENT_DOWNLOAD, ref);
         try {
             InputStream source = storageService.openStream(storage.get().fileUrl());
-            return new java.io.FilterInputStream(source) {
-                private boolean closed;
-                @Override public synchronized int read() throws java.io.IOException {
-                    if (closed) { throw new java.io.IOException("stream is closed"); }
-                    return in.read();
-                }
-                @Override public synchronized int read(byte[] buffer, int offset, int length) throws java.io.IOException {
-                    if (closed) { throw new java.io.IOException("stream is closed"); }
-                    return in.read(buffer, offset, length);
-                }
-                @Override public synchronized void close() throws java.io.IOException {
-                    if (closed) { return; }
-                    // close 失败时保留 permit；不能证明流已停止就不能宣告释放。
-                    super.close();
-                    operation.close();
-                    closed = true;
-                }
-            };
+            return new LeasedDocument(source,storage.get().mimeType(),operation);
         } catch (RuntimeException e) {
             operation.close();
             throw e;

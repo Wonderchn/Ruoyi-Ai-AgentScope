@@ -78,7 +78,7 @@ class PgVectorRetrieverServiceTest {
         assertEquals("tenant-1", args[1], "第二个参数必须是当前租户");
         assertEquals("kb-finance", args[2]);
         assertEquals("kb-policy", args[3]);
-        assertEquals(7, args[5], "SQL 只能有一个跨 Collection 共享的 LIMIT");
+        assertEquals(7, args[args.length-1], "SQL 只能有一个跨 Collection 共享的 LIMIT");
         verify(embeddingService, times(1)).embed("报销流程");
     }
 
@@ -93,6 +93,7 @@ class PgVectorRetrieverServiceTest {
                 1, 1, Set.of(), "jti-test-1", "test-issuer", 0L, 0L);
         AuthorizedResourceScope resourceScope = AuthorizedResourceScope.granted(
                 principal, "kb.retrieve", collections, 0L);
-        return AuthorizedRetrievalScope.of(resourceScope, collections, List.of(), List.of(), collections);
+        return AuthorizedRetrievalScope.of(resourceScope,collections.stream().map(id->"kb:"+id).toList(),
+                List.of("doc:doc-1"),List.of("chunk:chunk-1"),collections);
     }
 }

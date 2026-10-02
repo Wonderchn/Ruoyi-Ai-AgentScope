@@ -205,7 +205,7 @@ public class RuoYiPlatformIdentitySource implements PlatformIdentitySource, Orga
                 scopes.add(perm);
             }
         }
-        boolean enabled = facts.tenantEnabled() && facts.userEnabled();
+        boolean enabled = facts.tenantEnabled() && facts.userEnabled() && facts.packageEnabled();
         return new PlatformIdentity(tenantId, subject, membershipId, enabled, scopes, facts.policyVersion());
     }
 
@@ -234,6 +234,89 @@ public class RuoYiPlatformIdentitySource implements PlatformIdentitySource, Orga
             org.ancestorDeptIds().forEach(id -> refs.add("department:" + id));
         });
         return Set.copyOf(refs);
+    }
+
+    private record ActionRole(long id,String dataScope) { }
+    @Override
+    public boolean subjectExists(String tenant,String ref){
+        if(ref==null){return false;}
+        if(ref.equals("tenant_all:"+tenant)){return tenantState(tenant)==TenantState.ENABLED;}
+        String member="member:platform:"+tenant+":";
+        if(ref.startsWith(member)){
+            var facts=membershipService.describe(tenant,parseUserId(ref.substring(member.length())));
+            return facts!=null && facts.userEnabled() && facts.tenantEnabled();
+        }
+        String table,column,value;
+        if(ref.startsWith("role:")){table="sys_role";column="role_id";value=ref.substring(5);}
+        else if(ref.startsWith("department:")){table="sys_dept";column="dept_id";value=ref.substring(11);}
+        else{return false;}
+        Long id=parseUserId(value);if(id==null){return false;}
+        if(permitJdbc==null){throw permitUnavailable();}
+        return Boolean.TRUE.equals(permitJdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM "+table+" WHERE tenant_id=? AND "+column
+                +"=? AND status='0' AND del_flag='0')",Boolean.class,tenant,id));
+    }
+
+    private List<ActionRole> actionRoles(String tenant,String subject,String action) {
+        if(permitJdbc==null){throw permitUnavailable();}
+        Long user=parseUserId(subject);
+        var facts=user==null?null:membershipService.describe(tenant,user);
+        if(facts==null || !facts.tenantEnabled() || !facts.userEnabled() || !facts.packageEnabled()){return List.of();}
+        String permission=org.ruoyi.aiintegration.authorization.AiActionRegistry.requirePermission(action);
+        return permitJdbc.query("SELECT DISTINCT r.role_id,r.data_scope,m.menu_id FROM sys_user u"
+                +" JOIN sys_user_role ur ON ur.user_id=u.user_id JOIN sys_role r ON r.role_id=ur.role_id AND r.tenant_id=u.tenant_id"
+                +" JOIN sys_role_menu rm ON rm.role_id=r.role_id JOIN sys_menu m ON m.menu_id=rm.menu_id"
+                +" WHERE u.tenant_id=? AND u.user_id=? AND u.status='0' AND u.del_flag='0'"
+                +" AND r.status='0' AND r.del_flag='0' AND m.status='0' AND m.perms=?",
+                (rs,n)->facts.packageMenuIds().contains(rs.getLong("menu_id")) && facts.enabledRoleIds().contains(rs.getLong("role_id"))
+                        ?new ActionRole(rs.getLong("role_id"),rs.getString("data_scope")):null,tenant,user,permission)
+                .stream().filter(java.util.Objects::nonNull).distinct().toList();
+    }
+
+    @Override
+    public Set<String> currentSubjects(String tenant,String subject,String action) {
+        var roles=actionRoles(tenant,subject,action);
+        if(roles.isEmpty()){return Set.of();}
+        Set<String> refs=new HashSet<>(currentSubjects(tenant,subject));
+        refs.removeIf(ref->ref.startsWith("role:"));
+        roles.forEach(role->refs.add("role:"+role.id()));
+        return Set.copyOf(refs);
+    }
+
+    @Override
+    public boolean withinDataScope(String tenant,String subject,String action,String ownerMember,String ownerDept) {
+        var roles=actionRoles(tenant,subject,action);
+        if(roles.isEmpty()){return false;}
+        var org=orgFacts(tenant,subject).orElse(null);
+        boolean self=("platform:"+tenant+":"+subject).equals(ownerMember);
+        // Validate owner membership against live tenant facts even for ALL scope.
+        if(ownerMember!=null){
+            String prefix="platform:"+tenant+":";
+            if(!ownerMember.startsWith(prefix)){return false;}
+            var owner=membershipService.describe(tenant,parseUserId(ownerMember.substring(prefix.length())));
+            if(owner==null || !owner.userEnabled()){return false;}
+        }
+        Long dept=ownerDept==null?null:parseUserId(ownerDept);
+        List<String> ancestors=dept==null?List.of():permitJdbc.query("SELECT ancestors FROM sys_dept WHERE tenant_id=?"
+                +" AND dept_id=? AND status='0' AND del_flag='0'",(rs,n)->rs.getString(1),tenant,dept);
+        if(ownerDept!=null && ancestors.isEmpty()){return false;}
+        boolean same=org!=null && dept!=null && dept.equals(org.deptId());
+        boolean subtree=same || org!=null && !ancestors.isEmpty()
+                && java.util.Arrays.asList(ancestors.get(0).split(",")).contains(String.valueOf(org.deptId()));
+        for(var role:roles){
+            switch(role.dataScope()){
+                case "1": return true;
+                case "2":
+                    if(dept!=null && Boolean.TRUE.equals(permitJdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM sys_role_dept rd"
+                            +" JOIN sys_role r ON r.role_id=rd.role_id WHERE r.tenant_id=? AND rd.role_id=? AND rd.dept_id=?)",
+                            Boolean.class,tenant,role.id(),dept))){return true;}break;
+                case "3": if(same){return true;}break;
+                case "4": if(subtree){return true;}break;
+                case "5": if(self){return true;}break;
+                case "6": if(self || subtree){return true;}break;
+                default: break;
+            }
+        }
+        return false;
     }
 
     /**

@@ -77,6 +77,13 @@ public class OrganizationMatchController {
 
     /** 部门归属事实端口：由 admin 侧身份源实现（integration 不依赖 system/admin 具体类）。 */
     public interface SubjectMatchSource {
+        default java.util.Set<String> currentSubjects(String tenantId,String subject,String action) {
+            return currentSubjects(tenantId,subject);
+        }
+        default boolean withinDataScope(String tenantId,String subject,String action,String ownerMember,String ownerDept) {
+            return false;
+        }
+        default boolean subjectExists(String tenant,String ref){return false;}
         default java.util.Set<String> currentSubjects(String tenantId, String subject) {
             return java.util.Set.of("member:platform:" + tenantId + ":" + subject, "tenant_all:" + tenantId);
         }
@@ -101,7 +108,9 @@ public class OrganizationMatchController {
     /**
      * owner 候选：ownerMemberId（成员）/ ownerDeptId（部门子树）二选一，subjectRefs 可选。
      */
-    public record MatchCandidate(String ownerMemberId, String ownerDeptId, List<String> subjectRefs) {
+    public record MatchCandidate(String ownerMemberId, String ownerDeptId, List<String> subjectRefs, boolean dataScope,boolean validateOnly) {
+        public MatchCandidate(String ownerMemberId,String ownerDeptId,List<String> subjectRefs){this(ownerMemberId,ownerDeptId,subjectRefs,false,false);}
+        public MatchCandidate(String ownerMemberId,String ownerDeptId,List<String> subjectRefs,boolean dataScope){this(ownerMemberId,ownerDeptId,subjectRefs,dataScope,false);}
     }
 
     /**
@@ -117,7 +126,8 @@ public class OrganizationMatchController {
      * @param policyVersion platform 当前策略版本（与请求 pv 精确相等）
      * @param matches       与候选顺序一一对应的布尔匹配结果
      */
-    public record MatchResponse(int policyVersion, List<Boolean> matches) {
+    public record MatchResponse(int policyVersion, List<Boolean> matches, String principalDeptId) {
+        public MatchResponse(int policyVersion,List<Boolean> matches){this(policyVersion,matches,null);}
     }
 
     private final ObjectProvider<PlatformIdentitySource> identitySource;
@@ -174,25 +184,36 @@ public class OrganizationMatchController {
                 throw new P04Exception(P04ErrorCode.BAD_REQUEST);
             }
 
-            // 仅在需要部门判定时取一次主体部门事实（未知主体 → 部门候选一律不命中）
-            Optional<SubjectMatchSource.SubjectOrgFacts> orgFacts = Optional.empty();
-            if (candidates.stream().anyMatch(candidate -> candidate != null && candidate.ownerDeptId() != null)) {
-                orgFacts = matchSource.orgFacts(request.tenantId(), request.subject());
-            }
+            // One current fact read per request; never cache it across requests or identities.
+            Optional<SubjectMatchSource.SubjectOrgFacts> orgFacts = matchSource.orgFacts(request.tenantId(), request.subject());
+            java.util.Set<String> currentSubjects = candidates.stream().anyMatch(candidate -> candidate != null
+                    && !candidate.dataScope() && !candidate.validateOnly() && candidate.subjectRefs() != null)
+                    ? matchSource.currentSubjects(request.tenantId(), request.subject(), request.action()) : java.util.Set.of();
 
             List<Boolean> matches = new ArrayList<>(candidates.size());
             for (MatchCandidate candidate : candidates) {
                 if (candidate == null) {
                     throw new P04Exception(P04ErrorCode.BAD_REQUEST);
                 }
-                matches.add(matchCandidate(request, orgFacts, candidate)
-                        || (candidate.subjectRefs() != null && candidate.subjectRefs().stream()
-                        .anyMatch(matchSource.currentSubjects(request.tenantId(), request.subject())::contains)));
+                if(candidate.validateOnly()){
+                    if(candidate.dataScope() || candidate.ownerMemberId()!=null || candidate.ownerDeptId()!=null
+                            || candidate.subjectRefs()==null || candidate.subjectRefs().size()!=1){throw new P04Exception(P04ErrorCode.BAD_REQUEST);}
+                    matches.add(matchSource.subjectExists(request.tenantId(),candidate.subjectRefs().get(0)));
+                }else if(candidate.dataScope()){
+                    if(candidate.ownerMemberId()!=null && !isCanonicalMembershipOfTenant(candidate.ownerMemberId(),request.tenantId())
+                            || candidate.ownerDeptId()!=null && parseDeptId(candidate.ownerDeptId())==null){throw new P04Exception(P04ErrorCode.BAD_REQUEST);}
+                    matches.add(matchSource.withinDataScope(request.tenantId(),request.subject(),request.action(),candidate.ownerMemberId(),candidate.ownerDeptId()));
+                }else{
+                    matches.add(matchCandidate(request, orgFacts, candidate)
+                            || (candidate.subjectRefs() != null && candidate.subjectRefs().stream()
+                            .anyMatch(currentSubjects::contains)));
+                }
             }
 
             return ResponseEntity.ok()
                     .header(RequestId.HEADER, RequestId.currentOrEmpty())
-                    .body(ApiResponse.ok(new MatchResponse(identity.policyVersion(), matches)));
+                    .body(ApiResponse.ok(new MatchResponse(identity.policyVersion(), matches,
+                            orgFacts.map(org->String.valueOf(org.deptId())).orElse(null))));
         } catch (P04Exception ex) {
             return fail(ex.errorCode());
         }

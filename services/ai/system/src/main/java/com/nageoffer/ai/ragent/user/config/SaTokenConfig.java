@@ -80,7 +80,7 @@ public class SaTokenConfig implements WebMvcConfigurer {
                         String path = request.getRequestURI().substring(request.getContextPath().length());
                         if (path.startsWith("/internal/ai/v1/")
                                 && (com.nageoffer.ai.ragent.framework.context.PrincipalContext.get() != null
-                                || (path.equals("/internal/ai/v1/authorization/barriers")
+                                || (java.util.Set.of("/internal/ai/v1/authorization/barriers","/internal/ai/v1/authorization/deliveries/release").contains(path)
                                 && Boolean.TRUE.equals(request.getAttribute("ai.service.authenticated"))))) { return true; }
                         // 未注册的实验路径应保持404；只处理静态资源兜底，已注册接口仍完整走登录检查。
                         if (handler instanceof ResourceHttpRequestHandler

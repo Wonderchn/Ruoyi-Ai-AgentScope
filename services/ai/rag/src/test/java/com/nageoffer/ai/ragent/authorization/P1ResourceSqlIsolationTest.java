@@ -171,7 +171,7 @@ class P1ResourceSqlIsolationTest {
         assertAllGuarded("AiResourceWriteService", statements, 3);
 
         // 主键写/读都必须带租户：代理主键全局唯一可以保留，但访问路径不允许绕开租户
-        assertThat(statements.stream().filter(Statement::isInsert).findFirst().orElseThrow().text())
+        assertThat(statements.stream().filter(statement->statement.text().contains("INSERT INTO t_knowledge_base")).findFirst().orElseThrow().text())
                 .as("KB 元数据插入必须显式写 tenant_id / owner_member_id（归属只来自主体）")
                 .contains("INSERT INTO t_knowledge_base")
                 .contains("owner_member_id");

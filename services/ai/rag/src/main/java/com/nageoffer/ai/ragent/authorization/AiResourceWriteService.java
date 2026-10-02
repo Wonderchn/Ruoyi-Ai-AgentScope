@@ -113,20 +113,50 @@ public class AiResourceWriteService {
                 throw new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
             }
         }
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new ServiceException("资源 mutation 必须在外层业务事务之前 prepare/drain");
+        }
         try (var operation = revocations.enter(principal, action, ref)) {
-            return transactionOperations.execute(status -> {
-                Map<String, Object> parameters = Map.of("tenant", principal.tenantId(), "permit", operation.permitId());
+            Map<String, Object> parameters = Map.of("tenant", principal.tenantId(), "permit", operation.permitId(),
+                    "barrier", operation.operationId());
+            transactionOperations.executeWithoutResult(status -> {
                 var versions = jdbc.query("SELECT version FROM ai_acl_epoch WHERE tenant_id=:tenant FOR UPDATE",
                         parameters, (rs, n) -> rs.getInt(1));
                 if (versions.isEmpty() || versions.get(0) != principal.aclVersion()) {
                     throw new com.nageoffer.ai.ragent.framework.security.StaleVersionException("aclVersion changed");
                 }
-                // 所有版本变更必须等其它高风险段退出；此处遇活跃段即回滚，调用方可重试。
+                int prepared=jdbc.update("INSERT INTO ai_tenant_barrier(tenant_id,status,barrier_id,reason,updated_at)"
+                        + " VALUES(:tenant,'PENDING',:barrier,'resource mutation',now()) ON CONFLICT(tenant_id) DO UPDATE"
+                        + " SET status='PENDING',barrier_id=EXCLUDED.barrier_id,updated_at=now()"
+                        + " WHERE ai_tenant_barrier.status='OPEN' OR ai_tenant_barrier.barrier_id=EXCLUDED.barrier_id",parameters);
+                if(prepared!=1){throw new ServiceException("另一资源屏障尚未闭合");}
+            });
+            long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
+            while(true){
                 Long active = jdbc.queryForObject("SELECT count(*) FROM ai_execution_permit WHERE tenant_id=:tenant"
                         + " AND status='ACTIVE' AND permit_id<>:permit", parameters, Long.class);
-                if (active == null || active > 0) { throw new ServiceException("活跃 permit 未排空，写入已拒绝"); }
-                return work.doInTransaction(status);
+                if(active==null || active<0){throw new ServiceException("活跃集未知；屏障保持 PENDING");}
+                if(active==0){break;}
+                if(System.nanoTime()>=deadline){throw new ServiceException("资源 drain 超时；屏障保持 PENDING");}
+                try{Thread.sleep(100);}catch(InterruptedException e){Thread.currentThread().interrupt();throw new ServiceException("资源 drain 中断");}
+            }
+            T result=transactionOperations.execute(status -> {
+                var versions=jdbc.query("SELECT version FROM ai_acl_epoch WHERE tenant_id=:tenant FOR UPDATE",parameters,(rs,n)->rs.getInt(1));
+                if(versions.isEmpty() || versions.get(0)!=principal.aclVersion()){
+                    throw new com.nageoffer.ai.ragent.framework.security.StaleVersionException("aclVersion changed");
+                }
+                Long active=jdbc.queryForObject("SELECT count(*) FROM ai_execution_permit WHERE tenant_id=:tenant"
+                        + " AND status='ACTIVE' AND permit_id<>:permit",parameters,Long.class);
+                if(active==null || active!=0){throw new ServiceException("资源活跃集未排空");}
+                T value=work.doInTransaction(status);
+                if(jdbc.update("UPDATE ai_tenant_barrier SET status='CLOSED',target_acl_version=(SELECT version FROM ai_acl_epoch WHERE tenant_id=:tenant),updated_at=now()"
+                        + " WHERE tenant_id=:tenant AND barrier_id=:barrier AND status='PENDING'",parameters)!=1){throw new ServiceException("资源屏障提交未确认");}
+                return value;
             });
+            operation.close();
+            revocations.setBarrierState(principal.tenantId(), com.nageoffer.ai.ragent.framework.security.RevocationGuard.BarrierState.OPEN,
+                    operation.operationId(), null, "resource mutation committed and released");
+            return result;
         }
     }
 
@@ -176,6 +206,7 @@ public class AiResourceWriteService {
         String tenantId = principal.tenantId();
         String membershipId = principal.membershipId();
         String kbId = IdUtil.getSnowflakeNextIdStr();
+        String ownerDept=authorization instanceof AiResourceAuthorizationService live?live.currentOwnerDept(principal,"kb.write"):null;
 
         return write(principal, "kb.write", "kb:" + kbId, status -> {
             // 元数据行：tenant_id / owner_member_id 只取自主体；owner_dept_id 等部门事实
@@ -189,15 +220,16 @@ public class AiResourceWriteService {
             kb.put("updatedBy", principal.userId());
             kb.put("tenantId", tenantId);
             kb.put("ownerMemberId", membershipId);
+            kb.put("ownerDeptId", ownerDept);
             jdbc.update("INSERT INTO t_knowledge_base (id, name, embedding_model, collection_name,"
                             + " created_by, updated_by, tenant_id, owner_member_id, owner_dept_id, deleted)"
                             + " VALUES (:id, :name, :embeddingModel, :collectionName, :createdBy, :updatedBy,"
-                            + " :tenantId, :ownerMemberId, NULL, 0)",
+                            + " :tenantId, :ownerMemberId, :ownerDeptId, 0)",
                     kb);
 
             // registry 行：归属与版本权威（type=KB，无父）
             resourceMapper.insert(new AiResourceRow(tenantId, AiResourceMapper.TYPE_KB, kbId,
-                    membershipId, null, null, null, AiResourceMapper.STATUS_ACTIVE, 1L), membershipId);
+                    membershipId, ownerDept, null, null, AiResourceMapper.STATUS_ACTIVE, 1L), membershipId);
 
             // owner ACL 行：让 owner 主体进入"主体存活"判定（owner-allow 仍要求 platform 认可，
             // owner 身份本身不豁免任何一侧）
@@ -240,6 +272,9 @@ public class AiResourceWriteService {
         requireAclManageScope(principal);
         String tenantId = principal.tenantId();
         AclRow row = validatedRow(kbId, tenantId, principal, grant);
+        if(authorization instanceof AiResourceAuthorizationService live){
+            live.requireCurrentSubject(principal,AiResourceAuthorizationService.subjectRef(row.subjectType(),row.subjectId(),tenantId));
+        }
 
         write(principal, ACTION_ACL_MANAGE, "kb:" + kbId, status -> {
             try {
@@ -276,9 +311,13 @@ public class AiResourceWriteService {
                 || grant.action().isBlank()) {
             throw new P04AiException(P04AiErrorCode.BAD_REQUEST);
         }
-        AiResourceAuthorizationService.ParsedSubject subject =
-                AiResourceAuthorizationService.parseSubjectRef(grant.subjectType() + ":"
-                        + (grant.subjectId() == null ? "" : grant.subjectId()));
+        AiResourceAuthorizationService.ParsedSubject subject;
+        try {
+            subject = AiResourceAuthorizationService.parseSubjectRef(grant.subjectType() + ":"
+                    + (grant.subjectId() == null ? "" : grant.subjectId()));
+        } catch (IllegalArgumentException e) {
+            throw new P04AiException(P04AiErrorCode.BAD_REQUEST, "unsupported ACL subject type");
+        }
 
         // 主体必须同租户：member 主体是 canonical membership（platform:<tenantId>:<userId>），
         // 租户段与当前主体不一致 = 试图把授权发给别的租户的成员，直接拒绝。

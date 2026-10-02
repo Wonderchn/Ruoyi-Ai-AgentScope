@@ -71,7 +71,8 @@ import java.util.Set;
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
 public class AiResourceAuthorizationService
         implements ResourceAuthorizationService, ResourceAuthorizationService.FactPort,
-        ResourceAuthorizationService.SubjectMatchPort {
+        ResourceAuthorizationService.SubjectMatchPort,
+        com.nageoffer.ai.ragent.framework.security.AuthorizedRetrievalScopeResolver<com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope> {
 
     private final AiResourceMapper resourceMapper;
     private final AiResourceAclMapper aclMapper;
@@ -82,6 +83,77 @@ public class AiResourceAuthorizationService
     private com.nageoffer.ai.ragent.framework.security.AuthorizationChecker platformAuthorization;
     private String platformBaseUrl;
     private String platformCredential;
+    private org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate projectionJdbc;
+
+    @Autowired
+    public void configureProjection(org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc) {
+        this.projectionJdbc = jdbc;
+    }
+
+    @Override
+    public AuthorizedResourceScope resolve(ExecutionPrincipal principal, String action, Collection<String> requested) {
+        return resolveScope(principal, action, requested);
+    }
+
+    @Override
+    public com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope toRetrievalScope(AuthorizedResourceScope scope) {
+        var principal = com.nageoffer.ai.ragent.framework.context.PrincipalContext.require();
+        scope.requireStillValid(principal, principal.policyVersion(), currentAclVersion(principal.tenantId()));
+        Set<String> kbs = new LinkedHashSet<>(), docs = new LinkedHashSet<>(), chunks = new LinkedHashSet<>(), collections = new LinkedHashSet<>();
+        for (String ref : scope.authorizedRefs()) {
+            if (ref.startsWith("kb:") && check(principal, scope.action(), ref) == Verdict.GRANT) { kbs.add(ref); }
+        }
+        if (kbs.isEmpty()) { return com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope.of(scope,kbs,docs,chunks,collections); }
+        for (String kb : kbs) {
+            for (String doc : childResourceRefs(principal.tenantId(),kb)) {
+                if (doc.startsWith("doc:") && check(principal,scope.action(),doc)==Verdict.GRANT) { docs.add(doc); }
+            }
+        }
+        if (!docs.isEmpty()) {
+            if (projectionJdbc == null) { throw new ServiceException("retrieval projection unavailable"); }
+            var parameters = Map.of("tenant",principal.tenantId(),"kbs",kbs.stream().map(ref->ref.substring(3)).toList(),
+                    "docs",docs.stream().map(ref->ref.substring(4)).toList());
+            projectionJdbc.query("SELECT v.id,v.collection_name FROM t_knowledge_vector v JOIN t_knowledge_document d"
+                    +" ON d.tenant_id=v.tenant_id AND d.id=v.document_id JOIN ai_resource r ON r.tenant_id=d.tenant_id"
+                    +" AND r.resource_type='DOCUMENT' AND r.resource_id=d.id WHERE v.tenant_id=:tenant"
+                    +" AND d.kb_id IN (:kbs) AND d.id IN (:docs) AND v.deleted=0 AND d.deleted=0"
+                    +" AND r.status='ACTIVE' AND v.doc_version=r.resource_version LIMIT 10001",parameters,(org.springframework.jdbc.core.RowCallbackHandler)rs->{
+                        chunks.add("chunk:"+rs.getString("id"));collections.add(rs.getString("collection_name"));
+                    });
+            if (chunks.size()>10000) { throw new ServiceException("retrieval projection exceeds bounded scope"); }
+        }
+        scope.requireStillValid(principal,principal.policyVersion(),currentAclVersion(principal.tenantId()));
+        return com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope.of(scope,kbs,docs,chunks,collections);
+    }
+
+    /** Derived data with absent, stale or unverifiable provenance is never returned to a model or a caller. */
+    @Override
+    public boolean sourcesCurrent(ExecutionPrincipal principal, String sourceRefs, int policyVersion, int aclVersion) {
+        if (principal==null || sourceRefs==null || policyVersion!=principal.policyVersion() || aclVersion!=principal.aclVersion()) { return false; }
+        if (currentAclVersion(principal.tenantId())!=aclVersion) { return false; }
+        try {
+            var refs=matchJson.readTree(sourceRefs);
+            if (!refs.isArray() || refs.isEmpty() || refs.size()>200) { return false; }
+            for(var item:refs){
+                if(!item.isObject() || item.size()!=2 || !item.path("ref").isTextual() || !item.path("version").isIntegralNumber()
+                        || !item.path("version").canConvertToInt() || item.path("version").intValue()<1){return false;}
+                String ref=item.path("ref").textValue();
+                var parsed=parseResourceRef(ref);
+                var fact=resourceMapper.findByPk(principal.tenantId(),parsed.resourceType(),parsed.resourceId()).orElse(null);
+                if(fact==null || !"ACTIVE".equals(fact.status()) || fact.resourceVersion()!=item.path("version").intValue()){return false;}
+                String action=switch(parsed.resourceType()){case "KB"->"kb.read";case "DOCUMENT"->"document.read";case "CONVERSATION"->"conversation.read";default->null;};
+                if(action==null){return false;}
+                // Dependency checks use server facts and a fresh online function check for the source action.
+                var sourcePrincipal=new ExecutionPrincipal(principal.tenantId(),principal.userId(),principal.membershipId(),
+                        principal.policyVersion(),principal.aclVersion(),Set.of(action),principal.jti(),principal.issuer(),
+                        principal.issuedAtEpochSecond(),principal.expiresAtEpochSecond());
+                var verdict=check(sourcePrincipal,action,ref);
+                if(verdict==Verdict.UNKNOWN){throw new ServiceException("source authorization unavailable");}
+                if(verdict!=Verdict.GRANT){return false;}
+            }
+            return true;
+        }catch(ServiceException e){throw e;}catch(Exception e){return false;}
+    }
     private final com.fasterxml.jackson.databind.ObjectMapper matchJson = new com.fasterxml.jackson.databind.ObjectMapper()
             .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY)
             .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
@@ -157,6 +229,70 @@ public class AiResourceAuthorizationService
             }
         }
     }
+    public void requireFunction(ExecutionPrincipal principal,String action,String ref){requirePlatform(principal,action,ref);}
+
+    private com.fasterxml.jackson.databind.JsonNode queryCandidates(ExecutionPrincipal principal,String action,List<?> candidates) {
+        try {
+            var payload=Map.of("tenantId",principal.tenantId(),"subject",principal.userId(),"membershipId",principal.membershipId(),
+                    "policyVersion",principal.policyVersion(),"action",action,"candidates",candidates);
+            var request=java.net.http.HttpRequest.newBuilder(java.net.URI.create(platformBaseUrl+"/internal/platform/v1/authorization/subjects/match"))
+                    .timeout(java.time.Duration.ofSeconds(2)).header("Content-Type","application/json")
+                    .header("X-P04-Service-Credential",platformCredential)
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(matchJson.writeValueAsString(payload))).build();
+            var response=matchHttp.send(request,java.net.http.HttpResponse.BodyHandlers.ofString());
+            var root=matchJson.readTree(response.body());
+            if(response.statusCode()==409 && root!=null && root.path("code").asInt()==409
+                    && "POLICY_VERSION_STALE".equals(root.path("data").path("errorCode").textValue())){
+                throw new com.nageoffer.ai.ragent.framework.security.StaleVersionException("platform data scope version changed");
+            }
+            if(response.statusCode()!=200 || root==null || !root.path("code").isIntegralNumber() || root.path("code").intValue()!=200
+                    || !root.path("data").path("policyVersion").isIntegralNumber() || root.path("data").path("policyVersion").intValue()!=principal.policyVersion()
+                    || !root.path("data").path("matches").isArray() || root.path("data").path("matches").size()!=candidates.size()){
+                throw new ServiceException("platform candidate response invalid");
+            }
+            return root.path("data");
+        }catch(com.nageoffer.ai.ragent.framework.security.StaleVersionException e){throw e;}
+        catch(InterruptedException e){Thread.currentThread().interrupt();throw new ServiceException("platform match interrupted");}
+        catch(Exception e){throw new ServiceException("platform candidate facts unavailable");}
+    }
+
+    public String currentOwnerDept(ExecutionPrincipal principal,String action) {
+        if(platformBaseUrl==null){throw new ServiceException("platform owner facts unavailable");}
+        var data=queryCandidates(principal,action,List.of());
+        var dept=data.path("principalDeptId");
+        if(dept.isMissingNode() || dept.isNull()){return null;}
+        if(!dept.isTextual() || !dept.textValue().matches("[0-9]{1,19}")){throw new ServiceException("platform owner facts invalid");}
+        return dept.textValue();
+    }
+    public void requireCurrentSubject(ExecutionPrincipal principal,String subjectRef){
+        if(platformBaseUrl==null){throw new ServiceException("platform subject facts unavailable");}
+        var value=queryCandidates(principal,"kb.acl.manage",List.of(Map.of("validateOnly",true,"subjectRefs",List.of(subjectRef)))).path("matches").get(0);
+        if(!value.isBoolean()){throw new ServiceException("platform subject facts invalid");}
+        if(!value.booleanValue()){throw new com.nageoffer.ai.ragent.framework.security.P04AiException(
+                com.nageoffer.ai.ragent.framework.security.P04AiErrorCode.BAD_REQUEST,"acl subject is not a current tenant member or organization");}
+    }
+
+    private boolean dataScopeAllows(ExecutionPrincipal principal,String action,String ref) {
+        if(platformBaseUrl==null){return true;}
+        var candidates=new ArrayList<Map<String,Object>>();
+        Set<String> visited=new LinkedHashSet<>();
+        String current=ref;
+        while(current!=null){
+            if(!visited.add(current) || visited.size()>32){return false;}
+            var parsed=parseResourceRef(current);
+            var row=resourceMapper.findByPk(principal.tenantId(),parsed.resourceType(),parsed.resourceId()).orElse(null);
+            if(row==null || !"ACTIVE".equals(row.status())){return false;}
+            var candidate=new LinkedHashMap<String,Object>();candidate.put("dataScope",true);
+            candidate.put("ownerMemberId",row.ownerMemberId());candidate.put("ownerDeptId",row.ownerDeptId());
+            candidates.add(candidate);
+            current=row.parentType()==null?null:resourceRef(row.parentType(),row.parentId());
+        }
+        for(var matched:queryCandidates(principal,action,candidates).path("matches")){
+            if(!matched.isBoolean()){throw new ServiceException("platform data scope invalid");}
+            if(!matched.booleanValue()){return false;}
+        }
+        return true;
+    }
 
     @Autowired
     public AiResourceAuthorizationService(AiResourceMapper resourceMapper,
@@ -190,20 +326,24 @@ public class AiResourceAuthorizationService
     public AuthorizedResourceScope resolveScope(ExecutionPrincipal principal, String action,
                                                 Collection<String> requested) {
         requirePlatform(principal, action, requested == null || requested.isEmpty() ? "tenant:resources" : requested.iterator().next());
-        return delegate.resolveScope(principal, action, requested);
+        var resolved=delegate.resolveScope(principal, action, requested);
+        var refs=resolved.authorizedRefs().stream().filter(ref->dataScopeAllows(principal,action,ref)).toList();
+        return AuthorizedResourceScope.granted(principal,action,refs,clock.millis());
     }
 
     @Override
     public Verdict check(ExecutionPrincipal principal, String action, String resourceRef) {
         requirePlatform(principal, action, resourceRef);
-        return delegate.check(principal, action, resourceRef);
+        var verdict=delegate.check(principal, action, resourceRef);
+        return verdict==Verdict.GRANT && !dataScopeAllows(principal,action,resourceRef)?Verdict.DENY:verdict;
     }
 
     @Override
     public Map<String, Verdict> checkBatch(ExecutionPrincipal principal, String action,
                                            Collection<String> resourceRefs) {
-        for (String ref : resourceRefs) { requirePlatform(principal, action, ref); }
-        return delegate.checkBatch(principal, action, resourceRefs);
+        Map<String,Verdict> result=new LinkedHashMap<>();
+        for (String ref : resourceRefs) { result.put(ref,check(principal,action,ref)); }
+        return result;
     }
 
     @Override
@@ -239,7 +379,7 @@ public class AiResourceAuthorizationService
             }
         }
         for (AiResourceRow row : rows) {
-            if (!Set.of(AiResourceMapper.TYPE_KB, AiResourceMapper.TYPE_DOCUMENT, "CONVERSATION").contains(row.resourceType())) { continue; }
+            if (!Set.of(AiResourceMapper.TYPE_KB, AiResourceMapper.TYPE_DOCUMENT, "CONVERSATION", "RUN").contains(row.resourceType())) { continue; }
             String ref = resourceRef(row.resourceType(), row.resourceId());
             result.put(ref, toFact(ref, tenantId, row));
         }
@@ -330,6 +470,7 @@ public class AiResourceAuthorizationService
             case AiResourceMapper.TYPE_KB -> "kb";
             case AiResourceMapper.TYPE_DOCUMENT -> "doc";
             case "CONVERSATION" -> "conv";
+            case "RUN" -> "run";
             default -> throw new IllegalArgumentException("unsupported resourceType: " + resourceType);
         };
         return prefix + ":" + resourceId;
@@ -341,6 +482,7 @@ public class AiResourceAuthorizationService
             case "kb" -> AiResourceMapper.TYPE_KB;
             case "doc" -> AiResourceMapper.TYPE_DOCUMENT;
             case "conv" -> "CONVERSATION";
+            case "run" -> "RUN";
             default -> throw new IllegalArgumentException("unsupported resource ref: " + prefix);
         };
     }

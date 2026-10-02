@@ -88,6 +88,15 @@ public class AuthorizedExportService {
      * @throws P04AiException 404=无权/不存在、409=版本过期、503=授权事实源不可用
      */
     public void exportConversation(String conversationId, OutputStream out) {
+        var export=exportLeased(conversationId);
+        try(var operation=export.operation()) {
+            try{out.write(export.bytes());out.flush();}catch(IOException e){throw new UncheckedIOException(e);}
+        }
+    }
+
+    public record LeasedExport(byte[] bytes,com.nageoffer.ai.ragent.framework.security.RevocationGuard.Operation operation) { }
+
+    public LeasedExport exportLeased(String conversationId) {
         if (conversationId == null || conversationId.isBlank()) {
             throw new P04AiException(P04AiErrorCode.BAD_REQUEST);
         }
@@ -106,21 +115,24 @@ public class AuthorizedExportService {
         if (!highRiskEnabled || revocations == null) {
             throw new ServiceException("导出 permit 服务不可用");
         }
-        try (var operation = revocations.enter(principal, ACTION_CONVERSATION_EXPORT, ref)) {
+        var operation=revocations.enter(principal,ACTION_CONVERSATION_EXPORT,ref);
+        var out=new java.io.ByteArrayOutputStream();
+        try {
         long offset = 0;
         while (true) {
             List<MessageRow> batch = fetchBatch(principal, conversationId, offset);
             if (batch.isEmpty()) {
-                return;
+                return new LeasedExport(out.toByteArray(),operation);
             }
             requireGranted(authorization.check(principal, ACTION_CONVERSATION_EXPORT, ref));
             writeBatch(out, batch);
+            if(out.size()>4*1024*1024){throw new ServiceException("导出超出单次交付上限");}
             offset += batch.size();
             if (batch.size() < BATCH_SIZE) {
-                return;
+                return new LeasedExport(out.toByteArray(),operation);
             }
         }
-        }
+        } catch(RuntimeException e){operation.close();throw e;}
     }
 
     private List<MessageRow> fetchBatch(ExecutionPrincipal principal, String conversationId, long offset) {

@@ -60,6 +60,23 @@ public class RevocationBarrierController {
         this.serviceIdentity = serviceIdentity;
     }
 
+    public record DeliveryRelease(String tenantId,String memberId,String permitId,String operationId) { }
+
+    @PostMapping("/authorization/deliveries/release")
+    public ResponseEntity<?> releaseDelivery(@RequestBody DeliveryRelease request,
+            @RequestHeader(value=ServiceIdentityVerifier.SERVICE_CREDENTIAL_HEADER,required=false) String credential) {
+        ServiceIdentityVerifier verifier=serviceIdentity.getIfAvailable();
+        if(verifier==null){return ResponseEntity.status(401).body(Map.of("code",401));}
+        verifier.verify(credential);
+        RevocationGuard revocations=guard.getIfAvailable();
+        if(revocations==null){return ResponseEntity.status(503).body(Map.of("code",503));}
+        if(request==null || request.tenantId()==null || request.memberId()==null || request.permitId()==null || request.operationId()==null){
+            return ResponseEntity.badRequest().body(Map.of("code",400));
+        }
+        revocations.releaseDelivery(request.tenantId(),request.memberId(),request.permitId(),request.operationId());
+        return ResponseEntity.noContent().build();
+    }
+
     @PostMapping("/authorization/barriers")
     public ResponseEntity<Map<String, Object>> barriers(@RequestBody BarrierRequest request,
             @RequestHeader(value = ServiceIdentityVerifier.SERVICE_CREDENTIAL_HEADER, required = false) String credential) {

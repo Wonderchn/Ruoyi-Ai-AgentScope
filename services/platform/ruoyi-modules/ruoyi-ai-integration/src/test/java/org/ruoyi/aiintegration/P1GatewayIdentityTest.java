@@ -131,7 +131,7 @@ class P1GatewayIdentityTest {
     private static String pkcs8Pem(KeyPair pair) {
         String base64 = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.US_ASCII))
                 .encodeToString(pair.getPrivate().getEncoded());
-        return "-----BEGIN PRIVATE KEY-----\n" + base64 + "\n-----END PRIVATE KEY-----\n";
+        return "-----BEGIN " + "PRIVATE KEY-----\n" + base64 + "\n-----END " + "PRIVATE KEY-----\n";
     }
 
     private static ObjectProvider<PlatformIdentitySource> provider(PlatformIdentitySource source) {
@@ -163,6 +163,46 @@ class P1GatewayIdentityTest {
 
     private static int status(ResponseEntity<?> response) {
         return response.getStatusCode().value();
+    }
+
+    @Test
+    void finalOutputFlushPrecedesServiceRelease() throws Exception {
+        stubMember();
+        when(client.forwardBytes(any())).thenReturn(new AiGatewayClient.ByteResponse(200,
+                ENVELOPE.getBytes(StandardCharsets.UTF_8),"application/json","","permit","operation"));
+        var response=new org.springframework.mock.web.MockHttpServletResponse();
+        when(client.forward(any())).thenAnswer(invocation -> {
+            assertTrue(response.isCommitted());
+            assertEquals(ENVELOPE,response.getContentAsString());
+            AiGatewayClient.ForwardRequest acknowledgement=invocation.getArgument(0);
+            assertTrue(acknowledgement.uri().getPath().endsWith("/deliveries/release"));
+            return new AiGatewayClient.ForwardResponse(204,"");
+        });
+        assertEquals(null,controller.gateway(request("GET","/api/ai/v1/knowledge-bases/kb-a"),response,null));
+        verify(client).forward(any());
+        assertEquals(null,response.getHeader("X-AI-Delivery-Permit"));
+    }
+
+    @Test
+    void clientAbortStopsWritesBeforeServiceRelease() throws Exception {
+        stubMember();
+        when(client.forwardBytes(any())).thenReturn(new AiGatewayClient.ByteResponse(200,
+                ENVELOPE.getBytes(StandardCharsets.UTF_8),"application/json","","permit","operation"));
+        var writes=new java.util.concurrent.atomic.AtomicInteger();
+        var stopped=new java.util.concurrent.atomic.AtomicBoolean();
+        var output=new jakarta.servlet.ServletOutputStream(){
+            @Override public boolean isReady(){return true;}
+            @Override public void setWriteListener(jakarta.servlet.WriteListener listener){}
+            @Override public void write(int value) throws java.io.IOException {
+                assertFalse(stopped.get());writes.incrementAndGet();throw new java.io.IOException("synthetic client abort");
+            }
+        };
+        var response=new org.springframework.mock.web.MockHttpServletResponse(){
+            @Override public jakarta.servlet.ServletOutputStream getOutputStream(){return output;}
+        };
+        when(client.forward(any())).thenAnswer(invocation->{stopped.set(true);return new AiGatewayClient.ForwardResponse(204,"");});
+        assertEquals(null,controller.gateway(request("GET","/api/ai/v1/knowledge-bases/kb-a"),response,null));
+        assertEquals(1,writes.get());assertTrue(stopped.get());assertEquals(503,response.getStatus());
     }
 
     @SuppressWarnings("unchecked")

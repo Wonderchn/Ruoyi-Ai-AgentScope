@@ -58,11 +58,9 @@ class P1FixtureContractTest {
     /**
      * fixture 规范的唯一权威位置。
      *
-     * <p>刻意放在仓库外的私人规划目录：它同时被 AI 侧契约测试与
-     * {@code tools/p1-fixtures/generate.ps1} 读取，不能只挂在某一个模块的 classpath 上；
-     * 公开仓库也不需要提交这份规划材料。
+     * <p>公开仓库中的纯合成输入由测试和生成器共同读取，不依赖本机私人规划副本。
      */
-    private static final String SPEC_RELATIVE = "../mydocs/p1/p1-fixture-spec.json";
+    private static final String SPEC_RELATIVE = "tools/p1-fixtures/p1-fixture-spec.json";
 
     /** AI 域合成 SQL（本模块测试资源，编译后随 classpath 提供）。 */
     private static final String AI_SQL_RESOURCE = "p1/resources.sql";

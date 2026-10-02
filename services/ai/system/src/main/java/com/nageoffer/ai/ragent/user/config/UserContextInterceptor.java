@@ -63,7 +63,7 @@ public class UserContextInterceptor implements HandlerInterceptor {
         String path = request.getRequestURI().substring(request.getContextPath().length());
         if (path.startsWith("/internal/ai/v1/")
                 && (com.nageoffer.ai.ragent.framework.context.PrincipalContext.get() != null
-                || (path.equals("/internal/ai/v1/authorization/barriers")
+                || (java.util.Set.of("/internal/ai/v1/authorization/barriers","/internal/ai/v1/authorization/deliveries/release").contains(path)
                 && Boolean.TRUE.equals(request.getAttribute("ai.service.authenticated"))))) { return true; }
         // 异步调度请求跳过（SSE 完成回调会触发 asyncDispatch，此时 SaToken 上下文已丢失）
         if (request.getDispatcherType() == DispatcherType.ASYNC) {

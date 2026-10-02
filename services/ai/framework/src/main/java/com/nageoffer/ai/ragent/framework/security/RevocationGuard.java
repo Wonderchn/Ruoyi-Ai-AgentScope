@@ -37,6 +37,12 @@ public interface RevocationGuard {
     /** 登记先于 I/O；调用方必须在输出停止或事务结束之后关闭。 */
     default Operation enter(com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal principal,
                             String action, String resourceRef) {
+        return enterUsing(this, principal, action, resourceRef);
+    }
+
+    static Operation enterUsing(RevocationGuard guard,
+            com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal principal,
+            String action, String resourceRef) {
         String operationId = java.util.UUID.randomUUID().toString();
         String hash;
         try {
@@ -45,9 +51,9 @@ public interface RevocationGuard {
         } catch (java.security.NoSuchAlgorithmException e) {
             throw new IllegalStateException(e);
         }
-        PermitGrant grant = acquire(new PermitRequest(principal.tenantId(), principal.membershipId(), action,
+        PermitGrant grant = guard.acquire(new PermitRequest(principal.tenantId(), principal.membershipId(), action,
                 principal.policyVersion(), principal.aclVersion(), hash, operationId, resourceRef));
-        return new Operation(this, grant.permitId(), operationId);
+        return new Operation(guard, grant.permitId(), operationId);
     }
 
     final class Operation implements AutoCloseable {
@@ -63,6 +69,7 @@ public interface RevocationGuard {
         }
 
         public String permitId() { return permitId; }
+        public String operationId() { return operationId; }
 
         @Override
         public synchronized void close() {
@@ -79,6 +86,11 @@ public interface RevocationGuard {
             }
             closed = true;
         }
+    }
+
+    /** Delivery acknowledgement is bound to the original tenant/member and opaque operation. */
+    default void releaseDelivery(String tenantId, String memberId, String permitId, String operationId) {
+        throw new IllegalStateException("delivery release not configured");
     }
 
     /** 高风险段进入事实。不存 bearer。 */

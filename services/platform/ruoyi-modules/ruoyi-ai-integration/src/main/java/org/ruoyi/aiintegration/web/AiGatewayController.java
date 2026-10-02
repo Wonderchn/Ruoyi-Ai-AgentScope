@@ -106,7 +106,14 @@ public class AiGatewayController {
             new Route("DELETE", "/knowledge-bases/{id}/acl", "kb.acl.manage"),
             new Route("POST", "/knowledge-bases/retrievals", "kb.retrieve"),
             new Route("GET", "/documents/{id}", "document.read"),
-            new Route("GET", "/documents/{id}/content", "document.download"));
+            new Route("GET", "/documents/{id}/content", "document.download"),
+            new Route("GET", "/conversations", "conversation.read"),
+            new Route("GET", "/conversations/{id}", "conversation.read"),
+            new Route("GET", "/conversations/{id}/messages", "conversation.read"),
+            new Route("GET", "/conversations/{id}/export", "conversation.export"),
+            new Route("GET", "/memories", "memory.read"),
+            new Route("GET", "/runs/{id}", "run.get"),
+            new Route("GET", "/runs/{id}/event-records", "run.events"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;
@@ -129,18 +136,25 @@ public class AiGatewayController {
     /** 网关唯一入口：白名单匹配 → 委托 → 转发；白名单外 404。 */
     @RequestMapping("/**")
     public ResponseEntity<?> gateway(HttpServletRequest request,
+                                     jakarta.servlet.http.HttpServletResponse response,
                                      @RequestBody(required = false) byte[] body) {
         try {
-            return doGateway(request, body);
+            return doGateway(request, response, body);
         } catch (P04Exception ex) {
+            if(response!=null && response.isCommitted()){return null;}
             return fail(ex.errorCode());
         } catch (AiGatewayClient.UpstreamUnavailableException ex) {
+            if(response!=null && response.isCommitted()){return null;}
             // 上游不可用/恶意响应：不放行也不泄露原因
             return fail(P04ErrorCode.AUTHORIZATION_UNAVAILABLE);
         }
     }
 
-    private ResponseEntity<?> doGateway(HttpServletRequest request, byte[] body) {
+    public ResponseEntity<?> gateway(HttpServletRequest request,byte[] body) {
+        return gateway(request,null,body);
+    }
+
+    private ResponseEntity<?> doGateway(HttpServletRequest request,jakarta.servlet.http.HttpServletResponse response, byte[] body) {
         String method = request.getMethod() == null ? "" : request.getMethod().toUpperCase(Locale.ROOT);
         String subPath = subPath(request);
         if (subPath == null) {
@@ -185,11 +199,12 @@ public class AiGatewayController {
                 member.tenantId(), member.userId(), member.membershipId(),
                 List.of(route.action()), identity.policyVersion(), null);
 
-        return forward(request, method, subPath, issued.token(), body);
+        return forward(request,response,member,route.action(), method, subPath, issued.token(), body);
     }
 
     /** 组装转发请求并透传 AI 状态码。 */
-    private ResponseEntity<?> forward(HttpServletRequest request, String method,
+    private ResponseEntity<?> forward(HttpServletRequest request,jakarta.servlet.http.HttpServletResponse servletResponse,
+                                      CurrentPrincipalResolver.CurrentMember member,String action,String method,
                                       String subPath, String delegationToken,
                                       byte[] body) {
         if (body != null && body.length > properties.getMaxForwardBodyBytes()) {
@@ -219,6 +234,46 @@ public class AiGatewayController {
         headers.put("X-P04-Service-Credential", properties.getServiceCredential());
         headers.put(RequestId.HEADER, RequestId.currentOrEmpty());
 
+        if(action.equals("document.download") || action.equals("conversation.export")
+                || servletResponse!=null && (method.equals("GET") || action.equals("kb.retrieve"))){
+            var transfer=client.forwardBytes(new AiGatewayClient.ForwardRequest(method,uri,Map.copyOf(headers),body));
+            if(transfer.status()!=200 && transfer.status()!=206){
+                return ResponseEntity.status(transfer.status()).contentType(MediaType.APPLICATION_JSON)
+                        .body(new String(transfer.bytes(),java.nio.charset.StandardCharsets.UTF_8));
+            }
+            if(servletResponse==null){throw new AiGatewayClient.UpstreamUnavailableException("delivery output absent");}
+            try {
+                servletResponse.setStatus(transfer.status());
+                servletResponse.setContentType(transfer.contentType());
+                servletResponse.setHeader("Cache-Control","no-store");
+                servletResponse.setHeader("X-Content-Type-Options","nosniff");
+                servletResponse.setHeader("Accept-Ranges","bytes");
+                servletResponse.setHeader(RequestId.HEADER,RequestId.currentOrEmpty());
+                if(!transfer.contentRange().isBlank()){servletResponse.setHeader("Content-Range",transfer.contentRange());}
+                servletResponse.setContentLength(transfer.bytes().length);
+                var out=servletResponse.getOutputStream();
+                for(int offset=0;offset<transfer.bytes().length;offset+=8192){
+                    out.write(transfer.bytes(),offset,Math.min(8192,transfer.bytes().length-offset));
+                }
+                out.flush();
+                servletResponse.flushBuffer();
+                return null;
+            }catch(java.io.IOException e){
+                if(!servletResponse.isCommitted()){servletResponse.resetBuffer();servletResponse.setStatus(503);servletResponse.setContentLength(0);}
+                return null;
+            }finally{
+                // No application write occurs after this point, including client-abort paths.
+                byte[] acknowledgement;
+                try{acknowledgement=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsBytes(Map.of(
+                        "tenantId",member.tenantId(),"memberId",member.membershipId(),"permitId",transfer.permitId(),"operationId",transfer.operationId()));
+                }catch(Exception e){throw new AiGatewayClient.UpstreamUnavailableException("delivery acknowledgement invalid");}
+                var released=client.forward(new AiGatewayClient.ForwardRequest("POST",
+                        URI.create(properties.getAiBaseUrl()+AI_INTERNAL_PREFIX+"/authorization/deliveries/release"),
+                        Map.of("Content-Type","application/json","X-P04-Service-Credential",properties.getServiceCredential()),acknowledgement));
+                if(released.status()!=204 || !released.body().isBlank()){throw new AiGatewayClient.UpstreamUnavailableException("delivery release unconfirmed");}
+            }
+        }
+
         AiGatewayClient.ForwardResponse response = client.forward(
                 new AiGatewayClient.ForwardRequest(method, uri, Map.copyOf(headers), body));
 
@@ -245,6 +300,7 @@ public class AiGatewayController {
         headerNames.asIterator().forEachRemaining(names::add);
         for (String name : names) {
             String lower = name.toLowerCase(Locale.ROOT);
+            if(lower.startsWith("x-ai-delivery-")){continue;}
             if (lower.equals("x-p04-service-credential") || lower.equals("x-service-credential")) {
                 continue;
             }

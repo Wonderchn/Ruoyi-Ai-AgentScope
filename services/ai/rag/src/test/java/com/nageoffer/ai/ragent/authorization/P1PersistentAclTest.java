@@ -294,6 +294,37 @@ class P1PersistentAclTest {
     // ------------------------------------------------------------------ 写路径与事务边界
 
     @Test
+    void derivedContentRequiresCurrentVersionAndLiveSource() {
+        stubEpoch();
+        when(resourceMapper.findByPk(TENANT_A,"KB","kb-1")).thenReturn(Optional.of(kbRow("kb-1",MEMBER_A,"ACTIVE")));
+        when(aclMapper.findByResource(TENANT_A,"KB","kb-1")).thenReturn(List.of(rule("KB","kb-1","MEMBER",MEMBER_A,"kb.read",null)));
+        when(aclMapper.listTenantRows(TENANT_A)).thenReturn(List.of(rule("KB","kb-1","MEMBER",MEMBER_A,"kb.read",null)));
+        String proof="[{\"ref\":\"kb:kb-1\",\"version\":1}]";
+        assertThat(service.sourcesCurrent(principal(),proof,7,3)).isTrue();
+        assertThat(service.sourcesCurrent(principal(),null,7,3)).isFalse();
+        assertThat(service.sourcesCurrent(principal(),"[]",7,3)).isFalse();
+        assertThat(service.sourcesCurrent(principal(),proof,6,3)).isFalse();
+        assertThat(service.sourcesCurrent(principal(),proof,7,2)).isFalse();
+        assertThat(service.sourcesCurrent(principal(),"[{\"ref\":\"kb:kb-1\",\"version\":2}]",7,3)).isFalse();
+        when(resourceMapper.findByPk(TENANT_A,"KB","kb-1")).thenReturn(Optional.of(kbRow("kb-1",MEMBER_A,"TOMBSTONED")));
+        assertThat(service.sourcesCurrent(principal(),proof,7,3)).isFalse();
+    }
+
+    @Test
+    void malformedAclSubjectIsBadRequestBeforeAnyFactOrTransaction() {
+        PrincipalContext.set(principal());
+        List<String> events = new ArrayList<>();
+        AiResourceWriteService writes = writeService(events);
+        var invalid = new AiResourceWriteService.AclGrant("MEMBER", MEMBER_A, "kb.read", null);
+        assertThatThrownBy(() -> writes.grantAclRule("kb-1", invalid))
+                .isInstanceOf(P04AiException.class).hasMessageContaining("unsupported ACL subject");
+        assertThatThrownBy(() -> writes.revokeAclRule("kb-1", invalid))
+                .isInstanceOf(P04AiException.class).hasMessageContaining("unsupported ACL subject");
+        assertThat(events).isEmpty();
+        verify(resourceMapper, never()).findByPk(anyString(), anyString(), anyString());
+    }
+
+    @Test
     @DisplayName("创建 KB：t_knowledge_base + registry + owner ACL + epoch bump 在同一事务内按序落盘")
     void createKnowledgeBaseWritesEverythingInsideOneTransaction() {
         PrincipalContext.set(principal());
@@ -305,7 +336,7 @@ class P1PersistentAclTest {
 
         assertThat(kbId).isNotBlank();
         assertThat(events).containsExactly(
-                "tx-begin", "kb-insert", "registry-insert", "acl-insert", "epoch-bump", "tx-commit");
+                "tx-begin", "barrier-prepare", "tx-commit", "tx-begin", "kb-insert", "registry-insert", "acl-insert", "epoch-bump", "barrier-close", "tx-commit");
 
         // 归属只来自主体：kb 元数据与 registry 行都必须写 canonical membershipId
         ArgumentCaptor<AiResourceRow> registry = ArgumentCaptor.forClass(AiResourceRow.class);
@@ -332,7 +363,8 @@ class P1PersistentAclTest {
                 .hasMessageContaining("refusing to default");
 
         assertThat(events).as("epoch 缺失必须让整个事务回滚（无 tx-commit）")
-                .endsWith("acl-insert").doesNotContain("epoch-bump", "tx-commit");
+                .endsWith("acl-insert").doesNotContain("epoch-bump", "barrier-close");
+        assertThat(events.stream().filter("tx-commit"::equals).count()).as("only prepare commits; resource facts roll back").isEqualTo(1);
     }
 
     @Test
@@ -347,7 +379,7 @@ class P1PersistentAclTest {
         writeService.grantAclRule("kb-1",
                 new AiResourceWriteService.AclGrant("member", MEMBER_C, "kb.read", NOW_SECONDS + 60));
 
-        assertThat(events).containsExactly("tx-begin", "acl-insert", "epoch-bump", "tx-commit");
+        assertThat(events).containsExactly("tx-begin", "barrier-prepare", "tx-commit", "tx-begin", "acl-insert", "epoch-bump", "barrier-close", "tx-commit");
         inOrder(aclMapper, epochMapper).verify(aclMapper).insert(any(AclRow.class));
         inOrder(aclMapper, epochMapper).verify(epochMapper).bump(TENANT_A);
 
@@ -368,7 +400,7 @@ class P1PersistentAclTest {
 
         writeService.revokeAclRule("kb-1", new AiResourceWriteService.AclGrant("member", MEMBER_C, "kb.read", null));
 
-        assertThat(events).containsExactly("tx-begin", "acl-delete", "epoch-bump", "tx-commit");
+        assertThat(events).containsExactly("tx-begin", "barrier-prepare", "tx-commit", "tx-begin", "acl-delete", "epoch-bump", "barrier-close", "tx-commit");
         inOrder(aclMapper, epochMapper).verify(aclMapper).deleteRule(
                 TENANT_A, "KB", "kb-1", "MEMBER", MEMBER_C, "kb.read");
         inOrder(aclMapper, epochMapper).verify(epochMapper).bump(TENANT_A);
@@ -380,7 +412,7 @@ class P1PersistentAclTest {
             return 0;
         }).when(aclMapper).deleteRule(anyString(), anyString(), anyString(), anyString(), anyString(), anyString());
         writeService.revokeAclRule("kb-1", new AiResourceWriteService.AclGrant("member", MEMBER_C, "kb.read", null));
-        assertThat(events).containsExactly("tx-begin", "acl-delete", "tx-commit");
+        assertThat(events).containsExactly("tx-begin", "barrier-prepare", "tx-commit", "tx-begin", "acl-delete", "barrier-close", "tx-commit");
     }
 
     @Test
@@ -464,7 +496,8 @@ class P1PersistentAclTest {
         }).when(txOps).executeWithoutResult(any());
 
         when(jdbc.update(anyString(), anyMap())).thenAnswer(inv -> {
-            events.add("kb-insert");
+            String sql=inv.getArgument(0);
+            events.add(sql.startsWith("INSERT INTO ai_tenant_barrier")?"barrier-prepare":sql.startsWith("UPDATE ai_tenant_barrier")?"barrier-close":"kb-insert");
             return 1;
         });
         when(resourceMapper.insert(any(AiResourceRow.class), anyString())).thenAnswer(inv -> {

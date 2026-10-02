@@ -138,7 +138,8 @@ public class DelegatedPrincipalFilter implements Filter {
             return;
         }
         // 屏障只验服务身份，由控制器处理；不能要求平台提供浏览器委托。
-        if ((PROTECTED_PREFIX + "/authorization/barriers").equals(servletRequest.getRequestURI().substring(servletRequest.getContextPath().length()))
+        if (java.util.Set.of(PROTECTED_PREFIX + "/authorization/barriers",PROTECTED_PREFIX + "/authorization/deliveries/release")
+                .contains(servletRequest.getRequestURI().substring(servletRequest.getContextPath().length()))
                 && "POST".equals(servletRequest.getMethod())) {
             try {
                 new ServiceIdentityVerifier(properties).verify(
@@ -159,11 +160,53 @@ public class DelegatedPrincipalFilter implements Filter {
         }
         ExecutionPrincipal previous = PrincipalContext.set(principal);
         try {
-            chain.doFilter(request, response);
+            HttpServletRequest validated;
+            try { validated=validateBody(servletRequest); }
+            catch(P04AiException ex){writeError(servletResponse,ex);return;}
+            chain.doFilter(validated, response);
         } finally {
             // 恢复而非清空：嵌套分派（FORWARD/ERROR）里外层主体不被内层覆盖丢失
             PrincipalContext.restore(previous);
         }
+    }
+
+    private HttpServletRequest validateBody(HttpServletRequest request) throws IOException {
+        if(!java.util.Set.of("POST","PUT").contains(request.getMethod()) || request.getContentType()==null
+                || !request.getContentType().toLowerCase(java.util.Locale.ROOT).startsWith("application/json")){return request;}
+        byte[] bytes=request.getInputStream().readNBytes(64*1024+1);
+        if(bytes.length>64*1024){throw new P04AiException(P04AiErrorCode.BAD_REQUEST);}
+        if(bytes.length==0){return request;}
+        try {
+            var body=new com.fasterxml.jackson.databind.ObjectMapper()
+                    .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY)
+                    .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(bytes);
+            if(body==null || !body.isObject()){throw new P04AiException(P04AiErrorCode.BAD_REQUEST);}
+            rejectIdentity(body);
+        }catch(com.fasterxml.jackson.core.JsonProcessingException e){throw new P04AiException(P04AiErrorCode.BAD_REQUEST);}
+        return new jakarta.servlet.http.HttpServletRequestWrapper(request){
+            @Override public jakarta.servlet.ServletInputStream getInputStream(){
+                var input=new java.io.ByteArrayInputStream(bytes);
+                return new jakarta.servlet.ServletInputStream(){
+                    @Override public int read(){return input.read();}
+                    @Override public int read(byte[] buffer,int offset,int length){return input.read(buffer,offset,length);}
+                    @Override public boolean isFinished(){return input.available()==0;}
+                    @Override public boolean isReady(){return true;}
+                    @Override public void setReadListener(jakarta.servlet.ReadListener listener){throw new UnsupportedOperationException("synchronous JSON body");}
+                };
+            }
+            @Override public java.io.BufferedReader getReader(){return new java.io.BufferedReader(new java.io.InputStreamReader(getInputStream(),java.nio.charset.StandardCharsets.UTF_8));}
+        };
+    }
+
+    private void rejectIdentity(com.fasterxml.jackson.databind.JsonNode node){
+        if(node.isObject()){
+            var names=node.fieldNames();while(names.hasNext()){
+                String name=names.next();
+                if(java.util.Set.of("tenantId","tenant_id","membershipId","memberId","userId","ownerMemberId","ownerDeptId","principal","policyVersion","aclVersion")
+                        .contains(name)){throw new P04AiException(P04AiErrorCode.FORBIDDEN);}
+                rejectIdentity(node.get(name));
+            }
+        }else if(node.isArray()){node.forEach(this::rejectIdentity);}
     }
 
     @Override

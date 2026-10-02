@@ -44,6 +44,56 @@ public class AiPolicyMutationGuard {
 
     private final AiPolicyRevisionService policyRevisionService;
     private org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private org.springframework.transaction.support.TransactionTemplate outsideTransaction;
+    private BarrierPort barriers;
+    private boolean enabled;
+
+    public interface BarrierPort {
+        void prepareAndDrain(String tenantId, String barrierId);
+        void reopen(String tenantId, String barrierId);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureBarriers(org.springframework.beans.factory.ObjectProvider<BarrierPort> port,
+            org.springframework.transaction.PlatformTransactionManager manager,
+            @org.springframework.beans.factory.annotation.Value("${ai.integration.enabled:false}") boolean enabled) {
+        this.barriers = port.getIfAvailable();
+        this.enabled = enabled;
+        outsideTransaction = new org.springframework.transaction.support.TransactionTemplate(manager);
+        outsideTransaction.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
+    }
+
+    private static final class Mutation implements org.springframework.transaction.support.TransactionSynchronization {
+        final java.util.Map<String, String> barrierIds = new java.util.LinkedHashMap<>();
+        final java.util.Set<String> bumped = new java.util.HashSet<>();
+        private final BarrierPort port;
+        Mutation(BarrierPort port) { this.port = port; }
+        @Override public void afterCommit() {
+            barrierIds.forEach((tenant, id) -> port.reopen(tenant, id));
+        }
+        // On rollback/unknown commit no OPEN acknowledgement is sent: keep the tenant closed.
+    }
+
+    private Mutation prepare(java.util.List<String> tenants) {
+        if (!enabled || tenants.isEmpty()) { return null; }
+        if (barriers == null || outsideTransaction == null || jdbc == null) {
+            throw new IllegalStateException("policy barrier configuration missing");
+        }
+        Mutation mutation = TransactionSynchronizationManager.getSynchronizations().stream()
+                .filter(Mutation.class::isInstance).map(Mutation.class::cast).findFirst().orElse(null);
+        if (mutation == null) {
+            mutation = new Mutation(barriers);
+            TransactionSynchronizationManager.registerSynchronization(mutation);
+        }
+        for (String tenant : tenants) {
+            if (!mutation.barrierIds.containsKey(tenant)) {
+                String id = java.util.UUID.randomUUID().toString();
+                outsideTransaction.executeWithoutResult(status -> barriers.prepareAndDrain(tenant, id));
+                mutation.barrierIds.put(tenant, id);
+            }
+        }
+        return mutation;
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     public void configurePermits(org.springframework.jdbc.core.JdbcTemplate jdbc) { this.jdbc = jdbc; }
@@ -66,8 +116,26 @@ public class AiPolicyMutationGuard {
      */
     public void bump(Collection<String> tenantIds) {
         requireActiveTransaction();
-        policyRevisionService.bumpAll(tenantIds);
-        tenantIds.stream().distinct().sorted().forEach(this::requireDrained);
+        if (tenantIds == null) { throw new IllegalArgumentException("explicit tenant set required"); }
+        var tenants = tenantIds.stream().filter(java.util.Objects::nonNull).distinct().sorted().toList();
+        if (!enabled) {
+            policyRevisionService.bumpAll(tenants);
+            tenants.forEach(this::requireDrained);
+            return;
+        }
+        Mutation mutation = prepare(tenants);
+        for (String tenant : tenants) {
+            if (mutation != null && mutation.bumped.contains(tenant)) { continue; }
+            policyRevisionService.bump(tenant);
+            requireDrained(tenant);
+            if (mutation != null) {
+                int version = policyRevisionService.requireCurrentVersion(tenant);
+                int changed = jdbc.update("UPDATE sys_ai_tenant_barrier SET status='CLOSED',target_policy_version=?,updated_at=now()"
+                        + " WHERE tenant_id=? AND barrier_id=? AND status='PENDING'", version, tenant, mutation.barrierIds.get(tenant));
+                if (changed != 1) { throw new IllegalStateException("policy barrier commit not confirmed"); }
+                mutation.bumped.add(tenant);
+            }
+        }
     }
 
     /**
@@ -77,8 +145,12 @@ public class AiPolicyMutationGuard {
      */
     public void bumpTenant(String tenantId) {
         requireActiveTransaction();
-        policyRevisionService.bump(tenantId);
-        requireDrained(tenantId);
+        if (!enabled) {
+            policyRevisionService.bump(tenantId);
+            requireDrained(tenantId);
+            return;
+        }
+        bump(java.util.List.of(tenantId));
     }
 
     private static void requireActiveTransaction() {

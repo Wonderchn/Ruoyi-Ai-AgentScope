@@ -339,6 +339,28 @@ class P1PrincipalSecurityTest {
     }
 
     @Test
+    void businessBodyCannotSelectIdentityEvenWithValidDelegation() throws Exception {
+        when(replayGuard.consume(anyString(),anyString(),anyString(),any())).thenReturn(true);
+        var request=request("/internal/ai/v1/knowledge-bases",legalToken());
+        request.setMethod("POST");request.setContentType("application/json");
+        request.setContent("{\"name\":\"test\",\"nested\":{\"tenantId\":\"T2\"}}".getBytes(StandardCharsets.UTF_8));
+        var outcome=run(request);
+        assertEquals(403,outcome.status());assertTrue(!outcome.chainInvoked());assertNull(PrincipalContext.get());
+    }
+
+    @Test
+    void validatedJsonBodyRemainsReadableByHandler() throws Exception {
+        when(replayGuard.consume(anyString(),anyString(),anyString(),any())).thenReturn(true);
+        var request=request("/internal/ai/v1/knowledge-bases",legalToken());
+        request.setMethod("POST");request.setContentType("application/json");
+        byte[] body="{\"name\":\"test\",\"collectionName\":\"shared\"}".getBytes(StandardCharsets.UTF_8);request.setContent(body);
+        var response=new MockHttpServletResponse();
+        AtomicReference<byte[]> observed=new AtomicReference<>();
+        filter.doFilter(request,response,(req,res)->observed.set(req.getInputStream().readAllBytes()));
+        assertTrue(java.util.Arrays.equals(body,observed.get()));assertNull(PrincipalContext.get());
+    }
+
+    @Test
     @DisplayName("ServiceIdentityVerifier：空配置=全部拒绝（即使呈现值非空）")
     void serviceIdentityVerifierRejectsBlankConfiguration() {
         ProductionDelegationProperties blank = new ProductionDelegationProperties();

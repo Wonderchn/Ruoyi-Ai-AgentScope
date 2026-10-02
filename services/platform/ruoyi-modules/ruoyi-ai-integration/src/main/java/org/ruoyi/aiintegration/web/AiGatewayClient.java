@@ -105,6 +105,42 @@ public class AiGatewayClient {
     public record ForwardResponse(int status, String body) {
     }
 
+    public record ByteResponse(int status,byte[] bytes,String contentType,String contentRange,String permitId,String operationId) { }
+
+    public ByteResponse forwardBytes(ForwardRequest request) {
+        try {
+            HttpRequest.Builder builder=HttpRequest.newBuilder(request.uri()).timeout(Duration.ofMillis(timeoutMillis));
+            if("GET".equals(request.method())){builder.GET();}
+            else if("POST".equals(request.method())){builder.POST(request.body()==null?HttpRequest.BodyPublishers.noBody():HttpRequest.BodyPublishers.ofByteArray(request.body()));}
+            else {throw new UpstreamUnavailableException("unsupported delivery method");}
+            request.headers().forEach(builder::header);
+            var response=httpClient.send(builder.build(),HttpResponse.BodyHandlers.ofInputStream());
+            byte[] bytes;
+            try(var source=response.body()){bytes=source.readNBytes(4*1024*1024+1);}
+            if(bytes.length>4*1024*1024){throw new UpstreamUnavailableException("upstream body limit exceeded");}
+            int status=response.statusCode();
+            String permit=response.headers().firstValue("X-AI-Delivery-Permit").orElse("");
+            String operation=response.headers().firstValue("X-AI-Delivery-Operation").orElse("");
+            String type=response.headers().firstValue("Content-Type").orElse("application/octet-stream");
+            String range=response.headers().firstValue("Content-Range").orElse("");
+            if(status==200 || status==206){
+                if(type.toLowerCase(java.util.Locale.ROOT).startsWith("application/json")){
+                    requireSingleJsonObject(new String(bytes,java.nio.charset.StandardCharsets.UTF_8),status);
+                }
+                if(!permit.matches("[0-9a-f-]{36}") || !operation.matches("[0-9a-f-]{36}")
+                        || (status==206 && !range.matches("bytes [0-9]+-[0-9]+/[0-9]+"))){
+                    throw new UpstreamUnavailableException("delivery receipt missing");
+                }
+            } else {
+                if(!((status>=400 && status<500)||status==503)){throw new UpstreamUnavailableException("abnormal byte response");}
+                requireSingleJsonObject(new String(bytes,java.nio.charset.StandardCharsets.UTF_8),status);
+            }
+            return new ByteResponse(status,bytes,type,range,permit,operation);
+        } catch(InterruptedException e){Thread.currentThread().interrupt();throw new UpstreamUnavailableException("byte transfer interrupted");
+        } catch(UpstreamUnavailableException e){throw e;
+        } catch(Exception e){throw new UpstreamUnavailableException("byte transfer unavailable");}
+    }
+
     public ForwardResponse forward(ForwardRequest request) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(request.uri())
                 .timeout(Duration.ofMillis(timeoutMillis))

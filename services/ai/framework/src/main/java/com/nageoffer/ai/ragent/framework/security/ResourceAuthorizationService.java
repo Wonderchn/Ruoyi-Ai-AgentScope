@@ -50,6 +50,9 @@ import java.util.Set;
  * </ul>
  */
 public interface ResourceAuthorizationService {
+    default boolean sourcesCurrent(ExecutionPrincipal principal, String sourceRefs, int policyVersion, int aclVersion) {
+        return false;
+    }
 
     /** 单个资源的判定结果。 */
     enum Verdict {

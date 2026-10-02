@@ -37,13 +37,10 @@ import java.util.List;
  * {@code scope == null} 抛 {@code ClientException}；空作用域直接空集；
  * 请求侧 collection 与授权集合求交为空直接空集；作用域缺租户直接空集。
  *
- * <p>过滤条件只有一种形状：<b>授权 tenant 与授权 collection 并列</b>。
+ * <p>过滤同时约束授权 tenant、collection、KB、文档、chunk 和已发布版本。
  * 没有"只按 collection 过滤"的旧形状，也没有"集合为空 → 查全库"的回落分支。
  *
- * <p><b>V3 之前的失败语义</b>：{@code tenant_id} / {@code deleted} 列由 C6 门控的
- * V3 迁移补齐。列还不存在时查询会以 {@link BadSqlGrammarException} 失败，
- * 实现把它记成 ERROR 并返回空集，<b>绝不</b>回落到不带 tenant 的旧语句——
- * 宁可检索能力保持关闭，也不能在共享物理表上做跨租户检索。
+ * <p>授权 schema 不可用时记录错误并拒绝检索，不回落到无租户条件的旧语句。
  */
 @Slf4j
 @Service
@@ -53,6 +50,32 @@ public class PgVectorRetrieverService implements VectorRetrieverService {
 
     private final JdbcTemplate jdbcTemplate;
     private final EmbeddingService embeddingService;
+    private boolean currentFactsRequired;
+    private boolean executionEnabled;
+    private com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService authorization;
+    private com.nageoffer.ai.ragent.framework.security.RevocationGuard revocations;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureExecution(@org.springframework.beans.factory.annotation.Value("${ai.integration.enabled:false}") boolean required,
+            @org.springframework.beans.factory.annotation.Value("${ai.integration.high-risk.enabled:false}") boolean enabled,
+            org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService> resources,
+            org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.framework.security.RevocationGuard> guards){
+        currentFactsRequired=required;executionEnabled=enabled;authorization=resources.getIfAvailable();revocations=guards.getIfAvailable();
+    }
+
+    private com.nageoffer.ai.ragent.framework.security.RevocationGuard.Operation currentExecution(AuthorizedRetrievalScope scope){
+        if(!currentFactsRequired){return null;}
+        if(!executionEnabled || authorization==null || revocations==null){throw new com.nageoffer.ai.ragent.framework.exception.ServiceException("retrieval permit unavailable");}
+        var principal=com.nageoffer.ai.ragent.framework.context.PrincipalContext.require();
+        scope.requireStillValid(principal,principal.policyVersion(),authorization.currentAclVersion(principal.tenantId()));
+        var refs=new java.util.LinkedHashSet<String>(scope.authorizedKbRefs());refs.addAll(scope.authorizedDocRefs());
+        for(String ref:refs){
+            var verdict=authorization.check(principal,scope.action(),ref);
+            if(verdict==com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict.UNKNOWN){throw new com.nageoffer.ai.ragent.framework.exception.ServiceException("retrieval authorization unavailable");}
+            if(verdict!=com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict.GRANT){throw new com.nageoffer.ai.ragent.framework.security.StaleVersionException("retrieval scope no longer authorized");}
+        }
+        return revocations.enter(principal,scope.action(),"tenant:retrieval");
+    }
 
     @Override
     public List<RetrievedChunk> retrieve(AuthorizedRetrievalScope scope, RetrieveRequest request) {
@@ -63,11 +86,13 @@ public class PgVectorRetrieverService implements VectorRetrieverService {
         if (!hasExecutableScope(scope, request)) {
             return List.of();
         }
+        try(var execution=currentExecution(scope)){
         float[] vector = embedAndNormalize(scope, request.getQuery());
         if (vector.length == 0) {
             return List.of();
         }
         return retrieveByVector(scope, vector, request);
+        }
     }
 
     @Override
@@ -79,11 +104,14 @@ public class PgVectorRetrieverService implements VectorRetrieverService {
         // 授权作用域必须绑定租户：缺租户的集合条件不构成可执行的检索条件
         String tenantId = scopeTenant(scope);
         List<String> collectionNames = scope.effectiveCollections(request.getEffectiveCollectionNames());
-        if (tenantId == null || collectionNames.isEmpty() || vector == null || vector.length == 0) {
+        if (tenantId == null || collectionNames.isEmpty() || scope.authorizedDocRefs().isEmpty()
+                || scope.publishedChunkRefs().isEmpty() || vector == null || vector.length == 0) {
             return List.of();
         }
         // 单个或多个逻辑库都通过一条 SQL 过滤，LIMIT 是整个范围的总 TopK
-        return queryByCollections(vector, tenantId, collectionNames, request.getTopK());
+        try(var execution=currentExecution(scope)){
+            return queryByCollections(scope, vector, tenantId, collectionNames, request.getTopK());
+        }
     }
 
     @Override
@@ -96,7 +124,9 @@ public class PgVectorRetrieverService implements VectorRetrieverService {
                 || !hasExecutableScope(scope, null)) {
             return new float[0];
         }
-        return normalize(toArray(embeddingService.embed(query)));
+        try(var execution=currentExecution(scope)){
+            return normalize(toArray(embeddingService.embed(query)));
+        }
     }
 
     @Override
@@ -114,7 +144,8 @@ public class PgVectorRetrieverService implements VectorRetrieverService {
         if (scopeTenant(scope) == null) {
             return false;
         }
-        if (scope.authorizedCollections().isEmpty()) {
+        if (scope.authorizedCollections().isEmpty() || scope.authorizedDocRefs().isEmpty()
+                || scope.publishedChunkRefs().isEmpty()) {
             // 没有授权 collection 就没有可执行范围；request 为 null 时（embedAndNormalize）
             // 也只能得到这个结论，不能因为"没有选择条件"就当成"全库可选"。
             return false;
@@ -135,7 +166,7 @@ public class PgVectorRetrieverService implements VectorRetrieverService {
      * <p>单库与全局共用此方法：单库传单元素列表，全局传多元素列表。
      * tenant 条件不是可选的收窄项，而是与 collection 并列的必需条件。
      */
-    private List<RetrievedChunk> queryByCollections(float[] vector, String tenantId,
+    private List<RetrievedChunk> queryByCollections(AuthorizedRetrievalScope scope, float[] vector, String tenantId,
                                                     List<String> collectionNames, int limit) {
         // 提升召回率；迭代扫描保证过滤后仍能填满 LIMIT，消除过滤向量检索的召回悬崖（pgvector >= 0.8）
         // noinspection SqlDialectInspection,SqlNoDataSourceInspection
@@ -146,33 +177,38 @@ public class PgVectorRetrieverService implements VectorRetrieverService {
         String vectorLiteral = toVectorLiteral(vector);
         String placeholders = collectionNames.stream().map(c -> "?").collect(java.util.stream.Collectors.joining(", "));
 
-        // 绑定顺序必须与 SQL 文本里 ? 的出现顺序一致：SELECT 打分表达式 → tenant → collections → ORDER BY → LIMIT
-        Object[] args = new Object[collectionNames.size() + 4];
-        args[0] = vectorLiteral;
-        args[1] = tenantId;
-        for (int i = 0; i < collectionNames.size(); i++) {
-            args[i + 2] = collectionNames.get(i);
-        }
-        args[collectionNames.size() + 2] = vectorLiteral;
-        args[collectionNames.size() + 3] = limit;
+        // 绑定顺序：打分向量、tenant、collections、KB、文档、chunk、排序向量、limit。
+        var args = new java.util.ArrayList<Object>();
+        args.add(vectorLiteral); args.add(tenantId); args.addAll(collectionNames);
+        var kbIds = scope.authorizedKbRefs().stream().map(ref -> ref.substring(3)).toList();
+        var docIds = scope.authorizedDocRefs().stream().map(ref -> ref.substring(4)).toList();
+        var chunkIds = scope.publishedChunkRefs().stream().map(ref -> ref.startsWith("chunk:") ? ref.substring(6) : ref).toList();
+        args.addAll(kbIds); args.addAll(docIds); args.addAll(chunkIds);
+        args.add(vectorLiteral); args.add(Math.max(1, Math.min(100, limit)));
+        String kbSlots = kbIds.stream().map(id -> "?").collect(java.util.stream.Collectors.joining(","));
+        String docSlots = docIds.stream().map(id -> "?").collect(java.util.stream.Collectors.joining(","));
+        String chunkSlots = chunkIds.stream().map(id -> "?").collect(java.util.stream.Collectors.joining(","));
 
-        // 文档级 / 版本级收窄暂不做：document_id、doc_version 与 tenant_id、deleted 一样由 C6 门控的
-        // V3 迁移补齐。等列存在后必须按"AuthorizedRetrievalScope.authorizedDocRefs() ∩ 请求 refs"下推；
-        // 现在就拿请求侧原始 refs 过滤只是"看起来收窄"，并没有与授权事实求交，反而会掩盖未授权命中。
+        // 仅使用服务端投影的授权集合，并核对 registry 当前发布版本。
         try {
             // noinspection SqlDialectInspection,SqlNoDataSourceInspection
             return jdbcTemplate.query(
-                    "SELECT id, content, collection_name, 1 - (embedding <=> ?::vector) AS score "
-                            + "FROM t_knowledge_vector "
-                            + "WHERE tenant_id = ? AND deleted = 0 AND collection_name IN (" + placeholders + ") "
-                            + "ORDER BY embedding <=> ?::vector LIMIT ?",
+                    "SELECT v.id, v.content, v.collection_name, 1 - (v.embedding <=> ?::vector) AS score "
+                            + "FROM t_knowledge_vector v JOIN t_knowledge_document d ON d.tenant_id=v.tenant_id AND d.id=v.document_id "
+                            + "JOIN ai_resource dr ON dr.tenant_id=d.tenant_id AND dr.resource_type='DOCUMENT' AND dr.resource_id=d.id "
+                            + "JOIN ai_resource kr ON kr.tenant_id=d.tenant_id AND kr.resource_type='KB' AND kr.resource_id=d.kb_id "
+                            + "WHERE v.tenant_id = ? AND v.deleted = 0 AND d.deleted=0 AND d.enabled=1 AND dr.status='ACTIVE' AND kr.status='ACTIVE' "
+                            + "AND dr.parent_type='KB' AND dr.parent_id=d.kb_id AND v.doc_version=dr.resource_version "
+                            + "AND v.collection_name IN (" + placeholders + ") AND d.kb_id IN ("+kbSlots+") "
+                            + "AND v.document_id IN ("+docSlots+") AND v.id IN ("+chunkSlots+") "
+                            + "ORDER BY v.embedding <=> ?::vector LIMIT ?",
                     (rs, rowNum) -> RetrievedChunk.builder()
                             .id(rs.getString("id"))
                             .text(rs.getString("content"))
                             .collectionName(rs.getString("collection_name"))
                             .score(rs.getFloat("score"))
                             .build(),
-                    args);
+                    args.toArray());
         } catch (BadSqlGrammarException e) {
             // 结构性缺失（V3 未部署）只把检索能力保持关闭：绝不改跑不带 tenant_id 的旧 SQL，
             // 那条语句在共享物理表上等于跨租户检索，是本次改动要消除的缺陷本身。
@@ -180,7 +216,7 @@ public class PgVectorRetrieverService implements VectorRetrieverService {
                             + "t_knowledge_vector lacks the P1 tenant columns, so the retrieval path stays "
                             + "closed instead of falling back to an unscoped query",
                     tenantId, collectionNames.size(), e.getClass().getSimpleName());
-            return List.of();
+            throw new com.nageoffer.ai.ragent.framework.exception.ServiceException("authorized vector schema unavailable");
         }
     }
 
