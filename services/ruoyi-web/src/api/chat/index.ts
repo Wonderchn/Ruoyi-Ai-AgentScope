@@ -10,8 +10,19 @@ export function addChat(data: ChatMessageVo) {
 }
 
 // 获取当前会话的聊天记录
-export function getChatList(params: GetChatListParams) {
-  return get<ChatMessageVo[]>('/system/message/list', params).json();
+export async function getChatList(params: GetChatListParams) {
+  const response = await get<{ data: { id: string; role: string; content: string; createTime: string }[] }>(
+    `/api/ai/v1/conversations/${encodeURIComponent(String(params.sessionId))}/messages`,
+    { limit: 200 },
+  ).json();
+  const rows = (response.data ?? []).map((row: { id: string; role: string; content: string; createTime: string }) => ({
+    id: row.id,
+    sessionId: params.sessionId,
+    role: row.role,
+    content: row.content,
+    createTime: new Date(row.createTime),
+  } as ChatMessageVo));
+  return { rows };
 }
 
 // 获取知识库列表

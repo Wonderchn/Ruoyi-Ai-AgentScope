@@ -54,6 +54,12 @@ export const useChatStore = defineStore('chat', () => {
   const clearCurrentWorkflow = () => {
     currentWorkflow.value = null;
   };
+  const resetChats = () => {
+    chatMap.value = {};
+    knowledgeId.value = '';
+    currentWorkflow.value = null;
+    isDeepThinking.value = false;
+  };
 
   const setChatMap = (id: string, data: ChatMessageVo[]) => {
     chatMap.value[id] = data?.map((item: ChatMessageVo) => {
@@ -87,6 +93,7 @@ export const useChatStore = defineStore('chat', () => {
 
   // 获取当前会话的聊天记录
   const requestChatList = async (sessionId: string) => {
+    const epoch = userStore.authEpoch;
     // 如果没有 token 则不查询聊天记录
     if (!userStore.token)
       return;
@@ -95,7 +102,7 @@ export const useChatStore = defineStore('chat', () => {
         sessionId,
         userId: userStore.userInfo?.userId as number,
       });
-      if (res.rows) {
+      if (epoch === userStore.authEpoch && res.rows) {
         setChatMap(sessionId, res.rows);
       }
     }
@@ -129,6 +136,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   return {
+    resetChats,
     chatMap,
     requestChatList,
     isDeepThinking,

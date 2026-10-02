@@ -161,18 +161,22 @@ export function buildRunStreamUrl(
 ): string {
   const base = request.baseURL.endsWith('/') ? request.baseURL.slice(0, -1) : request.baseURL;
   const url = new URL(`${base}/runs/${encodeURIComponent(request.runId)}/events`);
-  if (request.afterSeq !== undefined) url.searchParams.set('afterSeq', String(request.afterSeq));
+  if (request.afterSeq !== undefined)
+    url.searchParams.set('afterSeq', String(request.afterSeq));
   for (const [key, value] of Object.entries(query ?? {})) {
-    if (value !== undefined) url.searchParams.set(key, String(value));
+    if (value !== undefined)
+      url.searchParams.set(key, String(value));
   }
   return url.toString();
 }
 
 function parseEnvelope(data: string): RunEventEnvelope | null {
-  if (data.length === 0) return null;
+  if (data.length === 0)
+    return null;
   try {
     const parsed: unknown = JSON.parse(data);
-    if (parsed !== null && typeof parsed === 'object') return parsed as RunEventEnvelope;
+    if (parsed !== null && typeof parsed === 'object')
+      return parsed as RunEventEnvelope;
     return null;
   }
   catch {
@@ -287,19 +291,23 @@ export async function createRunEventStream(
   options: RunStreamOptions = {},
 ): Promise<RunEventConnection> {
   const fetchImpl = request.fetchImpl ?? globalThis.fetch;
-  if (typeof fetchImpl !== 'function') throw new Error('no fetch implementation available');
+  if (typeof fetchImpl !== 'function')
+    throw new Error('no fetch implementation available');
 
   const url = buildRunStreamUrl(request, options.query);
   const headers: Record<string, string> = {
-    accept: 'text/event-stream',
+    'accept': 'text/event-stream',
     'cache-control': 'no-cache',
     ...request.headers,
   };
-  if (request.token) headers.authorization = `Bearer ${request.token}`;
-  if (request.clientId) headers.ClientID = request.clientId;
+  if (request.token)
+    headers.authorization = `Bearer ${request.token}`;
+  if (request.clientId)
+    headers.ClientID = request.clientId;
   // Merging (not replacing) the header map is required: a naive per-request override
   // would drop `authorization` and silently de-authenticate the stream.
-  if (request.lastEventId) headers['Last-Event-ID'] = request.lastEventId;
+  if (request.lastEventId)
+    headers['Last-Event-ID'] = request.lastEventId;
 
   // The run/SSE contract defines this endpoint as a read, so GET is the default.
   // POST stays available for deployments that need a request body.
@@ -322,7 +330,8 @@ export async function createRunEventStream(
         const data = (parsed as { data?: unknown }).data;
         if (data !== null && typeof data === 'object') {
           const candidate = (data as { lastSeq?: unknown }).lastSeq;
-          if (typeof candidate === 'number') lastSeq = candidate;
+          if (typeof candidate === 'number')
+            lastSeq = candidate;
           snapshot = (data as { snapshot?: unknown }).snapshot;
         }
       }
@@ -399,11 +408,12 @@ export async function createRunEventStream(
 
     trace?.(`awaiting chunk with ${idleMs}ms of budget`);
     const outcome = await Promise.race([
-      reader.read().then((result) => ({ kind: 'read' as const, result })),
+      reader.read().then(result => ({ kind: 'read' as const, result })),
       timeout,
     ]);
 
-    if (watchdog !== undefined) clearTimeout(watchdog);
+    if (watchdog !== undefined)
+      clearTimeout(watchdog);
 
     if (outcome.kind === 'timeout') {
       trace?.('stall detected; cancelling reader');
@@ -426,7 +436,8 @@ export async function createRunEventStream(
   /** Advances until at least one message is queued, or the stream/error is terminal. */
   const pull = async (): Promise<void> => {
     for (;;) {
-      if (queue.length > 0 || finished || failure) return;
+      if (queue.length > 0 || finished || failure)
+        return;
 
       const outcome = await awaitChunk();
 
@@ -455,7 +466,8 @@ export async function createRunEventStream(
       const events = parser.push(text);
       if (events.length > 0) {
         for (const event of events) {
-          if (event.isComment) options.onHeartbeat?.();
+          if (event.isComment)
+            options.onHeartbeat?.();
         }
         queue = events.map(toMessage);
         return;
@@ -471,7 +483,8 @@ export async function createRunEventStream(
           const message = queue.shift() as SseMessage;
           return { done: false, value: message };
         }
-        if (failure) throw failure;
+        if (failure)
+          throw failure;
         if (finished) {
           await releaseConnection();
           return { done: true, value: undefined };
@@ -514,9 +527,11 @@ export interface ReconnectingRunStreamOptions extends RunStreamOptions {
   onReconnect?: (info: { attempt: number; afterSeq: number | undefined; delayMs: number; reason: 'gap' | 'error' | 'incomplete' }) => void;
 }
 
-const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => {
-  setTimeout(resolve, ms);
-});
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 export interface RunEventStream {
   /**
@@ -550,8 +565,10 @@ export interface RunEventStream {
  * terminality from the verified envelope `type` after the gate instead of calling this.
  */
 export function isTerminalMessage(message: SseMessage): boolean {
-  if (message.isComment) return false;
-  if (message.type === 'run.terminal') return true;
+  if (message.isComment)
+    return false;
+  if (message.type === 'run.terminal')
+    return true;
   // Tolerate the envelope carrying the type instead of the SSE event name.
   return message.parsed?.type === 'run.terminal';
 }
@@ -627,7 +644,8 @@ export function openRunStream(
             const terminal = envelope.type === 'run.terminal';
             const seq = envelope.seq;
 
-            if (seen.has(seq)) continue; // overlap with an earlier connection
+            if (seen.has(seq))
+              continue; // overlap with an earlier connection
 
             if (seq > contiguous + 1) {
               // A hole below this frame. Stop reading and replay from the last contiguous
@@ -651,14 +669,17 @@ export function openRunStream(
             let watermark = contiguous;
             for (;;) {
               const next = watermark + 1;
-              if (!delivered.has(next)) break;
+              if (!delivered.has(next))
+                break;
               watermark = next;
               delivered.delete(next);
             }
             contiguous = watermark;
 
-            if (watermark > applied) applied = watermark;
-            if (seq > watermark) options.onDebug?.(`seq=${seq} delivered ahead of the watermark (hole open)`);
+            if (watermark > applied)
+              applied = watermark;
+            if (seq > watermark)
+              options.onDebug?.(`seq=${seq} delivered ahead of the watermark (hole open)`);
 
             yield message;
             if (terminal) {
@@ -674,16 +695,21 @@ export function openRunStream(
         }
       }
       catch (error) {
-        if (options.signal?.aborted) throw error;
-        if (error instanceof CursorExpiredError) throw error;
+        if (options.signal?.aborted)
+          throw error;
+        if (error instanceof CursorExpiredError)
+          throw error;
         // A contract breach is deterministic: replaying would return the same broken
         // frames, so retrying only delays an error the caller must see.
-        if (error instanceof RunEventStreamProtocolError) throw error;
-        if (error instanceof RunStreamHttpError && error.status >= 400 && error.status < 500) throw error;
+        if (error instanceof RunEventStreamProtocolError)
+          throw error;
+        if (error instanceof RunStreamHttpError && error.status >= 400 && error.status < 500)
+          throw error;
         lastError = error;
       }
 
-      if (sawTerminal) return;
+      if (sawTerminal)
+        return;
 
       if (repairFrom !== undefined) {
         // Gap repair is not a failure, so it does not consume the error retry budget.
@@ -709,9 +735,11 @@ export function openRunStream(
       const delayMs = Math.min(maxBackoffMs, baseDelayMs * 2 ** attempt);
       attempt += 1;
       options.onReconnect?.({ attempt, afterSeq: applied, delayMs, reason: 'error' });
-      if (lastError !== undefined) options.onDebug?.(`reconnecting after error: ${String(lastError)}`);
+      if (lastError !== undefined)
+        options.onDebug?.(`reconnecting after error: ${String(lastError)}`);
       await sleep(delayMs);
-      if (options.signal?.aborted) return;
+      if (options.signal?.aborted)
+        return;
     }
   }
 

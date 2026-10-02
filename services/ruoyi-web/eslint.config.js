@@ -35,4 +35,16 @@ export default antfu({
     "./*.js",
     "./package.json",
   ],
+}, {
+  files: ['tests/**/*.test.ts'],
+  rules: {
+    // The existing suite intentionally uses the built-in Node test runner.
+    'test/no-import-node-test': 'off',
+  },
+}, {
+  files: ['tests/ts-loader.mjs'],
+  rules: {
+    // Loader initialization must await the installed TypeScript compiler before registration.
+    'antfu/no-top-level-await': 'off',
+  },
 });

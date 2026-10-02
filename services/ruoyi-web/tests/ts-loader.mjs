@@ -11,9 +11,9 @@
  *   npx tsc -p tsconfig.tests.json --noEmit                     # types
  */
 
-import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
-import { register } from 'node:module';
+import { createRequire, register } from 'node:module';
+
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -46,9 +46,9 @@ async function loadTypeScript() {
     }
   }
   throw new Error(
-    'ts-loader could not locate the "typescript" package. Install dependencies first '
-    + '(pnpm install --frozen-lockfile), or run pnpm add -D typescript.\nTried:\n'
-    + errors.join('\n'),
+    `ts-loader could not locate the "typescript" package. Install dependencies first `
+    + `(pnpm install --frozen-lockfile), or run pnpm add -D typescript.\nTried:\n${
+      errors.join('\n')}`,
   );
 }
 
@@ -58,7 +58,8 @@ register('./ts-loader.mjs', import.meta.url);
 
 /** Transpile one TypeScript file to ESM JavaScript. */
 export async function load(url, context, nextLoad) {
-  if (!url.endsWith('.ts') || url.endsWith('.d.ts')) return nextLoad(url, context);
+  if (!url.endsWith('.ts') || url.endsWith('.d.ts'))
+    return nextLoad(url, context);
 
   const path = fileURLToPath(url);
   const source = await readFile(path, 'utf8');

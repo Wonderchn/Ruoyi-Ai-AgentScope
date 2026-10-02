@@ -21,8 +21,6 @@ const formModel = reactive<LoginDTO>({
   password: '',
   clientId: import.meta.env.VITE_CLIENT_ID,
   grantType: 'password',
-  tenantId: '000000',
-  uuid: 'a5705def96be468f80e4b8bde3127c31',
 });
 
 const rules = reactive<FormRules<LoginDTO>>({
@@ -31,6 +29,7 @@ const rules = reactive<FormRules<LoginDTO>>({
 });
 
 const router = useRouter();
+onMounted(() => loginFromStore.loadTenants());
 async function handleSubmit() {
   if (isSubmitting.value)
     return;
@@ -38,7 +37,7 @@ async function handleSubmit() {
   try {
     isSubmitting.value = true;
     await formRef.value?.validate();
-    const res = await login(formModel);
+    const res = await login({ ...formModel, tenantId: loginFromStore.requireTenant() });
     const loginData = res?.data ?? res;
     const token = loginData?.access_token || loginData?.token;
     if (!token)
@@ -72,6 +71,16 @@ async function handleSubmit() {
       class="login-form"
       @submit.prevent="handleSubmit"
     >
+      <el-form-item v-if="loginFromStore.tenantEnabled" label="所属租户">
+        <el-select v-model="loginFromStore.tenantId" placeholder="请选择所属租户" style="width: 100%">
+          <el-option v-for="tenant in loginFromStore.tenants" :key="tenant.tenantId" :label="tenant.companyName" :value="tenant.tenantId" />
+        </el-select>
+      </el-form-item>
+      <el-alert v-if="loginFromStore.tenantError" :title="loginFromStore.tenantError" type="error" :closable="false">
+        <el-button link @click="loginFromStore.loadTenants()">
+          重新加载
+        </el-button>
+      </el-alert>
       <el-form-item prop="username">
         <el-input v-model="formModel.username" placeholder="请输入账号">
           <template #prefix>
@@ -101,7 +110,7 @@ async function handleSubmit() {
           type="primary"
           native-type="submit"
           :loading="isSubmitting"
-          :disabled="isSubmitting"
+          :disabled="isSubmitting || !loginFromStore.tenantsReady || (loginFromStore.tenantEnabled && !loginFromStore.tenantId)"
         >
           立即登录
         </el-button>

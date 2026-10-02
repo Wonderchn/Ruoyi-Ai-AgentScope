@@ -131,7 +131,7 @@ describe('runStream: frame delivery', () => {
       messages.push(message);
     }
 
-    assert.deepEqual(messages.map((m) => m.type), ['run.accepted', '', 'run.output_delta', 'run.output_delta', 'run.terminal']);
+    assert.deepEqual(messages.map(m => m.type), ['run.accepted', '', 'run.output_delta', 'run.output_delta', 'run.terminal']);
     assert.equal(messages[1].isComment, true);
     assert.equal(messages[2].parsed?.seq, 2);
     assert.equal(messages[2].cursor, 2);
@@ -263,7 +263,7 @@ describe('runStream: reconnection', () => {
     const messages: SseMessage[] = [];
     for await (const message of stream.messages) messages.push(message);
 
-    assert.deepEqual(messages.map((m) => m.parsed?.seq), [1, 2, 3, 4]);
+    assert.deepEqual(messages.map(m => m.parsed?.seq), [1, 2, 3, 4]);
     assert.equal(calls.length, 2, 'must reconnect once');
     assert.equal(new URL(calls[1].url).searchParams.get('afterSeq'), '2', 'must resume from the last applied seq');
     assert.equal(stream.appliedCursor(), 4);
@@ -284,7 +284,8 @@ describe('runStream: reconnection', () => {
     );
     const seqs: number[] = [];
     for await (const message of stream.messages) {
-      if (typeof message.cursor === 'number') seqs.push(message.cursor);
+      if (typeof message.cursor === 'number')
+        seqs.push(message.cursor);
     }
     assert.deepEqual(seqs, [1, 2, 3, 4], 'the replayed overlap is dropped, the new frames are delivered once');
   });
@@ -297,7 +298,8 @@ describe('runStream: reconnection', () => {
     );
     const seqs: number[] = [];
     for await (const message of stream.messages) {
-      if (typeof message.cursor === 'number') seqs.push(message.cursor);
+      if (typeof message.cursor === 'number')
+        seqs.push(message.cursor);
     }
     assert.deepEqual(seqs, [6]);
   });
@@ -320,7 +322,7 @@ describe('runStream: reconnection', () => {
         maxRetries: 2,
         baseDelayMs: 0,
         sleep: async () => {},
-        onReconnect: (info) => attempts.push(info.attempt),
+        onReconnect: info => attempts.push(info.attempt),
       },
     );
     await assert.rejects(
@@ -365,14 +367,15 @@ describe('runStream: reconnection', () => {
       {
         baseDelayMs: 0,
         sleep: async () => {},
-        onReconnect: (i) => reconnects.push({ attempt: i.attempt, afterSeq: i.afterSeq, reason: i.reason }),
-        onDebug: (m) => debug.push(m),
+        onReconnect: i => reconnects.push({ attempt: i.attempt, afterSeq: i.afterSeq, reason: i.reason }),
+        onDebug: m => debug.push(m),
       },
     );
 
     const seqs: number[] = [];
     for await (const message of stream.messages) {
-      if (typeof message.cursor === 'number') seqs.push(message.cursor);
+      if (typeof message.cursor === 'number')
+        seqs.push(message.cursor);
     }
 
     assert.deepEqual(seqs, [1, 2, 3], 'the withheld frame is replayed and every seq is delivered exactly once');
@@ -381,7 +384,7 @@ describe('runStream: reconnection', () => {
     assert.deepEqual(reconnects, [{ attempt: 0, afterSeq: 1, reason: 'gap' }]);
     assert.equal(stream.appliedCursor(), 3);
     assert.ok(
-      debug.some((m) => m.includes('terminal withheld') && m.includes('afterSeq=1')),
+      debug.some(m => m.includes('terminal withheld') && m.includes('afterSeq=1')),
       `the withheld terminal must be recorded for diagnostics; got ${JSON.stringify(debug)}`,
     );
   });
@@ -402,7 +405,8 @@ describe('runStream: reconnection', () => {
     await assert.rejects(
       async () => {
         for await (const message of stream.messages) {
-          if (typeof message.cursor === 'number') seqs.push(message.cursor);
+          if (typeof message.cursor === 'number')
+            seqs.push(message.cursor);
         }
       },
       (error: unknown) => {
@@ -441,7 +445,8 @@ describe('runStream: reconnection', () => {
 
     const seqs: number[] = [];
     for await (const message of stream.messages) {
-      if (typeof message.cursor === 'number') seqs.push(message.cursor);
+      if (typeof message.cursor === 'number')
+        seqs.push(message.cursor);
     }
 
     assert.deepEqual(seqs, [1, 2, 3], 'the missing prefix is replayed before the terminal');
@@ -528,7 +533,8 @@ describe('runStream: reconnection', () => {
     );
     const seqs: number[] = [];
     for await (const message of stream.messages) {
-      if (typeof message.cursor === 'number') seqs.push(message.cursor);
+      if (typeof message.cursor === 'number')
+        seqs.push(message.cursor);
     }
     assert.deepEqual(seqs, [1, 2, 3]);
     assert.equal(attempt, 2);
@@ -553,7 +559,8 @@ describe('runStream: envelope contract gate', () => {
       payload: opts.payload ?? {},
     };
     const lines: string[] = [];
-    if (opts.id !== undefined) lines.push(`id: ${opts.id}`);
+    if (opts.id !== undefined)
+      lines.push(`id: ${opts.id}`);
     lines.push(`event: ${opts.event ?? type}`);
     lines.push(`data: ${JSON.stringify(envelope)}`);
     return `${lines.join('\n')}\n\n`;
@@ -582,7 +589,7 @@ describe('runStream: envelope contract gate', () => {
       },
       'a terminal without a usable cursor must fail as a protocol error, never complete the subscription',
     );
-    assert.deepEqual(delivered.map((m) => m.cursor), [1], 'only the frames before the breach are delivered');
+    assert.deepEqual(delivered.map(m => m.cursor), [1], 'only the frames before the breach are delivered');
     assert.equal(stream.appliedCursor(), 1);
     assert.equal(calls.length, 1, 'a contract breach is deterministic and must not be retried');
   });
@@ -670,7 +677,8 @@ describe('runStream: envelope contract gate', () => {
     const stream = openRunStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl }, { sleep: async () => {} });
     const seqs: number[] = [];
     for await (const message of stream.messages) {
-      if (typeof message.cursor === 'number') seqs.push(message.cursor);
+      if (typeof message.cursor === 'number')
+        seqs.push(message.cursor);
     }
     assert.deepEqual(seqs, [1]);
     assert.equal(stream.appliedCursor(), 1);
@@ -701,7 +709,7 @@ describe('runStream: envelope contract gate', () => {
       },
       'disagreeing type markers must fail as a protocol error, never complete the subscription',
     );
-    assert.deepEqual(delivered.map((m) => m.cursor), [1], 'only the frames before the breach are delivered');
+    assert.deepEqual(delivered.map(m => m.cursor), [1], 'only the frames before the breach are delivered');
     assert.equal(stream.appliedCursor(), 1);
     assert.equal(calls.length, 1, 'a contract breach is deterministic and must not be retried');
   });
@@ -741,7 +749,8 @@ describe('runStream: envelope contract gate', () => {
     const stream = openRunStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl }, { sleep: async () => {} });
     const seqs: number[] = [];
     for await (const message of stream.messages) {
-      if (typeof message.cursor === 'number') seqs.push(message.cursor);
+      if (typeof message.cursor === 'number')
+        seqs.push(message.cursor);
     }
     assert.deepEqual(seqs, [1, 2], 'agreeing markers deliver normally and the terminal ends the run');
     assert.equal(stream.appliedCursor(), 2);

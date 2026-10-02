@@ -3,6 +3,13 @@ import { get, post } from '@/utils/request';
 
 export const login = (data: LoginDTO) => post<LoginResponse>('/auth/login', data).json();
 
+export interface LoginTenants {
+  tenantEnabled: boolean;
+  voList?: { tenantId: string; companyName: string }[];
+}
+
+export const loginTenants = () => get<LoginTenants & { data?: LoginTenants }>('/auth/tenant/list').json();
+
 // 邮箱验证码（后端 GET /resource/email/code，按 query 参数 email 接收）
 export function emailCode(data: EmailCodeDTO) {
   return get('/resource/email/code', { email: data.email }).json();

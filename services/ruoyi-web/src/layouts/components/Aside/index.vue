@@ -8,11 +8,13 @@ import logo from '@/assets/images/logo.png';
 import Collapse from '@/layouts/components/Header/components/Collapse.vue';
 import { useDesignStore } from '@/stores';
 import { useSessionStore } from '@/stores/modules/session';
+import { useUserStore } from '@/stores/modules/user';
 
 const route = useRoute();
 const router = useRouter();
 const designStore = useDesignStore();
 const sessionStore = useSessionStore();
+const userStore = useUserStore();
 
 const sessionId = computed(() => route.params?.id);
 const conversationsList = computed(() => sessionStore.sessionList);
@@ -52,14 +54,23 @@ function handleClearSearch() {
 }
 
 onMounted(async () => {
+  const epoch = userStore.authEpoch;
   // 鑾峰彇浼氳瘽鍒楄〃
   await sessionStore.requestSessionList();
 
   // 楂樹寒鏈€鏂颁細璇?
   if (conversationsList.value.length > 0 && sessionId.value) {
-    const currentSessionRes = await get_session(`${sessionId.value}`);
-    // 閫氳繃 ID 鏌ヨ璇︽儏锛岃缃綋鍓嶄細璇?(鍥犱负鏈夊垎椤?
-    sessionStore.setCurrentSession(currentSessionRes.data);
+    const requestedId = sessionId.value;
+    try {
+      const currentSessionRes = await get_session(`${requestedId}`);
+      // 閫氳繃 ID 鏌ヨ璇︽儏锛岃缃綋鍓嶄細璇?(鍥犱负鏈夊垎椤?
+      if (epoch === userStore.authEpoch && requestedId === sessionId.value)
+        sessionStore.setCurrentSession(currentSessionRes.data);
+    }
+    catch {
+      if (epoch === userStore.authEpoch)
+        sessionStore.setCurrentSession(null);
+    }
   }
 });
 

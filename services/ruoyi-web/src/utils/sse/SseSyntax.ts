@@ -40,7 +40,7 @@ const CR = 0x0D;
 const LF = 0x0A;
 const SPACE = 0x20;
 
-const enum Field {
+enum Field {
   Data = 0,
   Event = 1,
   Id = 2,
@@ -49,10 +49,14 @@ const enum Field {
 }
 
 function classify(name: string): Field {
-  if (name === 'data') return Field.Data;
-  if (name === 'event') return Field.Event;
-  if (name === 'id') return Field.Id;
-  if (name === 'retry') return Field.Retry;
+  if (name === 'data')
+    return Field.Data;
+  if (name === 'event')
+    return Field.Event;
+  if (name === 'id')
+    return Field.Id;
+  if (name === 'retry')
+    return Field.Retry;
   return Field.Unknown;
 }
 
@@ -79,13 +83,15 @@ export class SseFrameParser {
 
   /** Events completed by this chunk, in order. */
   push(chunk: string): SseEvent[] {
-    if (chunk.length === 0) return [];
+    if (chunk.length === 0)
+      return [];
 
     // Strip a UTF-8 BOM that may lead the very first chunk of the body.
     let text = chunk;
     if (!this.#sawFirstChunk) {
       this.#sawFirstChunk = true;
-      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+      if (text.charCodeAt(0) === 0xFEFF)
+        text = text.slice(1);
     }
 
     this.#buffer += text;
@@ -163,7 +169,8 @@ export class SseFrameParser {
   #commentValue(line: string): string {
     const colon = line.indexOf(':');
     let value = colon === -1 ? '' : line.slice(colon + 1);
-    if (value.charCodeAt(0) === SPACE) value = value.slice(1);
+    if (value.charCodeAt(0) === SPACE)
+      value = value.slice(1);
     return value;
   }
 
@@ -176,7 +183,8 @@ export class SseFrameParser {
     const colon = line.indexOf(':');
     const name = colon === -1 ? line : line.slice(0, colon);
     let value = colon === -1 ? '' : line.slice(colon + 1);
-    if (value.charCodeAt(0) === SPACE) value = value.slice(1);
+    if (value.charCodeAt(0) === SPACE)
+      value = value.slice(1);
 
     if (name.length === 0) {
       // A line that is just ":" (or ": text") is a comment/heartbeat.
@@ -193,7 +201,8 @@ export class SseFrameParser {
         break;
       case Field.Id:
         // The spec ignores an id containing NUL.
-        if (!value.includes('\u0000')) this.#id = value;
+        if (!value.includes('\u0000'))
+          this.#id = value;
         break;
       case Field.Retry:
         if (value.length > 0) {
@@ -204,7 +213,8 @@ export class SseFrameParser {
               break;
             }
           }
-          if (allDigits) this.#retryMs = Number(value);
+          if (allDigits)
+            this.#retryMs = Number(value);
         }
         break;
       default:
@@ -214,10 +224,11 @@ export class SseFrameParser {
   }
 
   #takeComments(): SseEvent[] {
-    if (this.#comments.length === 0) return [];
+    if (this.#comments.length === 0)
+      return [];
     const comments = this.#comments;
     this.#comments = [];
-    return comments.map((data) => ({
+    return comments.map(data => ({
       type: '',
       data,
       id: this.#id,
@@ -238,7 +249,8 @@ export class SseFrameParser {
     // The event being dispatched now reports the id seen *before* this frame; the frame's
     // own id becomes the cursor for subsequent events (the buffer is not reset by spec).
     const previousId = this.#lastEventId;
-    if (this.#id !== undefined) this.#lastEventId = this.#id;
+    if (this.#id !== undefined)
+      this.#lastEventId = this.#id;
 
     if (hasData) {
       events.push({

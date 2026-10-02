@@ -96,7 +96,7 @@ describe('sseSyntax: frame parsing', () => {
 
   it('does not dispatch a frame that has an event name but no data', () => {
     assert.deepEqual(parseSseText('event: run.terminal\n\n'), []);
-    assert.deepEqual(parseSseText('id: 4\nevent: run.terminal\n\n').filter((e) => !e.isComment), []);
+    assert.deepEqual(parseSseText('id: 4\nevent: run.terminal\n\n').filter(e => !e.isComment), []);
   });
 
   it('still reports a pending comment at end of stream', () => {
@@ -150,6 +150,6 @@ describe('sseSyntax: frame parsing', () => {
 
   it('emits several events from one chunk and drops a trailing unfinished one', () => {
     const events = parseSseText('data: 1\n\ndata: 2\n\ndata: 3\n');
-    assert.deepEqual(events.map((e) => e.data), ['1', '2'], 'the third frame has no blank line');
+    assert.deepEqual(events.map(e => e.data), ['1', '2'], 'the third frame has no blank line');
   });
 });

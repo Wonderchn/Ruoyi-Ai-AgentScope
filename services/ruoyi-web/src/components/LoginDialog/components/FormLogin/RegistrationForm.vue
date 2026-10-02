@@ -8,6 +8,7 @@ import { emailCode, register } from '@/api';
 import { useLoginFormStore } from '@/stores/modules/loginForm';
 
 const loginFromStore = useLoginFormStore();
+onMounted(() => loginFromStore.loadTenants());
 const countdown = shallowRef(60);
 const { start, stop, resume } = useCountdown(countdown, {
   onComplete() {
@@ -70,7 +71,7 @@ async function handleSubmit() {
       // 且需指定租户，否则注册会被 @Validated 拦截或落到空租户。
       clientId: import.meta.env.VITE_CLIENT_ID,
       grantType: 'password',
-      tenantId: '000000',
+      tenantId: loginFromStore.requireTenant(),
     };
     await register(params);
     ElMessage.success('注册成功');
@@ -79,6 +80,7 @@ async function handleSubmit() {
   }
   catch (error) {
     console.error('请求错误:', error);
+    ElMessage.error(error instanceof Error ? error.message : '注册失败，请稍后重试');
   }
 }
 
@@ -116,6 +118,16 @@ async function getEmailCode() {
       class="register-form"
       @submit.prevent="handleSubmit"
     >
+      <el-form-item v-if="loginFromStore.tenantEnabled" label="所属租户">
+        <el-select v-model="loginFromStore.tenantId" placeholder="请选择所属租户" style="width: 100%">
+          <el-option v-for="tenant in loginFromStore.tenants" :key="tenant.tenantId" :label="tenant.companyName" :value="tenant.tenantId" />
+        </el-select>
+      </el-form-item>
+      <el-alert v-if="loginFromStore.tenantError" :title="loginFromStore.tenantError" type="error" :closable="false">
+        <el-button link @click="loginFromStore.loadTenants()">
+          重新加载
+        </el-button>
+      </el-alert>
       <el-form-item prop="username">
         <el-input v-model="formModel.username" placeholder="请输入邮箱" autocomplete="off">
           <template #prefix>
