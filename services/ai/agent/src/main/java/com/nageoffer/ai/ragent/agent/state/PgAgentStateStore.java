@@ -52,14 +52,15 @@ public class PgAgentStateStore implements AgentStateStore {
     @Override
     public void save(String userId, String sessionId, String key, State value) {
         Scope scope = requireScope();
-        agentStateMapper.upsert(scope.tenantId(), scope.memberId(), scope.displayUserId(userId),
+        // 展示引用取可信主体上的 userId，不取 AgentScope 运行时入参（那是可伪造的展示值）
+        agentStateMapper.upsert(scope.tenantId(), scope.memberId(), scope.displayUserId(),
                 sessionId, key, JsonUtils.getJsonCodec().toJson(value));
     }
 
     @Override
     public void save(String userId, String sessionId, String key, List<? extends State> values) {
         Scope scope = requireScope();
-        agentStateMapper.upsert(scope.tenantId(), scope.memberId(), scope.displayUserId(userId),
+        agentStateMapper.upsert(scope.tenantId(), scope.memberId(), scope.displayUserId(),
                 sessionId, key, JsonUtils.getJsonCodec().toJson(values));
     }
 

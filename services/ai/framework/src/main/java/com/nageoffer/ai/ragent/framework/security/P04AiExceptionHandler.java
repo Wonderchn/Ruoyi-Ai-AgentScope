@@ -19,7 +19,7 @@ package com.nageoffer.ai.ragent.framework.security;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -35,9 +35,17 @@ import java.util.Map;
  */
 @RestControllerAdvice(basePackages = {
         "com.nageoffer.ai.ragent.rag.runtime",
-        "com.nageoffer.ai.ragent.framework.security"
+        "com.nageoffer.ai.ragent.framework.security",
+        "com.nageoffer.ai.ragent.authorization"
 })
-@ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
+// P1.3b 修正：生产链（ai.integration.*）抛同一个 P04AiException，但处理器原先只在
+// p04.enabled=true 时注册、basePackages 也不含 authorization 包——生产姿态下
+// 跨租户 404/未授权 403/版本 409/不可用 503 会全部退化成 HTTP 500。
+// 复合条件与包范围修正后：p04 姿态行为不变（P04AssemblyBoundaryTest 继续通过），
+// 生产姿态有处理器；两者都关时仍不装配。
+@ConditionalOnExpression("'${p04.enabled:false}' == 'true'"
+        + " or '${ai.integration.enabled:false}' == 'true'"
+        + " or '${ai.integration.security.enabled:false}' == 'true'")
 public class P04AiExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(P04AiExceptionHandler.class);

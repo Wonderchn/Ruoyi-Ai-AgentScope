@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.agent.service.impl;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.nageoffer.ai.ragent.agent.config.ReActAgentProvider;
 import com.nageoffer.ai.ragent.agent.dao.entity.AgentConversationDO;
@@ -29,10 +30,14 @@ import com.nageoffer.ai.ragent.agent.dto.AgentConfirmSettlement;
 import com.nageoffer.ai.ragent.agent.enums.AgentMessageStatus;
 import com.nageoffer.ai.ragent.agent.service.handler.AgentRunGate;
 import com.nageoffer.ai.ragent.agent.state.PgAgentStateStore;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
+import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DuplicateKeyException;
@@ -42,6 +47,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import java.util.Date;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -51,11 +57,14 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class AgentConversationServiceImplTest {
 
-    private static final String USER_ID = "u-1001";
+    private static final String TENANT_ID = "T1";
+    private static final String USER_ID = "2101";
+    private static final String MEMBER_ID = "platform:" + TENANT_ID + ":" + USER_ID;
     private static final String CONVERSATION_ID = "c-2002";
 
     static {
@@ -87,6 +96,8 @@ class AgentConversationServiceImplTest {
         when(messageMapper.delete(any())).thenReturn(1);
         service = new AgentConversationServiceImpl(
                 conversationMapper, messageMapper, agentStateStore, runGate, agentProviderRef);
+        // P1.3d：每个入口都要从执行主体解析 (tenant, member)，这里统一给出
+        PrincipalContext.set(principalOf(TENANT_ID));
     }
 
     @AfterEach
@@ -94,6 +105,16 @@ class AgentConversationServiceImplTest {
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.clearSynchronization();
         }
+        PrincipalContext.clear();
+    }
+
+    /**
+     * 与 P1ObjectOwnershipTest.principalOf 同一写法：完整合法主体，membership 为 canonical 引用
+     */
+    private static ExecutionPrincipal principalOf(String tenantId) {
+        return new ExecutionPrincipal(
+                tenantId, USER_ID, "platform:" + tenantId + ":" + USER_ID, 7, 3,
+                Set.of(), "jti-" + tenantId, "platform", 1_700_000_000L, 1_700_000_060L);
     }
 
     @Test
@@ -102,6 +123,23 @@ class AgentConversationServiceImplTest {
 
         // 表清了内存不清，单例 Agent 会带着已删记忆继续对话并把状态写回 PG
         verify(agentProvider).evictStateCache(USER_ID, CONVERSATION_ID);
+    }
+
+    @Test
+    void shouldDeleteOnlyWithinTenantScope() {
+        service.delete(CONVERSATION_ID, USER_ID);
+
+        // 删除谓词必须钉死租户：id/conversationId 只是租户内的引用
+        ArgumentCaptor<Wrapper<AgentConversationDO>> conversationWhere = wrapperCaptor();
+        verify(conversationMapper).delete(conversationWhere.capture());
+        assertThat(conversationWhere.getValue().getSqlSegment())
+                .contains("tenant_id").contains("member_id")
+                .contains("conversation_id").contains("user_id");
+        ArgumentCaptor<Wrapper<AgentMessageDO>> messageWhere = wrapperCaptor();
+        verify(messageMapper).delete(messageWhere.capture());
+        assertThat(messageWhere.getValue().getSqlSegment())
+                .contains("tenant_id").contains("member_id")
+                .contains("conversation_id");
     }
 
     @Test
@@ -185,7 +223,7 @@ class AgentConversationServiceImplTest {
         assertThat(context.replyToMessageId()).isEqualTo("m-3003");
         assertThat(message.getMessageStatus()).isEqualTo(AgentMessageStatus.AWAITING_CONFIRM.name());
         assertThat(message.getBlocks().get(0).getStatus()).isEqualTo("pending");
-        verify(messageMapper, never()).updateById(any(AgentMessageDO.class));
+        verify(messageMapper, never()).update(any(AgentMessageDO.class), any());
     }
 
     @Test
@@ -199,7 +237,7 @@ class AgentConversationServiceImplTest {
         assertThatThrownBy(() -> service.settlePendingConfirm(CONVERSATION_ID, USER_ID, "m-4004", true))
                 .hasMessageContaining("已处理");
 
-        verify(messageMapper, never()).updateById(any(AgentMessageDO.class));
+        verify(messageMapper, never()).update(any(AgentMessageDO.class), any());
     }
 
     private static AgentMessageDO pendingConfirmation() {
@@ -216,7 +254,11 @@ class AgentConversationServiceImplTest {
         service.touchConversation(CONVERSATION_ID, USER_ID, "本轮提问");
 
         verify(agentStateStore).delete(USER_ID, CONVERSATION_ID);
-        verify(messageMapper).delete(any());
+        ArgumentCaptor<Wrapper<AgentMessageDO>> residueWhere = wrapperCaptor();
+        verify(messageMapper).delete(residueWhere.capture());
+        // 残骸清理也只能清本租户的：同号残骸在他租户是别人的活跃会话
+        assertThat(residueWhere.getValue().getSqlSegment())
+                .contains("tenant_id").contains("member_id").contains("conversation_id");
         verify(agentProvider).evictStateCache(USER_ID, CONVERSATION_ID);
     }
 
@@ -229,7 +271,11 @@ class AgentConversationServiceImplTest {
 
         // 清失败就不该建行：留下「会话行是新的、记忆是旧的」比不建更糟，重试还会再清一遍
         order.verify(agentStateStore).delete(USER_ID, CONVERSATION_ID);
-        order.verify(conversationMapper).insert(any(AgentConversationDO.class));
+        ArgumentCaptor<AgentConversationDO> inserted = ArgumentCaptor.forClass(AgentConversationDO.class);
+        order.verify(conversationMapper).insert(inserted.capture());
+        // 归属列必须来自执行主体：V4 起非空，漏写直接落不了库，更不许落成他租户的行
+        assertThat(inserted.getValue().getTenantId()).isEqualTo(TENANT_ID);
+        assertThat(inserted.getValue().getMemberId()).isEqualTo(MEMBER_ID);
     }
 
     @Test
@@ -279,9 +325,81 @@ class AgentConversationServiceImplTest {
                 .isInstanceOf(DuplicateKeyException.class);
     }
 
+    // ---------------------------------------------------------- P1.3d 主体与写入归属
+
+    @Test
+    void shouldStampTenantScopeOnInsertedUserMessage() {
+        service.addUserMessage(CONVERSATION_ID, USER_ID, "你好");
+
+        ArgumentCaptor<AgentMessageDO> inserted = ArgumentCaptor.forClass(AgentMessageDO.class);
+        verify(messageMapper).insert(inserted.capture());
+        assertThat(inserted.getValue().getTenantId()).isEqualTo(TENANT_ID);
+        assertThat(inserted.getValue().getMemberId()).isEqualTo(MEMBER_ID);
+        assertThat(inserted.getValue().getUserId()).isEqualTo(USER_ID);
+    }
+
+    @Test
+    void shouldStampTenantScopeOnInsertedAssistantMessage() {
+        service.addAssistantMessage(CONVERSATION_ID, USER_ID, "答复", null, null, null,
+                AgentMessageStatus.NORMAL, 12L);
+
+        ArgumentCaptor<AgentMessageDO> inserted = ArgumentCaptor.forClass(AgentMessageDO.class);
+        verify(messageMapper).insert(inserted.capture());
+        assertThat(inserted.getValue().getTenantId()).isEqualTo(TENANT_ID);
+        assertThat(inserted.getValue().getMemberId()).isEqualTo(MEMBER_ID);
+    }
+
+    @Test
+    void shouldRejectEveryEntryWithoutPrincipal() {
+        PrincipalContext.clear();
+
+        // 无主体一律拒绝：宁可失败也不落成跨租户可见的行
+        assertThatThrownBy(() -> service.touchConversation(CONVERSATION_ID, USER_ID, "q"))
+                .isInstanceOf(ClientException.class);
+        assertThatThrownBy(() -> service.addUserMessage(CONVERSATION_ID, USER_ID, "q"))
+                .isInstanceOf(ClientException.class);
+        assertThatThrownBy(() -> service.addAssistantMessage(CONVERSATION_ID, USER_ID, "a", null,
+                null, null, AgentMessageStatus.NORMAL, null))
+                .isInstanceOf(ClientException.class);
+        assertThatThrownBy(() -> service.listByUserId(USER_ID)).isInstanceOf(ClientException.class);
+        assertThatThrownBy(() -> service.listMessages(CONVERSATION_ID, USER_ID))
+                .isInstanceOf(ClientException.class);
+        assertThatThrownBy(() -> service.hasPendingConfirm(CONVERSATION_ID, USER_ID))
+                .isInstanceOf(ClientException.class);
+        assertThatThrownBy(() -> service.getPendingConfirm(CONVERSATION_ID, USER_ID, "m-1"))
+                .isInstanceOf(ClientException.class);
+        assertThatThrownBy(() -> service.settlePendingConfirm(CONVERSATION_ID, USER_ID, "m-1", true))
+                .isInstanceOf(ClientException.class);
+        assertThatThrownBy(() -> service.expirePendingConfirm(CONVERSATION_ID, USER_ID, "m-1"))
+                .isInstanceOf(ClientException.class);
+        assertThatThrownBy(() -> service.rename(CONVERSATION_ID, USER_ID, "新名字"))
+                .isInstanceOf(ClientException.class);
+        assertThatThrownBy(() -> service.delete(CONVERSATION_ID, USER_ID)).isInstanceOf(ClientException.class);
+        assertThatThrownBy(() -> service.deleteBatch(List.of(CONVERSATION_ID), USER_ID))
+                .isInstanceOf(ClientException.class);
+
+        // 拒绝发生在任何 DAO 访问之前
+        verifyNoMapperInteractions();
+    }
+
+    private void verifyNoMapperInteractions() {
+        verifyNoInteractions(conversationMapper, messageMapper, agentStateStore, runGate, agentProvider);
+    }
+
+    /**
+     * Wrapper 泛型捕获器：MyBatis-Plus 的条件谓词整体作为一个参数进出 mock
+     */
+    @SuppressWarnings("unchecked")
+    private static <T> ArgumentCaptor<Wrapper<T>> wrapperCaptor() {
+        return (ArgumentCaptor<Wrapper<T>>) (ArgumentCaptor<?>) ArgumentCaptor.forClass(Wrapper.class);
+    }
+
     private static AgentMessageDO assistantRow(String id, String replyTo, String content, AgentMessageStatus status) {
         return AgentMessageDO.builder()
                 .id(id)
+                .tenantId(TENANT_ID)
+                .memberId(MEMBER_ID)
+                .userId(USER_ID)
                 .role("assistant")
                 .content(content)
                 .replyToMessageId(replyTo)
@@ -299,6 +417,9 @@ class AgentConversationServiceImplTest {
 
     private AgentConversationDO existingConversation(String title) {
         return AgentConversationDO.builder()
+                .id("conv-row-1")
+                .tenantId(TENANT_ID)
+                .memberId(MEMBER_ID)
                 .conversationId(CONVERSATION_ID)
                 .userId(USER_ID)
                 .title(title)

@@ -25,12 +25,16 @@ import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryMapper;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMessageMapper;
 import com.nageoffer.ai.ragent.agent.enums.AgentMemoryExtractionStatus;
 import com.nageoffer.ai.ragent.agent.enums.AgentMemorySourceType;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -45,10 +49,16 @@ import static org.mockito.Mockito.when;
 
 /**
  * 清空批的提交：新增先验后清、合并淘汰不走、原本就空也要有专门结局
+ *
+ * <p>P1.3d 适配：Repository 在每个公共入口从 {@link PrincipalContext} 解析
+ * (tenant, member) 并贯通到 Mapper，mock 桩与断言按新签名对齐——
+ * 断言本身一条没删，只补了租户/成员绑定参数。
  */
 class AgentMemoryRepositoryClearTest {
 
-    private static final String USER_ID = "u-1";
+    private static final String TENANT_ID = "T1";
+    private static final String USER_ID = "2101";
+    private static final String MEMBER_ID = "platform:" + TENANT_ID + ":" + USER_ID;
     private static final String EXTRACTION_ID = "e-1";
     private static final long REVISION = 7L;
     private static final String WATERMARK = "1900000000000000001";
@@ -69,14 +79,31 @@ class AgentMemoryRepositoryClearTest {
         AgentMemoryControlDO control = new AgentMemoryControlDO();
         control.setUserId(USER_ID);
         control.setRevision(REVISION);
-        when(controlMapper.selectForUpdate(USER_ID)).thenReturn(control);
-        when(extractionMapper.selectWatermark(USER_ID)).thenReturn(WATERMARK);
+        when(controlMapper.selectForUpdate(TENANT_ID, MEMBER_ID)).thenReturn(control);
+        when(extractionMapper.selectWatermark(TENANT_ID, MEMBER_ID, USER_ID)).thenReturn(WATERMARK);
         when(extractionMapper.settle(eq(EXTRACTION_ID), anyString(), anyInt(), anyInt())).thenReturn(1);
+
+        // 提交入口要解析执行主体；同一 userId 在另一租户是另一份记忆与另一把锁
+        PrincipalContext.set(principalOf(TENANT_ID));
+    }
+
+    @AfterEach
+    void tearDown() {
+        PrincipalContext.clear();
+    }
+
+    /**
+     * 与 P1ObjectOwnershipTest.principalOf 同一写法：完整合法主体
+     */
+    private static ExecutionPrincipal principalOf(String tenantId) {
+        return new ExecutionPrincipal(
+                tenantId, USER_ID, "platform:" + tenantId + ":" + USER_ID, 7, 3,
+                Set.of(), "jti-" + tenantId, "platform", 1_700_000_000L, 1_700_000_060L);
     }
 
     @Test
     void shouldClearThenKeepLaterAdds() {
-        when(memoryMapper.retractAll(USER_ID)).thenReturn(2);
+        when(memoryMapper.retractAll(TENANT_ID, MEMBER_ID, USER_ID)).thenReturn(2);
 
         AgentMemoryCommitResult result = repository.commit(commit(
                 List.of(AgentMemoryDecision.clear(), AgentMemoryDecision.add("用户住在南京")),
@@ -90,9 +117,12 @@ class AgentMemoryRepositoryClearTest {
         ArgumentCaptor<AgentMemoryDO> inserted = ArgumentCaptor.forClass(AgentMemoryDO.class);
         verify(memoryMapper).insert(inserted.capture());
         assertThat(inserted.getValue().getContent()).isEqualTo("用户住在南京");
+        // 新行的归属必须来自执行主体，不来自 commit 携带的任何业务参数
+        assertThat(inserted.getValue().getTenantId()).isEqualTo(TENANT_ID);
+        assertThat(inserted.getValue().getMemberId()).isEqualTo(MEMBER_ID);
         // 旧条目整片失效，合并它们毫无意义
-        verify(memoryMapper, never()).supersede(anyString(), anyString(), anyString());
-        verify(controlMapper).bumpRevision(USER_ID);
+        verify(memoryMapper, never()).supersede(anyString(), anyString(), anyString(), anyString(), anyString());
+        verify(controlMapper).bumpRevision(TENANT_ID, MEMBER_ID);
         verify(extractionMapper).settle(EXTRACTION_ID, AgentMemoryExtractionStatus.WRITTEN.name(), 2, 1);
     }
 
@@ -101,7 +131,7 @@ class AgentMemoryRepositoryClearTest {
      */
     @Test
     void shouldSettleEmptyClearAsClear() {
-        when(memoryMapper.retractAll(USER_ID)).thenReturn(0);
+        when(memoryMapper.retractAll(TENANT_ID, MEMBER_ID, USER_ID)).thenReturn(0);
 
         AgentMemoryCommitResult result = repository.commit(commit(List.of(AgentMemoryDecision.clear()), List.of()));
 
@@ -109,7 +139,7 @@ class AgentMemoryRepositoryClearTest {
         assertThat(result.cleared()).isTrue();
         assertThat(result.clearedItems()).isZero();
         assertThat(result.mutated()).isFalse();
-        verify(controlMapper, never()).bumpRevision(any());
+        verify(controlMapper, never()).bumpRevision(any(), any());
         verify(extractionMapper).settle(EXTRACTION_ID, AgentMemoryExtractionStatus.NOOP.name(), 0, 1);
     }
 
@@ -122,7 +152,7 @@ class AgentMemoryRepositoryClearTest {
 
         assertThatThrownBy(() -> repository.commit(commit(decisions, List.of())))
                 .isInstanceOf(AgentMemoryCapacityException.class);
-        verify(memoryMapper, never()).retractAll(any());
+        verify(memoryMapper, never()).retractAll(any(), any(), any());
         verify(memoryMapper, never()).insert(any(AgentMemoryDO.class));
         verify(extractionMapper, never()).settle(anyString(), anyString(), anyInt(), anyInt());
     }
@@ -137,7 +167,7 @@ class AgentMemoryRepositoryClearTest {
 
         assertThatThrownBy(() -> repository.commit(commit(decisions, List.of())))
                 .isInstanceOf(AgentMemoryCapacityException.class);
-        verify(memoryMapper, never()).retractAll(any());
+        verify(memoryMapper, never()).retractAll(any(), any(), any());
     }
 
     /**
@@ -145,12 +175,24 @@ class AgentMemoryRepositoryClearTest {
      */
     @Test
     void shouldRejectStaleClear() {
-        when(extractionMapper.selectWatermark(USER_ID)).thenReturn("1900000000000000009");
+        when(extractionMapper.selectWatermark(TENANT_ID, MEMBER_ID, USER_ID)).thenReturn("1900000000000000009");
 
         AgentMemoryCommitResult result = repository.commit(commit(List.of(AgentMemoryDecision.clear()), List.of()));
 
         assertThat(result.status()).isEqualTo(AgentMemoryExtractionStatus.CONFLICT);
-        verify(memoryMapper, never()).retractAll(any());
+        verify(memoryMapper, never()).retractAll(any(), any(), any());
+    }
+
+    /**
+     * 行锁按 (tenant, member) 取：同 userId 跨租户互不排队，提交串行点也不串门
+     */
+    @Test
+    void shouldLockControlRowByTenantAndMember() {
+        when(memoryMapper.retractAll(TENANT_ID, MEMBER_ID, USER_ID)).thenReturn(0);
+
+        repository.commit(commit(List.of(AgentMemoryDecision.clear()), List.of()));
+
+        verify(controlMapper).selectForUpdate(TENANT_ID, MEMBER_ID);
     }
 
     private AgentMemoryCommit commit(List<AgentMemoryDecision> decisions, List<AgentMemoryMerge> merges) {

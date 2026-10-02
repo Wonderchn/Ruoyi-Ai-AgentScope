@@ -45,6 +45,14 @@ public class AgentConversationDO {
 
     private String conversationId;
 
+    /**
+     * P1.3d：归属（V3 加列、V4 NOT NULL）；权威主体引用是 memberId，userId 仅展示/legacy。
+     * 列名 tenant_id/member_id 由 MyBatis-Plus 驼峰映射，不加额外注解
+     */
+    private String tenantId;
+
+    private String memberId;
+
     private String userId;
 
     private String title;
