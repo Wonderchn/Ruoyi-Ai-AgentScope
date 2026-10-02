@@ -51,6 +51,7 @@
     {"name": "ai_run_event", "attribution": "REGISTRY", "primaryKey": ["tenant_id", "run_id", "seq"], "tenantColumn": "not_null", "foreignKeys": ["-> ai_run (tenant_id, run_id)"], "accessPath": "事件读取按 (tenant, run, seq)，禁止裸 eventId"},
     {"name": "outbox_event", "attribution": "REGISTRY", "primaryKey": ["tenant_id", "event_id"], "tenantColumn": "not_null", "note": "P2 投递使用；P1 消费关闭"},
     {"name": "ai_usage_ledger", "attribution": "REGISTRY", "primaryKey": ["tenant_id", "ledger_id"], "tenantColumn": "not_null", "note": "P2 计费/配额使用；P1 无写入路径"},
-    {"name": "ai_delegation_replay", "attribution": "REGISTRY", "primaryKey": ["issuer", "jti"], "tenantColumn": "not_null", "note": "委托 jti 消费账：先验签后 consume，重复 jti 401"}
+    {"name": "ai_delegation_replay", "attribution": "REGISTRY", "primaryKey": ["issuer", "jti"], "tenantColumn": "not_null", "note": "委托 jti 消费账：先验签后 consume，重复 jti 401"},
+    {"name": "ai_tenant_barrier", "attribution": "REGISTRY", "primaryKey": ["tenant_id"], "tenantColumn": "not_null", "note": "U10 租户屏障：PENDING/CLOSED/UNKNOWN 拒绝新 permit；UNKNOWN 保持关闭，不凭租约过期宣告成功"}
   ]
 }

@@ -73,7 +73,8 @@ class P1TableTenantAttributionTest {
             "V2__ai_static_configuration.sql",
             "V3__tenant_acl_expand.sql",
             "V4__tenant_acl_constraints.sql",
-            "V5__tenant_state_and_run_refs.sql");
+            "V5__tenant_state_and_run_refs.sql",
+            "V6__ai_tenant_barrier.sql");
 
     // ---------- 基线诊断（V1 原字节不变） ----------
 
@@ -111,7 +112,7 @@ class P1TableTenantAttributionTest {
         assertThat(model.keySet())
                 .as("迁移链建模出的表集合与逐表账应完全一致")
                 .containsExactlyInAnyOrderElementsOf(ledger.keySet());
-        assertThat(model).hasSize(41);
+        assertThat(model).hasSize(42);
 
         List<String> failures = new ArrayList<>();
         for (Map.Entry<String, LedgerEntry> e : ledger.entrySet()) {
