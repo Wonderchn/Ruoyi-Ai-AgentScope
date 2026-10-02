@@ -22,6 +22,8 @@ import org.ruoyi.common.core.utils.*;
 import org.ruoyi.common.mybatis.core.page.PageQuery;
 import org.ruoyi.common.mybatis.core.page.TableDataInfo;
 import org.ruoyi.common.satoken.utils.LoginHelper;
+import org.ruoyi.common.tenant.helper.TenantHelper;
+import org.ruoyi.system.aiidentity.AiPolicyMutationGuard;
 import org.ruoyi.system.domain.SysUser;
 import org.ruoyi.system.domain.SysUserPost;
 import org.ruoyi.system.domain.SysUserRole;
@@ -55,6 +57,24 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
     private final SysPostMapper postMapper;
     private final SysUserRoleMapper userRoleMapper;
     private final SysUserPostMapper userPostMapper;
+    private final AiPolicyMutationGuard aiPolicyMutationGuard;
+
+    /**
+     * 提取用户记录的 tenant_id 集合（P1.2b：受影响租户显式可枚举；跨租户读取忽略租户过滤）。
+     */
+    private Set<String> tenantIdsOfUsers(List<Long> userIds) {
+        Set<String> tenantIds = new HashSet<>();
+        if (CollUtil.isEmpty(userIds)) {
+            return tenantIds;
+        }
+        List<SysUser> users = TenantHelper.ignore(() -> baseMapper.selectByIds(userIds));
+        for (SysUser user : users) {
+            if (StringUtils.isNotBlank(user.getTenantId())) {
+                tenantIds.add(user.getTenantId());
+            }
+        }
+        return tenantIds;
+    }
 
     @Override
     public TableDataInfo<SysUserVo> selectPageUserList(SysUserBo user, PageQuery pageQuery) {
@@ -318,6 +338,10 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
         insertUserPost(user, false);
         // 新增用户与角色管理
         insertUserRole(user, false);
+        // P1.2b：同事务递增受影响租户的策略版本（租户取自插入后的记录）
+        if (rows > 0) {
+            aiPolicyMutationGuard.bump(tenantIdsOfUsers(List.of(sysUser.getUserId())));
+        }
         return rows;
     }
 
@@ -328,6 +352,7 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
      * @return 结果
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public boolean registerUser(SysUserBo user, String tenantId) {
         user.setCreateBy(0L);
         user.setUpdateBy(0L);
@@ -336,6 +361,10 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
         boolean rows = baseMapper.insert(sysUser) > 0;
         // 回写主键，调用方（注册服务、mpLogin）需要用 userId 绑定默认角色或登录
         user.setUserId(sysUser.getUserId());
+        // P1.2b：注册产生的成员事实（归属/启用）变化 → 同事务递增该租户的策略版本
+        if (rows) {
+            aiPolicyMutationGuard.bumpTenant(tenantId);
+        }
         return rows;
     }
 
@@ -349,6 +378,8 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
     @CacheEvict(cacheNames = CacheNames.SYS_NICKNAME, key = "#user.userId")
     @Transactional(rollbackFor = Exception.class)
     public int updateUser(SysUserBo user) {
+        // 记录的租户（变更前读取，P1.2b 同事务 bump 需要）
+        Set<String> tenantIds = tenantIdsOfUsers(List.of(user.getUserId()));
         // 新增用户与角色管理
         insertUserRole(user, true);
         // 新增用户与岗位管理
@@ -359,6 +390,8 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
         if (flag < 1) {
             throw new ServiceException("修改用户{}信息失败", user.getUserName());
         }
+        // P1.2b：用户信息/角色绑定变更 → 同事务递增该租户的策略版本
+        aiPolicyMutationGuard.bump(tenantIds);
         return flag;
     }
 
@@ -372,6 +405,8 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
     @Transactional(rollbackFor = Exception.class)
     public void insertUserAuth(Long userId, Long[] roleIds) {
         insertUserRole(userId, roleIds, true);
+        // P1.2b：用户-角色变更 → 同事务递增该用户所属租户的策略版本
+        aiPolicyMutationGuard.bump(tenantIdsOfUsers(List.of(userId)));
     }
 
     /**
@@ -382,11 +417,19 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
      * @return 结果
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public int updateUserStatus(Long userId, String status) {
-        return baseMapper.update(null,
+        // 记录的租户（变更前读取）
+        Set<String> tenantIds = tenantIdsOfUsers(List.of(userId));
+        int rows = baseMapper.update(null,
             new LambdaUpdateWrapper<SysUser>()
                 .set(SysUser::getStatus, status)
                 .eq(SysUser::getUserId, userId));
+        // P1.2b：用户启用/停用属于成员事实变更 → 同事务递增该租户的策略版本
+        if (rows > 0) {
+            aiPolicyMutationGuard.bump(tenantIds);
+        }
+        return rows;
     }
 
     /**
@@ -530,6 +573,8 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int deleteUserById(Long userId) {
+        // 记录的租户（删除前读取）
+        Set<String> tenantIds = tenantIdsOfUsers(List.of(userId));
         // 删除用户与角色关联
         userRoleMapper.delete(new LambdaQueryWrapper<SysUserRole>().eq(SysUserRole::getUserId, userId));
         // 删除用户与岗位表
@@ -539,6 +584,8 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
         if (flag < 1) {
             throw new ServiceException("删除用户失败!");
         }
+        // P1.2b：用户删除 → 同事务递增该租户的策略版本
+        aiPolicyMutationGuard.bump(tenantIds);
         return flag;
     }
 
@@ -556,6 +603,8 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
             checkUserDataScope(userId);
         }
         List<Long> ids = List.of(userIds);
+        // 记录的租户集合（删除前读取）
+        Set<String> tenantIds = tenantIdsOfUsers(ids);
         // 删除用户与角色关联
         userRoleMapper.delete(new LambdaQueryWrapper<SysUserRole>().in(SysUserRole::getUserId, ids));
         // 删除用户与岗位表
@@ -565,6 +614,8 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
         if (flag < 1) {
             throw new ServiceException("删除用户失败!");
         }
+        // P1.2b：同事务递增出现过的租户集合的策略版本
+        aiPolicyMutationGuard.bump(tenantIds);
         return flag;
     }
 

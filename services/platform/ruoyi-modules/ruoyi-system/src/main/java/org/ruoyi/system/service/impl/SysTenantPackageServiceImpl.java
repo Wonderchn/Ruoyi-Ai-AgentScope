@@ -12,6 +12,7 @@ import org.ruoyi.common.core.utils.MapstructUtils;
 import org.ruoyi.common.core.utils.StringUtils;
 import org.ruoyi.common.mybatis.core.page.PageQuery;
 import org.ruoyi.common.mybatis.core.page.TableDataInfo;
+import org.ruoyi.system.aiidentity.AiPolicyMutationGuard;
 import org.ruoyi.system.domain.SysTenant;
 import org.ruoyi.system.domain.SysTenantPackage;
 import org.ruoyi.system.domain.bo.SysTenantPackageBo;
@@ -24,7 +25,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 租户套餐Service业务层处理
@@ -37,6 +40,24 @@ public class SysTenantPackageServiceImpl implements ISysTenantPackageService {
 
     private final SysTenantPackageMapper baseMapper;
     private final SysTenantMapper tenantMapper;
+    private final AiPolicyMutationGuard aiPolicyMutationGuard;
+
+    /**
+     * 枚举使用指定套餐集合的租户（P1.2b：受影响租户显式可枚举，禁止「全部租户」）。
+     */
+    private Set<String> tenantIdsUsingPackages(Collection<Long> packageIds) {
+        Set<String> tenantIds = new HashSet<>();
+        if (CollUtil.isEmpty(packageIds)) {
+            return tenantIds;
+        }
+        for (SysTenant tenant : tenantMapper.selectList(
+            new LambdaQueryWrapper<SysTenant>().in(SysTenant::getPackageId, packageIds))) {
+            if (StringUtils.isNotBlank(tenant.getTenantId())) {
+                tenantIds.add(tenant.getTenantId());
+            }
+        }
+        return tenantIds;
+    }
 
     /**
      * 查询租户套餐
@@ -81,6 +102,9 @@ public class SysTenantPackageServiceImpl implements ISysTenantPackageService {
 
     /**
      * 新增租户套餐
+     *
+     * <p>P1.2b：新套餐尚未被任何租户使用，受影响租户集合为空（显式可枚举的空集），
+     * 无需递增策略版本。
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -106,7 +130,12 @@ public class SysTenantPackageServiceImpl implements ISysTenantPackageService {
         // 保存菜单id
         List<Long> menuIds = Arrays.asList(bo.getMenuIds());
         update.setMenuIds(CollUtil.isNotEmpty(menuIds) ? StringUtils.joinComma(menuIds) : "");
-        return baseMapper.updateById(update) > 0;
+        boolean flag = baseMapper.updateById(update) > 0;
+        // P1.2b：套餐菜单变更影响使用该套餐的租户 → 同事务递增其策略版本
+        if (flag && ObjectUtil.isNotNull(update.getPackageId())) {
+            aiPolicyMutationGuard.bump(tenantIdsUsingPackages(List.of(update.getPackageId())));
+        }
+        return flag;
     }
 
     /**
@@ -126,10 +155,16 @@ public class SysTenantPackageServiceImpl implements ISysTenantPackageService {
      * @param bo 套餐信息
      * @return 结果
      */
+    @Transactional(rollbackFor = Exception.class)
     @Override
     public int updatePackageStatus(SysTenantPackageBo bo) {
         SysTenantPackage tenantPackage = MapstructUtils.convert(bo, SysTenantPackage.class);
-        return baseMapper.updateById(tenantPackage);
+        int rows = baseMapper.updateById(tenantPackage);
+        // P1.2b：套餐启用/停用影响使用该套餐的租户 → 同事务递增其策略版本
+        if (rows > 0 && ObjectUtil.isNotNull(tenantPackage.getPackageId())) {
+            aiPolicyMutationGuard.bump(tenantIdsUsingPackages(List.of(tenantPackage.getPackageId())));
+        }
+        return rows;
     }
 
     /**
@@ -144,6 +179,13 @@ public class SysTenantPackageServiceImpl implements ISysTenantPackageService {
                 throw new ServiceException("租户套餐已被使用");
             }
         }
-        return baseMapper.deleteByIds(ids) > 0;
+        // 删除前枚举受影响租户（isValid=false 时不校验在用，仍需对在用租户递增版本）
+        Set<String> tenantIds = tenantIdsUsingPackages(ids);
+        boolean flag = baseMapper.deleteByIds(ids) > 0;
+        // P1.2b：同事务递增受影响租户集合的策略版本
+        if (flag) {
+            aiPolicyMutationGuard.bump(tenantIds);
+        }
+        return flag;
     }
 }

@@ -73,11 +73,18 @@ class P1LegacyAssemblyBoundaryTest {
         "org.ruoyi.RuoYiAIApplication",
         "org.springframework.boot.SpringApplication");
 
-    /** Legacy AI modules that must not be declared by the platform entry module. */
+    /**
+     * Legacy AI modules that must not be declared by the platform entry module.
+     *
+     * <p>P1.2b update: {@code ruoyi-ai-integration} is no longer in this list. The P0.4 experiment
+     * module is now the production platform authorization surface (U04/P1.2b): ruoyi-admin implements
+     * its identity SPI ({@code org.ruoyi.aiidentity.RuoYiPlatformIdentitySource} /
+     * {@code RuoYiCurrentPrincipalResolver}), so declaring it as a dependency is required and the
+     * production endpoints themselves stay gated behind {@code ai.integration.enabled} (default off).
+     */
     private static final List<String> LEGACY_AI_ARTIFACTS = List.of(
         "ruoyi-chat",
-        "ruoyi-aiflow",
-        "ruoyi-ai-integration");
+        "ruoyi-aiflow");
 
     /** The exclusion removed by this unit. */
     private static final String REMOVED_SECURITY_EXCLUSION = "/workflow/run";
@@ -119,9 +126,9 @@ class P1LegacyAssemblyBoundaryTest {
      *
      * <p>The probe runs against the <em>test</em> classpath of {@code ruoyi-admin}. That is exactly the admin
      * runtime classpath: {@code ruoyi-admin/pom.xml} declares only postgresql, ruoyi-common-doc/social/
-     * ratelimiter/mail, ruoyi-system, ruoyi-workflow and spring-boot-admin-starter-client (plus
-     * spring-boot-starter-test in test scope), and neither ruoyi-system nor ruoyi-workflow depends on
-     * ruoyi-chat / ruoyi-aiflow / ruoyi-ai-integration (asserted in
+     * ratelimiter/mail, ruoyi-system, ruoyi-ai-integration (P1.2b production authorization wiring),
+     * ruoyi-workflow and spring-boot-admin-starter-client (plus spring-boot-starter-test in test scope),
+     * and neither ruoyi-system nor ruoyi-workflow depends on ruoyi-chat / ruoyi-aiflow (asserted in
      * {@link #adminPomKeepsBusinessWorkflowAndDeclaresNoLegacyAiModule()}). Absence here therefore means
      * "not shipped in the platform runtime", which is the property this unit has to guarantee. The old modules
      * are still compiled by the reactor, so their sources are asserted to exist in

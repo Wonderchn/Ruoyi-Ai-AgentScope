@@ -21,6 +21,7 @@ import org.ruoyi.common.mybatis.core.page.TableDataInfo;
 import org.ruoyi.common.mybatis.helper.DataBaseHelper;
 import org.ruoyi.common.redis.utils.CacheUtils;
 import org.ruoyi.common.satoken.utils.LoginHelper;
+import org.ruoyi.system.aiidentity.AiPolicyMutationGuard;
 import org.ruoyi.system.domain.SysDept;
 import org.ruoyi.system.domain.SysRole;
 import org.ruoyi.system.domain.SysUser;
@@ -50,6 +51,7 @@ public class SysDeptServiceImpl implements ISysDeptService, DeptService {
     private final SysDeptMapper baseMapper;
     private final SysRoleMapper roleMapper;
     private final SysUserMapper userMapper;
+    private final AiPolicyMutationGuard aiPolicyMutationGuard;
 
     /**
      * 分页查询部门管理数据
@@ -298,6 +300,7 @@ public class SysDeptServiceImpl implements ISysDeptService, DeptService {
      */
     @CacheEvict(cacheNames = CacheNames.SYS_DEPT_AND_CHILD, allEntries = true)
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public int insertDept(SysDeptBo bo) {
         SysDept info = baseMapper.selectById(bo.getParentId());
         // 如果父节点不为正常状态,则不允许新增子节点
@@ -306,7 +309,13 @@ public class SysDeptServiceImpl implements ISysDeptService, DeptService {
         }
         SysDept dept = MapstructUtils.convert(bo, SysDept.class);
         dept.setAncestors(info.getAncestors() + StringUtils.SEPARATOR + dept.getParentId());
-        return baseMapper.insert(dept);
+        int rows = baseMapper.insert(dept);
+        // P1.2b：部门树变更 → 同事务递增该部门所属租户的策略版本（租户取自插入后的记录）
+        SysDept inserted = baseMapper.selectById(dept.getDeptId());
+        if (rows > 0 && inserted != null && StringUtils.isNotBlank(inserted.getTenantId())) {
+            aiPolicyMutationGuard.bumpTenant(inserted.getTenantId());
+        }
+        return rows;
     }
 
     /**
@@ -347,6 +356,10 @@ public class SysDeptServiceImpl implements ISysDeptService, DeptService {
             && !StringUtils.equals(SystemConstants.ROOT_DEPT_ANCESTORS, dept.getAncestors())) {
             // 如果该部门是启用状态，则启用该部门的所有上级部门
             updateParentDeptStatusNormal(dept);
+        }
+        // P1.2b：部门树/状态变更 → 同事务递增该租户的策略版本（记录变更前的租户）
+        if (result > 0 && StringUtils.isNotBlank(oldDept.getTenantId())) {
+            aiPolicyMutationGuard.bumpTenant(oldDept.getTenantId());
         }
         return result;
     }
@@ -399,8 +412,16 @@ public class SysDeptServiceImpl implements ISysDeptService, DeptService {
         @CacheEvict(cacheNames = CacheNames.SYS_DEPT_AND_CHILD, key = "#deptId")
     })
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public int deleteDeptById(Long deptId) {
-        return baseMapper.deleteById(deptId);
+        // 记录的租户（删除前读取）
+        SysDept existing = baseMapper.selectById(deptId);
+        int rows = baseMapper.deleteById(deptId);
+        // P1.2b：部门删除 → 同事务递增该租户的策略版本
+        if (rows > 0 && existing != null && StringUtils.isNotBlank(existing.getTenantId())) {
+            aiPolicyMutationGuard.bumpTenant(existing.getTenantId());
+        }
+        return rows;
     }
 
 
