@@ -63,7 +63,11 @@ $script:MavenExe = 'D:\develop\apache-maven-3.9.1\bin\mvn.cmd'
 $script:MavenRepo = 'D:\develop\maven_repository'
 $script:SpecPaths = @(
     'D:\AI-project\mydocs\p1\01-p1-first-unit-spec.md',
-    'D:\AI-project\mydocs\p1\00-p1-plan.md'
+    'D:\AI-project\mydocs\p1\00-p1-plan.md',
+    # 本轮**实际获批执行**的两份规格。只记前两份会让证据里的"规格基线"指向
+    # 与本轮工作无关的文档：读证据的人无法据此复算本轮究竟按哪份规格跑的。
+    'D:\AI-project\mydocs\p1\05-p1-full-execution-spec.md',
+    'D:\AI-project\mydocs\p1\03-p1-unit-paths.md'
 )
 $script:Failures = 0
 $script:Results = New-Object System.Collections.ArrayList
