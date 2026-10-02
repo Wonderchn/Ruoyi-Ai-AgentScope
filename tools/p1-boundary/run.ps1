@@ -2046,10 +2046,16 @@ function Invoke-HttpCases {
                 ("POST /auth/login tenant={0} status={1} code={2} msg={3}" -f $tenant, $r.Status,
                     $(if ($r.Json) { $r.Json.code } else { 'nil' }), $(if ($r.Json) { $r.Json.msg } else { '' }))
         }
-        $legacyLibs = @($script:PlatformJarEntries | Where-Object { $_ -match 'BOOT-INF/lib/(ruoyi-chat|ruoyi-ai-integration)' })
+        $legacyLibs = @($script:PlatformJarEntries | Where-Object { $_ -match 'BOOT-INF/lib/ruoyi-chat' })
+        $integrationClasses = @($script:IntegrationJarEntries | Where-Object { $_ -match '\.class$' })
+        $unexpectedClasses = @($integrationClasses | Where-Object { $_ -notmatch '^org/ruoyi/aiintegration/' -or $_ -match '(^|/)[^/]*Test[^/]*\.class$' })
+        $requiredClasses = @('config/ProductionAiIntegrationConfig', 'delegation/ProductionSigningKeySource',
+            'identity/ProductionAuthorizationProvider', 'web/AiGatewayController', 'web/AiGatewayClient')
+        $missingClasses = @($requiredClasses | Where-Object { $script:IntegrationJarEntries -cnotcontains ('org/ruoyi/aiintegration/' + $_ + '.class') })
+        $formalIntegration = ($script:IntegrationJarCount -eq 1 -and $integrationClasses.Count -gt 0 -and $unexpectedClasses.Count -eq 0 -and $missingClasses.Count -eq 0)
         $workflowKept = @($script:PlatformJarEntries | Where-Object { $_ -match 'BOOT-INF/lib/ruoyi-workflow' }).Count -gt 0
-        Assert-That 'B01-preserved-business' 'B' ($legacyLibs.Count -eq 0 -and $workflowKept) `
-            ("legacyAiLibs=[{0}] ruoyi-workflowKept={1}" -f ($legacyLibs -join ','), $workflowKept)
+        Assert-That 'B01-preserved-business' 'B' ($legacyLibs.Count -eq 0 -and $formalIntegration -and $workflowKept) `
+            ("legacyAiLibs=[{0}] formalIntegration={1} unexpectedClasses={2} missingClasses=[{3}] ruoyi-workflowKept={4}" -f ($legacyLibs -join ','), $formalIntegration, $unexpectedClasses.Count, ($missingClasses -join ','), $workflowKept)
 
         # 平台侧异常必须落进证据：登录失败时返回体只有一句通用中文消息，
         # 而真正的原因（约束校验、租户不存在、口令不匹配……）只在平台日志里。
@@ -2267,8 +2273,8 @@ function Invoke-HttpCases {
         # B13：platform 运行 jar 内容 + 残留 /workflow/run 安全排除项。
         $testClasses = @($script:PlatformJarEntries | Where-Object { $_ -match 'BOOT-INF/classes/.*Test.*\.class$' })
         $workflowRunExclusion = ($script:PlatformJarConfig -match '/workflow/run')
-        Assert-That 'B13-jar-contents' 'B' ($legacyLibs.Count -eq 0 -and $testClasses.Count -eq 0 -and $workflowKept) `
-            ("legacyAiLibs={0} testClasses={1} ruoyi-workflowKept={2}" -f $legacyLibs.Count, $testClasses.Count, $workflowKept)
+        Assert-That 'B13-jar-contents' 'B' ($legacyLibs.Count -eq 0 -and $formalIntegration -and $testClasses.Count -eq 0 -and $workflowKept) `
+            ("legacyAiLibs={0} testClasses={1} formalIntegration={2} nestedClasses={3} ruoyi-workflowKept={4}" -f $legacyLibs.Count, $testClasses.Count, $formalIntegration, $integrationClasses.Count, $workflowKept)
         Assert-That 'B13-workflow-run-exclusion-removed' 'B' (-not $workflowRunExclusion) `
             ("packaged application.yml still excludes /workflow/run={0}" -f $workflowRunExclusion)
 
@@ -2332,6 +2338,18 @@ function Invoke-BootAndCases {
     $archive = [IO.Compression.ZipFile]::OpenRead($platformJar)
     try {
         $script:PlatformJarEntries = @($archive.Entries | ForEach-Object { $_.FullName })
+        $integrationEntries = @($archive.Entries | Where-Object { $_.FullName -match '^BOOT-INF/lib/ruoyi-ai-integration-[^/]+\.jar$' })
+        $script:IntegrationJarCount = $integrationEntries.Count
+        $script:IntegrationJarEntries = @()
+        if ($integrationEntries.Count -eq 1) {
+            $memory = New-Object IO.MemoryStream
+            $stream = $integrationEntries[0].Open()
+            try { $stream.CopyTo($memory) } finally { $stream.Dispose() }
+            $memory.Position = 0
+            $nested = New-Object IO.Compression.ZipArchive($memory, [IO.Compression.ZipArchiveMode]::Read)
+            try { $script:IntegrationJarEntries = @($nested.Entries | ForEach-Object { $_.FullName }) }
+            finally { $nested.Dispose(); $memory.Dispose() }
+        }
         $configEntry = @($archive.Entries | Where-Object { $_.FullName -ceq 'BOOT-INF/classes/application.yml' })
         if ($configEntry.Count -eq 1) {
             $reader = New-Object IO.StreamReader($configEntry[0].Open())

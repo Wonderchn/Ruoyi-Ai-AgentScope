@@ -50,19 +50,17 @@ WHERE n.nspname = 'ai' AND ix.indisunique AND NOT ix.indisprimary
                     AND tc.constraint_name = i.relname)
 ORDER BY t.relname, i.relname;
 
-SELECT 'FK|' || tc.table_name || '|' ||
-       (SELECT string_agg(kcu.column_name, ',' ORDER BY kcu.ordinal_position)
-        FROM information_schema.key_column_usage kcu
-        WHERE kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema)
-       || '|' || ccu.table_name || '|' ||
-       (SELECT string_agg(ccu.column_name, ',' ORDER BY kcu.ordinal_position)
-        FROM information_schema.key_column_usage kcu
-        JOIN information_schema.constraint_column_usage ccu
-          ON ccu.constraint_name = kcu.constraint_name AND ccu.table_schema = kcu.table_schema
-        WHERE kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema)
-FROM information_schema.table_constraints tc
-WHERE tc.table_schema = 'ai' AND tc.constraint_type = 'FOREIGN KEY'
-ORDER BY tc.table_name, tc.constraint_name;
+SELECT 'FK|' || child.relname || '|' ||
+       (SELECT string_agg(a.attname, ',' ORDER BY k.ord) FROM unnest(c.conkey) WITH ORDINALITY k(num,ord)
+        JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.num)
+       || '|' || parent.relname || '|' ||
+       (SELECT string_agg(a.attname, ',' ORDER BY k.ord) FROM unnest(c.confkey) WITH ORDINALITY k(num,ord)
+        JOIN pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.num)
+FROM pg_constraint c
+JOIN pg_class child ON child.oid=c.conrelid
+JOIN pg_class parent ON parent.oid=c.confrelid
+WHERE c.connamespace='ai'::regnamespace AND c.contype='f'
+ORDER BY child.relname,c.conname;
 
 SELECT 'CK|' || conrelid::regclass::text || '|' || conname
 FROM pg_constraint

@@ -27,7 +27,7 @@ public class P1LiveAcceptance {
     public record Payload(String value) implements State {}
     static void require(boolean ok, String name) { if (!ok) throw new AssertionError(name); System.out.println("PASS " + name); }
     static ExecutionPrincipal principal(String tenant, int av) {
-        return new ExecutionPrincipal(tenant,"900000000000000001","platform:"+tenant+":900000000000000001",2,av,
+        return new ExecutionPrincipal(tenant,"900000000000000001","platform:"+tenant+":900000000000000001",Integer.parseInt(System.getenv().getOrDefault("P1C_PV","2")),av,
                 Set.of("kb.read","document.download","conversation.export","kb.write"),UUID.randomUUID().toString(),"platform",0,Long.MAX_VALUE);
     }
     public static void main(String[] args) throws Exception {
@@ -70,7 +70,7 @@ public class P1LiveAcceptance {
                 String ref="kb:kb-t1-private-a";
                 String hash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(ref.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
                 var grant=transactions.execute(status -> guard.acquire(new RevocationGuard.PermitRequest("p1t1",
-                        "platform:p1t1:900000000000000001","kb.read",2,av,hash,"c10-live-operation",ref)));
+                        "platform:p1t1:900000000000000001","kb.read",Integer.parseInt(System.getenv().getOrDefault("P1C_PV","2")),av,hash,"c10-live-operation",ref)));
                 // Fault injection changes the synthetic lease only; ACTIVE is still a real service registration.
                 jdbc.update("UPDATE ai_execution_permit SET expires_at=now()-interval '1 minute' WHERE permit_id=?",grant.permitId());
                 require(guard.activePermitCount("p1t1")==1,"real held permit visible in shared database");
@@ -111,7 +111,18 @@ public class P1LiveAcceptance {
             sessions.getMapper(AgentMemoryMapper.class).insert(AgentMemoryDO.builder().id("mem-"+tenant).tenantId(tenant)
                     .memberId(principal(tenant,1).membershipId()).userId("900000000000000001").content(tenant).sourceType("EXTRACTION")
                     .createTime(new java.util.Date()).build());
-            require(memory.listActiveItems("900000000000000001").size()==1 && memory.listActiveItems("900000000000000001").get(0).content().equals(tenant),"memory actual service scoped "+tenant);
+        }
+        for (String tenant : List.of("p1t1","p1t2")) {
+            PrincipalContext.set(principal(tenant,1));
+            var items=memory.listActiveItems("900000000000000001");
+            require(items.stream().filter(item -> item.id().equals("mem-"+tenant) && item.content().equals(tenant)).count()==1,
+                    "memory actual service reads own inserted item "+tenant);
+            String other=tenant.equals("p1t1")?"p1t2":"p1t1";
+            require(items.stream().noneMatch(item -> item.id().equals("mem-"+other)),"memory rejects other tenant item "+tenant);
+            require(items.stream().allMatch(item -> jdbc.queryForObject(
+                    "SELECT count(*) FROM t_agent_memory WHERE id=? AND tenant_id=? AND member_id=? AND user_id=?",
+                    Long.class,item.id(),tenant,principal(tenant,1).membershipId(),"900000000000000001")==1),
+                    "every returned memory has current tenant/member/user attribution "+tenant);
         }
         PrincipalContext.clear();
         boolean refused=false;

@@ -17,6 +17,8 @@
 后台 listener / 事务回查 / 定时扫描 / 启动期自动 I/O 直接触发也在 IO 之前受控关闭；
 platform 普通构建不装配旧 AI 与 Harness、业务审批保留。
 
+U06 后，正式轻量 `ruoyi-ai-integration` 属于平台生产装配。B01/B13 要求它恰好一个，检查五个生产装配/签发/授权/网关类，全部 class 限定在 `org/ruoyi/aiintegration` 且无测试类；遗留 `ruoyi-chat` 仍拒绝。这个包清单检查不授予任何客户能力。
+
 **不能证明（本 runner 明确不覆盖）**：
 
 * **租户/资源隔离未完成**：本单元只关旧路径。跨 tenant 的 SQL/对象/缓存/记忆隔离、ACL/owner、
