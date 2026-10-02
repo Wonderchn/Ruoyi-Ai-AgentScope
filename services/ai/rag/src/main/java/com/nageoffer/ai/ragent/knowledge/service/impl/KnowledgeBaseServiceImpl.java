@@ -64,6 +64,12 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
 
+    /**
+     * P1.3a：既有查询补租户条件的统一谓词（{0} 绑定当前主体的 tenantId）。
+     * 代理主键全局唯一可以保留，但访问路径必须带租户条件（逐表账判据）。
+     */
+    private static final String TENANT_PREDICATE = "tenant_id = {0}";
+
     private final KnowledgeBaseMapper knowledgeBaseMapper;
     private final KnowledgeDocumentMapper knowledgeDocumentMapper;
     private final VectorStoreAdmin vectorStoreAdmin;
@@ -73,6 +79,18 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
 
     @Value("knowledge-base-cleanup_topic${unique-name:}")
     private String cleanupTopic;
+
+    /** 当前主体租户；缺失即拒绝（不降级到默认租户）。 */
+    private static String requireTenantId() {
+        return PrincipalContext.require().tenantId();
+    }
+
+    /** 按租户读 KB 行：替代裸 selectById，跨租户 id 与不存在同外显。 */
+    private KnowledgeBaseDO selectTenantKnowledgeBase(String kbId) {
+        return knowledgeBaseMapper.selectOne(new LambdaQueryWrapper<KnowledgeBaseDO>()
+                .eq(KnowledgeBaseDO::getId, kbId)
+                .apply(TENANT_PREDICATE, requireTenantId()));
+    }
 
     @Transactional
     @Override
@@ -86,12 +104,13 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public String create(KnowledgeBaseCreateRequest requestParam) {
-        // 名称重复校验
+        // 名称重复校验（租户内唯一：uk_knowledge_base_tenant_collection 与同名判断都按租户圈定）
         String name = requestParam.getName().replaceAll("\\s+", "");
         Long count = knowledgeBaseMapper.selectCount(
                 new LambdaQueryWrapper<KnowledgeBaseDO>()
                         .eq(KnowledgeBaseDO::getName, name)
                         .eq(KnowledgeBaseDO::getDeleted, 0)
+                        .apply(TENANT_PREDICATE, requireTenantId())
         );
         if (count > 0) {
             throw new ServiceException("知识库名称已存在：" + requestParam.getName());
@@ -102,6 +121,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
                 new LambdaQueryWrapper<KnowledgeBaseDO>()
                         .eq(KnowledgeBaseDO::getCollectionName, requestParam.getCollectionName())
                         .eq(KnowledgeBaseDO::getDeleted, 0)
+                        .apply(TENANT_PREDICATE, requireTenantId())
         );
         if (collectionCount > 0) {
             throw new ServiceException("Collection 名称已存在：" + requestParam.getCollectionName());
@@ -144,7 +164,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public void update(KnowledgeBaseUpdateRequest requestParam) {
-        KnowledgeBaseDO kb = knowledgeBaseMapper.selectById(requestParam.getId());
+        KnowledgeBaseDO kb = selectTenantKnowledgeBase(requestParam.getId());
         if (kb == null || kb.getDeleted() != null && kb.getDeleted() == 1) {
             throw new ClientException("知识库不存在：" + requestParam.getId());
         }
@@ -158,6 +178,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
                             .eq(KnowledgeDocumentDO::getKbId, requestParam.getId())
                             .gt(KnowledgeDocumentDO::getChunkCount, 0)
                             .eq(KnowledgeDocumentDO::getDeleted, 0)
+                            .apply(TENANT_PREDICATE, requireTenantId())
             );
             if (docCount > 0) {
                 throw new ClientException("知识库已存在向量化文档，不允许修改嵌入模型");
@@ -171,8 +192,14 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         }
 
         kb.setUpdatedBy(UserContext.getUsername());
-        knowledgeBaseMapper.updateById(kb);
-        bizChangeLogContext.put(requestParam.getId(), before, knowledgeBaseMapper.selectById(requestParam.getId()));
+        // P1.3a：主键更新改为租户条件更新（WHERE id + tenant_id），不再裸 updateById
+        knowledgeBaseMapper.update(null, Wrappers.lambdaUpdate(KnowledgeBaseDO.class)
+                .eq(KnowledgeBaseDO::getId, requestParam.getId())
+                .apply(TENANT_PREDICATE, requireTenantId())
+                .set(KnowledgeBaseDO::getName, kb.getName())
+                .set(KnowledgeBaseDO::getEmbeddingModel, kb.getEmbeddingModel())
+                .set(KnowledgeBaseDO::getUpdatedBy, kb.getUpdatedBy()));
+        bizChangeLogContext.put(requestParam.getId(), before, selectTenantKnowledgeBase(requestParam.getId()));
     }
 
     @Override
@@ -186,7 +213,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public void rename(String kbId, KnowledgeBaseUpdateRequest requestParam) {
-        KnowledgeBaseDO kb = knowledgeBaseMapper.selectById(kbId);
+        KnowledgeBaseDO kb = selectTenantKnowledgeBase(kbId);
         if (kb == null || kb.getDeleted() != null && kb.getDeleted() == 1) {
             throw new ClientException("知识库不存在");
         }
@@ -196,13 +223,14 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
             throw new ClientException("知识库名称不能为空");
         }
 
-        // 名称重复校验（排除当前知识库）
+        // 名称重复校验（排除当前知识库；租户内判定）
         String name = requestParam.getName().replaceAll("\\s+", "");
         Long count = knowledgeBaseMapper.selectCount(
                 Wrappers.lambdaQuery(KnowledgeBaseDO.class)
                         .eq(KnowledgeBaseDO::getName, name)
                         .ne(KnowledgeBaseDO::getId, kbId)
                         .eq(KnowledgeBaseDO::getDeleted, 0)
+                        .apply(TENANT_PREDICATE, requireTenantId())
         );
         if (count > 0) {
             throw new ServiceException("知识库名称已存在：" + requestParam.getName());
@@ -210,8 +238,13 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
 
         kb.setName(requestParam.getName());
         kb.setUpdatedBy(UserContext.getUsername());
-        knowledgeBaseMapper.updateById(kb);
-        bizChangeLogContext.put(kbId, before, knowledgeBaseMapper.selectById(kbId));
+        // P1.3a：主键更新改为租户条件更新（WHERE id + tenant_id）
+        knowledgeBaseMapper.update(null, Wrappers.lambdaUpdate(KnowledgeBaseDO.class)
+                .eq(KnowledgeBaseDO::getId, kbId)
+                .apply(TENANT_PREDICATE, requireTenantId())
+                .set(KnowledgeBaseDO::getName, kb.getName())
+                .set(KnowledgeBaseDO::getUpdatedBy, kb.getUpdatedBy()));
+        bizChangeLogContext.put(kbId, before, selectTenantKnowledgeBase(kbId));
 
         log.info("成功重命名知识库, kbId={}, newName={}", kbId, requestParam.getName());
     }
@@ -227,7 +260,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public void delete(String kbId) {
-        KnowledgeBaseDO kbDO = knowledgeBaseMapper.selectById(kbId);
+        KnowledgeBaseDO kbDO = selectTenantKnowledgeBase(kbId);
         if (kbDO == null || kbDO.getDeleted() != null && kbDO.getDeleted() == 1) {
             throw new ClientException("知识库不存在");
         }
@@ -237,6 +270,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
                 Wrappers.lambdaQuery(KnowledgeDocumentDO.class)
                         .eq(KnowledgeDocumentDO::getKbId, kbId)
                         .eq(KnowledgeDocumentDO::getDeleted, 0)
+                        .apply(TENANT_PREDICATE, requireTenantId())
         );
         if (docCount != null && docCount > 0) {
             throw new ClientException("当前知识库下还有文档，请删除文档");
@@ -261,8 +295,10 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
                 "知识库删除清理",
                 event,
                 arg -> {
-                    kbDO.setUpdatedBy(operator);
-                    int rows = knowledgeBaseMapper.deleteById(kbDO);
+                    // P1.3a：软删同样带租户条件（逻辑删 UPDATE ... WHERE id AND tenant_id）
+                    int rows = knowledgeBaseMapper.delete(Wrappers.lambdaQuery(KnowledgeBaseDO.class)
+                            .eq(KnowledgeBaseDO::getId, kbId)
+                            .apply(TENANT_PREDICATE, tenantId));
                     if (rows == 0) {
                         throw new ClientException("知识库不存在或已删除");
                     }
@@ -273,7 +309,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
 
     @Override
     public KnowledgeBaseVO queryById(String kbId) {
-        KnowledgeBaseDO kbDO = knowledgeBaseMapper.selectById(kbId);
+        KnowledgeBaseDO kbDO = selectTenantKnowledgeBase(kbId);
         if (kbDO == null || kbDO.getDeleted() != null && kbDO.getDeleted() == 1) {
             throw new ClientException("知识库不存在");
         }
@@ -285,6 +321,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
         LambdaQueryWrapper<KnowledgeBaseDO> queryWrapper = Wrappers.lambdaQuery(KnowledgeBaseDO.class)
                 .like(StringUtils.hasText(requestParam.getName()), KnowledgeBaseDO::getName, requestParam.getName())
                 .eq(KnowledgeBaseDO::getDeleted, 0)
+                .apply(TENANT_PREDICATE, requireTenantId())
                 .orderByDesc(KnowledgeBaseDO::getUpdateTime);
 
         Page<KnowledgeBaseDO> page = new Page<>(requestParam.getCurrent(), requestParam.getSize());
@@ -301,6 +338,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
                                 .select("kb_id", "COUNT(1) AS doc_count")
                                 .in("kb_id", kbIds)
                                 .eq("deleted", 0)
+                                .apply(TENANT_PREDICATE, requireTenantId())
                                 .groupBy("kb_id")
                 );
                 for (Map<String, Object> row : rows) {

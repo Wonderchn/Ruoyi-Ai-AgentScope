@@ -75,6 +75,12 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
 
+    /**
+     * P1.3a：既有查询补租户条件的统一谓词（{0} 绑定当前主体的 tenantId）。
+     * 代理主键全局唯一可以保留，但访问路径必须带租户条件（逐表账判据）。
+     */
+    private static final String TENANT_PREDICATE = "tenant_id = {0}";
+
     private final KnowledgeChunkMapper chunkMapper;
     private final KnowledgeDocumentMapper documentMapper;
     private final KnowledgeBaseMapper knowledgeBaseMapper;
@@ -85,13 +91,43 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
     private final TransactionOperations transactionOperations;
     private final BizChangeLogContext bizChangeLogContext;
 
+    /** 当前主体租户；缺失即拒绝（不降级到默认租户）。 */
+    private static String requireTenantId() {
+        return PrincipalContext.require().tenantId();
+    }
+
+    /** 按租户读文档行：替代裸 selectById，跨租户 id 与不存在同外显。 */
+    private KnowledgeDocumentDO selectTenantKnowledgeDocument(String docId) {
+        return documentMapper.selectOne(new LambdaQueryWrapper<KnowledgeDocumentDO>()
+                .eq(KnowledgeDocumentDO::getId, docId)
+                .apply(TENANT_PREDICATE, requireTenantId()));
+    }
+
+    /** 按租户读 KB 行：chunk 落点必须先确认属于本租户。 */
+    private KnowledgeBaseDO selectTenantKnowledgeBase(String kbId) {
+        return knowledgeBaseMapper.selectOne(new LambdaQueryWrapper<KnowledgeBaseDO>()
+                .eq(KnowledgeBaseDO::getId, kbId)
+                .apply(TENANT_PREDICATE, requireTenantId()));
+    }
+
+    /** 按租户读 chunk 行，并校验其确属给定文档。 */
+    private KnowledgeChunkDO selectTenantChunk(String docId, String chunkId) {
+        KnowledgeChunkDO chunkDO = chunkMapper.selectOne(new LambdaQueryWrapper<KnowledgeChunkDO>()
+                .eq(KnowledgeChunkDO::getId, chunkId)
+                .apply(TENANT_PREDICATE, requireTenantId()));
+        Assert.notNull(chunkDO, () -> new ClientException("Chunk 不存在"));
+        Assert.isTrue(chunkDO.getDocId().equals(docId), () -> new ClientException("Chunk 不属于该文档"));
+        return chunkDO;
+    }
+
     @Override
     public IPage<KnowledgeChunkVO> pageQuery(String docId, KnowledgeChunkPageRequest requestParam) {
-        KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
+        KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
 
         LambdaQueryWrapper<KnowledgeChunkDO> queryWrapper = new LambdaQueryWrapper<KnowledgeChunkDO>()
                 .eq(KnowledgeChunkDO::getDocId, docId)
+                .apply(TENANT_PREDICATE, requireTenantId())
                 .eq(requestParam.getEnabled() != null, KnowledgeChunkDO::getEnabled, requestParam.getEnabled())
                 .orderByAsc(KnowledgeChunkDO::getChunkIndex);
 
@@ -112,7 +148,7 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public KnowledgeChunkVO create(String docId, KnowledgeChunkCreateRequest requestParam) {
-        KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
+        KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
         if (DocumentStatus.RUNNING.getCode().equals(documentDO.getStatus())) {
             throw new ClientException("文档正在分块处理中，暂不支持新增 Chunk");
@@ -127,6 +163,7 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
         KnowledgeChunkDO latest = chunkMapper.selectOne(
                 Wrappers.lambdaQuery(KnowledgeChunkDO.class)
                         .eq(KnowledgeChunkDO::getDocId, docId)
+                        .apply(TENANT_PREDICATE, requireTenantId())
                         .orderByDesc(KnowledgeChunkDO::getChunkIndex)
                         .last("LIMIT 1")
         );
@@ -136,7 +173,7 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
 
         String contentHash = SecureUtil.sha256(content);
         int charCount = content.length();
-        KnowledgeBaseDO kbDO = knowledgeBaseMapper.selectById(documentDO.getKbId());
+        KnowledgeBaseDO kbDO = selectTenantKnowledgeBase(documentDO.getKbId());
         String embeddingModel = kbDO.getEmbeddingModel();
         String collectionName = kbDO.getCollectionName();
         Integer tokenCount = resolveTokenCount(content);
@@ -162,6 +199,7 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
 
         documentMapper.update(Wrappers.lambdaUpdate(KnowledgeDocumentDO.class)
                 .eq(KnowledgeDocumentDO::getId, docId)
+                .apply(TENANT_PREDICATE, requireTenantId())
                 .setSql("chunk_count = chunk_count + 1"));
 
         // 同步写入向量库
@@ -183,15 +221,13 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public void update(String docId, String chunkId, KnowledgeChunkUpdateRequest requestParam) {
-        KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
+        KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
         if (DocumentStatus.RUNNING.getCode().equals(documentDO.getStatus())) {
             throw new ClientException("文档正在分块处理中，暂不支持修改 Chunk");
         }
 
-        KnowledgeChunkDO chunkDO = chunkMapper.selectById(chunkId);
-        Assert.notNull(chunkDO, () -> new ClientException("Chunk 不存在"));
-        Assert.isTrue(chunkDO.getDocId().equals(docId), () -> new ClientException("Chunk 不属于该文档"));
+        KnowledgeChunkDO chunkDO = selectTenantChunk(docId, chunkId);
         KnowledgeChunkDO before = BeanUtil.copyProperties(chunkDO, KnowledgeChunkDO.class);
 
         String newContent = requestParam.getContent();
@@ -205,7 +241,7 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
         chunkDO.setContent(newContent);
         chunkDO.setContentHash(SecureUtil.sha256(newContent));
         chunkDO.setCharCount(newContent.length());
-        KnowledgeBaseDO kbDO = knowledgeBaseMapper.selectById(documentDO.getKbId());
+        KnowledgeBaseDO kbDO = selectTenantKnowledgeBase(documentDO.getKbId());
         String embeddingModel = kbDO.getEmbeddingModel();
         String collectionName = kbDO.getCollectionName();
         chunkDO.setTokenCount(resolveTokenCount(newContent));
@@ -213,7 +249,16 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
         chunkDO.setEmbeddingText(newContent);
         chunkDO.setUpdatedBy(UserContext.getUsername());
 
-        chunkMapper.updateById(chunkDO);
+        // P1.3a：主键更新改为租户条件更新（WHERE id + tenant_id）
+        chunkMapper.update(null, Wrappers.lambdaUpdate(KnowledgeChunkDO.class)
+                .eq(KnowledgeChunkDO::getId, chunkId)
+                .apply(TENANT_PREDICATE, requireTenantId())
+                .set(KnowledgeChunkDO::getContent, chunkDO.getContent())
+                .set(KnowledgeChunkDO::getContentHash, chunkDO.getContentHash())
+                .set(KnowledgeChunkDO::getCharCount, chunkDO.getCharCount())
+                .set(KnowledgeChunkDO::getTokenCount, chunkDO.getTokenCount())
+                .set(KnowledgeChunkDO::getEmbeddingText, chunkDO.getEmbeddingText())
+                .set(KnowledgeChunkDO::getUpdatedBy, chunkDO.getUpdatedBy()));
 
         log.info("更新 Chunk 成功, kbId={}, docId={}, chunkId={}", documentDO.getKbId(), docId, chunkId);
 
@@ -221,7 +266,7 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
         VectorTarget target = vectorTargetResolver.resolve(kbDO);
         vectorStoreService.updateChunk(target.tenantId(), collectionName, docId,
                 embedPersisted(List.of(chunkDO), target).get(0));
-        bizChangeLogContext.put(chunkId, before, chunkMapper.selectById(chunkId));
+        bizChangeLogContext.put(chunkId, before, selectTenantChunk(docId, chunkId));
     }
 
     @Override
@@ -236,25 +281,27 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public void delete(String docId, String chunkId) {
-        KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
+        KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
         if (DocumentStatus.RUNNING.getCode().equals(documentDO.getStatus())) {
             throw new ClientException("文档正在分块处理中，暂不支持删除 Chunk");
         }
 
-        KnowledgeChunkDO chunkDO = chunkMapper.selectById(chunkId);
-        Assert.notNull(chunkDO, () -> new ClientException("Chunk 不存在"));
-        Assert.isTrue(chunkDO.getDocId().equals(docId), () -> new ClientException("Chunk 不属于该文档"));
+        KnowledgeChunkDO chunkDO = selectTenantChunk(docId, chunkId);
         KnowledgeChunkDO before = BeanUtil.copyProperties(chunkDO, KnowledgeChunkDO.class);
 
-        KnowledgeBaseDO kbDO = knowledgeBaseMapper.selectById(documentDO.getKbId());
+        KnowledgeBaseDO kbDO = selectTenantKnowledgeBase(documentDO.getKbId());
         Assert.notNull(kbDO, () -> new ServiceException("知识库不存在"));
         String collectionName = kbDO.getCollectionName();
 
-        chunkMapper.deleteById(chunkId);
+        // P1.3a：软删带租户条件（逻辑删 UPDATE ... WHERE id AND tenant_id）
+        chunkMapper.delete(Wrappers.lambdaQuery(KnowledgeChunkDO.class)
+                .eq(KnowledgeChunkDO::getId, chunkId)
+                .apply(TENANT_PREDICATE, requireTenantId()));
 
         documentMapper.update(Wrappers.lambdaUpdate(KnowledgeDocumentDO.class)
                 .eq(KnowledgeDocumentDO::getId, docId)
+                .apply(TENANT_PREDICATE, requireTenantId())
                 .setSql("chunk_count = CASE WHEN chunk_count > 0 THEN chunk_count - 1 ELSE 0 END"));
 
         log.info("删除 Chunk 成功, kbId={}, docId={}, chunkId={}", documentDO.getKbId(), docId, chunkId);
@@ -275,16 +322,14 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public void enableChunk(String docId, String chunkId, boolean enabled) {
-        KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
+        KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
         if (DocumentStatus.RUNNING.getCode().equals(documentDO.getStatus())) {
             throw new ClientException("文档正在分块处理中，暂不支持修改 Chunk 状态");
         }
         validateDocumentEnabledForChunkEnable(documentDO, enabled);
 
-        KnowledgeChunkDO chunkDO = chunkMapper.selectById(chunkId);
-        Assert.notNull(chunkDO, () -> new ClientException("Chunk 不存在"));
-        Assert.isTrue(chunkDO.getDocId().equals(docId), () -> new ClientException("Chunk 不属于该文档"));
+        KnowledgeChunkDO chunkDO = selectTenantChunk(docId, chunkId);
         KnowledgeChunkDO before = BeanUtil.copyProperties(chunkDO, KnowledgeChunkDO.class);
 
         // 如果状态没变，直接返回
@@ -296,9 +341,14 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
 
         chunkDO.setEnabled(enabledValue);
         chunkDO.setUpdatedBy(UserContext.getUsername());
-        chunkMapper.updateById(chunkDO);
+        // P1.3a：启用状态更新带租户条件（WHERE id AND tenant_id）
+        chunkMapper.update(null, Wrappers.lambdaUpdate(KnowledgeChunkDO.class)
+                .eq(KnowledgeChunkDO::getId, chunkId)
+                .apply(TENANT_PREDICATE, requireTenantId())
+                .set(KnowledgeChunkDO::getEnabled, enabledValue)
+                .set(KnowledgeChunkDO::getUpdatedBy, chunkDO.getUpdatedBy()));
 
-        KnowledgeBaseDO kbDO = knowledgeBaseMapper.selectById(documentDO.getKbId());
+        KnowledgeBaseDO kbDO = selectTenantKnowledgeBase(documentDO.getKbId());
         String collectionName = kbDO.getCollectionName();
         log.info("{}Chunk 成功, kbId={}, docId={}, chunkId={}", enabled ? "启用" : "禁用", documentDO.getKbId(), docId, chunkId);
 
@@ -308,7 +358,7 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
         } else {
             deleteChunkFromVector(collectionName, chunkId);
         }
-        bizChangeLogContext.put(chunkId, before, chunkMapper.selectById(chunkId));
+        bizChangeLogContext.put(chunkId, before, selectTenantChunk(docId, chunkId));
     }
 
     @Override
@@ -330,14 +380,18 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
             throw new ClientException("单次批量操作 Chunk 数量不能超过 500");
         }
 
-        KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
+        KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
         if (DocumentStatus.RUNNING.getCode().equals(documentDO.getStatus())) {
             throw new ClientException("文档正在分块处理中，暂不支持批量修改 Chunk 状态");
         }
         validateDocumentEnabledForChunkEnable(documentDO, enabled);
 
-        List<KnowledgeChunkDO> found = chunkMapper.selectByIds(requestedIds);
+        // P1.3a：按租户圈定候选，跨租户 chunkId 混入即总量对不上而拒绝
+        List<KnowledgeChunkDO> found = chunkMapper.selectList(
+                new LambdaQueryWrapper<KnowledgeChunkDO>()
+                        .in(KnowledgeChunkDO::getId, requestedIds)
+                        .apply(TENANT_PREDICATE, requireTenantId()));
         if (found.size() != requestedIds.size()) {
             throw new ClientException("存在无效的 Chunk ID，请求 " + requestedIds.size() + " 个，实际找到 " + found.size() + " 个");
         }
@@ -357,6 +411,7 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
         List<KnowledgeChunkDO> needUpdateChunks = chunkMapper.selectList(
                 new LambdaQueryWrapper<KnowledgeChunkDO>()
                         .in(KnowledgeChunkDO::getId, targetIds)
+                        .apply(TENANT_PREDICATE, requireTenantId())
                         .ne(KnowledgeChunkDO::getEnabled, enabledValue)
         );
         List<String> needUpdateIds = needUpdateChunks.stream().map(KnowledgeChunkDO::getId).collect(Collectors.toList());
@@ -368,7 +423,7 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
                 .map(each -> BeanUtil.copyProperties(each, KnowledgeChunkDO.class))
                 .collect(Collectors.toList());
 
-        KnowledgeBaseDO kbDO = knowledgeBaseMapper.selectById(documentDO.getKbId());
+        KnowledgeBaseDO kbDO = selectTenantKnowledgeBase(documentDO.getKbId());
         String collectionName = kbDO.getCollectionName();
         // 租户取自落点身份（唯一产生地），两个分支共用；缺主体时 resolve 已经直接拒绝
         String tenantId = vectorTargetResolver.resolve(kbDO).tenantId();
@@ -380,6 +435,7 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
                 chunkMapper.update(
                         Wrappers.lambdaUpdate(KnowledgeChunkDO.class)
                                 .in(KnowledgeChunkDO::getId, needUpdateIds)
+                                .apply(TENANT_PREDICATE, tenantId)
                                 .set(KnowledgeChunkDO::getEnabled, 1)
                                 .set(KnowledgeChunkDO::getUpdatedBy, UserContext.getUsername())
                 );
@@ -390,6 +446,7 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
                 chunkMapper.update(
                         Wrappers.lambdaUpdate(KnowledgeChunkDO.class)
                                 .in(KnowledgeChunkDO::getId, needUpdateIds)
+                                .apply(TENANT_PREDICATE, tenantId)
                                 .set(KnowledgeChunkDO::getEnabled, 0)
                                 .set(KnowledgeChunkDO::getUpdatedBy, UserContext.getUsername())
                 );
@@ -399,7 +456,10 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
 
         log.info("批量{}Chunk 成功, kbId={}, docId={}, count={}", enabled ? "启用" : "禁用",
                 documentDO.getKbId(), docId, needUpdateIds.size());
-        bizChangeLogContext.put(docId, before, chunkMapper.selectByIds(needUpdateIds));
+        bizChangeLogContext.put(docId, before, chunkMapper.selectList(
+                new LambdaQueryWrapper<KnowledgeChunkDO>()
+                        .in(KnowledgeChunkDO::getId, needUpdateIds)
+                        .apply(TENANT_PREDICATE, requireTenantId())));
     }
 
     @Override
@@ -409,6 +469,7 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
         chunkMapper.update(
                 Wrappers.lambdaUpdate(KnowledgeChunkDO.class)
                         .eq(KnowledgeChunkDO::getDocId, docId)
+                        .apply(TENANT_PREDICATE, requireTenantId())
                         .set(KnowledgeChunkDO::getEnabled, enabledValue)
                         .set(KnowledgeChunkDO::getUpdatedBy, UserContext.getUsername())
         );
@@ -417,12 +478,13 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
 
     @Override
     public List<EmbeddedChunk> embedPersistedChunks(String docId, VectorTarget target) {
-        KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
+        KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
 
         List<KnowledgeChunkDO> chunkDOList = chunkMapper.selectList(
                 Wrappers.lambdaQuery(KnowledgeChunkDO.class)
                         .eq(KnowledgeChunkDO::getDocId, docId)
+                        .apply(TENANT_PREDICATE, requireTenantId())
                         .orderByAsc(KnowledgeChunkDO::getChunkIndex)
         );
         if (CollUtil.isEmpty(chunkDOList)) {
@@ -437,7 +499,9 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
         if (docId == null) {
             return;
         }
-        chunkMapper.delete(new LambdaQueryWrapper<KnowledgeChunkDO>().eq(KnowledgeChunkDO::getDocId, docId));
+        chunkMapper.delete(new LambdaQueryWrapper<KnowledgeChunkDO>()
+                .eq(KnowledgeChunkDO::getDocId, docId)
+                .apply(TENANT_PREDICATE, requireTenantId()));
     }
 
     // ==================== 私有方法 ====================
