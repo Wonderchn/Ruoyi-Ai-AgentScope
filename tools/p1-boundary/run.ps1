@@ -116,6 +116,8 @@ $script:ExternalizedPlaceholderCount = 0
 # 不保住它们，退出码与异步日志都会在需要时已经不可读。
 $script:OwnedProcessObjects = @{}
 $script:ProcessWriters = @{}
+# 已处理过的 pid 文件：Stop-OwnedProcess 幂等，避免同一进程被记两次结论。
+$script:StoppedPidFiles = New-Object System.Collections.ArrayList
 
 # -RemoteHost 的**最早**生效点。不能等到容器运行时预检才设置：Integration 的端口预检
 # （Invoke-IntegrationPortCheck）在预检之前运行，而端口是否空闲必须在容器宿主上判定。
@@ -545,6 +547,14 @@ function Start-OwnedProcess([string]$Exe, [string[]]$Arguments, [string]$WorkDir
 }
 function Stop-OwnedProcess([string]$PidFile, [string]$CommandMatch, [string]$Label) {
     # 只停止本脚本启动过、且 PID 归属 + 命令行双重对得上的进程。
+    #
+    # 幂等：同一个 pid 文件会被停两次——用例跑完时按语义停一次，
+    # 收尾时的通用循环再遍历一次。第二次不该再产生一行结论，
+    # 否则清理结论的行数会多于 pid 文件数，而断言 "accounted == pidFiles"
+    # 就永远不成立：8 个文件却有 10 行，读起来像"有进程没被正确记账"，
+    # 实际是**同一个进程被记了两次**。
+    if ($script:StoppedPidFiles -contains $PidFile) { return }
+    [void]$script:StoppedPidFiles.Add($PidFile)
     if (-not (Test-Path -LiteralPath $PidFile)) {
         [void]$script:Cleanup.Add([pscustomobject]@{ id = 'CLEANUP-owned-process'; target = $Label
                 action = 'stop'; result = 'NO_PID_FILE'; detail = $PidFile })
