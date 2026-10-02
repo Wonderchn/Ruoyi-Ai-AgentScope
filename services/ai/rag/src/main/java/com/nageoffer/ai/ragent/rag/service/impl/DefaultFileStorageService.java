@@ -131,7 +131,9 @@ public class DefaultFileStorageService implements FileStorageService {
     public StoredFileDTO uploadAsset(byte[] content, String originalFilename, String contentType) {
         Assert.notNull(content, "上传内容不能为空");
         String detected = resolveContentType(originalFilename, contentType);
-        String key = randomKey(originalFilename);
+        // 资产 key 同样带租户前缀：否则 getPublicUrl 无从判定"这个 key 是否属于调用方"。
+        // 资产桶是公共读的，一旦 key 可猜或可泄漏，无前缀就意味着任何人拿到 key 即可长期直读。
+        String key = assetKey(originalFilename);
         objectStorageClient.streamPut(assetBucket, key, new ByteArrayInputStream(content), content.length, detected);
         return buildStoredFileDTO(key, originalFilename, detected, content.length);
     }
@@ -139,19 +141,59 @@ public class DefaultFileStorageService implements FileStorageService {
     @Override
     public InputStream openStream(String key) {
         Assert.notBlank(key, "对象 key 不能为空");
+        requireOwnership(key);
         return objectStorageClient.getObject(kbBucket, key);
     }
 
     @Override
     public void deleteByUrl(String key) {
         Assert.notBlank(key, "对象 key 不能为空");
+        requireOwnership(key);
         objectStorageClient.deleteObject(kbBucket, key);
     }
 
     @Override
     public String getPublicUrl(String key) {
         Assert.notBlank(key, "对象 key 不能为空");
+        requireOwnership(key);
         return objectStorageClient.buildPublicUrl(assetBucket, key);
+    }
+
+    /**
+     * 校验 key 归属当前租户；不属于则拒绝。
+     *
+     * <p><b>为什么必须有这一步。</b>这三个方法的入参只有 key，没有资源标识可用于
+     * 走常规的 ACL 判定，因此在此之前 <b>key 本身就是唯一的访问凭据</b>：
+     * 任何能拿到 key 的地方（日志、导出、前端直链、共享链接）都等价于拿到读/删权限。
+     * key 形如 {@code {tenantId}/{namespace}/{uuid}.{ext}}，前缀即归属，
+     * 于是这里可以只用一次前缀比较把访问收回本租户。
+     *
+     * <p><b>为什么不"没前缀就放行"。</b>那样等于给历史 key 留一条永久后门：
+     * 任何绕过 upload 路径写进桶的对象都自动对所有租户可读。
+     * 本仓库的所有写入路径（{@link #documentKey} 与 {@link #assetKey}）都已带前缀，
+     * 因此"没有前缀"是异常状态而不是兼容状态，必须拒绝并点名。
+     *
+     * <p>无执行主体时同样拒绝（{@code PrincipalContext.require()} 抛异常），
+     * 绝不因为"没有主体"就放宽为"不校验"——与检索侧的 fail-closed 同一口径。
+     */
+    private void requireOwnership(String key) {
+        String tenantId = com.nageoffer.ai.ragent.framework.context.PrincipalContext.require().tenantId();
+        String prefix = tenantId + "/";
+        if (!key.startsWith(prefix)) {
+            log.warn("拒绝跨租户对象访问: tenantId={}, keyPrefix={}", tenantId,
+                    key.length() > 24 ? key.substring(0, 24) : key);
+            throw new ServiceException("对象不存在或无权访问");
+        }
+    }
+
+    /**
+     * 组装资产 key：{@code {tenantId}/{uuid}.{ext}}
+     *
+     * <p>与文档 key 同口径：租户只从可信执行主体取，不取请求参数。
+     */
+    private String assetKey(String originalFilename) {
+        String tenantId = com.nageoffer.ai.ragent.framework.context.PrincipalContext.require().tenantId();
+        return tenantId + "/" + randomKey(originalFilename);
     }
 
     @Override
