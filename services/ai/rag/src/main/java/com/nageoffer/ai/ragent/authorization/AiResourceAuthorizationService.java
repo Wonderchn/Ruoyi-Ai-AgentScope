@@ -17,6 +17,8 @@
 
 package com.nageoffer.ai.ragent.authorization;
 
+import com.nageoffer.ai.ragent.framework.exception.ServiceException;
+
 import com.nageoffer.ai.ragent.authorization.dao.AiAclEpochMapper;
 import com.nageoffer.ai.ragent.authorization.dao.AiResourceAclMapper;
 import com.nageoffer.ai.ragent.authorization.dao.AiResourceMapper;
@@ -77,6 +79,84 @@ public class AiResourceAuthorizationService
     private final ResourceSourceRefMapper sourceRefMapper;
     private final Clock clock;
     private final DefaultResourceAuthorizationService delegate;
+    private com.nageoffer.ai.ragent.framework.security.AuthorizationChecker platformAuthorization;
+    private String platformBaseUrl;
+    private String platformCredential;
+    private final com.fasterxml.jackson.databind.ObjectMapper matchJson = new com.fasterxml.jackson.databind.ObjectMapper()
+            .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY)
+            .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+    private final java.net.http.HttpClient matchHttp = java.net.http.HttpClient.newBuilder()
+            .connectTimeout(java.time.Duration.ofSeconds(2)).followRedirects(java.net.http.HttpClient.Redirect.NEVER).build();
+
+    @Autowired
+    public void configureSubjectMatch(@org.springframework.beans.factory.annotation.Value("${ai.integration.platform-base-url:}") String url,
+            @org.springframework.beans.factory.annotation.Value("${ai.integration.platform-service-credential:}") String credential) {
+        if (url.isBlank() || credential.isBlank()) { throw new IllegalStateException("platform subject match configuration required"); }
+        platformBaseUrl = url;
+        platformCredential = credential;
+    }
+
+    @Override
+    public MatchResult match(ExecutionPrincipal principal, Collection<String> subjectRefs, int policyVersion, String action) {
+        if (platformBaseUrl == null) { return match(principal, subjectRefs, policyVersion); }
+        try {
+            var refs = List.copyOf(subjectRefs);
+            var candidates = refs.stream().map(ref -> Map.of("subjectRefs", List.of(ref))).toList();
+            var payload = Map.of("tenantId", principal.tenantId(), "subject", principal.userId(),
+                    "membershipId", principal.membershipId(), "policyVersion", policyVersion,
+                    "action", action, "candidates", candidates);
+            var request = java.net.http.HttpRequest.newBuilder(java.net.URI.create(platformBaseUrl
+                            + "/internal/platform/v1/authorization/subjects/match"))
+                    .timeout(java.time.Duration.ofSeconds(2)).header("Content-Type", "application/json")
+                    .header("X-P04-Service-Credential", platformCredential)
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(matchJson.writeValueAsString(payload))).build();
+            var response = matchHttp.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+            var root = matchJson.readTree(response.body());
+            if (response.statusCode() == 409 && root != null && root.path("code").isIntegralNumber()
+                    && root.path("code").intValue() == 409
+                    && "POLICY_VERSION_STALE".equals(root.path("data").path("errorCode").textValue())) {
+                throw new com.nageoffer.ai.ragent.framework.security.StaleVersionException("platform policy changed during subject match");
+            }
+            var data = root.path("data");
+            if (response.statusCode() != 200 || !root.path("code").isIntegralNumber()
+                    || root.path("code").intValue() != 200 || !data.path("policyVersion").isIntegralNumber()
+                    || data.path("policyVersion").intValue() != policyVersion
+                    || !data.path("matches").isArray() || data.path("matches").size() != refs.size()) {
+                throw new ServiceException("subject match response invalid");
+            }
+            Set<String> matched = new LinkedHashSet<>();
+            for (int i = 0; i < refs.size(); i++) {
+                var value = data.path("matches").get(i);
+                if (!value.isBoolean()) { throw new ServiceException("subject match response invalid"); }
+                if (value.booleanValue()) { matched.add(refs.get(i)); }
+            }
+            return new MatchResult(matched, policyVersion);
+        } catch (com.nageoffer.ai.ragent.framework.security.StaleVersionException e) { throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ServiceException("subject match interrupted");
+        } catch (Exception e) { throw new ServiceException("subject match unavailable"); }
+    }
+
+    @Autowired
+    public void configurePlatformAuthorization(com.nageoffer.ai.ragent.framework.security.AuthorizationChecker checker) {
+        this.platformAuthorization = checker;
+    }
+
+    private void requirePlatform(ExecutionPrincipal principal, String action, String ref) {
+        if (platformAuthorization != null) {
+            if (!principal.hasScope(action)) {
+                throw new com.nageoffer.ai.ragent.framework.security.P04AiException(
+                        com.nageoffer.ai.ragent.framework.security.P04AiErrorCode.FORBIDDEN);
+            }
+            var result = platformAuthorization.check(new com.nageoffer.ai.ragent.framework.security.DelegatedPrincipal(
+                    principal.issuer(), principal.tenantId(), principal.userId(), principal.membershipId(),
+                    principal.policyVersion(), principal.scopes(), principal.jti()), action, ref);
+            if (!result.allowed() || result.policyVersion() != principal.policyVersion()) {
+                throw new ServiceException("platform authorization unavailable");
+            }
+        }
+    }
 
     @Autowired
     public AiResourceAuthorizationService(AiResourceMapper resourceMapper,
@@ -109,17 +189,20 @@ public class AiResourceAuthorizationService
     @Override
     public AuthorizedResourceScope resolveScope(ExecutionPrincipal principal, String action,
                                                 Collection<String> requested) {
+        requirePlatform(principal, action, requested == null || requested.isEmpty() ? "tenant:resources" : requested.iterator().next());
         return delegate.resolveScope(principal, action, requested);
     }
 
     @Override
     public Verdict check(ExecutionPrincipal principal, String action, String resourceRef) {
+        requirePlatform(principal, action, resourceRef);
         return delegate.check(principal, action, resourceRef);
     }
 
     @Override
     public Map<String, Verdict> checkBatch(ExecutionPrincipal principal, String action,
                                            Collection<String> resourceRefs) {
+        for (String ref : resourceRefs) { requirePlatform(principal, action, ref); }
         return delegate.checkBatch(principal, action, resourceRefs);
     }
 
@@ -156,6 +239,7 @@ public class AiResourceAuthorizationService
             }
         }
         for (AiResourceRow row : rows) {
+            if (!Set.of(AiResourceMapper.TYPE_KB, AiResourceMapper.TYPE_DOCUMENT, "CONVERSATION").contains(row.resourceType())) { continue; }
             String ref = resourceRef(row.resourceType(), row.resourceId());
             result.put(ref, toFact(ref, tenantId, row));
         }
@@ -200,7 +284,10 @@ public class AiResourceAuthorizationService
         }
         Set<String> matched = new LinkedHashSet<>();
         for (String ref : subjectRefs) {
-            if (ref != null && liveSubjects.contains(ref)) {
+            // 本地 MEMBER/TENANT_ALL 必须匹配当前成员；组织候选需平台实时事实。
+            if (ref != null && liveSubjects.contains(ref) && (platformAuthorization == null
+                    || ref.equals("member:" + principal.membershipId())
+                    || ref.equals("tenant_all:" + principal.tenantId()))) {
                 matched.add(ref);
             }
         }
@@ -222,6 +309,7 @@ public class AiResourceAuthorizationService
         for (ResourceSourceRefMapper.SourceRefRow child
                 : sourceRefMapper.findChildren(tenantId, parsed.resourceType(), parsed.resourceId())) {
             if (AiResourceMapper.STATUS_ACTIVE.equals(child.status())) {
+                if (!Set.of(AiResourceMapper.TYPE_KB, AiResourceMapper.TYPE_DOCUMENT, "CONVERSATION").contains(child.resourceType())) { continue; }
                 refs.add(resourceRef(child.resourceType(), child.resourceId()));
             }
         }
@@ -241,6 +329,7 @@ public class AiResourceAuthorizationService
         String prefix = switch (resourceType) {
             case AiResourceMapper.TYPE_KB -> "kb";
             case AiResourceMapper.TYPE_DOCUMENT -> "doc";
+            case "CONVERSATION" -> "conv";
             default -> throw new IllegalArgumentException("unsupported resourceType: " + resourceType);
         };
         return prefix + ":" + resourceId;
@@ -251,6 +340,7 @@ public class AiResourceAuthorizationService
         return switch (prefix) {
             case "kb" -> AiResourceMapper.TYPE_KB;
             case "doc" -> AiResourceMapper.TYPE_DOCUMENT;
+            case "conv" -> "CONVERSATION";
             default -> throw new IllegalArgumentException("unsupported resource ref: " + prefix);
         };
     }

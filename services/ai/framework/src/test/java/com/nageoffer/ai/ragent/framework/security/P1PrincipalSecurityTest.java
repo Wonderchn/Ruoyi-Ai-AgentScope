@@ -163,6 +163,7 @@ class P1PrincipalSecurityTest {
 
     private static MockHttpServletRequest request(String uri, String bearer) {
         MockHttpServletRequest request = new MockHttpServletRequest("GET", uri);
+        request.addHeader("X-P04-Service-Credential", "p1-test-service-credential");
         if (bearer != null) {
             request.addHeader("Authorization", "Bearer " + bearer);
         }

@@ -77,6 +77,9 @@ public class OrganizationMatchController {
 
     /** 部门归属事实端口：由 admin 侧身份源实现（integration 不依赖 system/admin 具体类）。 */
     public interface SubjectMatchSource {
+        default java.util.Set<String> currentSubjects(String tenantId, String subject) {
+            return java.util.Set.of("member:platform:" + tenantId + ":" + subject, "tenant_all:" + tenantId);
+        }
 
         /**
          * @param tenantId 租户编号
@@ -182,7 +185,9 @@ public class OrganizationMatchController {
                 if (candidate == null) {
                     throw new P04Exception(P04ErrorCode.BAD_REQUEST);
                 }
-                matches.add(matchCandidate(request, orgFacts, candidate));
+                matches.add(matchCandidate(request, orgFacts, candidate)
+                        || (candidate.subjectRefs() != null && candidate.subjectRefs().stream()
+                        .anyMatch(matchSource.currentSubjects(request.tenantId(), request.subject())::contains)));
             }
 
             return ResponseEntity.ok()

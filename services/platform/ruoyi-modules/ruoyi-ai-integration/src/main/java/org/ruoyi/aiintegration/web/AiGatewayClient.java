@@ -135,7 +135,7 @@ public class AiGatewayClient {
 
         int status = response.statusCode();
         // 状态契约：2xx/4xx 透传；3xx（重定向异常）与 1xx/5xx 视为状态异常
-        boolean passthrough = (status >= 200 && status < 300) || (status >= 400 && status < 500);
+        boolean passthrough = (status >= 200 && status < 300) || (status >= 400 && status < 500) || status == 503;
         if (!passthrough) {
             log.warn("ai gateway upstream abnormal status={}", status);
             throw new UpstreamUnavailableException("abnormal upstream status");
@@ -143,7 +143,7 @@ public class AiGatewayClient {
 
         String body = response.body() == null ? "" : response.body();
         if (!body.isBlank()) {
-            requireSingleJsonObject(body);
+            requireSingleJsonObject(body, status);
         }
         return new ForwardResponse(status, body);
     }
@@ -153,7 +153,7 @@ public class AiGatewayClient {
      * 重复键（{@code FAIL_ON_READING_DUP_TREE_KEY}）、trailing token
      * （{@code FAIL_ON_TRAILING_TOKENS}）、非对象根、坏 JSON 一律 503 语义。
      */
-    private void requireSingleJsonObject(String body) {
+    private void requireSingleJsonObject(String body, int status) {
         JsonNode root;
         try {
             root = responseMapper.readTree(body);
@@ -166,7 +166,8 @@ public class AiGatewayClient {
         }
         // 响应必须是本协议包络（code 为整数、与状态一致的数据由 AI 侧保证）；
         // 这里只强制"单对象 + 携带整数 code"的形状，防止把任意 JSON 原样透传给浏览器
-        if (!root.path("code").isIntegralNumber()) {
+        if (!root.path("code").isIntegralNumber()
+                || (root.path("code").intValue() != status && !(status == 202 && root.path("code").intValue() == 200))) {
             throw new UpstreamUnavailableException("missing envelope code");
         }
     }

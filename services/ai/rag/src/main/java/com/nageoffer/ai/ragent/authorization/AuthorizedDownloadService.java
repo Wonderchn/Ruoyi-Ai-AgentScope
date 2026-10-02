@@ -65,6 +65,18 @@ public class AuthorizedDownloadService {
     private final ObjectProvider<ResourceAuthorizationService> authorizationService;
     private final TenantObjectReferenceRepository objectReferences;
     private final ObjectProvider<FileStorageService> fileStorage;
+    private com.nageoffer.ai.ragent.framework.security.RevocationGuard revocations;
+    private boolean highRiskEnabled;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setHighRiskEnabled(@org.springframework.beans.factory.annotation.Value("${ai.integration.high-risk.enabled:false}") boolean enabled) {
+        highRiskEnabled = enabled;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setRevocations(com.nageoffer.ai.ragent.framework.security.RevocationGuard revocations) {
+        this.revocations = revocations;
+    }
 
     public AuthorizedDownloadService(ObjectProvider<ResourceAuthorizationService> authorizationService,
                                      TenantObjectReferenceRepository objectReferences,
@@ -116,7 +128,34 @@ public class AuthorizedDownloadService {
             throw new ServiceException("对象存储不可用");
         }
         // openStream 内部再做一次租户前缀归属校验（防御纵深）；key 不出本方法
-        return storageService.openStream(storage.get().fileUrl());
+        if (!highRiskEnabled || revocations == null) {
+            throw new ServiceException("下载 permit 服务不可用");
+        }
+        var operation = revocations.enter(principal, ACTION_DOCUMENT_DOWNLOAD, ref);
+        try {
+            InputStream source = storageService.openStream(storage.get().fileUrl());
+            return new java.io.FilterInputStream(source) {
+                private boolean closed;
+                @Override public synchronized int read() throws java.io.IOException {
+                    if (closed) { throw new java.io.IOException("stream is closed"); }
+                    return in.read();
+                }
+                @Override public synchronized int read(byte[] buffer, int offset, int length) throws java.io.IOException {
+                    if (closed) { throw new java.io.IOException("stream is closed"); }
+                    return in.read(buffer, offset, length);
+                }
+                @Override public synchronized void close() throws java.io.IOException {
+                    if (closed) { return; }
+                    // close 失败时保留 permit；不能证明流已停止就不能宣告释放。
+                    super.close();
+                    operation.close();
+                    closed = true;
+                }
+            };
+        } catch (RuntimeException e) {
+            operation.close();
+            throw e;
+        }
     }
 
     /**
@@ -129,8 +168,8 @@ public class AuthorizedDownloadService {
             throw new ClientException("documentId 与 fileUrl 均不能为空");
         }
         ExecutionPrincipal principal = PrincipalContext.require();
-        String objectSegment = TenantObjectReferenceRepository.objectSegmentOf(fileUrl);
-        objectReferences.register(principal.tenantId(), objectSegment, "DOC", documentId,
-                principal.membershipId(), principal.membershipId());
+        // 登记只能由具备 KB 写权限的受保护上传路径调用；当前没有该路径。
+        // 在上传事务与 permit 接入前，独立登记入口保持关闭。
+        throw new ServiceException("对象登记上传入口尚未开放");
     }
 }

@@ -132,7 +132,14 @@ public class TenantObjectReferenceRepository {
         params.put("docId", docId);
         return jdbc.query(sql, params, (rs, rowNum) -> new DocumentStorage(
                 rs.getString("file_url"),
-                rs.getString("mime_type"))).stream().findFirst();
+                rs.getString("mime_type"))).stream().filter(storage -> {
+                    String segment;
+                    try { segment = objectSegmentOf(storage.fileUrl()); }
+                    catch (IllegalArgumentException e) { return false; }
+                    return storage.fileUrl().startsWith(tenantId + "/")
+                            && findActiveByParent(tenantId, "DOCUMENT", docId).stream()
+                            .anyMatch(row -> segment.equals(row.resourceId()));
+                }).findFirst();
     }
 
     /**

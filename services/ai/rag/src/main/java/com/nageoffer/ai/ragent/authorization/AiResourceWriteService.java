@@ -73,6 +73,62 @@ public class AiResourceWriteService {
     private final AiResourceAclMapper aclMapper;
     private final AiAclEpochMapper epochMapper;
     private final TransactionOperations transactionOperations;
+    private com.nageoffer.ai.ragent.framework.security.RevocationGuard revocations;
+    private com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService authorization;
+    private com.nageoffer.ai.ragent.framework.security.AuthorizationChecker platform;
+    private boolean highRiskEnabled;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setHighRiskEnabled(@org.springframework.beans.factory.annotation.Value("${ai.integration.high-risk.enabled:false}") boolean enabled) {
+        highRiskEnabled = enabled;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureExecution(com.nageoffer.ai.ragent.framework.security.RevocationGuard guard,
+            com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService resources,
+            com.nageoffer.ai.ragent.framework.security.AuthorizationChecker checker) {
+        revocations = guard;
+        authorization = resources;
+        platform = checker;
+    }
+
+    private <T> T write(ExecutionPrincipal principal, String action, String ref,
+                       org.springframework.transaction.support.TransactionCallback<T> work) {
+        if (!highRiskEnabled || revocations == null || authorization == null || platform == null) {
+            throw new ServiceException("写入 permit/授权服务不可用");
+        }
+        if (!principal.hasScope(action)) { throw new P04AiException(P04AiErrorCode.FORBIDDEN); }
+        platform.check(new com.nageoffer.ai.ragent.framework.security.DelegatedPrincipal(principal.issuer(),
+                principal.tenantId(), principal.userId(), principal.membershipId(), principal.policyVersion(),
+                principal.scopes(), principal.jti()), action, ref);
+        if (!"kb.write".equals(action)) {
+            var verdict = authorization.check(principal, action, ref);
+            if (verdict == com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict.STALE) {
+                throw new com.nageoffer.ai.ragent.framework.security.StaleVersionException("aclVersion changed");
+            }
+            if (verdict == null || verdict == com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict.UNKNOWN) {
+                throw new ServiceException("资源授权事实未知");
+            }
+            if (verdict != com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict.GRANT) {
+                throw new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
+            }
+        }
+        try (var operation = revocations.enter(principal, action, ref)) {
+            return transactionOperations.execute(status -> {
+                Map<String, Object> parameters = Map.of("tenant", principal.tenantId(), "permit", operation.permitId());
+                var versions = jdbc.query("SELECT version FROM ai_acl_epoch WHERE tenant_id=:tenant FOR UPDATE",
+                        parameters, (rs, n) -> rs.getInt(1));
+                if (versions.isEmpty() || versions.get(0) != principal.aclVersion()) {
+                    throw new com.nageoffer.ai.ragent.framework.security.StaleVersionException("aclVersion changed");
+                }
+                // 所有版本变更必须等其它高风险段退出；此处遇活跃段即回滚，调用方可重试。
+                Long active = jdbc.queryForObject("SELECT count(*) FROM ai_execution_permit WHERE tenant_id=:tenant"
+                        + " AND status='ACTIVE' AND permit_id<>:permit", parameters, Long.class);
+                if (active == null || active > 0) { throw new ServiceException("活跃 permit 未排空，写入已拒绝"); }
+                return work.doInTransaction(status);
+            });
+        }
+    }
 
     public AiResourceWriteService(NamedParameterJdbcTemplate jdbc,
                                   AiResourceMapper resourceMapper,
@@ -121,7 +177,7 @@ public class AiResourceWriteService {
         String membershipId = principal.membershipId();
         String kbId = IdUtil.getSnowflakeNextIdStr();
 
-        return transactionOperations.execute(status -> {
+        return write(principal, "kb.write", "kb:" + kbId, status -> {
             // 元数据行：tenant_id / owner_member_id 只取自主体；owner_dept_id 等部门事实
             // 由 platform 组织匹配接线后补充（ExecutionPrincipal 当前不携带部门）。
             Map<String, Object> kb = new HashMap<>();
@@ -166,12 +222,13 @@ public class AiResourceWriteService {
     public void tombstoneKnowledgeBase(String kbId) {
         ExecutionPrincipal principal = PrincipalContext.require();
         String tenantId = principal.tenantId();
-        transactionOperations.executeWithoutResult(status -> {
+        write(principal, "kb.delete", "kb:" + kbId, status -> {
             int rows = resourceMapper.tombstone(tenantId, AiResourceMapper.TYPE_KB, kbId);
             if (rows == 0) {
                 throw new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
             }
             bumpEpochOrRefuse(tenantId);
+            return null;
         });
     }
 
@@ -184,7 +241,7 @@ public class AiResourceWriteService {
         String tenantId = principal.tenantId();
         AclRow row = validatedRow(kbId, tenantId, principal, grant);
 
-        transactionOperations.executeWithoutResult(status -> {
+        write(principal, ACTION_ACL_MANAGE, "kb:" + kbId, status -> {
             try {
                 aclMapper.insert(row);
             } catch (DuplicateKeyException e) {
@@ -192,6 +249,7 @@ public class AiResourceWriteService {
                 throw new P04AiException(P04AiErrorCode.BAD_REQUEST, "acl rule already exists");
             }
             bumpEpochOrRefuse(tenantId);
+            return null;
         });
     }
 
@@ -202,12 +260,13 @@ public class AiResourceWriteService {
         String tenantId = principal.tenantId();
         AclRow row = validatedRow(kbId, tenantId, principal, grant);
 
-        transactionOperations.executeWithoutResult(status -> {
+        write(principal, ACTION_ACL_MANAGE, "kb:" + kbId, status -> {
             int rows = aclMapper.deleteRule(tenantId, AiResourceMapper.TYPE_KB, kbId,
                     row.subjectType(), row.subjectId(), row.action());
             if (rows > 0) {
                 bumpEpochOrRefuse(tenantId);
             }
+            return null;
         });
     }
 

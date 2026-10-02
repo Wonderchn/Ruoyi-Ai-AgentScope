@@ -58,6 +58,46 @@ import java.time.Clock;
 public class ProductionAiIntegrationConfig {
 
     @Bean
+    public org.springframework.boot.web.servlet.FilterRegistrationBean<org.ruoyi.aiintegration.web.RequestIdFilter> productionRequestIdFilter() {
+        var registration = new org.springframework.boot.web.servlet.FilterRegistrationBean<>(new org.ruoyi.aiintegration.web.RequestIdFilter());
+        registration.addUrlPatterns("/*");
+        registration.setOrder(Integer.MIN_VALUE + 50);
+        registration.setName("productionRequestIdFilter");
+        return registration;
+    }
+
+    @Bean
+    public org.springframework.boot.web.servlet.FilterRegistrationBean<jakarta.servlet.Filter> productionInternalServiceFilter(
+            @Value("${ai.integration.authorization.service-credential:}") String credential) {
+        var registration = new org.springframework.boot.web.servlet.FilterRegistrationBean<jakarta.servlet.Filter>();
+        registration.setFilter((request, response, chain) -> {
+            var req = (jakarta.servlet.http.HttpServletRequest) request;
+            var res = (jakarta.servlet.http.HttpServletResponse) response;
+            String path = req.getRequestURI().substring(req.getContextPath().length());
+            var paths = java.util.Set.of("/internal/platform/v1/authorization/check",
+                    "/internal/platform/v1/authorization/subjects/match",
+                    "/internal/platform/v1/authorization/permits/acquire",
+                    "/internal/platform/v1/authorization/permits/release");
+            if (paths.contains(path) && "POST".equals(req.getMethod())) {
+                String presented = req.getHeader("X-P04-Service-Credential");
+                if (credential.isBlank() || presented == null || !java.security.MessageDigest.isEqual(
+                        credential.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        presented.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
+                    res.setStatus(401);
+                    res.setContentType("application/json;charset=UTF-8");
+                    res.getWriter().write("{\"code\":401,\"data\":{\"errorCode\":\"AUTH_REQUIRED\"}}");
+                    return;
+                }
+                req.setAttribute("ai.service.authenticated", Boolean.TRUE);
+            }
+            chain.doFilter(request, response);
+        });
+        registration.addUrlPatterns("/internal/platform/v1/*");
+        registration.setOrder(Integer.MIN_VALUE + 100);
+        return registration;
+    }
+
+    @Bean
     @ConditionalOnMissingBean(Clock.class)
     public Clock aiIntegrationClock() {
         return Clock.systemUTC();

@@ -165,8 +165,17 @@ class P1ObjectAndCacheIsolationTest {
                 .thenReturn(new ByteArrayInputStream("payload".getBytes(StandardCharsets.UTF_8)));
         PrincipalContext.set(principal());
 
-        assertThat(new AuthorizedDownloadService(providerOf(authz), refs, providerOf(storage))
-                .openDocumentStream("doc-1")).isNotNull();
+        AuthorizedDownloadService service = new AuthorizedDownloadService(providerOf(authz), refs, providerOf(storage));
+        var guard = mock(com.nageoffer.ai.ragent.framework.security.RevocationGuard.class);
+        when(guard.enter(any(), anyString(), anyString())).thenReturn(
+                new com.nageoffer.ai.ragent.framework.security.RevocationGuard.Operation(guard, "permit", "op"));
+        service.setRevocations(guard);
+        service.setHighRiskEnabled(true);
+        try (var stream = service.openDocumentStream("doc-1")) {
+            assertThat(stream).isNotNull();
+            verify(guard, never()).release(anyString(), anyString());
+        } catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
+        verify(guard).release("permit", "op");
         verify(storage).openStream(boundKey);
     }
 

@@ -43,6 +43,21 @@ import java.util.Collection;
 public class AiPolicyMutationGuard {
 
     private final AiPolicyRevisionService policyRevisionService;
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configurePermits(org.springframework.jdbc.core.JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    private void requireDrained(String tenantId) {
+        // bump 已持 policy revision 行锁；acquire 同锁，因此检查至提交之间不能登记新 permit。
+        if (jdbc != null) {
+            Long active = jdbc.queryForObject("SELECT count(*) FROM sys_ai_execution_permit"
+                    + " WHERE tenant_id=? AND status='ACTIVE'", Long.class, tenantId);
+            if (active == null || active > 0) {
+                throw new IllegalStateException("AI permits active/unknown; policy mutation must roll back");
+            }
+        }
+    }
 
     /**
      * 对受影响租户集合逐个递增策略版本（排序去重，防死锁）。
@@ -52,6 +67,7 @@ public class AiPolicyMutationGuard {
     public void bump(Collection<String> tenantIds) {
         requireActiveTransaction();
         policyRevisionService.bumpAll(tenantIds);
+        tenantIds.stream().distinct().sorted().forEach(this::requireDrained);
     }
 
     /**
@@ -62,6 +78,7 @@ public class AiPolicyMutationGuard {
     public void bumpTenant(String tenantId) {
         requireActiveTransaction();
         policyRevisionService.bump(tenantId);
+        requireDrained(tenantId);
     }
 
     private static void requireActiveTransaction() {

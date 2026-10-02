@@ -60,6 +60,9 @@ import java.util.Set;
  * </ol>
  */
 public class SaasEntryFilter extends OncePerRequestFilter {
+    private final boolean production;
+    public SaasEntryFilter() { this(false); }
+    public SaasEntryFilter(boolean production) { this.production = production; }
 
     private static final Logger log = LoggerFactory.getLogger(SaasEntryFilter.class);
 
@@ -89,6 +92,10 @@ public class SaasEntryFilter extends OncePerRequestFilter {
             return;
         }
         String path = normalizedPath(request);
+        if (production && path != null && path.startsWith("/internal/ai/v1/")) {
+            chain.doFilter(request, response);
+            return;
+        }
         if (isInfrastructurePath(path, request.getMethod())) {
             chain.doFilter(request, response);
             return;

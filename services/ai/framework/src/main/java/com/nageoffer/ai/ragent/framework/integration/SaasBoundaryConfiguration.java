@@ -79,9 +79,11 @@ public class SaasBoundaryConfiguration {
      * 与 {@code ERROR}（错误页）分派必须越过边界，否则错误页会被自身拦成递归 404。
      */
     @Bean
-    public FilterRegistrationBean<SaasEntryFilter> saasEntryFilterRegistration() {
+    public FilterRegistrationBean<SaasEntryFilter> saasEntryFilterRegistration(Environment environment) {
         FilterRegistrationBean<SaasEntryFilter> registration =
-                new FilterRegistrationBean<>(new SaasEntryFilter());
+                new FilterRegistrationBean<>(new SaasEntryFilter(
+                        environment.getProperty("ai.integration.enabled", Boolean.class, false)
+                        && environment.getProperty("ai.integration.security.enabled", Boolean.class, false)));
         registration.addUrlPatterns("/*");
         registration.setName("saasEntryFilter");
         registration.setDispatcherTypes(jakarta.servlet.DispatcherType.REQUEST,
@@ -127,6 +129,9 @@ public class SaasBoundaryConfiguration {
             return;
         }
         for (String flag : UNAPPROVED_CAPABILITY_FLAGS) {
+            if (flag.equals("ai.integration.enabled")
+                    && environment.getProperty("ai.integration.security.enabled", Boolean.class, false)
+                    && !environment.getProperty("p04.enabled", Boolean.class, false)) { continue; }
             if (environment.getProperty(flag, Boolean.class, Boolean.FALSE)) {
                 throw new IllegalStateException("unapproved capability enabled: " + flag
                         + "; this capability is not approved for a product deployment");

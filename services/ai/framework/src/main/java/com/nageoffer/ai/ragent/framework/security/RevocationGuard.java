@@ -34,10 +34,61 @@ package com.nageoffer.ai.ragent.framework.security;
  */
 public interface RevocationGuard {
 
+    /** 登记先于 I/O；调用方必须在输出停止或事务结束之后关闭。 */
+    default Operation enter(com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal principal,
+                            String action, String resourceRef) {
+        String operationId = java.util.UUID.randomUUID().toString();
+        String hash;
+        try {
+            hash = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(resourceRef.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+        PermitGrant grant = acquire(new PermitRequest(principal.tenantId(), principal.membershipId(), action,
+                principal.policyVersion(), principal.aclVersion(), hash, operationId, resourceRef));
+        return new Operation(this, grant.permitId(), operationId);
+    }
+
+    final class Operation implements AutoCloseable {
+        private final RevocationGuard guard;
+        private final String permitId;
+        private final String operationId;
+        private boolean closed;
+
+        public Operation(RevocationGuard guard, String permitId, String operationId) {
+            this.guard = guard;
+            this.permitId = permitId;
+            this.operationId = operationId;
+        }
+
+        public String permitId() { return permitId; }
+
+        @Override
+        public synchronized void close() {
+            if (closed) { return; }
+            if (org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()) {
+                org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                        new org.springframework.transaction.support.TransactionSynchronization() {
+                            @Override public void afterCompletion(int status) {
+                                guard.release(permitId, operationId);
+                            }
+                        });
+            } else {
+                guard.release(permitId, operationId);
+            }
+            closed = true;
+        }
+    }
+
     /** 高风险段进入事实。不存 bearer。 */
     record PermitRequest(String tenantId, String memberId, String action,
                          int policyVersion, int aclVersion,
-                         String resourceRefsHash, String operationId) {
+                         String resourceRefsHash, String operationId, String resourceRef) {
+        public PermitRequest(String tenantId, String memberId, String action, int policyVersion, int aclVersion,
+                             String resourceRefsHash, String operationId) {
+            this(tenantId, memberId, action, policyVersion, aclVersion, resourceRefsHash, operationId, resourceRefsHash);
+        }
     }
 
     /** 登记结果：permitId 与登记时刻的 aclVersion（释放在 AI 提交之后）。 */

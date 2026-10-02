@@ -55,9 +55,17 @@ public class PlatformAuthorizationClient implements AuthorizationChecker {
     private final ObjectMapper objectMapper;
     private final ObjectMapper responseMapper;
     private final P04SecurityProperties properties;
+    private final boolean strictContext;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public PlatformAuthorizationClient(HttpClient httpClient, ObjectMapper objectMapper,
                                        P04SecurityProperties properties) {
+        this(httpClient, objectMapper, properties, false);
+    }
+
+    public PlatformAuthorizationClient(HttpClient httpClient, ObjectMapper objectMapper,
+                                       P04SecurityProperties properties, boolean strictContext) {
+        this.strictContext = strictContext;
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
         this.responseMapper = objectMapper.copy()
@@ -128,6 +136,11 @@ public class PlatformAuthorizationClient implements AuthorizationChecker {
         if (status == ApiEnvelope.SUCCESS_CODE && data.path("allowed").isBoolean()
                 && data.path("allowed").booleanValue() && data.path("policyVersion").isIntegralNumber()
                 && data.path("policyVersion").canConvertToInt() && !data.has("errorCode")) {
+            if (strictContext && (data.get("policyVersion").intValue() != principal.policyVersion()
+                    || !action.equals(data.path("action").textValue())
+                    || !resourceRef.equals(data.path("resourceRef").textValue()))) {
+                throw new P04AiException(P04AiErrorCode.AUTHORIZATION_UNAVAILABLE);
+            }
             return new AuthorizeResult(true, data.get("policyVersion").intValue());
         }
 

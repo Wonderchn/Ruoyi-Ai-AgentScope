@@ -71,6 +71,35 @@ public class ProductionAuthorizationController {
 
     /** AI → platform 服务凭证；缺省（空白）时端点不可用。 */
     private final String serviceCredential;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ObjectProvider<org.ruoyi.aiintegration.identity.ProductionAuthorizationProvider> permitProvider;
+
+    @PostMapping("/authorization/permits/acquire")
+    public ResponseEntity<?> acquire(@RequestHeader(value = InternalAuthorizationController.SERVICE_CREDENTIAL_HEADER,
+            required = false) String credential,
+            @RequestBody org.ruoyi.aiintegration.identity.ProductionAuthorizationProvider.PermitRequest request) {
+        try {
+            requireServiceCredential(credential);
+            var provider = permitProvider.getIfAvailable();
+            if (provider == null) { throw new P04Exception(P04ErrorCode.AUTHORIZATION_UNAVAILABLE); }
+            return ResponseEntity.ok(ApiResponse.ok(provider.acquire(request)));
+        } catch (P04Exception e) { return fail(e.errorCode()); }
+        catch (RuntimeException e) { return fail(P04ErrorCode.AUTHORIZATION_UNAVAILABLE); }
+    }
+
+    @PostMapping("/authorization/permits/release")
+    public ResponseEntity<?> release(@RequestHeader(value = InternalAuthorizationController.SERVICE_CREDENTIAL_HEADER,
+            required = false) String credential,
+            @RequestBody org.ruoyi.aiintegration.identity.ProductionAuthorizationProvider.PermitRelease request) {
+        try {
+            requireServiceCredential(credential);
+            var provider = permitProvider.getIfAvailable();
+            if (provider == null) { throw new P04Exception(P04ErrorCode.AUTHORIZATION_UNAVAILABLE); }
+            provider.release(request);
+            return ResponseEntity.noContent().build();
+        } catch (P04Exception e) { return fail(e.errorCode()); }
+        catch (RuntimeException e) { return fail(P04ErrorCode.AUTHORIZATION_UNAVAILABLE); }
+    }
 
     public ProductionAuthorizationController(ObjectProvider<PlatformIdentitySource> identitySource,
                                              @Value("${ai.integration.authorization.service-credential:}")

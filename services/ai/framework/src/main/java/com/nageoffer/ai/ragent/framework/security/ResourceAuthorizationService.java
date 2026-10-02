@@ -138,6 +138,9 @@ public interface ResourceAuthorizationService {
          * @throws com.nageoffer.ai.ragent.framework.exception.ServiceException 平台不可用或响应不可信
          */
         MatchResult match(ExecutionPrincipal principal, Collection<String> subjectRefs, int policyVersion);
+        default MatchResult match(ExecutionPrincipal principal, Collection<String> subjectRefs, int policyVersion, String action) {
+            return match(principal, subjectRefs, policyVersion);
+        }
     }
 
     /**

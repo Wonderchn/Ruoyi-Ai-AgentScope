@@ -91,7 +91,7 @@ public class AiGatewayController {
     private static final Set<String> HOP_BY_HOP_HEADERS = Set.of(
             "authorization", "host", "content-length", "connection", "keep-alive",
             "proxy-authenticate", "proxy-authorization", "te", "trailer",
-            "transfer-encoding", "upgrade", "cookie");
+            "transfer-encoding", "upgrade", "cookie", "expect");
 
     /** 白名单路由：method + 路径形状 → canonical 动作。运行期固定，不可扩展。 */
     private record Route(String method, String pattern, String action) {
@@ -183,7 +183,7 @@ public class AiGatewayController {
         // 5. 签发委托（只带本路由所需 scope）并转发
         ProductionSigningKeySource.Issued issued = signingKeys.issue(
                 member.tenantId(), member.userId(), member.membershipId(),
-                List.of(requiredPermission), identity.policyVersion(), null);
+                List.of(route.action()), identity.policyVersion(), null);
 
         return forward(request, method, subPath, issued.token(), body);
     }
@@ -211,8 +211,12 @@ public class AiGatewayController {
         }
 
         Map<String, String> headers = sanitizedHeaders(request);
+        if (properties.getServiceCredential() == null || properties.getServiceCredential().isBlank()) {
+            throw new P04Exception(P04ErrorCode.AUTHORIZATION_UNAVAILABLE);
+        }
         // 委托凭证是唯一身份载体；浏览器凭证已在黑名单中剥除
         headers.put("Authorization", "Bearer " + delegationToken);
+        headers.put("X-P04-Service-Credential", properties.getServiceCredential());
         headers.put(RequestId.HEADER, RequestId.currentOrEmpty());
 
         AiGatewayClient.ForwardResponse response = client.forward(
@@ -241,6 +245,9 @@ public class AiGatewayController {
         headerNames.asIterator().forEachRemaining(names::add);
         for (String name : names) {
             String lower = name.toLowerCase(Locale.ROOT);
+            if (lower.equals("x-p04-service-credential") || lower.equals("x-service-credential")) {
+                continue;
+            }
             if (INTERNAL_IDENTITY_HEADERS.contains(lower) || HOP_BY_HOP_HEADERS.contains(lower)) {
                 continue;
             }

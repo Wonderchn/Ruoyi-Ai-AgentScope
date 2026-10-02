@@ -110,6 +110,7 @@ class P1GatewayIdentityTest {
     @BeforeEach
     void setUp() {
         properties = new AiIntegrationProperties();
+        properties.setServiceCredential("synthetic-service-credential");
         properties.setEnabled(true);
         properties.setAiBaseUrl(BASE_URL);
         properties.setForwardTimeoutMillis(2000);
@@ -257,7 +258,7 @@ class P1GatewayIdentityTest {
         assertEquals("T1", claims.get("tid", String.class));
         assertEquals("platform:T1:42", claims.get("mid", String.class));
         assertEquals(3, claims.get("pv", Integer.class));
-        assertEquals(List.of("ai:kb:write"), claims.get("scope", List.class),
+        assertEquals(List.of("kb.write"), claims.get("scope", List.class),
                 "委托只携带本路由所需 scope");
         assertNotNull(claims.getId(), "jti 必须全新");
     }

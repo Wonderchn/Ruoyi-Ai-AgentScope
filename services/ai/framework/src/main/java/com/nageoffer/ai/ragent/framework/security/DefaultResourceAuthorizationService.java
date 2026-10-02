@@ -227,6 +227,7 @@ public class DefaultResourceAuthorizationService implements ResourceAuthorizatio
             }
             for (ResourceFact chainItem : inheritanceChain(withParents, fact)) {
                 subjectRefs.addAll(collectSubjectRefs(List.of(chainItem)));
+                if (!ownerSubjectRef(chainItem).isEmpty()) { subjectRefs.add(ownerSubjectRef(chainItem)); }
             }
             // owner 也必须过 platform：把 owner 自己的 member subject 一起提交，
             // 否则"平台已停用该成员/撤销其功能权限"的 owner 会因为没有 ACL 规则
@@ -236,7 +237,7 @@ public class DefaultResourceAuthorizationService implements ResourceAuthorizatio
                 subjectRefs.add(ownerRef);
             }
         }
-        Set<String> matched = matchSubjects(principal, subjectRefs, refs, result);
+        Set<String> matched = matchSubjects(principal, subjectRefs, refs, result, action);
         if (matched == null) {
             // 平台不可用或版本作废：全部 UNKNOWN/STALE，不放行
             return result;
@@ -297,7 +298,7 @@ public class DefaultResourceAuthorizationService implements ResourceAuthorizatio
      * @return 命中集合；平台不可用/响应不可信时返回 {@code null}，并把涉及的 ref 标成 UNKNOWN 或 STALE
      */
     private Set<String> matchSubjects(ExecutionPrincipal principal, Set<String> subjectRefs,
-                                      Set<String> refs, Map<String, Verdict> result) {
+                                      Set<String> refs, Map<String, Verdict> result, String action) {
         if (subjectRefs.isEmpty()) {
             // 没有任何候选（例如资源无 owner 也无 ACL）：不需要问 platform，直接判 DENY
             return Set.of();
@@ -316,7 +317,10 @@ public class DefaultResourceAuthorizationService implements ResourceAuthorizatio
         }
         MatchResult match;
         try {
-            match = subjectMatchPort.match(principal, subjectRefs, principal.policyVersion());
+            match = subjectMatchPort.match(principal, subjectRefs, principal.policyVersion(), action);
+        } catch (StaleVersionException e) {
+            refs.forEach(ref -> result.put(ref, Verdict.STALE));
+            return null;
         } catch (RuntimeException e) {
             log.warn("subject match failed tenant={} reason={}",
                     principal.tenantId(), e.getClass().getSimpleName());
@@ -334,7 +338,12 @@ public class DefaultResourceAuthorizationService implements ResourceAuthorizatio
     /** 单资源最终判定：tombstone → owner/显式 grant → platform 匹配。 */
     private Verdict decide(ExecutionPrincipal principal, String action,
                            Map<String, ResourceFact> facts, ResourceFact fact, Set<String> matchedSubjects) {
-        for (ResourceFact item : inheritanceChain(facts, fact)) {
+        List<ResourceFact> chain = inheritanceChain(facts, fact);
+        if (chain.get(chain.size() - 1).parentRef() != null
+                || chain.stream().map(ResourceFact::resourceRef).distinct().count() != chain.size()) {
+            return Verdict.UNKNOWN;
+        }
+        for (ResourceFact item : chain) {
             if (item.isTombstoned()) {
                 // 本层或任一层父被删除即不可见：父授权不能让删除的子资源复活
                 return Verdict.DENY;
@@ -342,12 +351,13 @@ public class DefaultResourceAuthorizationService implements ResourceAuthorizatio
         }
 
         // owner 允许的前提是 platform 也认可这个 member（owner subject 已在候选里提交过）
-        boolean ownerAllowed = fact.isOwnedBy(principal.membershipId())
-                && matchedSubjects.contains(ownerSubjectRef(fact));
-
-        boolean granted = false;
         long now = clock.instant().getEpochSecond();
-        for (ResourceFact item : inheritanceChain(facts, fact)) {
+        // 从根向子求交：子资源允许规则只能收窄父范围，不能恢复无权的父资源。
+        java.util.Collections.reverse(chain);
+        for (int index = 0; index < chain.size(); index++) {
+            ResourceFact item = chain.get(index);
+            boolean granted = item.isOwnedBy(principal.membershipId())
+                    && matchedSubjects.contains(ownerSubjectRef(item));
             for (AclRule rule : item.acl()) {
                 if (!rule.appliesTo(action)) {
                     continue;
@@ -360,11 +370,8 @@ public class DefaultResourceAuthorizationService implements ResourceAuthorizatio
                     granted = true;
                 }
             }
-        }
-
-        if (!ownerAllowed && !granted) {
-            // 空 ACL 不是公开；管理员也没有豁免
-            return Verdict.DENY;
+            // 根必须明确允许；无子 ACL 时继承父允许，有子 ACL 则再次求交。
+            if (!granted && (index == 0 || !item.acl().isEmpty())) { return Verdict.DENY; }
         }
         // 两侧求交已完成：owner 或显式 grant 命中，且各自都过了 platform 匹配
         return Verdict.GRANT;

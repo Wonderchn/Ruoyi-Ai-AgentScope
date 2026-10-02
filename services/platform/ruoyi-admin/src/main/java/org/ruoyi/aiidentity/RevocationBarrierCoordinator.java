@@ -67,7 +67,9 @@ public class RevocationBarrierCoordinator {
         this.jdbc = jdbc;
         this.policyRevisionService = policyRevisionService;
         this.aiBarrierPort = aiBarrierPort;
-        this.transactionTemplate = transactionTemplate;
+        this.transactionTemplate = transactionTemplate.getTransactionManager() == null ? transactionTemplate
+                : new org.springframework.transaction.support.TransactionTemplate(transactionTemplate.getTransactionManager());
+        this.transactionTemplate.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     /**
@@ -88,25 +90,41 @@ public class RevocationBarrierCoordinator {
      * @param reason   原因（脱敏）
      */
     public DrainResult drainAndBump(String tenantId, String barrierId, String reason) {
-        if (tenantId == null || tenantId.isBlank()) {
-            throw new IllegalArgumentException("tenantId is required");
+        if (tenantId == null || tenantId.isBlank() || barrierId == null || barrierId.isBlank()) {
+            throw new IllegalArgumentException("tenantId/barrierId is required");
+        }
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("drain must run before the business transaction");
         }
         // 1) prepare：本地屏障 PENDING（独立短事务提交，先于等待）
-        jdbc.update("INSERT INTO sys_ai_tenant_barrier (tenant_id, status, barrier_id, reason, updated_at)"
+        transactionTemplate.execute(status -> {
+            lockRevision(tenantId);
+            int prepared = jdbc.update("INSERT INTO sys_ai_tenant_barrier (tenant_id, status, barrier_id, reason, updated_at)"
                 + " VALUES (?, 'PENDING', ?, ?, now())"
                 + " ON CONFLICT (tenant_id) DO UPDATE SET status = 'PENDING',"
-                + " barrier_id = EXCLUDED.barrier_id, reason = EXCLUDED.reason, updated_at = now()",
+                + " barrier_id = EXCLUDED.barrier_id, reason = EXCLUDED.reason, updated_at = now()"
+                + " WHERE sys_ai_tenant_barrier.status = 'OPEN' OR sys_ai_tenant_barrier.barrier_id = EXCLUDED.barrier_id",
                 tenantId, barrierId, reason);
+            if (prepared != 1) { throw new IllegalStateException("another barrier is pending"); }
+            return null;
+        });
 
         // 2) 通知 AI 节点进入 PENDING（拒绝新 permit）；节点回报当前活跃数
         Optional<Long> nodeActive = aiBarrierPort.close(tenantId, barrierId, reason);
+        if (nodeActive.isEmpty() || nodeActive.get() < 0) {
+            return new DrainResult(false, 0, -1, "node unreachable; barrier stays PENDING");
+        }
 
         // 3) drain：以共享库事实等待归零；节点回报值作为下界（取最大值更保守）
         long deadline = System.currentTimeMillis() + DRAIN_TIMEOUT_MILLIS;
         long remaining;
         while (true) {
             long localActive = countActivePermits(tenantId);
-            long reported = aiBarrierPort.activePermitCount(tenantId).orElse(nodeActive.orElse(0L));
+            Optional<Long> observed = aiBarrierPort.activePermitCount(tenantId);
+            if (observed.isEmpty() || observed.get() < 0) {
+                return new DrainResult(false, 0, -1, "node status unknown; barrier stays PENDING");
+            }
+            long reported = observed.get();
             remaining = Math.max(localActive, reported);
             if (remaining == 0) {
                 break;
@@ -128,22 +146,40 @@ public class RevocationBarrierCoordinator {
         // 4) commit：bump pv 与置 CLOSED 必须在**同一事务**（事实与版本同时提交）；
         //    等待已经在事务之外完成，这里只做短提交。
         Integer committedVersion = transactionTemplate.execute(status -> {
+            lockRevision(tenantId);
+            if (countActivePermits(tenantId) != 0) { throw new IllegalStateException("permits remain active"); }
             policyRevisionService.bumpAll(java.util.List.of(tenantId));
             int version = policyRevisionService.currentVersion(tenantId)
                     .orElseThrow(() -> new IllegalStateException("bump 后 pv 行必须存在"));
             jdbc.update("UPDATE sys_ai_tenant_barrier SET status = 'CLOSED', target_policy_version = ?,"
-                    + " updated_at = now() WHERE tenant_id = ?", version, tenantId);
+                    + " updated_at = now() WHERE tenant_id = ? AND barrier_id = ?", version, tenantId, barrierId);
             return version;
         });
-        aiBarrierPort.open(tenantId, barrierId);
+        try { aiBarrierPort.open(tenantId, barrierId); }
+        catch (RuntimeException e) {
+            return new DrainResult(false, committedVersion, -1, "open not acknowledged; platform stays CLOSED");
+        }
+        transactionTemplate.execute(status -> {
+            lockRevision(tenantId);
+            jdbc.update("UPDATE sys_ai_tenant_barrier SET status = 'OPEN', updated_at = now()"
+                    + " WHERE tenant_id = ? AND barrier_id = ? AND status = 'CLOSED'", tenantId, barrierId);
+            return null;
+        });
         log.info("撤权 drain 完成, tenantId={}, newPv={}", tenantId, committedVersion);
         return new DrainResult(true, committedVersion, 0, "drained and bumped");
     }
 
     private long countActivePermits(String tenantId) {
         Long count = jdbc.queryForObject("SELECT count(*) FROM sys_ai_execution_permit"
-                + " WHERE tenant_id = ? AND status = 'ACTIVE' AND expires_at > now()", Long.class, tenantId);
-        return count == null ? 0L : count;
+                + " WHERE tenant_id = ? AND status = 'ACTIVE'", Long.class, tenantId);
+        if (count == null || count < 0) { throw new IllegalStateException("permit count unknown"); }
+        return count;
+    }
+
+    private void lockRevision(String tenantId) {
+        Integer version = jdbc.queryForObject("SELECT version FROM sys_ai_policy_revision WHERE tenant_id=? FOR UPDATE",
+                Integer.class, tenantId);
+        if (version == null || version < 1) { throw new IllegalStateException("policy revision missing"); }
     }
 
     /**

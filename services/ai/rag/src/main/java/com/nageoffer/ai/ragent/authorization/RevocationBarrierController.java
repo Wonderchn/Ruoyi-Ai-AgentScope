@@ -26,6 +26,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -60,10 +61,10 @@ public class RevocationBarrierController {
     }
 
     @PostMapping("/authorization/barriers")
-    public ResponseEntity<Map<String, Object>> barriers(@RequestBody BarrierRequest request) {
+    public ResponseEntity<Map<String, Object>> barriers(@RequestBody BarrierRequest request,
+            @RequestHeader(value = ServiceIdentityVerifier.SERVICE_CREDENTIAL_HEADER, required = false) String credential) {
         // 服务身份先行：没有 verifier（生产装配缺失）即拒绝，不接受"免检"调用
         ServiceIdentityVerifier verifier = serviceIdentity.getIfAvailable();
-        String credential = request == null ? null : request.serviceCredential();
         if (verifier == null) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Map.of("code", 401, "msg", "服务身份校验失败"));

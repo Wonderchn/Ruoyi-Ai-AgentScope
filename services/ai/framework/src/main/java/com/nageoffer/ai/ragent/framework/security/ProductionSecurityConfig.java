@@ -54,6 +54,38 @@ import java.util.EnumSet;
 public class ProductionSecurityConfig {
 
     @Bean
+    public FilterRegistrationBean<AiRequestIdFilter> productionAiRequestIdFilter() {
+        var registration = new FilterRegistrationBean<>(new AiRequestIdFilter());
+        registration.addUrlPatterns("/*");
+        registration.setOrder(Integer.MIN_VALUE + 50);
+        registration.setName("productionAiRequestIdFilter");
+        return registration;
+    }
+
+    @Bean
+    public AuthorizationChecker productionAuthorizationChecker(
+            @org.springframework.beans.factory.annotation.Value("${ai.integration.platform-base-url:}") String url,
+            @org.springframework.beans.factory.annotation.Value("${ai.integration.platform-service-credential:}") String credential) {
+        if (url.isBlank() || credential.isBlank()) { throw new IllegalStateException("platform authorization configuration required"); }
+        P04SecurityProperties configuration = new P04SecurityProperties();
+        configuration.getPlatform().setAuthorizationUrl(url + "/internal/platform/v1/authorization/check");
+        configuration.getPlatform().setServiceCredential(credential);
+        return new PlatformAuthorizationClient(java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(2)).followRedirects(java.net.http.HttpClient.Redirect.NEVER).build(),
+                new com.fasterxml.jackson.databind.ObjectMapper(), configuration, true);
+    }
+
+    @Bean
+    public DelegatedPrincipalFilter.AclVersionSource productionAclVersionSource(
+            ObjectProvider<ResourceAuthorizationService> resources) {
+        return tenantId -> {
+            ResourceAuthorizationService service = resources.getIfAvailable();
+            if (service == null) { throw new com.nageoffer.ai.ragent.framework.exception.ServiceException("ACL source missing"); }
+            return service.currentAclVersion(tenantId);
+        };
+    }
+
+    @Bean
     @ConditionalOnMissingBean(Clock.class)
     public Clock productionSecurityClock() {
         return Clock.systemUTC();

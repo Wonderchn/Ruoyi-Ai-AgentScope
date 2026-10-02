@@ -67,7 +67,96 @@ import java.util.Set;
 @RequiredArgsConstructor
 @Component
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
-public class RuoYiPlatformIdentitySource implements PlatformIdentitySource, OrganizationMatchController.SubjectMatchSource {
+public class RuoYiPlatformIdentitySource implements PlatformIdentitySource, OrganizationMatchController.SubjectMatchSource,
+        org.ruoyi.aiintegration.identity.ProductionAuthorizationProvider {
+
+    private org.springframework.jdbc.core.JdbcTemplate permitJdbc;
+    private org.springframework.transaction.support.TransactionTemplate permitTransactions;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configurePermits(org.springframework.jdbc.core.JdbcTemplate jdbc,
+            org.springframework.transaction.support.TransactionTemplate transactions) {
+        this.permitJdbc = jdbc;
+        this.permitTransactions = transactions;
+    }
+
+    @Override
+    public PermitGrant acquire(PermitRequest request) {
+        if (request == null || request.tenantId() == null || request.subject() == null
+                || request.membershipId() == null || request.operationId() == null
+                || request.operationId().isBlank() || request.operationId().length() > 64
+                || request.resourceRefsHash() == null || !request.resourceRefsHash().matches("[0-9a-f]{64}")
+                || request.resourceRef() == null || request.resourceRef().isBlank() || request.resourceRef().length() > 512
+                || request.aclVersion() < 1 || request.policyVersion() < 1
+                || request.tenantId().isBlank() || request.tenantId().length() > 64 || request.tenantId().contains(":")
+                || !request.subject().matches("[0-9]{1,20}")
+                || !request.membershipId().equals("platform:" + request.tenantId() + ":" + request.subject())
+                || !request.resourceRefsHash().equals(hashRef(request.resourceRef()))) {
+            throw new org.ruoyi.aiintegration.web.P04Exception(org.ruoyi.aiintegration.web.P04ErrorCode.BAD_REQUEST);
+        }
+        return permitTransactions.execute(status -> {
+            Integer version = permitJdbc.query("SELECT version FROM sys_ai_policy_revision WHERE tenant_id = ? FOR UPDATE",
+                    (rs, n) -> rs.getInt(1), request.tenantId()).stream().findFirst().orElse(null);
+            if (version == null) { throw permitUnavailable(); }
+            if (version != request.policyVersion()) {
+                throw new org.ruoyi.aiintegration.web.P04Exception(org.ruoyi.aiintegration.web.P04ErrorCode.POLICY_VERSION_STALE);
+            }
+            var barriers = permitJdbc.query("SELECT status FROM sys_ai_tenant_barrier WHERE tenant_id = ?",
+                    (rs, n) -> rs.getString(1), request.tenantId());
+            if (barriers.stream().anyMatch(s -> !"OPEN".equals(s))) { throw permitUnavailable(); }
+            PlatformIdentity identity = membership(request.tenantId(), request.subject(), request.membershipId());
+            if (tenantState(request.tenantId()) != TenantState.ENABLED || identity == null || !identity.enabled()) {
+                throw new org.ruoyi.aiintegration.web.P04Exception(org.ruoyi.aiintegration.web.P04ErrorCode.MEMBERSHIP_INVALID);
+            }
+            String permission = org.ruoyi.aiintegration.authorization.AiActionRegistry.requirePermission(request.action());
+            if (!identity.scopes().contains(permission)) {
+                throw new org.ruoyi.aiintegration.web.P04Exception(org.ruoyi.aiintegration.web.P04ErrorCode.FORBIDDEN);
+            }
+            String permitId = java.util.UUID.randomUUID().toString();
+            int inserted = permitJdbc.update("INSERT INTO sys_ai_execution_permit (permit_id,tenant_id,member_id,action,policy_version,"
+                    + "resource_refs_hash,operation_id,status,expires_at) VALUES (?,?,?,?,?,?,?,'ACTIVE',now()+interval '5 minutes')",
+                    permitId, request.tenantId(), request.membershipId(), request.action(), version,
+                    request.resourceRefsHash(), request.operationId());
+            if (inserted != 1) { throw permitUnavailable(); }
+            return new PermitGrant(permitId, version, request.operationId());
+        });
+    }
+
+    @Override
+    public void release(PermitRelease request) {
+        if (request == null || request.permitId() == null || request.operationId() == null
+                || request.tenantId() == null || request.membershipId() == null) {
+            throw new org.ruoyi.aiintegration.web.P04Exception(org.ruoyi.aiintegration.web.P04ErrorCode.BAD_REQUEST);
+        }
+        permitTransactions.executeWithoutResult(status -> {
+            var rows = permitJdbc.query("SELECT status FROM sys_ai_execution_permit WHERE permit_id = ?"
+                    + " AND tenant_id = ? AND member_id = ? AND operation_id = ? FOR UPDATE",
+                    (rs, n) -> rs.getString(1), request.permitId(), request.tenantId(), request.membershipId(), request.operationId());
+            if (rows.isEmpty()) {
+                Integer owned = permitJdbc.queryForObject("SELECT count(*) FROM sys_ai_execution_permit"
+                        + " WHERE permit_id=? AND tenant_id=? AND member_id=?", Integer.class,
+                        request.permitId(), request.tenantId(), request.membershipId());
+                if (owned != null && owned > 0) {
+                    throw new org.ruoyi.aiintegration.web.P04Exception(org.ruoyi.aiintegration.web.P04ErrorCode.IDEMPOTENCY_KEY_REUSED);
+                }
+                throw new org.ruoyi.aiintegration.web.P04Exception(org.ruoyi.aiintegration.web.P04ErrorCode.FORBIDDEN);
+            }
+            if ("ACTIVE".equals(rows.get(0))) {
+                permitJdbc.update("UPDATE sys_ai_execution_permit SET status='RELEASED',released_at=now() WHERE permit_id=?",
+                        request.permitId());
+            }
+        });
+    }
+
+    private static org.ruoyi.aiintegration.web.P04Exception permitUnavailable() {
+        return new org.ruoyi.aiintegration.web.P04Exception(org.ruoyi.aiintegration.web.P04ErrorCode.AUTHORIZATION_UNAVAILABLE);
+    }
+
+    private static String hashRef(String ref) {
+        try { return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(ref.getBytes(java.nio.charset.StandardCharsets.UTF_8))); }
+        catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+    }
 
     /** AI 功能权限前缀：只有该前缀的菜单 perms 才进入身份 scopes。 */
     private static final String AI_PERMS_PREFIX = "ai:";
@@ -128,6 +217,23 @@ public class RuoYiPlatformIdentitySource implements PlatformIdentitySource, Orga
         }
         return membershipService.describeOrgFacts(tenantId, userId)
             .map(facts -> new SubjectOrgFacts(facts.deptId(), List.copyOf(facts.ancestorDeptIds())));
+    }
+
+    @Override
+    public Set<String> currentSubjects(String tenantId, String subject) {
+        Long userId = parseUserId(subject);
+        if (userId == null) { return Set.of(); }
+        var facts = membershipService.describe(tenantId, userId);
+        if (facts == null || !facts.userEnabled() || !facts.tenantEnabled()) { return Set.of(); }
+        Set<String> refs = new HashSet<>();
+        refs.add("member:" + canonicalMembershipId(tenantId, userId));
+        refs.add("tenant_all:" + tenantId);
+        facts.enabledRoleIds().forEach(id -> refs.add("role:" + id));
+        membershipService.describeOrgFacts(tenantId, userId).ifPresent(org -> {
+            refs.add("department:" + org.deptId());
+            org.ancestorDeptIds().forEach(id -> refs.add("department:" + id));
+        });
+        return Set.copyOf(refs);
     }
 
     /**

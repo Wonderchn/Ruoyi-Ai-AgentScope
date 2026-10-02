@@ -63,6 +63,18 @@ public class AuthorizedExportService {
 
     private final ObjectProvider<ResourceAuthorizationService> authorizationService;
     private final JdbcTemplate jdbc;
+    private com.nageoffer.ai.ragent.framework.security.RevocationGuard revocations;
+    private boolean highRiskEnabled;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setHighRiskEnabled(@org.springframework.beans.factory.annotation.Value("${ai.integration.high-risk.enabled:false}") boolean enabled) {
+        highRiskEnabled = enabled;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setRevocations(com.nageoffer.ai.ragent.framework.security.RevocationGuard revocations) {
+        this.revocations = revocations;
+    }
 
     public AuthorizedExportService(ObjectProvider<ResourceAuthorizationService> authorizationService,
                                    JdbcTemplate jdbc) {
@@ -91,6 +103,10 @@ public class AuthorizedExportService {
         requireGranted(authorization.check(principal, ACTION_CONVERSATION_EXPORT, ref));
 
         // 分批读取 + 每批复核：撤权后的批次立即失败，不静默返回"剩余为空"
+        if (!highRiskEnabled || revocations == null) {
+            throw new ServiceException("导出 permit 服务不可用");
+        }
+        try (var operation = revocations.enter(principal, ACTION_CONVERSATION_EXPORT, ref)) {
         long offset = 0;
         while (true) {
             List<MessageRow> batch = fetchBatch(principal, conversationId, offset);
@@ -103,6 +119,7 @@ public class AuthorizedExportService {
             if (batch.size() < BATCH_SIZE) {
                 return;
             }
+        }
         }
     }
 

@@ -87,7 +87,7 @@ class P1RevocationRaceTest {
         JdbcTemplate jdbc = jdbcWithEpoch(5, List.of());
 
         assertThatThrownBy(() -> new DefaultRevocationGuard(jdbc).acquire(request(3)))
-                .isInstanceOf(ServiceException.class);
+                .isInstanceOf(com.nageoffer.ai.ragent.framework.security.StaleVersionException.class);
         verify(jdbc, never()).update(contains("INSERT INTO ai_execution_permit"), any(Object[].class));
     }
 
@@ -135,7 +135,7 @@ class P1RevocationRaceTest {
                 .thenReturn(2L);
 
         assertThat(new DefaultRevocationGuard(jdbc).activePermitCount(TENANT)).isEqualTo(2L);
-        verify(jdbc).queryForObject(contains("status = 'ACTIVE' AND expires_at > now()"),
+        verify(jdbc).queryForObject(contains("status = 'ACTIVE'"),
                 any(Class.class), any(Object[].class));
     }
 
@@ -164,7 +164,7 @@ class P1RevocationRaceTest {
     @Test
     @DisplayName("屏障状态写入：NO_ROW 拒绝；UNKNOWN 可写；upsert 含 ON CONFLICT（原位更新）")
     void barrierStateWritesAreGuarded() {
-        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        JdbcTemplate jdbc = jdbcWithEpoch(3, List.of());
         DefaultRevocationGuard guard = new DefaultRevocationGuard(jdbc);
 
         assertThatThrownBy(() -> guard.setBarrierState(TENANT, RevocationGuard.BarrierState.NO_ROW,

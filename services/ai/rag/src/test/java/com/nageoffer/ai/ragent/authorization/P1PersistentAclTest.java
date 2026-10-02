@@ -109,7 +109,7 @@ class P1PersistentAclTest {
 
     /** 默认主体：T1 成员 2101，av=3，持 kb.acl.manage（ACL 管理动作）。 */
     private ExecutionPrincipal principal() {
-        return principalOf(TENANT_A, "2101", Set.of("kb.acl.manage"));
+        return principalOf(TENANT_A, "2101", Set.of("kb.acl.manage", "kb.write", "kb.delete"));
     }
 
     private static AiResourceRow kbRow(String kbId, String ownerMemberId, String status) {
@@ -484,6 +484,20 @@ class P1PersistentAclTest {
             events.add("epoch-bump");
             return Optional.of(4);
         });
-        return new AiResourceWriteService(jdbc, resourceMapper, aclMapper, epochMapper, txOps);
+        when(jdbc.query(org.mockito.ArgumentMatchers.contains("FOR UPDATE"), anyMap(), any(org.springframework.jdbc.core.RowMapper.class)))
+                .thenReturn(List.of(3));
+        when(jdbc.queryForObject(anyString(), anyMap(), org.mockito.ArgumentMatchers.eq(Long.class))).thenReturn(0L);
+        var guard = mock(com.nageoffer.ai.ragent.framework.security.RevocationGuard.class);
+        when(guard.enter(any(), anyString(), anyString())).thenReturn(
+                new com.nageoffer.ai.ragent.framework.security.RevocationGuard.Operation(guard, "permit", "op"));
+        var resources = mock(com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.class);
+        when(resources.check(any(), anyString(), anyString())).thenReturn(Verdict.GRANT);
+        var platform = mock(com.nageoffer.ai.ragent.framework.security.AuthorizationChecker.class);
+        when(platform.check(any(), anyString(), anyString())).thenReturn(
+                new com.nageoffer.ai.ragent.framework.security.AuthorizationChecker.AuthorizeResult(true, 7));
+        var service = new AiResourceWriteService(jdbc, resourceMapper, aclMapper, epochMapper, txOps);
+        service.configureExecution(guard, resources, platform);
+        service.setHighRiskEnabled(true);
+        return service;
     }
 }

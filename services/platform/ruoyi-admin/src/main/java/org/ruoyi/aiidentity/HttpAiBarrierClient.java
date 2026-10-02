@@ -46,7 +46,9 @@ public class HttpAiBarrierClient implements RevocationBarrierCoordinator.AiBarri
 
     private final String baseUrl;
     private final String serviceCredential;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper = new ObjectMapper()
+            .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY)
+            .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     private final HttpClient httpClient;
 
     public HttpAiBarrierClient(AiIntegrationProperties properties) {
@@ -72,8 +74,9 @@ public class HttpAiBarrierClient implements RevocationBarrierCoordinator.AiBarri
 
     @Override
     public void open(String tenantId, String barrierId) {
-        call("{\"action\":\"OPEN\",\"tenantId\":\"" + escape(tenantId)
+        Optional<Long> active = call("{\"action\":\"OPEN\",\"tenantId\":\"" + escape(tenantId)
                 + "\",\"barrierId\":\"" + escape(barrierId) + "\"}");
+        if (active.isEmpty() || active.get() != 0) { throw new IllegalStateException("barrier open unacknowledged"); }
     }
 
     private Optional<Long> call(String body) {
@@ -82,7 +85,7 @@ public class HttpAiBarrierClient implements RevocationBarrierCoordinator.AiBarri
                     .uri(URI.create(baseUrl + "/internal/ai/v1/authorization/barriers"))
                     .timeout(Duration.ofSeconds(2))
                     .header("Content-Type", "application/json")
-                    .header("X-Service-Credential", serviceCredential == null ? "" : serviceCredential)
+                    .header("X-P04-Service-Credential", serviceCredential == null ? "" : serviceCredential)
                     .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                     .build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -91,11 +94,26 @@ public class HttpAiBarrierClient implements RevocationBarrierCoordinator.AiBarri
                 return Optional.empty();
             }
             JsonNode node = objectMapper.readTree(response.body());
-            if (!node.isObject() || node.path("code").asInt() != 200) {
+            if (node == null || !node.isObject() || !node.path("code").isIntegralNumber() || node.path("code").intValue() != 200) {
                 log.error("屏障调用响应形状非法：拒绝读取活跃数");
                 return Optional.empty();
             }
-            return Optional.of(node.path("activePermits").asLong(-1));
+            JsonNode active = node.path("activePermits");
+            if (!active.isIntegralNumber() || !active.canConvertToLong() || active.longValue() < 0) {
+                return Optional.empty();
+            }
+            JsonNode sent = objectMapper.readTree(body);
+            String action = sent.path("action").textValue();
+            if (!node.path("status").isTextual()
+                    || ("OPEN".equals(action) && !"OPEN".equals(node.path("status").textValue()))
+                    || ("CLOSE".equals(action) && !"PENDING".equals(node.path("status").textValue()))
+                    || (sent.has("barrierId") && !sent.path("barrierId").equals(node.path("barrierId")))) {
+                return Optional.empty();
+            }
+            return Optional.of(active.longValue());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Optional.empty();
         } catch (Exception e) {
             log.error("屏障调用异常：{}（按无法证明处理）", e.getClass().getSimpleName());
             return Optional.empty();

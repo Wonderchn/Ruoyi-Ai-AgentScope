@@ -72,7 +72,7 @@ public class AiResourceController {
     /** 删除动作（tombstone）。 */
     public static final String ACTION_KB_DELETE = "kb.delete";
     /** 文档元数据只读动作。 */
-    public static final String ACTION_DOC_READ = "doc.read";
+    public static final String ACTION_DOC_READ = "document.read";
 
     private final AiResourceAuthorizationService authorization;
     private final AiResourceWriteService writeService;
@@ -100,7 +100,8 @@ public class AiResourceController {
     public ResponseEntity<ApiEnvelope<List<Map<String, Object>>>> listKnowledgeBases() {
         ExecutionPrincipal principal = PrincipalContext.require();
         List<Map<String, Object>> data = new ArrayList<>();
-        for (String ref : authorization.resolveScope(principal, ACTION_KB_READ, List.of()).authorizedRefs()) {
+        for (String ref : authorization.resolveScope(principal, "kb.list", List.of()).authorizedRefs()) {
+            if (!ref.startsWith("kb:")) { continue; }
             String kbId = AiResourceAuthorizationService.parseResourceRef(ref).resourceId();
             writeService.findKnowledgeBase(principal.tenantId(), kbId)
                     .ifPresent(view -> data.add(kbView(view)));

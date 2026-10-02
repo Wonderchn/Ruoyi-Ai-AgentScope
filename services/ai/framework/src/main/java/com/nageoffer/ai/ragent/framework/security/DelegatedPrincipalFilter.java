@@ -137,8 +137,21 @@ public class DelegatedPrincipalFilter implements Filter {
             chain.doFilter(request, response);
             return;
         }
+        // 屏障只验服务身份，由控制器处理；不能要求平台提供浏览器委托。
+        if ((PROTECTED_PREFIX + "/authorization/barriers").equals(servletRequest.getRequestURI().substring(servletRequest.getContextPath().length()))
+                && "POST".equals(servletRequest.getMethod())) {
+            try {
+                new ServiceIdentityVerifier(properties).verify(
+                        servletRequest.getHeader(ServiceIdentityVerifier.SERVICE_CREDENTIAL_HEADER));
+            } catch (P04AiException e) { writeError(servletResponse, e); return; }
+            servletRequest.setAttribute("ai.service.authenticated", Boolean.TRUE);
+            chain.doFilter(request, response);
+            return;
+        }
         ExecutionPrincipal principal;
         try {
+            new ServiceIdentityVerifier(properties).verify(
+                    servletRequest.getHeader(ServiceIdentityVerifier.SERVICE_CREDENTIAL_HEADER));
             principal = authenticate(servletRequest);
         } catch (P04AiException ex) {
             writeError(servletResponse, ex);

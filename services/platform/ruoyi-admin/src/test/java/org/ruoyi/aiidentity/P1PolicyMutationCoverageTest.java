@@ -33,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -67,6 +68,8 @@ class P1PolicyMutationCoverageTest {
     @DisplayName("活跃 permit 未清空：不 bump、屏障保持 PENDING、closed=false")
     void drainTimeoutNeverClaimsSuccess() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForObject(contains("sys_ai_policy_revision"), eq(Integer.class), any(Object[].class))).thenReturn(7);
+        when(jdbc.update(contains("INSERT INTO sys_ai_tenant_barrier"), any(Object[].class))).thenReturn(1);
         when(jdbc.queryForObject(contains("sys_ai_execution_permit"), any(Class.class), any(Object[].class)))
                 .thenReturn(1L);
         AiPolicyRevisionService revisions = mock(AiPolicyRevisionService.class);
@@ -94,6 +97,8 @@ class P1PolicyMutationCoverageTest {
     @DisplayName("drain 闭合：同一事务 bump + 置 CLOSED，随后解除节点屏障")
     void drainedPathBumpsInOneTransaction() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForObject(contains("sys_ai_policy_revision"), eq(Integer.class), any(Object[].class))).thenReturn(7);
+        when(jdbc.update(contains("INSERT INTO sys_ai_tenant_barrier"), any(Object[].class))).thenReturn(1);
         when(jdbc.queryForObject(contains("sys_ai_execution_permit"), any(Class.class), any(Object[].class)))
                 .thenReturn(0L);
         AiPolicyRevisionService revisions = mock(AiPolicyRevisionService.class);
@@ -112,13 +117,15 @@ class P1PolicyMutationCoverageTest {
         verify(jdbc).update(contains("SET status = 'CLOSED'"), any(Object[].class));
         verify(port).open(TENANT, "b-2");
         // bump 与 CLOSED 出自同一个 TransactionTemplate.execute 调用
-        verify(template).execute(ArgumentMatchers.any(TransactionCallback.class));
+        verify(template, org.mockito.Mockito.times(3)).execute(ArgumentMatchers.any(TransactionCallback.class));
     }
 
     @Test
     @DisplayName("节点不可达但仍要 prepare：规则是 CLOSE 先于等待、PENDING 写在前")
     void prepareHappensBeforeWaiting() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForObject(contains("sys_ai_policy_revision"), eq(Integer.class), any(Object[].class))).thenReturn(7);
+        when(jdbc.update(contains("INSERT INTO sys_ai_tenant_barrier"), any(Object[].class))).thenReturn(1);
         when(jdbc.queryForObject(contains("sys_ai_execution_permit"), any(Class.class), any(Object[].class)))
                 .thenReturn(0L);
         AiPolicyRevisionService revisions = mock(AiPolicyRevisionService.class);
@@ -131,15 +138,17 @@ class P1PolicyMutationCoverageTest {
         new RevocationBarrierCoordinator(jdbc, revisions, port, passthroughTemplate())
                 .drainAndBump(TENANT, "b-3", "node down");
 
-        // PENDING 先写（prepare），且本地活跃集为空时允许闭合（共享表事实为准）
+        // 节点完全不可达，即使本地零活跃也不能宣告成功。
         verify(jdbc).update(contains("'PENDING'"), any(Object[].class));
-        verify(revisions).bumpAll(java.util.List.of(TENANT));
+        verify(revisions, never()).bumpAll(any());
     }
 
     @Test
     @DisplayName("空租户拒绝：不产生任何写入")
     void blankTenantRejected() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForObject(contains("sys_ai_policy_revision"), eq(Integer.class), any(Object[].class))).thenReturn(7);
+        when(jdbc.update(contains("INSERT INTO sys_ai_tenant_barrier"), any(Object[].class))).thenReturn(1);
         RevocationBarrierCoordinator coordinator = new RevocationBarrierCoordinator(jdbc,
                 mock(AiPolicyRevisionService.class),
                 mock(RevocationBarrierCoordinator.AiBarrierPort.class), passthroughTemplate());

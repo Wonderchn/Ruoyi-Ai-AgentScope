@@ -62,6 +62,12 @@ class P1IdentityAssemblyTest {
 
     @Configuration
     static class MockFactsConfig {
+        @Bean org.springframework.jdbc.core.JdbcTemplate permitJdbc() {
+            return mock(org.springframework.jdbc.core.JdbcTemplate.class);
+        }
+        @Bean org.springframework.transaction.support.TransactionTemplate permitTransactions() {
+            return mock(org.springframework.transaction.support.TransactionTemplate.class);
+        }
 
         @Bean
         CurrentAiMembershipService currentAiMembershipService() {
