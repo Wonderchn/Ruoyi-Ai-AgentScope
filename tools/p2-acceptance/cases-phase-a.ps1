@@ -120,12 +120,12 @@ $claims = @{ iss = 'platform'; aud = @('ai'); sub = '910000000000000001'; tid = 
 $tok = (Remote ("bash $($script:RemoteRoot)/sign.sh '" + $claims.Replace("'", "'\''") + "'") 'a05-sign').Output
 $tok = (($tok -split "`n") | Where-Object { $_ -match '^eyJ' } | Select-Object -Last 1)
 $h5 = @{ 'X-P04-Service-Credential' = $script:ServiceCredential; 'Authorization' = "Bearer $tok" }
-$first = Http 'GET' "http://127.0.0.1:$AiPort/internal/ai/v1/runs/does-not-exist" $h5 '' 20 'a05-first'
-$second = Http 'GET' "http://127.0.0.1:$AiPort/internal/ai/v1/runs/does-not-exist" $h5 '' 20 'a05-replay'
+$first = Http 'GET' "http://127.0.0.1:$AiPort/api/ragent/internal/ai/v1/runs/does-not-exist" $h5 '' 20 'a05-first'
+$second = Http 'GET' "http://127.0.0.1:$AiPort/api/ragent/internal/ai/v1/runs/does-not-exist" $h5 '' 20 'a05-replay'
 Add-Case 'A05' ($second.Status -eq 401) "same jti replayed -> 401 (first=$($first.Status), replay=$($second.Status))"
 
 # A06 缺身份 / 伪造身份头
-$noauth = Http 'POST' "http://127.0.0.1:$AiPort/internal/ai/v1/runs" @{ 'Content-Type' = 'application/json'; 'Idempotency-Key' = "a06-$($script:Tag)" } '{"schemaVersion":1,"action":"rag.chat","input":{"text":"x"}}' 20 'a06-noauth'
+$noauth = Http 'POST' "http://127.0.0.1:$AiPort/api/ragent/internal/ai/v1/runs" @{ 'Content-Type' = 'application/json'; 'Idempotency-Key' = "a06-$($script:Tag)" } '{"schemaVersion":1,"action":"rag.chat","input":{"text":"x"}}' 20 'a06-noauth'
 $forgedKey = "a06-forged-$($script:Tag)"
 $forged = Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/runs" @{ 'Content-Type' = 'application/json'; 'Idempotency-Key' = $forgedKey; 'Authorization' = "Bearer $t1"; 'X-Tenant-Id' = 'p2t2'; 'X-User-Id' = 'evil' } ('{"schemaVersion":1,"action":"rag.chat","input":{"text":"forged"},"resourceRefs":[{"type":"knowledge_base","id":"' + $kb1 + '"}],"budget":{"maxTokens":1000}}') 20 'a06-forged'
 $forgedTenant = Sql "SELECT tenant_id FROM ai_run WHERE idempotency_key='$forgedKey';" 'a06-tenant'
@@ -179,7 +179,7 @@ Add-Case 'A10/A11' ($taken -and $sv10[0].Trim() -eq '1' -and $sv10[1].Trim() -eq
 $permitRun = RunId (SubmitRun $t1 'rag.chat' ("a14-$($script:Tag)") '{"text":"permit"}' '[]' '{"maxTokens":1000}' 'a14-submit').Body
 [void](Wait-RunStatus $t1 $permitRun 'SUCCEEDED' 40)
 $permitTok = SignDelegation 'p2t1' '910000000000000001' 'run.get' 1
-[void](Http 'GET' "http://127.0.0.1:$AiPort/internal/ai/v1/runs/$permitRun" @{ 'X-P04-Service-Credential' = $script:ServiceCredential; 'Authorization' = "Bearer $permitTok" } '' 20 'a14-permit')
+[void](Http 'GET' "http://127.0.0.1:$AiPort/api/ragent/internal/ai/v1/runs/$permitRun" @{ 'X-P04-Service-Credential' = $script:ServiceCredential; 'Authorization' = "Bearer $permitTok" } '' 20 'a14-permit')
 $activePermits = Sql "SELECT count(*) FROM ai_execution_permit WHERE tenant_id='p2t1' AND status='ACTIVE';" 'a14-active'
 Add-Case 'A14' ([int]$activePermits.Output.Trim() -ge 1) "delivery permit stays ACTIVE without ACK (count=$($activePermits.Output.Trim())); lease expiry does not clear it"
 

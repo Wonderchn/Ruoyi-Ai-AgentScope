@@ -160,7 +160,7 @@ function AiHttp([string]$Method, [string]$Path, [string]$Tenant, [string]$User, 
     foreach ($k in @($Headers.Keys)) { $headers[$k] = $Headers[$k] }
     $headers['Authorization'] = "Bearer $token"
     $port = if ($TargetPort -gt 0) { $TargetPort } else { $AiPort }
-    return Http $Method "http://127.0.0.1:$port$Path" $headers $Body $Timeout $LogName
+    return Http $Method "http://127.0.0.1:$port/api/ragent$Path" $headers $Body $Timeout $LogName
 }
 function DbScalar([string]$Query, [string]$LogName = 'db-scalar') {
     $r = Sql $Query $LogName 'p2app'
