@@ -421,7 +421,7 @@ $aiReal = @(
 $platformArgs = @(
     "--spring.datasource.dynamic.datasource.master.url=jdbc:postgresql://127.0.0.1:$($script:PgHostPort)/$($script:Db)?currentSchema=platform,extensions",
     '--PLATFORM_DB_USERNAME=p2app', '--REDIS_HOST=127.0.0.1', "--REDIS_PORT=$($script:RedisHostPort)",
-    '--ai.integration.enabled=true', "--ai.integration.ai-base-url=http://127.0.0.1:$AiPort",
+    '--ai.integration.enabled=true', "--ai.integration.ai-base-url=http://127.0.0.1:$AiPort/api/ragent",
     "--ai.integration.service-credential=$($script:ServiceCredential)",
     "--ai.integration.authorization.service-credential=$($script:ServiceCredential)",
     "--ai.integration.delegation.private-key-path=$($script:RemoteRoot)/keys/private.pem",
