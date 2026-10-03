@@ -5,8 +5,8 @@ param(
     [string]$RepoRoot = 'D:\AI-project\Ruoyi-Ai-AgentScope',
     [string]$RemoteHost = 'root@192.168.139.103',
     [string]$RunTag = ('p2c' + (Get-Date -Format 'yyyyMMddHHmmss')),
-    [int]$AiPort = 29090, [int]$Ai2Port = 29091, [int]$PlatformPort = 28082,
-    [switch]$SkipBuild, [switch]$SkipSetup, [switch]$KeepEnvironment
+    [int]$AiPort = 0, [int]$Ai2Port = 0, [int]$PlatformPort = 0,
+    [switch]$SkipBuild, [switch]$SkipSetup, [switch]$KeepEnvironment, [switch]$ReclaimStale
 )
 # P2 专属合成环境验收 runner。
 #
@@ -25,6 +25,21 @@ $script:RemoteRoot = "/opt/p2core-acceptance/$($script:Tag)"
 $script:PgName = "p2core-pg-$($script:Tag)"
 $script:RedisName = "p2core-redis-$($script:Tag)"
 $script:Db = 'ragent_p2core'
+# 端口隔离（U09 §5 R1）：由 tag 的稳定散列映射到互不重叠区段。
+# 原先按 tag 长度推导端口，等长 tag（...a / ...b）得到同一端口，且服务端口固定，
+# 上一轮孤儿 jar 会占住 28082/29090，让本轮 jar 启动失败却被"能连通"判成就绪。
+function Get-TagSlot([string]$Value, [int]$Mod) {
+    $sum = 0
+    foreach ($ch in $Value.ToCharArray()) { $sum = ($sum * 31 + [int]$ch) % 1000003 }
+    return $sum % $Mod
+}
+$script:Slot = Get-TagSlot $script:Tag 120
+$script:HalfSlot = [int]($script:Slot / 2)
+$script:PgHostPort = 15400 + $script:Slot
+$script:RedisHostPort = 15700 + $script:Slot
+if ($PlatformPort -le 0) { $PlatformPort = 28082 + $script:HalfSlot }
+if ($AiPort -le 0) { $AiPort = 29090 + $script:HalfSlot }
+if ($Ai2Port -le 0) { $Ai2Port = $AiPort + 100 }
 $script:Results = New-Object System.Collections.ArrayList
 $script:Pids = @()
 $script:AiNodes = @()
@@ -125,8 +140,9 @@ function SignDelegation([string]$Tenant, [string]$User, [string]$Action, [int]$P
 }
 function AiHttp([string]$Method, [string]$Path, [string]$Tenant, [string]$User, [string]$Action, [hashtable]$Headers = @{}, [string]$Body = '', [int]$Pv = 1, [int]$Timeout = 30, [string]$LogName = 'ai-http', [int]$TargetPort = 0) {
     $token = SignDelegation $Tenant $User $Action $Pv
+    # 合并到新表：边枚举 Keys 边写入同一 hashtable 会抛“集合已修改”
     $headers = @{ 'X-P04-Service-Credential' = $script:ServiceCredential }
-    foreach ($k in $Headers.Keys) { $headers[$k] = $Headers[$k] }
+    foreach ($k in @($Headers.Keys)) { $headers[$k] = $Headers[$k] }
     $headers['Authorization'] = "Bearer $token"
     $port = if ($TargetPort -gt 0) { $TargetPort } else { $AiPort }
     return Http $Method "http://127.0.0.1:$port$Path" $headers $Body $Timeout $LogName
@@ -207,9 +223,9 @@ if (-not $SkipSetup) {
     Write-Step 'provision owned PG/Redis containers, schemas, migrations, fixtures'
     Remote "mkdir -p $($script:RemoteRoot)/objects $($script:RemoteRoot)/keys /tmp/p2http-$($script:Tag)" 'remote-mkdir' | Out-Null
     Remote "docker rm -f $($script:PgName) $($script:RedisName) >/dev/null 2>&1; true" 'cleanup-previous' | Out-Null
-    $pg = Remote "docker run -d --name $($script:PgName) --label p2core.owner=$($script:Tag) -e POSTGRES_PASSWORD='$($script:PgPass)' -e POSTGRES_DB=$($script:Db) -p 127.0.0.1:$($script:PgName.Length + 15400):5432 pgvector/pgvector:0.8.6-pg17" 'pg-run'
+    $pg = Remote "docker run -d --name $($script:PgName) --label p2core.owner=$($script:Tag) -e POSTGRES_PASSWORD='$($script:PgPass)' -e POSTGRES_DB=$($script:Db) -p 127.0.0.1:$($script:PgHostPort):5432 pgvector/pgvector:0.8.6-pg17" 'pg-run'
     if ($pg.ExitCode -ne 0) { Add-Case 'ENV-pg' $false 'cannot start owned pg container'; exit 2 }
-    $redis = Remote "docker run -d --name $($script:RedisName) --label p2core.owner=$($script:Tag) -p 127.0.0.1:$($script:PgName.Length + 15500):6379 redis:7.4-alpine redis-server --requirepass '$($script:RedisPass)'" 'redis-run'
+    $redis = Remote "docker run -d --name $($script:RedisName) --label p2core.owner=$($script:Tag) -p 127.0.0.1:$($script:RedisHostPort):6379 redis:7.4-alpine redis-server --requirepass '$($script:RedisPass)'" 'redis-run'
     if ($redis.ExitCode -ne 0) { Add-Case 'ENV-redis' $false 'cannot start owned redis container'; exit 2 }
     $ready = $false
     for ($i = 0; $i -lt 60; $i++) {
@@ -339,8 +355,8 @@ function Wait-Ready([int]$Port, [string]$LogPath, [int]$Seconds = 240) {
 $aiCommon = @(
     '--p2.enabled=true', '--p2.worker.enabled=true', '--p2.outbox.relay-enabled=true',
     "--p2.object-store.type=fs", "--p2.object-store.root=/opt/p2core-acceptance/$($script:Tag)/objects",
-    "--AI_DB_URL=jdbc:postgresql://127.0.0.1:$($script:PgName.Length + 15400)/$($script:Db)?client_encoding=UTF8&currentSchema=ai,extensions",
-    "--spring.data.redis.host=127.0.0.1", "--spring.data.redis.port=$($script:PgName.Length + 15500)",
+    "--AI_DB_URL=jdbc:postgresql://127.0.0.1:$($script:PgHostPort)/$($script:Db)?client_encoding=UTF8&currentSchema=ai,extensions",
+    "--spring.data.redis.host=127.0.0.1", "--spring.data.redis.port=$($script:RedisHostPort)",
     "--spring.data.redis.password=$($script:RedisPass)",
     '--ai.integration.enabled=true', '--ai.integration.security.enabled=true',
     "--ai.integration.security.public-key-path=$($script:RemoteRoot)/keys/public.pem",
@@ -359,8 +375,8 @@ $aiCommon = @(
 $aiReal = @(
     '--p2.enabled=true', '--p2.worker.enabled=true', '--p2.outbox.relay-enabled=true',
     "--p2.object-store.type=fs", "--p2.object-store.root=/opt/p2core-acceptance/$($script:Tag)/objects",
-    "--AI_DB_URL=jdbc:postgresql://127.0.0.1:$($script:PgName.Length + 15400)/$($script:Db)?client_encoding=UTF8&currentSchema=ai,extensions",
-    "--spring.data.redis.host=127.0.0.1", "--spring.data.redis.port=$($script:PgName.Length + 15500)",
+    "--AI_DB_URL=jdbc:postgresql://127.0.0.1:$($script:PgHostPort)/$($script:Db)?client_encoding=UTF8&currentSchema=ai,extensions",
+    "--spring.data.redis.host=127.0.0.1", "--spring.data.redis.port=$($script:RedisHostPort)",
     "--spring.data.redis.password=$($script:RedisPass)",
     '--ai.integration.enabled=true', '--ai.integration.security.enabled=true',
     "--ai.integration.security.public-key-path=$($script:RemoteRoot)/keys/public.pem",
@@ -377,8 +393,8 @@ $aiReal = @(
     '--p2.executor.mode=real'
 )
 $platformArgs = @(
-    "--spring.datasource.dynamic.datasource.master.url=jdbc:postgresql://127.0.0.1:$($script:PgName.Length + 15400)/$($script:Db)?currentSchema=platform,extensions",
-    '--PLATFORM_DB_USERNAME=p2app', '--REDIS_HOST=127.0.0.1', "--REDIS_PORT=$($script:PgName.Length + 15500)",
+    "--spring.datasource.dynamic.datasource.master.url=jdbc:postgresql://127.0.0.1:$($script:PgHostPort)/$($script:Db)?currentSchema=platform,extensions",
+    '--PLATFORM_DB_USERNAME=p2app', '--REDIS_HOST=127.0.0.1', "--REDIS_PORT=$($script:RedisHostPort)",
     '--ai.integration.enabled=true', "--ai.integration.ai-base-url=http://127.0.0.1:$AiPort",
     "--ai.integration.service-credential=$($script:ServiceCredential)",
     "--ai.integration.authorization.service-credential=$($script:ServiceCredential)",
