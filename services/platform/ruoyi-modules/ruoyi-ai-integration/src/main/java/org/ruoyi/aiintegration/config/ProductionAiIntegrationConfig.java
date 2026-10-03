@@ -75,6 +75,7 @@ public class ProductionAiIntegrationConfig {
             var res = (jakarta.servlet.http.HttpServletResponse) response;
             String path = req.getRequestURI().substring(req.getContextPath().length());
             var paths = java.util.Set.of("/internal/platform/v1/authorization/check",
+                    "/internal/platform/v1/authorization/current",
                     "/internal/platform/v1/authorization/subjects/match",
                     "/internal/platform/v1/authorization/permits/acquire",
                     "/internal/platform/v1/authorization/permits/release");

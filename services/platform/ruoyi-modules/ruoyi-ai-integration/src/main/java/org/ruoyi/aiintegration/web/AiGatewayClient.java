@@ -93,7 +93,12 @@ public class AiGatewayClient {
      * @param headers 已净化的转发头（内部身份头/逐跳头已剥除，Authorization 已换成委托凭证）
      * @param body    请求体（GET/DELETE 为 {@code null}）
      */
-    public record ForwardRequest(String method, URI uri, Map<String, String> headers, byte[] body) {
+    public record ForwardRequest(String method, URI uri, Map<String, String> headers, byte[] body,
+                                 java.util.function.Supplier<java.io.InputStream> streamBody) {
+
+        public ForwardRequest(String method, URI uri, Map<String, String> headers, byte[] body) {
+            this(method, uri, headers, body, null);
+        }
     }
 
     /**
@@ -139,6 +144,139 @@ public class AiGatewayClient {
         } catch(InterruptedException e){Thread.currentThread().interrupt();throw new UpstreamUnavailableException("byte transfer interrupted");
         } catch(UpstreamUnavailableException e){throw e;
         } catch(Exception e){throw new UpstreamUnavailableException("byte transfer unavailable");}
+    }
+
+    // ------------------------------------------------------------------ 专用流式传输
+
+    /** SSE 专用流：建连/空闲/总时长受限；不缓冲全量，逐块 flush。 */
+    public void forwardEventStream(ForwardRequest request, jakarta.servlet.http.HttpServletResponse response,
+                                   int connectTimeoutMillis, int idleTimeoutMillis, int maxDurationMillis) {
+        HttpClient streamClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofMillis(connectTimeoutMillis))
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
+        HttpRequest.Builder builder = HttpRequest.newBuilder(request.uri())
+                .timeout(Duration.ofMillis(connectTimeoutMillis)).GET();
+        request.headers().forEach(builder::header);
+        HttpResponse<java.io.InputStream> upstream;
+        try {
+            upstream = streamClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new UpstreamUnavailableException("event stream interrupted");
+        } catch (Exception e) {
+            throw new UpstreamUnavailableException("event stream unavailable");
+        }
+        int status = upstream.statusCode();
+        try (java.io.InputStream body = upstream.body()) {
+            if (status != 200) {
+                byte[] bytes = body.readNBytes(64 * 1024);
+                response.setStatus(status);
+                response.setContentType(upstream.headers().firstValue("Content-Type").orElse("application/json"));
+                response.getOutputStream().write(bytes);
+                response.getOutputStream().flush();
+                return;
+            }
+            response.setStatus(200);
+            response.setContentType(upstream.headers().firstValue("Content-Type").orElse("text/event-stream;charset=UTF-8"));
+            response.setHeader("Cache-Control", "no-cache, no-store");
+            response.setHeader("X-Accel-Buffering", "no");
+            java.util.concurrent.atomic.AtomicLong lastRead = new java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis());
+            java.util.concurrent.atomic.AtomicBoolean aborted = new java.util.concurrent.atomic.AtomicBoolean(false);
+            long startedAt = System.currentTimeMillis();
+            var watchdog = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "ai-gateway-sse-watchdog");
+                thread.setDaemon(true);
+                return thread;
+            });
+            watchdog.scheduleAtFixedRate(() -> {
+                long now = System.currentTimeMillis();
+                if (now - lastRead.get() > idleTimeoutMillis || now - startedAt > maxDurationMillis) {
+                    aborted.set(true);
+                    try {
+                        body.close();
+                    } catch (java.io.IOException ignored) {
+                        // 关闭上游以解除阻塞读
+                    }
+                }
+            }, 1000, 1000, java.util.concurrent.TimeUnit.MILLISECONDS);
+            try {
+                byte[] buffer = new byte[8192];
+                int read;
+                var out = response.getOutputStream();
+                while (!aborted.get() && (read = body.read(buffer)) >= 0) {
+                    lastRead.set(System.currentTimeMillis());
+                    out.write(buffer, 0, read);
+                    out.flush();
+                }
+            } catch (java.io.IOException e) {
+                // 客户端断开或上游结束：只断订阅，不改变运行
+            } finally {
+                watchdog.shutdownNow();
+            }
+        } catch (java.io.IOException e) {
+            throw new UpstreamUnavailableException("event stream body unavailable");
+        }
+    }
+
+    /** 专用上传流：请求体流式转发，超限即拒绝（不缓冲全量）。 */
+    public void forwardUploadStream(ForwardRequest request, jakarta.servlet.http.HttpServletResponse response,
+                                    long maxBytes, int timeoutMillis) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(request.uri()).timeout(Duration.ofMillis(timeoutMillis));
+        request.headers().forEach(builder::header);
+        builder.method(request.method(), HttpRequest.BodyPublishers.ofInputStream(() -> new java.io.InputStream() {
+            private long total = 0;
+
+            private final java.io.InputStream delegate = request.streamBody().get();
+
+            @Override
+            public int read() throws java.io.IOException {
+                int value = delegate.read();
+                if (value >= 0 && ++total > maxBytes) {
+                    throw new java.io.IOException("upload exceeds the gateway limit");
+                }
+                return value;
+            }
+
+            @Override
+            public int read(byte[] buffer, int offset, int length) throws java.io.IOException {
+                int read = delegate.read(buffer, offset, length);
+                if (read > 0) {
+                    total += read;
+                    if (total > maxBytes) {
+                        throw new java.io.IOException("upload exceeds the gateway limit");
+                    }
+                }
+                return read;
+            }
+
+            @Override
+            public void close() throws java.io.IOException {
+                delegate.close();
+            }
+        }));
+        try {
+            HttpResponse<java.io.InputStream> upstream = httpClient.send(builder.build(),
+                    HttpResponse.BodyHandlers.ofInputStream());
+            int status = upstream.statusCode();
+            byte[] bytes;
+            try (java.io.InputStream body = upstream.body()) {
+                bytes = body.readNBytes(256 * 1024);
+            }
+            response.setStatus(status);
+            response.setContentType(upstream.headers().firstValue("Content-Type").orElse("application/json"));
+            response.setHeader("Cache-Control", "no-store");
+            response.getOutputStream().write(bytes);
+            response.getOutputStream().flush();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new UpstreamUnavailableException("upload interrupted");
+        } catch (java.io.IOException e) {
+            throw new UpstreamUnavailableException("upload stream rejected");
+        } catch (Exception e) {
+            throw new UpstreamUnavailableException("upload unavailable");
+        }
     }
 
     public ForwardResponse forward(ForwardRequest request) {

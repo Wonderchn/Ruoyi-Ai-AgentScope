@@ -123,6 +123,45 @@ public class ProductionAuthorizationController {
     public record CheckResponse(boolean allowed, int policyVersion, String action, String resourceRef) {
     }
 
+    public record CurrentFactsRequest(String tenantId, String subject, String membershipId) {
+    }
+
+    public record CurrentFactsResponse(boolean enabled, int policyVersion) {
+    }
+
+    /**
+     * 异步执行重新获取当前主体/策略事实（U02）：只返回最小事实，不返回权限清单。
+     * 缺成员/停用/租户不可用一律拒绝；不泄露存在性差异。
+     */
+    @PostMapping("/authorization/current")
+    public ResponseEntity<? extends ApiResponse<?>> current(
+            @RequestHeader(value = InternalAuthorizationController.SERVICE_CREDENTIAL_HEADER, required = false)
+            String credential,
+            @RequestBody CurrentFactsRequest request) {
+        try {
+            requireServiceCredential(credential);
+            PlatformIdentitySource source = requireIdentitySource();
+            if (request == null || request.tenantId() == null || request.tenantId().isBlank()
+                    || request.subject() == null || request.subject().isBlank()
+                    || request.membershipId() == null || request.membershipId().isBlank()) {
+                throw new P04Exception(P04ErrorCode.TENANT_CONTEXT_MISSING);
+            }
+            PlatformIdentitySource.TenantState tenantState = source.tenantState(request.tenantId());
+            if (tenantState != PlatformIdentitySource.TenantState.ENABLED) {
+                throw new P04Exception(P04ErrorCode.TENANT_DISABLED);
+            }
+            PlatformIdentitySource.PlatformIdentity identity =
+                    source.membership(request.tenantId(), request.subject(), request.membershipId());
+            if (identity == null || !identity.enabled()) {
+                throw new P04Exception(P04ErrorCode.MEMBERSHIP_INVALID);
+            }
+            return ResponseEntity.ok().header(RequestId.HEADER, RequestId.currentOrEmpty())
+                    .body(ApiResponse.ok(new CurrentFactsResponse(true, identity.policyVersion())));
+        } catch (P04Exception ex) {
+            return fail(ex.errorCode());
+        }
+    }
+
     @PostMapping("/authorization/check")
     public ResponseEntity<? extends ApiResponse<?>> check(
             @RequestHeader(value = InternalAuthorizationController.SERVICE_CREDENTIAL_HEADER, required = false)

@@ -158,9 +158,26 @@ public class AiResourceController {
 
     @GetMapping("/runs/{runId}")
     public ResponseEntity<ApiEnvelope<Map<String,Object>>> getRun(@PathVariable String runId){
-        var row=visibleRun(PrincipalContext.require(),runId,"run.get");
+        var principal=PrincipalContext.require();
+        var p2=runSnapshots.getIfAvailable();
+        if(p2!=null && p2.isManagedRun(principal.tenantId(),runId)){
+            // P2 正式执行账本：当前授权 + 扩展快照（状态/阶段/版本/允许动作/终态结果）
+            requireGrant(principal,"run.get","run:"+runId);
+            return reply("run.get","run:"+runId,p2.snapshot(principal,runId));
+        }
+        var row=visibleRun(principal,runId,"run.get");
         return reply("run.get","run:"+runId,Map.of("runId",row.runId(),"action",row.action(),"status",row.status(),"createdAt",row.createdAt()));
     }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureP2Snapshots(org.springframework.beans.factory.ObjectProvider<
+            com.nageoffer.ai.ragent.runtime.RunLifecycleService> snapshots) {
+        this.runSnapshots = snapshots;
+    }
+
+    private org.springframework.beans.factory.ObjectProvider<
+            com.nageoffer.ai.ragent.runtime.RunLifecycleService> runSnapshots;
+
 
     @GetMapping("/runs/{runId}/event-records")
     public ResponseEntity<ApiEnvelope<List<TenantEventReadRepository.EventRow>>> getEvents(@PathVariable String runId,

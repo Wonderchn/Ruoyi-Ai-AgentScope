@@ -113,7 +113,16 @@ public class AiGatewayController {
             new Route("GET", "/conversations/{id}/export", "conversation.export"),
             new Route("GET", "/memories", "memory.read"),
             new Route("GET", "/runs/{id}", "run.get"),
-            new Route("GET", "/runs/{id}/event-records", "run.events"));
+            new Route("GET", "/runs/{id}/event-records", "run.events"),
+            // P2：正式受理/生命周期/专用流与上传/文档
+            new Route("POST", "/runs", "run.submit"),
+            new Route("POST", "/runs/{id}/cancel", "run.cancel"),
+            new Route("POST", "/runs/{id}/resume", "run.resume"),
+            new Route("GET", "/runs/{id}/events", "run.stream"),
+            new Route("POST", "/documents/uploads", "document.upload"),
+            new Route("POST", "/documents/{id}/ingestions", "document.ingest"),
+            new Route("GET", "/documents/{id}", "document.read"),
+            new Route("GET", "/knowledge-bases/{id}/documents", "document.list"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;
