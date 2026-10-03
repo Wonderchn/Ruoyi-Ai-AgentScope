@@ -111,4 +111,6 @@ public class P2FaultInjector {
     public static final String PUBLISH_AFTER_SWAP = "publish.afterSwap";
     public static final String CHAT_BEFORE_PROVIDER = "chat.beforeProvider";
     public static final String CHAT_AFTER_PROVIDER = "chat.afterProvider";
+    public static final String UPLOAD_AFTER_OBJECT_STORE = "upload.afterObjectStore";
+    public static final String UPLOAD_AFTER_DB = "upload.afterDb";
 }

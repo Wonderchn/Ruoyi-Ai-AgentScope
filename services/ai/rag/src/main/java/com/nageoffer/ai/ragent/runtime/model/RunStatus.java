@@ -39,8 +39,8 @@ public final class RunStatus {
     /** 可 resume 的非终态白名单（P2 首期）。 */
     public static final Set<String> RESUMABLE = Set.of(RECOVERING, RETRY_WAIT, CANCEL_REQUESTED);
 
-    /** Worker 可认领的状态。 */
-    public static final Set<String> CLAIMABLE = Set.of(QUEUED, RETRY_WAIT);
+    /** Worker 可认领的状态：QUEUED/RETRY_WAIT 以及租约过期后的 RECOVERING（接管）。 */
+    public static final Set<String> CLAIMABLE = Set.of(QUEUED, RETRY_WAIT, RECOVERING);
 
     private RunStatus() {
     }

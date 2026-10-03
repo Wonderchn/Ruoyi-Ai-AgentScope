@@ -20,6 +20,7 @@ package com.nageoffer.ai.ragent.ingest;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService;
+import com.nageoffer.ai.ragent.runtime.P2FaultInjector;
 import com.nageoffer.ai.ragent.runtime.P2RuntimeProperties;
 import com.nageoffer.ai.ragent.runtime.RunAdmissionService;
 import com.nageoffer.ai.ragent.runtime.RunApiException;
@@ -54,15 +55,17 @@ public class UploadService {
     private final PrivateObjectStore objectStore;
     private final RunAdmissionService admission;
     private final P2RuntimeProperties properties;
+    private final P2FaultInjector faults;
     private final ObjectProvider<com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService> authorization;
 
     public UploadService(DocumentDao documentDao, PrivateObjectStore objectStore, RunAdmissionService admission,
-                         P2RuntimeProperties properties,
+                         P2RuntimeProperties properties, P2FaultInjector faults,
                          ObjectProvider<com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService> authorization) {
         this.documentDao = documentDao;
         this.objectStore = objectStore;
         this.admission = admission;
         this.properties = properties;
+        this.faults = faults;
         this.authorization = authorization;
     }
 
@@ -110,10 +113,14 @@ public class UploadService {
             objectStore.delete(objectKey);
             throw new RunApiException(RunErrorCode.BAD_REQUEST, "file exceeds the configured upload limit");
         }
+        // A25：对象已落盘、元数据未写——崩溃窗口，孤儿对象仅可清理
+        faults.checkpoint(P2FaultInjector.UPLOAD_AFTER_OBJECT_STORE);
         documentDao.insertDocument(principal.tenantId(), docId, kbId, filename, principal.membershipId());
         documentDao.insertUpload(principal.tenantId(), uploadId, docId, kbId, principal.membershipId(),
                 filename, "application/pdf", stored.sizeBytes(), stored.sha256(), objectKey);
         documentDao.insertVersion(principal.tenantId(), versionId, docId, uploadId, null);
+        // A25：元数据已逐条提交、响应未达——响应丢失窗口，重试产生独立新意图
+        faults.checkpoint(P2FaultInjector.UPLOAD_AFTER_DB);
         return new UploadResult(uploadId, docId, versionId, stored.sha256(), stored.sizeBytes(), "STORED");
     }
 

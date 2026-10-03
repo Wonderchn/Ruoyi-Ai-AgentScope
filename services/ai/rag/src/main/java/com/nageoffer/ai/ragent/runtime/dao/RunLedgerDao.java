@@ -242,7 +242,7 @@ public class RunLedgerDao {
         List<ClaimedRun> claimed = jdbc.query(
                 "WITH candidate AS ("
                         + " SELECT tenant_id, run_id FROM ai_run "
-                        + " WHERE status IN ('QUEUED','RETRY_WAIT') AND (lease_until IS NULL OR lease_until < now()) "
+                        + " WHERE status IN ('QUEUED','RETRY_WAIT','RECOVERING') AND (lease_until IS NULL OR lease_until < now()) "
                         + " ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) "
                         + "UPDATE ai_run r SET status='RUNNING', lease_owner=?, lease_until=now() + (? * interval '1 second'), "
                         + "attempt=r.attempt+1, fence=r.fence+1, version=r.version+1, "

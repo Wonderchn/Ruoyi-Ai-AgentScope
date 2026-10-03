@@ -200,9 +200,15 @@ class P1CurrentAuthorizationTest {
 
     @Test
     void registryCoversTheFrozenActionTable() {
-        assertEquals(13, AiActionRegistry.knownActions().size());
+        // P1 冻结 13 个动作；P2 U00 追加 run.submit/cancel/resume/stream、document.upload/ingest/list → 20
+        assertEquals(20, AiActionRegistry.knownActions().size());
         assertEquals(Optional.of("ai:kb:acl"), AiActionRegistry.permissionOf("kb.acl.manage"));
         assertEquals(Optional.of("ai:run:event:read"), AiActionRegistry.permissionOf("run.events"));
+        assertEquals(Optional.of("ai:run:submit"), AiActionRegistry.permissionOf("run.submit"));
+        assertEquals(Optional.of("ai:run:stream"), AiActionRegistry.permissionOf("run.stream"));
+        assertEquals(Optional.of("ai:document:upload"), AiActionRegistry.permissionOf("document.upload"));
+        assertEquals(Optional.of("ai:document:ingest"), AiActionRegistry.permissionOf("document.ingest"));
+        assertEquals(Optional.of("ai:document:read"), AiActionRegistry.permissionOf("document.list"));
         assertTrue(AiActionRegistry.permissionOf("rag.chat").isEmpty());
         assertTrue(AiActionRegistry.permissionOf(null).isEmpty());
     }
