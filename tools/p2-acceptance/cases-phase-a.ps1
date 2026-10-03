@@ -57,9 +57,9 @@ Add-Case 'ENV-kb' ($kbCreate.Status -eq 200 -and $kb1 -ne '') "KB created throug
 $key1 = "a01-$($script:Tag)"
 $r = SubmitRun $t1 'rag.chat' $key1 '{"text":"admission control case"}' ('[{"type":"knowledge_base","id":"' + $kb1 + '"}]') '{"maxTokens":2000}' 'a01-submit'
 $run1 = RunId $r.Body
-$db = Sql "SELECT (SELECT count(*) FROM ai_run WHERE idempotency_key='$key1'), (SELECT count(*) FROM ai_run_event e JOIN ai_run r ON r.tenant_id=e.tenant_id AND r.run_id=e.run_id WHERE r.idempotency_key='$key1' AND e.seq=1), (SELECT count(*) FROM outbox_event o JOIN ai_run r ON r.tenant_id=o.tenant_id AND r.run_id=o.run_id WHERE r.idempotency_key='$key1'), (SELECT count(*) FROM ai_budget_reservation b JOIN ai_run r ON r.tenant_id=b.tenant_id AND r.run_id=b.run_id WHERE r.idempotency_key='$key1' AND b.state='RESERVED');" 'a01-db'
-$counts = ($db.Output -split '\|')
-Add-Case 'A01' ($r.Status -eq 202 -and $counts.Count -ge 4 -and $counts[0].Trim() -eq '1' -and $counts[1].Trim() -eq '1' -and $counts[2].Trim() -eq '1' -and $counts[3].Trim() -eq '1') "202 + runId=$run1; run/event(seq=1)/outbox/reserve all present in one tx (counts=$($db.Output.Trim()))"
+$a01db = Sql "SELECT (SELECT count(*) FROM ai_run WHERE idempotency_key='$key1'), (SELECT count(*) FROM ai_run_event e JOIN ai_run r ON r.tenant_id=e.tenant_id AND r.run_id=e.run_id WHERE r.idempotency_key='$key1' AND e.seq=1), (SELECT count(*) FROM outbox_event o JOIN ai_run r ON r.tenant_id=o.tenant_id AND r.run_id=o.run_id WHERE r.idempotency_key='$key1'), (SELECT count(*) FROM ai_budget_reservation b JOIN ai_run r ON r.tenant_id=b.tenant_id AND r.run_id=b.run_id WHERE r.idempotency_key='$key1' AND b.state='RESERVED');" 'a01-db'
+$counts = ($a01db.Output -split '\|')
+Add-Case 'A01' ($r.Status -eq 202 -and $counts.Count -ge 4 -and $counts[0].Trim() -eq '1' -and $counts[1].Trim() -eq '1' -and $counts[2].Trim() -eq '1' -and $counts[3].Trim() -eq '1') "202 + runId=$run1; run/event(seq=1)/outbox/reserve all present in one tx (counts=$($a01db.Output.Trim()))"
 
 # A02 受理五处故障注入 → 全部回滚
 $faultCases = @(

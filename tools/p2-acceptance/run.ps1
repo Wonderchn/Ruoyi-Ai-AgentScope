@@ -102,6 +102,8 @@ function RemoteStdin([string]$Command, [string]$Text, [string]$LogName = '') {
     return [pscustomobject]@{ ExitCode = $code; Output = $text }
 }
 function Sql([string]$Text, [string]$LogName = 'case-sql', [string]$User = 'postgres') {
+    $dbgCmd = "docker exec -i -e PGCLIENTENCODING=UTF8 $($script:PgName) psql -U $User -d $($script:Db) -X -q -tA -v ON_ERROR_STOP=1 -f -"
+    if ($dbgCmd -match '[{}]') { Write-Host ("[sqldebug-BRACE] {0} dbType={1} userType={2} cmd={3}" -f $LogName, $script:Db.GetType().Name, $User.GetType().Name, $dbgCmd) }
     # search_path 在 SQL 文本内设置（经 stdin 传入，无 shell 引号问题）；
     # 迁移自带的 SET search_path 在文本更后处执行，自然覆盖本前缀。
     $prefix = "SET search_path TO ai,extensions,platform;`n"
@@ -299,9 +301,12 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA ai GRANT ALL ON SEQUENCES TO p2app;
     Add-Case 'ENV-db-grants' ($r.ExitCode -eq 0) 'app role grants applied'
     # fixtures：两租户同名用户、角色/岗位/客户端、AI 权限菜单（V4+V5 全量）、policy revision、acl epoch
     $fixtureSql = @"
+INSERT INTO platform.sys_tenant_package (package_id, package_name, menu_ids, remark, menu_check_strictly, status, del_flag, create_dept, create_by, create_time, update_by, update_time)
+SELECT 910000000000000901, 'p2c-package', COALESCE(string_agg(menu_id::text, ','), '0'), 'p2 synthetic package', true, '0', '0', 103, 1, now(), 1, now()
+FROM platform.sys_menu WHERE perms LIKE 'ai:%';
 INSERT INTO platform.sys_tenant (id, tenant_id, contact_user_name, contact_phone, company_name, package_id, account_count, status, del_flag)
-VALUES (910000000000000011, 'p2t1', 'p2c-admin-t1', '13900000011', 'p2 synthetic tenant 1', NULL, -1, '0', '0'),
-       (910000000000000012, 'p2t2', 'p2c-admin-t2', '13900000012', 'p2 synthetic tenant 2', NULL, -1, '0', '0');
+VALUES (910000000000000011, 'p2t1', 'p2c-admin-t1', '13900000011', 'p2 synthetic tenant 1', 910000000000000901, -1, '0', '0'),
+       (910000000000000012, 'p2t2', 'p2c-admin-t2', '13900000012', 'p2 synthetic tenant 2', 910000000000000901, -1, '0', '0');
 INSERT INTO platform.sys_user (user_id, tenant_id, user_name, nick_name, password, status, del_flag)
 VALUES (910000000000000001, 'p2t1', 'p2admin', 'p2admin-t1', '__HASH__', '0', '0'),
        (910000000000000002, 'p2t2', 'p2admin', 'p2admin-t2', '__HASH__', '0', '0');
