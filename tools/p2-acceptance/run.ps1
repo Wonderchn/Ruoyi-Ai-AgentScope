@@ -46,6 +46,16 @@ $script:AiNodes = @()
 $script:HttpLogs = New-Object System.Collections.ArrayList
 
 function Write-Step([string]$Text) { Write-Host ("[p2] " + $Text) }
+function Get-PortOwnerPid([int]$Port) {
+    $r = Remote "ss -lntp 2>/dev/null | awk -v p=`":$Port`" '`$4 ~ p`"$`" {print `$NF}' | head -1" ''
+    if ($r.Output -match 'pid=(\d+)') { return [int]$Matches[1] }
+    return 0
+}
+function Get-PortOwnerName([int]$Port) {
+    $r = Remote "ss -lntp 2>/dev/null | awk -v p=`":$Port`" '`$4 ~ p`"$`" {print `$NF}' | head -1" ''
+    if ($r.Output -match '"([^"]+)"') { return $Matches[1] }
+    return 'unknown'
+}
 function Add-Case([string]$Id, [bool]$Ok, [string]$Detail, [string]$Class = 'integration') {
     [void]$script:Results.Add([pscustomobject]@{ id = $Id; ok = $Ok; detail = $Detail; class = $Class; at = (Get-Date).ToUniversalTime().ToString('o') })
     $mark = if ($Ok) { 'PASS' } else { 'FAIL' }
@@ -92,7 +102,10 @@ function RemoteStdin([string]$Command, [string]$Text, [string]$LogName = '') {
     return [pscustomobject]@{ ExitCode = $code; Output = $text }
 }
 function Sql([string]$Text, [string]$LogName = 'case-sql', [string]$User = 'postgres') {
-    return RemoteStdin ("docker exec -i -e PGCLIENTENCODING=UTF8 -e 'PGOPTIONS=-c search_path=ai,extensions,platform' $($script:PgName) psql -U $User -d $($script:Db) -X -q -tA -v ON_ERROR_STOP=1 -f -") $Text ($LogName + '.sql')
+    # search_path 在 SQL 文本内设置（经 stdin 传入，无 shell 引号问题）；
+    # 迁移自带的 SET search_path 在文本更后处执行，自然覆盖本前缀。
+    $prefix = "SET search_path TO ai,extensions,platform;`n"
+    return RemoteStdin ("docker exec -i -e PGCLIENTENCODING=UTF8 $($script:PgName) psql -U $User -d $($script:Db) -X -q -tA -v ON_ERROR_STOP=1 -f -") ($prefix + $Text) ($LogName + '.sql')
 }
 function Http([string]$Method, [string]$Url, [hashtable]$Headers = @{}, [string]$Body = '', [int]$Timeout = 30, [string]$LogName = 'http') {
     $dir = "/tmp/p2http-$($script:Tag)"
@@ -331,6 +344,14 @@ echo "$H.$P.$S"
 function Start-Jar([string]$Side, [int]$Port, [string[]]$Extra) {
     $jar = if ($Side -eq 'ai') { '/opt/p2core-acceptance/' + $script:Tag + '/ai.jar' } else { '/opt/p2core-acceptance/' + $script:Tag + '/platform.jar' }
     $log = "/opt/p2core-acceptance/$($script:Tag)/$Side-$Port.log"
+    # 清场：先结束占用该端口的上一轮 jar（以命令行里的 server.port 精确匹配），否则
+    # 残留进程会让 Wait-Ready 误判就绪、把流量打到带旧凭据的僵尸服务上。
+    [void](Remote "pkill -f -- '--server.port=$Port' 2>/dev/null; sleep 1; true" ("clear-port-$Port"))
+    $holder = Remote "ss -tln | grep -c ':$Port ' || true" ("port-check-$Port")
+    if (($holder.Output.Trim() -as [int]) -gt 0) {
+        Add-Case "ENV-port-$Port" $false "port $Port still held by an unknown process after cleanup"
+        exit 2
+    }
     $envLine = if ($Side -eq 'ai') {
         "export P2_MINERU_TOKEN=`$(cat /opt/ragent-ai-lab-20261003/secrets/mineru_token); export AI_DB_PASSWORD='$($script:PgPass)'; export AI_DB_USERNAME=p2app;"
     } else {
