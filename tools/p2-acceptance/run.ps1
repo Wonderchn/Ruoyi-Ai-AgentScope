@@ -15,7 +15,8 @@ param(
 #  * 不触碰原有 ruoyi-agent-pg / ruoyi-agent-redis / 业务库；MinerU 只调用专属 lab 实例的本地 API；
 #  * 口令随机生成、只在远端本轮目录与本机 work 目录（不进证据）；证据脱敏；
 #  * 结束按 PID 停止本轮自有进程，容器默认保留供复核（-KeepEnvironment 时连容器也保留）。
-$ErrorActionPreference = 'Stop'
+# 用例大量依赖预期失败（注入故障/负例），错误记录不终止运行；关键路径显式检查退出码
+$ErrorActionPreference = 'Continue'
 $script:Tag = $RunTag.ToLower()
 $script:Evidence = Join-Path ([IO.Path]::GetFullPath($EvidenceDir)) $script:Tag
 $script:Work = Join-Path 'D:\AI-project\.scratch\p2-acceptance' $script:Tag
@@ -76,12 +77,14 @@ function RemoteStdin([string]$Command, [string]$Text, [string]$LogName = '') {
     return [pscustomobject]@{ ExitCode = $code; Output = $text }
 }
 function Sql([string]$Text, [string]$LogName = 'case-sql', [string]$User = 'postgres') {
-    return RemoteStdin ("docker exec -i -e PGCLIENTENCODING=UTF8 $($script:PgName) psql -U $User -d $($script:Db) -X -q -tA -v ON_ERROR_STOP=1 -f -") $Text ($LogName + '.sql')
+    return RemoteStdin ("docker exec -i -e PGCLIENTENCODING=UTF8 -e 'PGOPTIONS=-c search_path=ai,extensions,platform' $($script:PgName) psql -U $User -d $($script:Db) -X -q -tA -v ON_ERROR_STOP=1 -f -") $Text ($LogName + '.sql')
 }
 function Http([string]$Method, [string]$Url, [hashtable]$Headers = @{}, [string]$Body = '', [int]$Timeout = 30, [string]$LogName = 'http') {
     $dir = "/tmp/p2http-$($script:Tag)"
     $lines = New-Object System.Collections.ArrayList
     [void]$lines.Add("cd $dir")
+    # 平台网关校验 clientid 头与 token 内 clientId 一致；AI 内部接口忽略多余头
+    if (-not $Headers.ContainsKey('clientid')) { $Headers['clientid'] = 'p2c-client' }
     if ($Body) {
         $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Body))
         [void]$lines.Add("printf %s '$b64' | base64 -d > body.bin")
