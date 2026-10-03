@@ -109,6 +109,7 @@ function Token([string]$Tenant, [string]$User, [string]$Password) {
     $body = (@{ clientId = 'p2c-client'; grantType = 'password'; tenantId = $Tenant; username = $User; password = $Password } | ConvertTo-Json -Compress)
     $r = Http 'POST' "http://127.0.0.1:$PlatformPort/auth/login" @{ 'Content-Type' = 'application/json' } $body 20 'login'
     if ($r.Body -match '"accessToken"\s*:\s*"([^"]+)"') { return $Matches[1] }
+    if ($r.Body -match '"access_token"\s*:\s*"([^"]+)"') { return $Matches[1] }
     if ($r.Body -match '"token"\s*:\s*"([^"]+)"') { return $Matches[1] }
     return $null
 }
