@@ -63,6 +63,7 @@ public class LocalMinerUClient {
             throw new IllegalStateException("mineru.local.base-url and token are required when enabled");
         }
         this.http = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(Duration.ofSeconds(properties.getConnectTimeoutSeconds()))
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
@@ -92,14 +93,36 @@ public class LocalMinerUClient {
 
     /** 提交解析并等待完成；超过 deadline 抛 DEPENDENCY_UNAVAILABLE（由上层分类）。 */
     public ParseResult parse(byte[] pdfBytes, String filename, String sha256, int deadlineSeconds) {
+        return awaitResult(submit(pdfBytes,filename,sha256),deadlineSeconds);
+    }
+
+    public record ParseJob(String jobId,String fileId) {}
+
+    public ParseJob submit(byte[] pdfBytes,String filename,String sha256) {
         if (pdfBytes.length > properties.getMaxBytes()) {
             throw new RunApiException(RunErrorCode.BAD_REQUEST, "file exceeds mineru.local.max-bytes");
         }
-        String uploadId = createUpload(filename, pdfBytes.length, sha256);
-        putContent(uploadId, pdfBytes);
-        String fileId = completeUpload(uploadId, sha256);
+        JsonNode upload = createUpload(filename, pdfBytes.length, sha256);
+        String fileId;
+        if("completed".equals(upload.path("status").asText())) {
+            fileId=upload.path("file").path("id").asText("");
+            if(fileId.isBlank()) throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE,"cached mineru file missing");
+        } else if("pending".equals(upload.path("status").asText())) {
+            String uploadId=upload.path("id").asText();
+            putContent(uploadId, pdfBytes);
+            fileId = completeUpload(uploadId, sha256);
+        } else throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE,"mineru upload status invalid");
         String jobId = createJob(fileId);
-        JsonNode job = awaitJob(jobId, deadlineSeconds);
+        return new ParseJob(jobId,fileId);
+    }
+
+    public ParseResult awaitResult(ParseJob submitted,int deadlineSeconds) {
+        return awaitResult(submitted,deadlineSeconds,()->false);
+    }
+    public static class ParseCancelledException extends RuntimeException { }
+    public ParseResult awaitResult(ParseJob submitted,int deadlineSeconds,java.util.function.BooleanSupplier cancelled) {
+        String jobId=submitted.jobId(),fileId=submitted.fileId();
+        JsonNode job = awaitJob(jobId, deadlineSeconds,cancelled);
         JsonNode file = job.path("files").path(0);
         String status = file.path("status").asText("");
         if (!"completed".equals(status)) {
@@ -130,7 +153,7 @@ public class LocalMinerUClient {
         }
     }
 
-    private String createUpload(String filename, long bytes, String sha256) {
+    private JsonNode createUpload(String filename, long bytes, String sha256) {
         Map<String, Object> body = Map.of("filename", filename, "bytes", bytes,
                 "mime_type", "application/pdf", "purpose", "parse", "sha256sum", sha256);
         JsonNode response = sendJson("POST", "/v1/uploads", body);
@@ -138,7 +161,7 @@ public class LocalMinerUClient {
         if (id.isBlank()) {
             throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE, "mineru upload id missing");
         }
-        return id;
+        return response;
     }
 
     private void putContent(String uploadId, byte[] bytes) {
@@ -183,10 +206,11 @@ public class LocalMinerUClient {
         return jobId;
     }
 
-    private JsonNode awaitJob(String jobId, int deadlineSeconds) {
+    private JsonNode awaitJob(String jobId, int deadlineSeconds,java.util.function.BooleanSupplier cancelled) {
         Instant deadline = Instant.now().plusSeconds(Math.max(30, deadlineSeconds));
         long backoff = Math.max(500, properties.getPollIntervalMs());
         while (Instant.now().isBefore(deadline)) {
+            if(cancelled.getAsBoolean()) {cancel(jobId);throw new ParseCancelledException();}
             JsonNode job = getJob(jobId);
             String status = job.path("status").asText("");
             if (TERMINAL_STATUSES.contains(status)) {

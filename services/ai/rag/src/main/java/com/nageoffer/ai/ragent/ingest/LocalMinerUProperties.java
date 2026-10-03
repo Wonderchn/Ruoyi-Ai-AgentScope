@@ -35,7 +35,7 @@ public class LocalMinerUProperties {
     private String ocrMode = "auto";
     private long pollIntervalMs = 2000;
     private int deadlineSeconds = 600;
-    private long maxBytes = 20L * 1024L * 1024L;
+    private long maxBytes = 50L * 1024L * 1024L;
     private int connectTimeoutSeconds = 5;
     private int requestTimeoutSeconds = 60;
 

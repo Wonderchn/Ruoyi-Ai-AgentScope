@@ -17,94 +17,86 @@
 
 package com.nageoffer.ai.ragent.ingest;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.framework.convention.ChatMessage;
-import com.nageoffer.ai.ragent.framework.convention.ChatRequest;
-import com.nageoffer.ai.ragent.infra.chat.LLMService;
-import com.nageoffer.ai.ragent.infra.chat.StreamCallback;
-import com.nageoffer.ai.ragent.runtime.RunApiException;
-import com.nageoffer.ai.ragent.runtime.RunErrorCode;
+import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
-
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
+import java.io.*;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
 import java.util.function.Consumer;
 
-/**
- * 真实问答模型网关（{@code p2.chat.mode=real}，默认）。
- *
- * <p><b>真实模型 ID / 受控 key / 外发范围与预算尚未确认（输入 I2–I4）</b>：本类按既有
- * {@link LLMService} 路由调用；提供方 requestId/usage 当前不可得时按合同记
- * {@code PENDING_RECONCILIATION}（不按 0 结算）。I2–I4 确认前不得用于真实签收。
- */
+/** Human-selected DeepSeek model; provider uncertainty never triggers fallback or retry. */
 @Component
-@ConditionalOnProperty(name = "p2.chat.mode", havingValue = "real", matchIfMissing = true)
+@ConditionalOnProperty(name="p2.chat.mode",havingValue="real",matchIfMissing=true)
 public class RealChatGateway implements ChatGateway {
-
-    private final LLMService llmService;
-    private final String modelId;
-
-    public RealChatGateway(LLMService llmService, @Value("${agent.chat.model:deepseek-flash}") String modelId) {
-        this.llmService = llmService;
-        this.modelId = modelId;
+    private final String key;
+    private final URI endpoint;
+    private final EgressPolicy egress;
+    private com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope spend;
+    private boolean providerEndpoint;
+    @Autowired
+    public void configureSpend(com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope spend) {this.spend=spend;}
+    private final ObjectMapper json=new ObjectMapper();
+    @Autowired
+    public RealChatGateway(@Value("${p2.providers.deepseek.api-key:${DEEPSEEK_API_KEY:}}") String key,EgressPolicy egress) {
+        this(key,egress,URI.create("https://api.deepseek.com/chat/completions"),true);
     }
-
-    @Override
-    public String provider() {
-        return "configured-provider";
+    RealChatGateway(String key,EgressPolicy egress,URI endpoint) {
+        this(key,egress,endpoint,false);
+        if(!"http".equals(endpoint.getScheme()) || !"127.0.0.1".equals(endpoint.getHost())) throw new IllegalArgumentException("test endpoint must be loopback");
     }
-
-    @Override
-    public String model() {
-        return modelId;
+    private RealChatGateway(String key,EgressPolicy egress,URI endpoint,boolean providerEndpoint) {this.key=key;this.egress=egress;this.endpoint=endpoint;this.providerEndpoint=providerEndpoint;}
+    private String reserve(String body,int maxTokens) {
+        if(key==null || key.isBlank()) throw ProviderHttp.unavailable();
+        if(!providerEndpoint) return null;
+        if(spend==null) throw ProviderHttp.unavailable();
+        return spend.reserve(provider(),model(),body.getBytes(StandardCharsets.UTF_8).length,maxTokens);
     }
-
-    @Override
-    public ChatResult stream(List<ChatMessage> messages, int maxTokens, Consumer<String> onDelta) {
-        CountDownLatch done = new CountDownLatch(1);
-        StringBuilder content = new StringBuilder();
-        AtomicReference<Throwable> error = new AtomicReference<>();
-        ChatRequest request = ChatRequest.builder()
-                .messages(messages)
-                .maxTokens(maxTokens > 0 ? maxTokens : null)
-                .build();
-        llmService.streamChat(request, new StreamCallback() {
-            @Override
-            public void onContent(String chunk) {
-                if (chunk == null || chunk.isEmpty()) {
-                    return;
-                }
-                content.append(chunk);
-                onDelta.accept(chunk);
-            }
-
-            @Override
-            public void onComplete() {
-                done.countDown();
-            }
-
-            @Override
-            public void onError(Throwable throwable) {
-                error.set(throwable);
-                done.countDown();
-            }
-        });
+    public String provider() {return "deepseek";}
+    public String model() {return "deepseek-flash";}
+    public ChatResult stream(List<ChatMessage> messages,int maxTokens,Consumer<String> onDelta) {
+        egress.requireAllowed(provider());
+        var serialized=messages.stream().map(m->Map.of("role",m.getRole().name().toLowerCase(Locale.ROOT),"content",m.getContent())).toList();
+        if(maxTokens<1 || maxTokens>8192 || serialized.stream().mapToInt(m->m.get("content").length()).sum()>65536) throw ProviderHttp.unavailable();
+        HttpURLConnection connection=null;
         try {
-            if (!done.await(600, TimeUnit.SECONDS)) {
-                throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE, "model stream timed out");
+            String body=json.writeValueAsString(Map.of("model",model(),"messages",serialized,"max_tokens",maxTokens,"thinking",Map.of("type","disabled"),"stream",true,"stream_options",Map.of("include_usage",true)));
+            String spendId=reserve(body,maxTokens);
+            connection=ProviderHttp.open(endpoint,key,body);
+            int status=connection.getResponseCode();
+            if(status!=200) {
+                if(spendId!=null) spend.received(spendId,null,Map.of("httpStatus",status));
+                throw ProviderHttp.unavailable();
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE, "model stream interrupted");
-        }
-        if (error.get() != null) {
-            throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE, "model stream failed");
-        }
-        // 提供方 requestId/usage 未在现有接口暴露：按合同保持待核对，不伪造结算
-        return new ChatResult(content.toString(), null, null, "stop");
+            String id=null,finish=null; Map<String,Object> usage=null;
+            StringBuilder content=new StringBuilder(); boolean done=false;
+            long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(120);
+            int consumed=0;
+            try(var reader=new BufferedReader(new InputStreamReader(connection.getInputStream(),StandardCharsets.UTF_8))) {
+                for(String line;(line=ProviderHttp.line(reader,65536))!=null;) {
+                    if((consumed+=line.length())>2097152 || System.nanoTime()>deadline || Thread.currentThread().isInterrupted()) throw ProviderHttp.unavailable();
+                    if(!line.startsWith("data:")) continue;
+                    String value=line.substring(5).trim();
+                    if("[DONE]".equals(value)){done=true;break;}
+                    var chunk=json.readTree(value);
+                    if(chunk.hasNonNull("id")) {String next=chunk.path("id").asText(); if(id!=null&&!id.equals(next))throw ProviderHttp.unavailable();id=next;}
+                    if(chunk.path("usage").isObject()) usage=json.convertValue(chunk.path("usage"),new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});
+                    for(var choice:chunk.path("choices")) {
+                        String delta=choice.path("delta").path("content").asText("");
+                        if(!delta.isEmpty()){content.append(delta);onDelta.accept(delta);}
+                        if(choice.hasNonNull("finish_reason")) finish=choice.path("finish_reason").asText();
+                    }
+                }
+            }
+            if(!done || finish==null || id==null) throw ProviderHttp.unavailable();
+            if(spendId!=null) spend.received(spendId,id,usage);
+            return new ChatResult(content.toString(),id,usage,finish);
+        } catch(IOException e) {throw ProviderHttp.unavailable();}
+        finally {if(connection!=null) connection.disconnect();}
     }
 }

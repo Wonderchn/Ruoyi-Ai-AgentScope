@@ -43,6 +43,7 @@ declare module 'vue' {
     LoginDialog: typeof import('./../src/components/LoginDialog/index.vue')['default']
     ModelSelect: typeof import('./../src/components/ModelSelect/index.vue')['default']
     Popover: typeof import('./../src/components/Popover/index.vue')['default']
+    PrivatePdf: typeof import('./../src/components/rag/PrivatePdf.vue')['default']
     QrCodeLogin: typeof import('./../src/components/LoginDialog/components/QrCodeLogin/index.vue')['default']
     RegistrationForm: typeof import('./../src/components/LoginDialog/components/FormLogin/RegistrationForm.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']

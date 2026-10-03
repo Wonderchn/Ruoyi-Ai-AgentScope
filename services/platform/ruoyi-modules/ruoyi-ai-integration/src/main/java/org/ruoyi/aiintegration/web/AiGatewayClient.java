@@ -151,6 +151,62 @@ public class AiGatewayClient {
     /** SSE 专用流：建连/空闲/总时长受限；不缓冲全量，逐块 flush。 */
     public void forwardEventStream(ForwardRequest request, jakarta.servlet.http.HttpServletResponse response,
                                    int connectTimeoutMillis, int idleTimeoutMillis, int maxDurationMillis) {
+        forwardEventStream(request,response,connectTimeoutMillis,idleTimeoutMillis,maxDurationMillis,null);
+    }
+
+    public record DeliveryAck(URI uri,String tenantId,String memberId,String serviceCredential) {}
+
+    private void acknowledge(DeliveryAck delivery,String permit,String operation) {
+        if(delivery==null || !validDeliveryId(permit) || !validDeliveryId(operation))
+            throw new UpstreamUnavailableException("delivery identity missing");
+        try {
+            byte[] body=responseMapper.writeValueAsBytes(Map.of("tenantId",delivery.tenantId(),
+                    "memberId",delivery.memberId(),"permitId",permit,"operationId",operation));
+            var result=forward(new ForwardRequest("POST",delivery.uri(),Map.of("Content-Type","application/json",
+                    "X-P04-Service-Credential",delivery.serviceCredential()),body));
+            if(result.status()!=204 || result.body()!=null && !result.body().isBlank())
+                throw new UpstreamUnavailableException("delivery acknowledgement unavailable");
+        } catch(java.io.IOException e) {throw new UpstreamUnavailableException("delivery acknowledgement unavailable");}
+    }
+
+    private static boolean validDeliveryId(String value) {
+        return value!=null && value.matches("[A-Za-z0-9_-]{1,128}");
+    }
+
+    void deliverFrame(byte[] bytes,jakarta.servlet.http.HttpServletResponse response,DeliveryAck delivery)
+            throws java.io.IOException {
+        String frame=new String(bytes,java.nio.charset.StandardCharsets.UTF_8);
+        String permit=null,operation=null;
+        StringBuilder publicFrame=new StringBuilder();
+        boolean restricted=false;
+        for(String line:frame.split("\n",-1)) {
+            if(line.startsWith(": ai-delivery ")) {
+                String[] ids=line.substring(14).trim().split(" ",-1);
+                if(permit!=null || ids.length!=2 || !validDeliveryId(ids[0]) || !validDeliveryId(ids[1]))
+                    throw new UpstreamUnavailableException("invalid delivery metadata");
+                permit=ids[0]; operation=ids[1];
+            } else {
+                if(line.startsWith("data:") || line.startsWith("id:") || line.startsWith("event:")) restricted=true;
+                publicFrame.append(line).append('\n');
+            }
+        }
+        if(restricted && permit==null) throw new UpstreamUnavailableException("unprotected stream frame");
+        if(permit==null && !frame.equals(": ping\n\n"))
+            throw new UpstreamUnavailableException("unexpected unprotected stream frame");
+        try {
+            var out=response.getOutputStream();
+            out.write(publicFrame.substring(0,publicFrame.length()-1).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            out.flush();
+        } finally {
+            // No subsequent application write can belong to this complete frame, including client abort.
+            // Unknown/failed ACK is never retried automatically and leaves the permit ACTIVE.
+            if(permit!=null) acknowledge(delivery,permit,operation);
+        }
+    }
+
+    public void forwardEventStream(ForwardRequest request, jakarta.servlet.http.HttpServletResponse response,
+                                   int connectTimeoutMillis,int idleTimeoutMillis,int maxDurationMillis,
+                                   DeliveryAck delivery) {
         HttpClient streamClient = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(Duration.ofMillis(connectTimeoutMillis))
@@ -174,8 +230,12 @@ public class AiGatewayClient {
                 byte[] bytes = body.readNBytes(64 * 1024);
                 response.setStatus(status);
                 response.setContentType(upstream.headers().firstValue("Content-Type").orElse("application/json"));
-                response.getOutputStream().write(bytes);
-                response.getOutputStream().flush();
+                String permit=upstream.headers().firstValue("X-AI-Delivery-Permit").orElse(null);
+                String operation=upstream.headers().firstValue("X-AI-Delivery-Operation").orElse(null);
+                try {
+                    response.getOutputStream().write(bytes);
+                    response.getOutputStream().flush();
+                } finally { if(permit!=null || operation!=null) acknowledge(delivery,permit,operation); }
                 return;
             }
             response.setStatus(200);
@@ -204,11 +264,20 @@ public class AiGatewayClient {
             try {
                 byte[] buffer = new byte[8192];
                 int read;
-                var out = response.getOutputStream();
+                var frame = new java.io.ByteArrayOutputStream();
+                int previous=-1;
                 while (!aborted.get() && (read = body.read(buffer)) >= 0) {
                     lastRead.set(System.currentTimeMillis());
-                    out.write(buffer, 0, read);
-                    out.flush();
+                    for(int i=0;i<read;i++) {
+                        int value=buffer[i]&255;
+                        if(frame.size()>=1024*1024) throw new UpstreamUnavailableException("stream frame too large");
+                        frame.write(value);
+                        if(previous=='\n' && value=='\n') {
+                            deliverFrame(frame.toByteArray(),response,delivery);
+                            frame.reset();
+                        }
+                        previous=value;
+                    }
                 }
             } catch (java.io.IOException e) {
                 // 客户端断开或上游结束：只断订阅，不改变运行
@@ -217,6 +286,40 @@ public class AiGatewayClient {
             }
         } catch (java.io.IOException e) {
             throw new UpstreamUnavailableException("event stream body unavailable");
+        }
+    }
+
+    /** Dedicated bounded private PDF delivery; the ordinary JSON limit remains unchanged. */
+    public void forwardPrivateDocument(ForwardRequest request,jakarta.servlet.http.HttpServletResponse response,
+                                       int maxBytes,int deadlineMillis,DeliveryAck delivery) {
+        HttpResponse<java.io.InputStream> upstream;
+        try {
+            var builder=HttpRequest.newBuilder(request.uri()).timeout(Duration.ofMillis(deadlineMillis)).GET();
+            request.headers().forEach(builder::header);
+            upstream=httpClient.send(builder.build(),HttpResponse.BodyHandlers.ofInputStream());
+        } catch(InterruptedException e){Thread.currentThread().interrupt();throw new UpstreamUnavailableException("download interrupted");}
+        catch(Exception e){throw new UpstreamUnavailableException("download unavailable");}
+        String permit=upstream.headers().firstValue("X-AI-Delivery-Permit").orElse(null);
+        String operation=upstream.headers().firstValue("X-AI-Delivery-Operation").orElse(null);
+        var watchdog=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"ai-private-download-deadline");t.setDaemon(true);return t;});
+        watchdog.schedule(()->{try{upstream.body().close();}catch(java.io.IOException ignored){}},deadlineMillis,java.util.concurrent.TimeUnit.MILLISECONDS);
+        try(java.io.InputStream body=upstream.body()) {
+            int status=upstream.statusCode();
+            if(status!=200 && !java.util.Set.of(400,401,403,404,409,413,503).contains(status)) throw new UpstreamUnavailableException("download status invalid");
+            String type=upstream.headers().firstValue("Content-Type").orElse("");
+            if(status==200 && (!type.toLowerCase(java.util.Locale.ROOT).startsWith("application/pdf") || permit==null || operation==null))
+                throw new UpstreamUnavailableException("download proof missing");
+            int limit=status==200 ? maxBytes : 65536;
+            byte[] bytes=body.readNBytes(limit+1);
+            if(bytes.length>limit) throw new UpstreamUnavailableException("download limit exceeded");
+            response.setStatus(status);response.setContentType(status==200 ? "application/pdf" : "application/json;charset=UTF-8");
+            response.setHeader("Cache-Control","no-store");response.setHeader("X-Content-Type-Options","nosniff");
+            response.getOutputStream().write(bytes);response.getOutputStream().flush();
+        } catch(java.io.IOException e){throw new UpstreamUnavailableException("download delivery failed");}
+        finally {
+            watchdog.shutdownNow();
+            // Reached only after our read and final write have stopped, including client abort.
+            if(permit!=null || operation!=null) acknowledge(delivery,permit,operation);
         }
     }
 

@@ -56,7 +56,7 @@ public class P2TestControlController {
         this.properties = properties;
     }
 
-    public record ArmRequest(String hook, Integer times) {
+    public record ArmRequest(String hook, Integer times, Integer pauseMillis) {
     }
 
     @PostMapping("/fault")
@@ -64,7 +64,7 @@ public class P2TestControlController {
         if (request == null || request.hook() == null || request.hook().isBlank()) {
             return Map.of("code", 400, "msg", "hook is required");
         }
-        faults.arm(request.hook(), request.times() == null ? 1 : request.times());
+        faults.armPause(request.hook(), request.times() == null ? 1 : request.times(),request.pauseMillis()==null?0:request.pauseMillis());
         return Map.of("code", 200, "armed", faults.snapshot());
     }
 
@@ -79,10 +79,7 @@ public class P2TestControlController {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("code", 200);
         result.put("armed", faults.snapshot());
-        result.put("hits", Map.of(
-                P2FaultInjector.ADMISSION_AFTER_RUN, faults.hits(P2FaultInjector.ADMISSION_AFTER_RUN),
-                P2FaultInjector.OUTBOX_AFTER_PUBLISH, faults.hits(P2FaultInjector.OUTBOX_AFTER_PUBLISH),
-                P2FaultInjector.WORKER_AFTER_STEP_COMMIT, faults.hits(P2FaultInjector.WORKER_AFTER_STEP_COMMIT)));
+        result.put("hits", faults.hitSnapshot());
         return result;
     }
 

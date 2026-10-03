@@ -54,6 +54,9 @@ public class RunEventAppender {
 
     private final RunLedgerDao dao;
     private final ObjectMapper objectMapper;
+    private org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.runtime.usage.UsageLedgerService> usage;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureUsage(org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.runtime.usage.UsageLedgerService> usage) {this.usage=usage;}
 
     public RunEventAppender(RunLedgerDao dao, ObjectMapper objectMapper) {
         this.dao = dao;
@@ -163,6 +166,8 @@ public class RunEventAppender {
         if (!updated) {
             throw new RunApiException(RunErrorCode.VERSION_CONFLICT, "terminal transition rejected");
         }
+        var ledger=usage==null ? null : usage.getIfAvailable();
+        if(ledger!=null) ledger.finalizeReservation(tenantId,runId);
         return seq;
     }
 

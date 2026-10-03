@@ -63,18 +63,35 @@ public class UsageLedgerService {
      * 幂等结算：仅 STARTED → SETTLED 一次；providerRequestId 唯一约束防重复计量。
      * usage 未知时调用方传 {@code usageRaw=null} → 保持 PENDING_RECONCILIATION。
      */
+    @org.springframework.transaction.annotation.Transactional(rollbackFor=Exception.class)
     public void settle(String tenantId, String callId, String providerRequestId, Map<String, Object> usageRaw) {
         String usageJson = usageRaw == null ? null : CanonicalJson.strictMapper().valueToTree(usageRaw).toString();
-        String state = usageRaw == null ? STATE_PENDING_RECONCILIATION : STATE_SETTLED;
-        try {
+        boolean synthetic=usageRaw!=null && Boolean.TRUE.equals(usageRaw.get("synthetic"));
+        String state = units(usageRaw)==null || !synthetic && (providerRequestId==null || providerRequestId.isBlank()) ? STATE_PENDING_RECONCILIATION : STATE_SETTLED;
+        if(providerRequestId!=null) {
+            jdbc.queryForList("SELECT pg_advisory_xact_lock(hashtextextended(?,0))","p2-usage:"+tenantId+":"+providerRequestId);
+            if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM ai_model_call old JOIN ai_model_call current ON current.tenant_id=old.tenant_id AND current.run_id=old.run_id AND current.kind=old.kind WHERE old.tenant_id=? AND old.provider_request_id=? AND old.call_id<>? AND current.call_id=?)",Boolean.class,tenantId,providerRequestId,callId,callId))) {
+                jdbc.update("UPDATE ai_model_call SET state='PENDING_RECONCILIATION',error_code='PROVIDER_ID_COLLISION',usage_raw=?::jsonb,updated_at=now() WHERE tenant_id=? AND call_id=? AND state='STARTED'",usageJson,tenantId,callId);
+                return;
+            }
+        }
             jdbc.update("UPDATE ai_model_call SET state=?, provider_request_id=?, usage_raw=?::jsonb, updated_at=now() "
                             + "WHERE tenant_id=? AND call_id=? AND state=?",
                     state, providerRequestId, usageJson, tenantId, callId, STATE_STARTED);
-        } catch (DuplicateKeyException e) {
-            // 同一 providerRequestId 已结算：本调用标记为重复，不二次计量
-            jdbc.update("UPDATE ai_model_call SET state='RELEASED', updated_at=now() "
-                    + "WHERE tenant_id=? AND call_id=? AND state=?", tenantId, callId, STATE_STARTED);
+    }
+
+    private static Long units(Map<String,Object> usage) {
+        if(usage==null) return null;
+        if(Boolean.TRUE.equals(usage.get("synthetic"))) return 1L;
+        Object total=usage.get("total_tokens");
+        if(total==null) {
+            var input=usage.getOrDefault("prompt_tokens",usage.get("input_tokens"));
+            var output=usage.getOrDefault("completion_tokens",usage.getOrDefault("output_tokens",0));
+            if(!(input instanceof Number i) || !(output instanceof Number o) || i.longValue()<0 || o.longValue()<0) return null;
+            total=i.longValue()+o.longValue();
         }
+        if(!(total instanceof Number n) || n.longValue()<0 || n.doubleValue()!=n.longValue()) return null;
+        return (n.longValue()+999)/1000;
     }
 
     public void markFailed(String tenantId, String callId, String errorCode) {
@@ -98,13 +115,22 @@ public class UsageLedgerService {
             long count = ((Number) row.get("n")).longValue();
             switch (state) {
                 case STATE_SETTLED -> settled += count;
-                case STATE_PENDING_RECONCILIATION -> pending += count;
+                case STATE_STARTED, STATE_PENDING_RECONCILIATION -> pending += count;
                 case STATE_FAILED -> failed += count;
                 default -> {
                 }
             }
         }
         return new RunUsage(settled, pending, failed);
+    }
+
+    public boolean unresolved(String tenantId,String runId,String stepId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM ai_model_call WHERE tenant_id=? AND run_id=? AND step_id=? "
+                +"AND state IN ('STARTED','PENDING_RECONCILIATION'))",Boolean.class,tenantId,runId,stepId));
+    }
+
+    public void markUnknown(String tenantId,String callId) {
+        jdbc.update("UPDATE ai_model_call SET state='PENDING_RECONCILIATION',updated_at=now() WHERE tenant_id=? AND call_id=? AND state='STARTED'",tenantId,callId);
     }
 
     /**
@@ -116,7 +142,12 @@ public class UsageLedgerService {
         if (usage.pendingReconciliation() > 0) {
             return;
         }
-        long units = Math.max(1, usage.settledCalls());
+        if(usage.settledCalls()==0) {releaseReservation(tenantId,runId);return;}
+        long units=0;
+        for(String raw:jdbc.query("SELECT usage_raw::text FROM ai_model_call WHERE tenant_id=? AND run_id=? AND state='SETTLED'",(rs,n)->rs.getString(1),tenantId,runId)) {
+            try {Long known=units(CanonicalJson.strictMapper().readValue(raw,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){}));if(known==null)return;units+=known;}
+            catch(java.io.IOException e){return;}
+        }
         jdbc.update("UPDATE ai_budget_reservation SET units=?, state='SETTLED', updated_at=now() "
                 + "WHERE tenant_id=? AND run_id=? AND state='RESERVED'", units, tenantId, runId);
     }

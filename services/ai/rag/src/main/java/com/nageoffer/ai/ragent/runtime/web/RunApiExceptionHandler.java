@@ -26,8 +26,17 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import java.util.Map;
 
 /** 运行面异常映射；不泄露 SQL/密钥/堆栈/其他租户标识。 */
-@RestControllerAdvice(basePackages = "com.nageoffer.ai.ragent.runtime.web")
+@RestControllerAdvice(basePackages = {"com.nageoffer.ai.ragent.runtime.web","com.nageoffer.ai.ragent.ingest"})
+@org.springframework.core.annotation.Order(org.springframework.core.Ordered.HIGHEST_PRECEDENCE)
 public class RunApiExceptionHandler {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(RunApiExceptionHandler.class);
+
+    @ExceptionHandler(com.nageoffer.ai.ragent.framework.security.P04AiException.class)
+    public ResponseEntity<?> handleSecurity(com.nageoffer.ai.ragent.framework.security.P04AiException e) {
+        var code=e.errorCode();
+        return ResponseEntity.status(code.httpStatus()).body(com.nageoffer.ai.ragent.framework.security.ApiEnvelope.error(
+                code.httpStatus(),code.message(),code.name()));
+    }
 
     @ExceptionHandler(RunApiException.class)
     public ResponseEntity<Map<String, Object>> handle(RunApiException e) {
@@ -35,8 +44,17 @@ public class RunApiExceptionHandler {
         return RunApiResponses.fail(e.errorCode(), e.getMessage(), requestId);
     }
 
+    @ExceptionHandler({org.springframework.web.multipart.support.MissingServletRequestPartException.class,
+            org.springframework.web.multipart.MaxUploadSizeExceededException.class,
+            org.springframework.http.converter.HttpMessageNotReadableException.class})
+    public ResponseEntity<Map<String,Object>> invalidInput(Exception e) {
+        return RunApiResponses.fail(RunErrorCode.BAD_REQUEST,"req-"+java.util.UUID.randomUUID());
+    }
+
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<Map<String, Object>> handleGeneric(RuntimeException e) {
+        log.warn("run request rejected type={} cause={}", e.getClass().getSimpleName(),
+                e.getCause() == null ? "none" : e.getCause().getClass().getSimpleName());
         String requestId = "req-" + java.util.UUID.randomUUID().toString().replace("-", "");
         return RunApiResponses.fail(RunErrorCode.INTERNAL_ERROR, requestId);
     }

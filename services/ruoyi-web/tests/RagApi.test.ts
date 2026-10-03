@@ -53,3 +53,10 @@ test('terminalSummary tolerates flat and empty payloads', () => {
   assert.deepEqual(empty.citations, []);
   assert.equal(empty.evidenceInsufficient, false);
 });
+
+test('terminalSummary decodes persisted resultRef JSON with citations', () => {
+  const payload = { resultRef: JSON.stringify({ answer: 'persisted', citations: [{ docId: 'd1', versionId: 'v1', chunkKey: 'c1', chunkIndex: 0 }] }) };
+  assert.equal(terminalSummary(payload).answer, 'persisted');
+  assert.equal(terminalSummary(payload).citations.length, 1);
+  assert.equal(terminalSummary({ resultRef: '{broken' }).answer, '');
+});

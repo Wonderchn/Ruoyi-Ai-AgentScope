@@ -8,6 +8,7 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 
 export const useRagStore = defineStore('rag', () => {
+  const epoch = ref(0);
   const knowledgeBases = ref<KnowledgeBaseView[]>([]);
   const currentKbId = ref('');
   const documents = ref<DocumentView[]>([]);
@@ -24,6 +25,7 @@ export const useRagStore = defineStore('rag', () => {
   const errorCode = ref('');
 
   function resetRag() {
+    epoch.value++;
     knowledgeBases.value = [];
     currentKbId.value = '';
     documents.value = [];
@@ -41,6 +43,7 @@ export const useRagStore = defineStore('rag', () => {
   }
 
   return {
+    epoch,
     knowledgeBases,
     currentKbId,
     documents,

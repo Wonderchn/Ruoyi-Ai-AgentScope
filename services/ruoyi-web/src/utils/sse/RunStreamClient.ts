@@ -160,7 +160,7 @@ export function buildRunStreamUrl(
   query?: Record<string, string | number | undefined>,
 ): string {
   const base = request.baseURL.endsWith('/') ? request.baseURL.slice(0, -1) : request.baseURL;
-  const url = new URL(`${base}/runs/${encodeURIComponent(request.runId)}/events`);
+  const url = new URL(`${base}/runs/${encodeURIComponent(request.runId)}/events`, globalThis.location?.origin);
   if (request.afterSeq !== undefined)
     url.searchParams.set('afterSeq', String(request.afterSeq));
   for (const [key, value] of Object.entries(query ?? {})) {

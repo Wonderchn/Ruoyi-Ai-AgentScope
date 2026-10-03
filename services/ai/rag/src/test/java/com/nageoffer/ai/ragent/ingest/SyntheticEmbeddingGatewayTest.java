@@ -83,8 +83,8 @@ class SyntheticEmbeddingGatewayTest {
                         return embedBatch(texts);
                     }
                 };
-        var real = new RealEmbeddingGateway(wrongDimension, 1536);
-        assertThrows(com.nageoffer.ai.ragent.runtime.RunApiException.class, () -> real.embed("x"));
+        assertThrows(com.nageoffer.ai.ragent.runtime.RunApiException.class,
+                () -> RealEmbeddingGateway.validateVector(wrongDimension.embed("x"),1536));
     }
 
     private double cosine(List<Float> a, List<Float> b) {

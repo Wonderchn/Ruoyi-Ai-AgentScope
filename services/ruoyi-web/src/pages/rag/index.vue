@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ElMessage } from 'element-plus';
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
   cancelRun,
   chatRunBody,
   createIngestion,
   createKnowledgeBase,
+  downloadSource,
   getRun,
   listDocuments,
   listKnowledgeBases,
@@ -13,11 +14,13 @@ import {
   terminalSummary,
   uploadDocument,
 } from '@/api/rag';
+import PrivatePdf from '@/components/rag/PrivatePdf.vue';
 import { useUserStore } from '@/stores';
 import { useRagStore } from '@/stores/modules/rag';
 import { openRunStream } from '@/utils/sse/RunStreamClient';
 
 const rag = useRagStore();
+let viewEpoch = 0;
 const question = ref('');
 const newKbName = ref('');
 const creatingKb = ref(false);
@@ -25,7 +28,74 @@ const loadingKbs = ref(false);
 const ingesting = ref(false);
 const asking = ref(false);
 const fileInput = ref<HTMLInputElement>();
+const versionTarget = ref('');
+const sourceUrl = ref('');
+let sourceController: AbortController | null = null;
+function closeSource() {
+  sourceController?.abort();
+  if (sourceUrl.value)
+    URL.revokeObjectURL(sourceUrl.value);
+  sourceUrl.value = '';
+}
+async function viewSource(docId: string, versionId: string) {
+  const epoch = viewEpoch;
+  closeSource();
+  const controller = new AbortController();
+  sourceController = controller;
+  try {
+    const blob = await downloadSource(docId, versionId, controller.signal);
+    if (current(epoch) && sourceController === controller)
+      sourceUrl.value = URL.createObjectURL(blob);
+  }
+  catch (error) {
+    if (current(epoch) && sourceController === controller)
+      ElMessage.error(error instanceof Error ? error.message : '引用不可访问');
+  }
+}
 let streamController: AbortController | null = null;
+let uploadController: AbortController | null = null;
+let mounted = true;
+const pendingUpload = ref<{ file: File; kbId: string; key: string; docId?: string } | null>(null);
+function current(epoch: number, kbId?: string) {
+  return mounted && epoch === viewEpoch && (kbId === undefined || kbId === rag.currentKbId);
+}
+watch(() => rag.epoch, () => {
+  viewEpoch++;
+  closeSource();
+  versionTarget.value = '';
+  streamController?.abort();
+  uploadController?.abort();
+  pendingUpload.value = null;
+  asking.value = false;
+  ingesting.value = false;
+  loadingKbs.value = false;
+  creatingKb.value = false;
+});
+
+watch(() => rag.currentKbId, () => {
+  viewEpoch++;
+  closeSource();
+  streamController?.abort();
+  uploadController?.abort();
+  pendingUpload.value = null;
+  versionTarget.value = '';
+  rag.documents = [];
+  rag.upload = null;
+  rag.uploadPercent = 0;
+  rag.ingestRun = null;
+  rag.chatRunId = '';
+  rag.chatStatus = '';
+  rag.answer = '';
+  rag.citations = [];
+  rag.steps = [];
+  rag.lastSeq = 0;
+  rag.streamNote = '';
+  rag.errorCode = '';
+  loadingKbs.value = false;
+  creatingKb.value = false;
+  asking.value = false;
+  ingesting.value = false;
+}, { flush: 'sync' });
 
 const isTerminal = computed(() => ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(rag.chatStatus));
 const statusTagType = computed(() => {
@@ -40,54 +110,76 @@ const statusTagType = computed(() => {
 const ingestStepActive = computed(() => (rag.ingestRun?.steps || []).filter(step => step.state === 'COMPLETED').length);
 
 async function loadKbs() {
+  const epoch = viewEpoch;
   loadingKbs.value = true;
   try {
-    rag.knowledgeBases = await listKnowledgeBases();
+    const kbs = await listKnowledgeBases();
+    if (!current(epoch))
+      return;
+    rag.knowledgeBases = kbs;
     if (!rag.currentKbId && rag.knowledgeBases.length) {
       rag.currentKbId = rag.knowledgeBases[0].kbId;
       await loadDocuments();
     }
   }
   catch (error) {
+    if (!(current(epoch)))
+      return;
     console.warn('[rag] operation failed', error);
     ElMessage.error('加载知识库失败（需要 ai:kb:list 权限）');
   }
   finally {
-    loadingKbs.value = false;
+    if (current(epoch))
+      loadingKbs.value = false;
   }
 }
 
 async function createKb() {
+  const epoch = viewEpoch;
   if (!newKbName.value)
     return;
   creatingKb.value = true;
   try {
-    const kb = await createKnowledgeBase(newKbName.value, 'synthetic-feature-hash-1536');
+    const kb = await createKnowledgeBase(newKbName.value);
+    if (!current(epoch))
+      return;
     newKbName.value = '';
     await loadKbs();
+    if (!current(epoch))
+      return;
     if (kb?.kbId) {
       rag.currentKbId = kb.kbId;
       await loadDocuments();
     }
   }
   catch (error) {
+    if (!(current(epoch)))
+      return;
     console.warn('[rag] operation failed', error);
     ElMessage.error('创建知识库失败');
   }
   finally {
-    creatingKb.value = false;
+    if (current(epoch))
+      creatingKb.value = false;
   }
 }
 
 async function loadDocuments() {
+  const epoch = viewEpoch;
+  const kbId = rag.currentKbId;
   if (!rag.currentKbId)
     return;
   try {
-    rag.documents = await listDocuments(rag.currentKbId);
+    const docs = await listDocuments(kbId);
+    if (current(epoch, kbId))
+      rag.documents = docs;
   }
   catch (error) {
+    if (!(current(epoch, kbId)))
+      return;
     console.warn('[rag] operation failed', error);
-    rag.documents = [];
+    if (current(epoch, kbId))
+      rag.documents = [];
   }
 }
 
@@ -101,42 +193,76 @@ async function onFilePicked(event: Event) {
   input.value = '';
   if (!file || !rag.currentKbId)
     return;
+  pendingUpload.value = { file, kbId: rag.currentKbId, key: crypto.randomUUID(), docId: versionTarget.value || undefined };
+  await retryUpload();
+}
+
+async function retryUpload() {
+  const pending = pendingUpload.value;
+  if (!pending || pending.kbId !== rag.currentKbId)
+    return;
+  const epoch = viewEpoch;
+  uploadController?.abort();
+  uploadController = new AbortController();
+  const controller = uploadController;
+  const valid = () => current(epoch, pending.kbId) && uploadController === controller;
   try {
-    rag.upload = await uploadDocument(rag.currentKbId, file, (percent) => {
-      rag.uploadPercent = percent;
-    });
+    const uploaded = await uploadDocument(pending.kbId, pending.file, (percent) => {
+      if (valid())
+        rag.uploadPercent = percent;
+    }, pending.key, uploadController.signal, pending.docId);
+    if (!valid())
+      return;
+    rag.upload = uploaded;
+    pendingUpload.value = null;
     ElMessage.success('上传完成');
   }
   catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '上传失败');
+    if (valid())
+      ElMessage.error(error instanceof Error ? error.message : '上传失败');
   }
   finally {
-    rag.uploadPercent = 0;
+    if (valid())
+      rag.uploadPercent = 0;
   }
 }
 
 async function startIngest() {
+  const epoch = viewEpoch;
+  const kbId = rag.currentKbId;
   if (!rag.upload)
     return;
   ingesting.value = true;
   try {
     const idempotencyKey = `web-ingest-${rag.upload.uploadId}`;
     const created = await createIngestion(rag.upload.docId, rag.upload.uploadId, idempotencyKey);
-    rag.ingestRun = await getRun(created.runId);
+    if (!current(epoch, kbId))
+      return;
+    const initial = await getRun(created.runId);
+    if (!current(epoch, kbId))
+      return;
+    rag.ingestRun = initial;
     await pollIngest(created.runId);
   }
   catch (error) {
+    if (!(current(epoch, kbId)))
+      return;
     console.warn('[rag] operation failed', error);
     ElMessage.error('创建摄入任务失败');
   }
   finally {
-    ingesting.value = false;
+    if (current(epoch, kbId))
+      ingesting.value = false;
   }
 }
 
 async function pollIngest(runId: string) {
+  const epoch = viewEpoch;
+  const kbId = rag.currentKbId;
   for (let i = 0; i < 240; i++) {
     const snapshot = await getRun(runId);
+    if (!current(epoch, kbId))
+      return;
     rag.ingestRun = snapshot;
     if (['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(snapshot.status)) {
       await loadDocuments();
@@ -147,6 +273,10 @@ async function pollIngest(runId: string) {
 }
 
 async function ask() {
+  const epoch = viewEpoch;
+  const kbId = rag.currentKbId;
+  streamController?.abort();
+  rag.lastSeq = 0;
   asking.value = true;
   rag.answer = '';
   rag.citations = [];
@@ -156,11 +286,15 @@ async function ask() {
   try {
     const key = `web-chat-${rag.currentKbId}-${Date.now()}`;
     const created = await submitRun(chatRunBody([rag.currentKbId], question.value), key);
+    if (!current(epoch, kbId))
+      return;
     rag.chatRunId = created.runId;
     rag.chatStatus = created.status;
     streamChat(created.runId);
   }
   catch (error) {
+    if (!(current(epoch, kbId)))
+      return;
     console.warn('[rag] operation failed', error);
     asking.value = false;
     ElMessage.error('提交失败（需要 ai:run:submit 权限）');
@@ -168,13 +302,17 @@ async function ask() {
 }
 
 function streamChat(runId: string) {
+  const epoch = viewEpoch;
+  const valid = () => current(epoch) && rag.chatRunId === runId;
   streamController = new AbortController();
   const base = (import.meta.env.VITE_API_URL as string | undefined) ?? '';
   const stream = openRunStream(
-    { baseURL: `${base}/api/ai/v1`, runId, token: useUserStore().token ?? '', afterSeq: rag.lastSeq },
+    { baseURL: `${base}/api/ai/v1`, runId, token: useUserStore().token ?? '', clientId: import.meta.env.VITE_CLIENT_ID, afterSeq: rag.lastSeq },
     {
       signal: streamController.signal,
       onReconnect: (info) => {
+        if (!valid())
+          return;
         rag.streamNote = `重连中（afterSeq=${info.afterSeq ?? 0}，${info.reason}）`;
       },
     },
@@ -182,6 +320,8 @@ function streamChat(runId: string) {
   void (async () => {
     try {
       for await (const message of stream.messages) {
+        if (!valid())
+          return;
         const seq = typeof message.cursor === 'number' ? message.cursor : Number(message.cursor);
         if (Number.isFinite(seq))
           rag.lastSeq = seq;
@@ -220,12 +360,14 @@ function streamChat(runId: string) {
       }
     }
     catch (error) {
-      rag.streamNote = error instanceof Error ? `${error.name}: ${error.message}` : '订阅中断';
+      if (valid())
+        rag.streamNote = error instanceof Error ? `${error.name}: ${error.message}` : '订阅中断';
     }
     finally {
-      asking.value = false;
-      const snapshot = await getRun(runId).catch(() => null);
-      if (snapshot) {
+      if (valid())
+        asking.value = false;
+      const snapshot = valid() ? await getRun(runId).catch(() => null) : null;
+      if (valid() && snapshot) {
         rag.chatStatus = snapshot.status;
         rag.errorCode = snapshot.errorCode ?? rag.errorCode;
         const terminal = terminalSummary(snapshot.terminalResult);
@@ -239,26 +381,37 @@ function streamChat(runId: string) {
 }
 
 async function cancel() {
+  const epoch = viewEpoch;
+  const runId = rag.chatRunId;
   if (!rag.chatRunId)
     return;
   try {
     const snapshot = await getRun(rag.chatRunId);
-    const result = await cancelRun(rag.chatRunId, snapshot.version);
-    rag.chatStatus = result.status;
+    if (!current(epoch) || rag.chatRunId !== runId)
+      return;
+    const result = await cancelRun(runId, snapshot.version);
+    if (current(epoch) && rag.chatRunId === runId)
+      rag.chatStatus = result.status;
   }
   catch (error) {
+    if (!(current(epoch) && rag.chatRunId === runId))
+      return;
     console.warn('[rag] operation failed', error);
     ElMessage.error('取消失败');
   }
 }
 
 async function retry() {
+  const epoch = viewEpoch;
+  const kbId = rag.currentKbId;
   if (!rag.chatRunId || !rag.currentKbId)
     return;
   rag.lastSeq = 0;
   try {
     const key = `web-chat-retry-${rag.chatRunId}`;
     const created = await submitRun(chatRunBody([rag.currentKbId], question.value, rag.chatRunId), key);
+    if (!current(epoch, kbId))
+      return;
     rag.chatRunId = created.runId;
     rag.chatStatus = created.status;
     rag.answer = '';
@@ -267,6 +420,8 @@ async function retry() {
     streamChat(created.runId);
   }
   catch (error) {
+    if (!(current(epoch, kbId)))
+      return;
     console.warn('[rag] operation failed', error);
     ElMessage.error('重试失败');
   }
@@ -274,7 +429,10 @@ async function retry() {
 
 onMounted(loadKbs);
 onBeforeUnmount(() => {
+  closeSource();
+  mounted = false;
   streamController?.abort();
+  uploadController?.abort();
 });
 </script>
 
@@ -313,9 +471,15 @@ onBeforeUnmount(() => {
         文档摄入
       </el-divider>
       <div class="rag-row">
+        <el-select v-model="versionTarget" placeholder="上传为新文档" clearable style="width: 220px">
+          <el-option v-for="doc in rag.documents" :key="doc.docId" :value="doc.docId" :label="`更新版本：${doc.name}`" />
+        </el-select>
         <input ref="fileInput" type="file" accept="application/pdf" style="display: none" @change="onFilePicked">
         <el-button :disabled="!rag.currentKbId" @click="pickFile">
           选择 PDF 上传
+        </el-button>
+        <el-button v-if="pendingUpload" @click="retryUpload">
+          重试原上传
         </el-button>
         <span v-if="rag.uploadPercent > 0 && rag.uploadPercent < 100">上传中 {{ rag.uploadPercent }}%</span>
         <span v-if="rag.upload">已上传：{{ rag.upload.docId }}（sha256 {{ rag.upload.sha256.slice(0, 12) }}…）</span>
@@ -369,9 +533,15 @@ onBeforeUnmount(() => {
         <div v-for="(citation, index) in rag.citations" :key="citation.chunkKey" class="rag-citation">
           [{{ index + 1 }}] {{ citation.docName || citation.docId }} · 版本 {{ citation.versionId.slice(0, 10) }} ·
           chunk {{ citation.chunkIndex }}<span v-if="citation.score"> · 相似度 {{ citation.score }}</span>
+          <el-button link type="primary" @click="viewSource(citation.docId, citation.versionId)">
+            查看当前来源
+          </el-button>
         </div>
       </div>
     </el-card>
+    <el-dialog :model-value="!!sourceUrl" title="私有 PDF 来源" width="80%" @close="closeSource">
+      <PrivatePdf v-if="sourceUrl" :source-url="sourceUrl" />
+    </el-dialog>
   </div>
 </template>
 

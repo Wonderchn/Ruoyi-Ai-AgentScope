@@ -56,16 +56,18 @@ public class UploadService {
     private final RunAdmissionService admission;
     private final P2RuntimeProperties properties;
     private final P2FaultInjector faults;
+    private final UploadIntentService intents;
     private final ObjectProvider<com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService> authorization;
 
     public UploadService(DocumentDao documentDao, PrivateObjectStore objectStore, RunAdmissionService admission,
-                         P2RuntimeProperties properties, P2FaultInjector faults,
+                         P2RuntimeProperties properties, P2FaultInjector faults, UploadIntentService intents,
                          ObjectProvider<com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService> authorization) {
         this.documentDao = documentDao;
         this.objectStore = objectStore;
         this.admission = admission;
         this.properties = properties;
         this.faults = faults;
+        this.intents = intents;
         this.authorization = authorization;
     }
 
@@ -74,10 +76,24 @@ public class UploadService {
     }
 
     public UploadResult upload(ExecutionPrincipal principal, String kbId, MultipartFile file) {
+        return upload(principal,kbId,file,UUID.randomUUID().toString());
+    }
+
+    public UploadResult upload(ExecutionPrincipal principal, String kbId, MultipartFile file, String key) {
+        return upload(principal,kbId,file,key,null);
+    }
+    public UploadResult upload(ExecutionPrincipal principal, String kbId, MultipartFile file, String key,String targetDocId) {
         if (kbId == null || kbId.isBlank() || !kbId.matches("[A-Za-z0-9_-]{1,64}")) {
             throw new RunApiException(RunErrorCode.BAD_REQUEST, "kbId is required and must be a plain identifier");
         }
         requireKbRead(principal, kbId);
+        if(targetDocId!=null) {
+            if(!targetDocId.matches("[A-Za-z0-9_-]{1,64}")) throw new RunApiException(RunErrorCode.BAD_REQUEST);
+            var target=documentDao.findDocument(principal.tenantId(),targetDocId).orElseThrow(()->new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
+            if(target.tombstoned() || !target.kbId().equals(kbId) || authorization.getObject().check(
+                    com.nageoffer.ai.ragent.runtime.RunAccessService.scoped(principal,java.util.Set.of("document.read")),"document.read","doc:"+targetDocId)!=ResourceAuthorizationService.Verdict.GRANT)
+                throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
+        }
         if (file == null || file.isEmpty()) {
             throw new RunApiException(RunErrorCode.BAD_REQUEST, "file is required");
         }
@@ -86,7 +102,7 @@ public class UploadService {
             throw new RunApiException(RunErrorCode.BAD_REQUEST, "file exceeds the configured upload limit");
         }
         String mime = file.getContentType();
-        if (mime == null || !mime.toLowerCase(java.util.Locale.ROOT).startsWith(properties.getUpload().getAllowedMime())) {
+        if (mime == null || !mime.split(";",2)[0].trim().equalsIgnoreCase(properties.getUpload().getAllowedMime())) {
             throw new RunApiException(RunErrorCode.BAD_REQUEST, "only application/pdf uploads are accepted");
         }
         String filename = sanitizeFilename(file.getOriginalFilename());
@@ -99,10 +115,17 @@ public class UploadService {
             throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE, "upload stream unavailable");
         }
 
-        String docId = "doc-" + UUID.randomUUID().toString().replace("-", "");
-        String uploadId = "upl-" + UUID.randomUUID().toString().replace("-", "");
-        String versionId = "ver-" + UUID.randomUUID().toString().replace("-", "");
-        String objectKey = "tenants/" + principal.tenantId() + "/docs/" + docId + "/" + uploadId + ".pdf";
+        String sha;
+        try (InputStream in=file.getInputStream()) {
+            var digest=java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buffer=new byte[65536]; long readBytes=0; int n;
+            while((n=in.read(buffer))!=-1) {readBytes+=n; if(readBytes>maxBytes){throw new RunApiException(RunErrorCode.BAD_REQUEST);} digest.update(buffer,0,n);}
+            sha=java.util.HexFormat.of().formatHex(digest.digest());
+        } catch(java.security.NoSuchAlgorithmException | IOException e) {throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE);}
+        String requestHash=com.nageoffer.ai.ragent.runtime.CanonicalJson.sha256(kbId+"\n"+(targetDocId==null?"":targetDocId)+"\n"+filename+"\n"+file.getSize()+"\n"+sha);
+        var intent=intents.begin(principal,key,requestHash,sha,file.getSize(),targetDocId);
+        String docId=intent.docId(), uploadId=intent.uploadId(), versionId=intent.versionId(), objectKey=intent.objectKey();
+        if("STORED".equals(intent.state())) {return new UploadResult(uploadId,docId,versionId,sha,intent.size(),"STORED");}
         PrivateObjectStore.StoredObject stored;
         try (InputStream input = file.getInputStream()) {
             stored = objectStore.putStream(objectKey, input, maxBytes);
@@ -113,13 +136,20 @@ public class UploadService {
             objectStore.delete(objectKey);
             throw new RunApiException(RunErrorCode.BAD_REQUEST, "file exceeds the configured upload limit");
         }
-        // A25：对象已落盘、元数据未写——崩溃窗口，孤儿对象仅可清理
+        if(!sha.equals(stored.sha256()) || file.getSize()!=stored.sizeBytes()) {
+            objectStore.delete(objectKey);
+            throw new RunApiException(RunErrorCode.BAD_REQUEST,"upload content changed");
+        }
+        requireKbRead(principal,kbId);
+        // A25：对象已落盘、元数据未写；原 intent 可恢复并保留同一服务器键。
         faults.checkpoint(P2FaultInjector.UPLOAD_AFTER_OBJECT_STORE);
-        documentDao.insertDocument(principal.tenantId(), docId, kbId, filename, principal.membershipId());
-        documentDao.insertUpload(principal.tenantId(), uploadId, docId, kbId, principal.membershipId(),
-                filename, "application/pdf", stored.sizeBytes(), stored.sha256(), objectKey);
-        documentDao.insertVersion(principal.tenantId(), versionId, docId, uploadId, null);
-        // A25：元数据已逐条提交、响应未达——响应丢失窗口，重试产生独立新意图
+        intents.complete(principal,key,requestHash,() -> {
+            if(targetDocId==null) documentDao.insertDocument(principal.tenantId(), docId, kbId, filename, principal.membershipId());
+            documentDao.insertUpload(principal.tenantId(), uploadId, docId, kbId, principal.membershipId(),
+                    filename, "application/pdf", stored.sizeBytes(), stored.sha256(), objectKey);
+            documentDao.insertVersion(principal.tenantId(), versionId, docId, uploadId, null);
+        });
+        // A25：原子元数据提交后响应丢失；原 key 重试复用同一 intent。
         faults.checkpoint(P2FaultInjector.UPLOAD_AFTER_DB);
         return new UploadResult(uploadId, docId, versionId, stored.sha256(), stored.sizeBytes(), "STORED");
     }
@@ -222,9 +252,12 @@ public class UploadService {
         }
         requireKbRead(principal, document.kbId());
         String targetVersion = versionId == null || versionId.isBlank() ? document.publishedVersionId() : versionId;
+        if(targetVersion==null || !targetVersion.equals(document.publishedVersionId())
+                || authorization.getObject().check(com.nageoffer.ai.ragent.runtime.RunAccessService.scoped(principal,java.util.Set.of("document.read")),"document.read","doc:"+docId)!=ResourceAuthorizationService.Verdict.GRANT)
+            throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
         DocumentDao.VersionRow version = documentDao.findVersion(principal.tenantId(), targetVersion)
                 .orElseThrow(() -> new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
-        if (!docId.equals(version.docId())) {
+        if (!docId.equals(version.docId()) || !"PUBLISHED".equals(version.state())) {
             throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
         }
         DocumentDao.UploadRow upload = documentDao.findUpload(principal.tenantId(), version.uploadId())
@@ -234,10 +267,13 @@ public class UploadService {
     }
 
     /** 删除：先 tombstone 阻断检索，再异步清理（P2 首期同步清理分块，对象保留审计）。 */
+    @org.springframework.transaction.annotation.Transactional(rollbackFor=Exception.class)
     public Map<String, Object> tombstone(ExecutionPrincipal principal, String docId) {
         DocumentDao.DocumentRow document = documentDao.findDocument(principal.tenantId(), docId)
                 .orElseThrow(() -> new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
         requireKbRead(principal, document.kbId());
+        if(authorization.getObject().check(principal,"kb.delete","kb:"+document.kbId())!=ResourceAuthorizationService.Verdict.GRANT)
+            throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
         documentDao.tombstoneDocument(principal.tenantId(), docId);
         documentDao.tombstoneVersions(principal.tenantId(), docId);
         Map<String, Object> view = new LinkedHashMap<>();
@@ -253,7 +289,8 @@ public class UploadService {
         }
         ResourceAuthorizationService.Verdict verdict;
         try {
-            verdict = service.check(principal, "kb.read", "kb:" + kbId);
+            for(String action:principal.scopes()) service.requireFunction(principal,action,"kb:"+kbId);
+            verdict = service.check(com.nageoffer.ai.ragent.runtime.RunAccessService.scoped(principal,java.util.Set.of("kb.read")), "kb.read", "kb:" + kbId);
         } catch (RuntimeException e) {
             throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE, "kb authorization unavailable");
         }
@@ -267,11 +304,8 @@ public class UploadService {
         if (original == null || original.isBlank()) {
             throw new RunApiException(RunErrorCode.BAD_REQUEST, "filename is required");
         }
-        String name = original.replace('\\', '/');
-        int slash = name.lastIndexOf('/');
-        if (slash >= 0) {
-            name = name.substring(slash + 1);
-        }
+        if(original.contains("/") || original.contains("\\")) throw new RunApiException(RunErrorCode.BAD_REQUEST, "filename is not acceptable");
+        String name = original;
         name = name.strip();
         if (name.isEmpty() || name.contains("..") || name.length() > 200) {
             throw new RunApiException(RunErrorCode.BAD_REQUEST, "filename is not acceptable");

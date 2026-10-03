@@ -33,6 +33,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class P2FaultInjector {
 
     private final Map<String, AtomicInteger> armed = new ConcurrentHashMap<>();
+    private final Map<String,Integer> pauses=new ConcurrentHashMap<>();
     private final Map<String, AtomicInteger> hits = new ConcurrentHashMap<>();
 
     public static class InjectedFault extends RuntimeException {
@@ -49,13 +50,20 @@ public class P2FaultInjector {
         hits.computeIfAbsent(hook, key -> new AtomicInteger(0));
     }
 
+    public void armPause(String hook,int times,int pauseMillis) {
+        if(pauseMillis<0 || pauseMillis>30000) throw new IllegalArgumentException("pause outside bounded test window");
+        pauses.put(hook,pauseMillis);arm(hook,times);
+    }
+
     public void clear(String hook) {
+        pauses.remove(hook);
         armed.remove(hook);
     }
 
     public void clearAll() {
         armed.clear();
         hits.clear();
+        pauses.clear();
     }
 
     public Map<String, Integer> snapshot() {
@@ -76,6 +84,8 @@ public class P2FaultInjector {
             if (remaining.get() == 0) {
                 armed.remove(hook);
             }
+            int pause=pauses.getOrDefault(hook,0);
+            if(pause>0) {try{Thread.sleep(pause);}catch(InterruptedException e){Thread.currentThread().interrupt();}}
             throw new InjectedFault(hook);
         }
     }
@@ -89,6 +99,10 @@ public class P2FaultInjector {
     public int hits(String hook) {
         AtomicInteger counter = hits.get(hook);
         return counter == null ? 0 : counter.get();
+    }
+    public Map<String,Integer> hitSnapshot() {
+        Map<String,Integer> result=new java.util.LinkedHashMap<>();
+        hits.forEach((key,value)->result.put(key,value.get()));return Map.copyOf(result);
     }
 
     /** 故障点常量（与验收 runner 共享字符串）。 */
@@ -107,6 +121,7 @@ public class P2FaultInjector {
     public static final String WORKER_ABANDON_RUN = "worker.abandonRun";
     public static final String MINERU_BEFORE_JOB = "mineru.beforeJob";
     public static final String MINERU_AFTER_JOB_CREATE = "mineru.afterJobCreate";
+    public static final String EMBEDDING_AFTER_STAGING_CHUNK = "embedding.afterStagingChunk";
     public static final String PUBLISH_BEFORE_SWAP = "publish.beforeSwap";
     public static final String PUBLISH_AFTER_SWAP = "publish.afterSwap";
     public static final String CHAT_BEFORE_PROVIDER = "chat.beforeProvider";

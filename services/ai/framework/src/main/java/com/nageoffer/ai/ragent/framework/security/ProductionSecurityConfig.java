@@ -70,7 +70,7 @@ public class ProductionSecurityConfig {
         P04SecurityProperties configuration = new P04SecurityProperties();
         configuration.getPlatform().setAuthorizationUrl(url + "/internal/platform/v1/authorization/check");
         configuration.getPlatform().setServiceCredential(credential);
-        return new PlatformAuthorizationClient(java.net.http.HttpClient.newBuilder()
+        return new PlatformAuthorizationClient(java.net.http.HttpClient.newBuilder().version(java.net.http.HttpClient.Version.HTTP_1_1)
                 .connectTimeout(java.time.Duration.ofSeconds(2)).followRedirects(java.net.http.HttpClient.Redirect.NEVER).build(),
                 new com.fasterxml.jackson.databind.ObjectMapper(), configuration, true);
     }

@@ -31,4 +31,10 @@ public interface EmbeddingGateway {
     List<List<Float>> embedBatch(List<String> texts);
 
     List<Float> embed(String text);
+
+    record EmbeddingResult(List<List<Float>> vectors,String providerRequestId,java.util.Map<String,Object> usageRaw) {}
+
+    default EmbeddingResult embedBatchWithUsage(List<String> texts) {
+        return new EmbeddingResult(embedBatch(texts),null,"synthetic".equals(provider())?java.util.Map.of("synthetic",true,"batchSize",texts.size()):null);
+    }
 }

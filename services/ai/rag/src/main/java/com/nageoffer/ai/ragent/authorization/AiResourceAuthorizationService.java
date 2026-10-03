@@ -157,7 +157,7 @@ public class AiResourceAuthorizationService
     private final com.fasterxml.jackson.databind.ObjectMapper matchJson = new com.fasterxml.jackson.databind.ObjectMapper()
             .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY)
             .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
-    private final java.net.http.HttpClient matchHttp = java.net.http.HttpClient.newBuilder()
+    private final java.net.http.HttpClient matchHttp = java.net.http.HttpClient.newBuilder().version(java.net.http.HttpClient.Version.HTTP_1_1)
             .connectTimeout(java.time.Duration.ofSeconds(2)).followRedirects(java.net.http.HttpClient.Redirect.NEVER).build();
 
     @Autowired

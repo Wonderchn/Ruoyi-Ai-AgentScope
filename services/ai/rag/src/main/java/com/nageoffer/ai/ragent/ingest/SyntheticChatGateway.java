@@ -84,7 +84,7 @@ public class SyntheticChatGateway implements ChatGateway {
         usage.put("synthetic", true);
         usage.put("promptChars", userText.length());
         usage.put("completionChars", answer.length());
-        return new ChatResult(answer, "synthetic-req-" + Integer.toHexString(answer.hashCode()), usage, "stop");
+        return new ChatResult(answer, "synthetic-req-" + java.util.UUID.randomUUID(), usage, "stop");
     }
 
     private String compose(String question, String context) {

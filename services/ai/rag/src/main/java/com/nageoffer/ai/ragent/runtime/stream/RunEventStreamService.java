@@ -63,16 +63,19 @@ public class RunEventStreamService {
     private final P2RuntimeProperties properties;
     private final ObjectMapper objectMapper;
     private final ObjectProvider<com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService> authorization;
+    private final com.nageoffer.ai.ragent.runtime.web.DeliveryPermits permits;
 
     public RunEventStreamService(RunLedgerDao dao, RunLifecycleService lifecycle, NotificationBus bus,
                                  P2RuntimeProperties properties, ObjectMapper objectMapper,
-                                 ObjectProvider<com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService> authorization) {
+                                 ObjectProvider<com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService> authorization,
+                                 com.nageoffer.ai.ragent.runtime.web.DeliveryPermits permits) {
         this.dao = dao;
         this.lifecycle = lifecycle;
         this.bus = bus;
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.authorization = authorization;
+        this.permits = permits;
     }
 
     /** 入口：鉴权 → 保留期检查 → 流式输出。返回 false 表示已写错误响应。 */
@@ -95,7 +98,7 @@ public class RunEventStreamService {
             writeCursorExpired(response, principal, runId, afterSeq, run);
             return false;
         }
-        if (afterSeq == 0 && min > 1 && retentionExpired) {
+        if (afterSeq == 0 && min > 1) {
             writeCursorExpired(response, principal, runId, 0, run);
             return false;
         }
@@ -113,24 +116,35 @@ public class RunEventStreamService {
 
         BoundedSink sink = new BoundedSink(response, properties.getEvents().getBufferMaxFrames(),
                 properties.getEvents().getBufferMaxBytes(),
-                Duration.ofSeconds(properties.getEvents().getHeartbeatSeconds()).toMillis());
+                Duration.ofSeconds(properties.getEvents().getHeartbeatSeconds()).toMillis(), content -> {
+                    if (content.startsWith(": ping")) return content;
+                    if (!authorize(principal, runId)) throw new RunApiException(RunErrorCode.FORBIDDEN, "stream revoked");
+                    var permit = permits.enter(principal, "run.stream", "run:" + runId);
+                    // Only the final gateway can confirm application delivery has ended.
+                    return ": ai-delivery " + permit.permitId() + " " + permit.operationId() + "\n" + content;
+                });
         AtomicBoolean closed = new AtomicBoolean(false);
         Thread writer = sink.startWriter(closed);
         AutoCloseable subscription = bus.subscribe(principal.tenantId(), runId, seq -> sink.wake());
         try {
             runStreamLoop(principal, run, afterSeq, sink, closed);
+        } catch (RuntimeException e) {
+            closed.set(true);
+            throw e;
         } finally {
             try {
                 subscription.close();
             } catch (Exception ignored) {
                 // 忽略
             }
-            sink.close();
+            sink.finish();
             try {
-                writer.join(500);
+                writer.join(30000);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
+            sink.close();
+            writer.interrupt();
         }
         return true;
     }
@@ -140,8 +154,7 @@ public class RunEventStreamService {
         String tenantId = run.tenantId();
         String runId = run.runId();
         long cursor = afterSeq;
-        long lastAuthCheckMs = 0;
-        while (!closed.get()) {
+        while (!closed.get() && !sink.isClosed()) {
             long high = dao.maxSeq(tenantId, runId);
             if (high > cursor) {
                 List<RunLedgerDao.EventRow> batch = dao.listEvents(tenantId, runId, cursor,
@@ -153,7 +166,7 @@ public class RunEventStreamService {
                         sink.enqueue(frame("stream.cursor_expired", cursor,
                                 envelope(tenantId, runId, cursor, "e-stream-cursor-expired", "stream.cursor_expired",
                                         Map.of("lastSeq", cursor, "snapshot", snapshot(run)))));
-                        closed.set(true);
+                        sink.finish();
                         return;
                     }
                     expected++;
@@ -161,15 +174,6 @@ public class RunEventStreamService {
                 for (RunLedgerDao.EventRow row : batch) {
                     if (closed.get()) {
                         return;
-                    }
-                    long now = System.currentTimeMillis();
-                    if (now - lastAuthCheckMs > 5000) {
-                        if (!authorize(principal, runId)) {
-                            // 鉴权失效：停止受限输出，不发终态
-                            closed.set(true);
-                            return;
-                        }
-                        lastAuthCheckMs = now;
                     }
                     String type = row.type();
                     Map<String, Object> envelope = envelope(tenantId, runId, row.seq(), row.eventId(), type,
@@ -181,14 +185,14 @@ public class RunEventStreamService {
                     }
                     cursor = row.seq();
                     if ("run.terminal".equals(type)) {
-                        closed.set(true);
+                        sink.finish();
                         return;
                     }
                 }
                 continue;
             }
             // 无新事件：心跳 + 短暂等待（通知只是加速，轮询是扫描补偿）
-            if (!sink.heartbeatIfIdle()) {
+            if (!authorize(principal, runId) || !sink.heartbeatIfIdle()) {
                 closed.set(true);
                 return;
             }
@@ -202,6 +206,7 @@ public class RunEventStreamService {
             return false;
         }
         try {
+            lifecycle.get(principal,runId);
             return service.check(principal, "run.stream", "run:" + runId)
                     == com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict.GRANT;
         } catch (RuntimeException e) {
@@ -247,6 +252,9 @@ public class RunEventStreamService {
 
     private void writeCursorExpired(HttpServletResponse response, ExecutionPrincipal principal,
                                     String runId, long afterSeq, RunRecord run) throws IOException {
+        var permit = permits.enter(principal, "run.stream", "run:" + runId);
+        response.setHeader("X-AI-Delivery-Permit", permit.permitId());
+        response.setHeader("X-AI-Delivery-Operation", permit.operationId());
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("errorCode", RunErrorCode.CURSOR_EXPIRED.name());
         data.put("retryable", false);
@@ -283,7 +291,7 @@ public class RunEventStreamService {
      * 有界缓冲输出：帧/字节双上限；超限即断订阅（不静默丢弃、不伪造 410）。
      * 写线程与流循环解耦，保证慢订阅者不会无限缓存，也不阻塞 Worker。
      */
-    private static final class BoundedSink {
+    static final class BoundedSink {
         private final HttpServletResponse response;
         private final int maxFrames;
         private final long maxBytes;
@@ -294,13 +302,17 @@ public class RunEventStreamService {
         private final Object wakeLock = new Object();
         private final AtomicLong lastWriteMs = new AtomicLong(System.currentTimeMillis());
         private volatile boolean closed = false;
+        private volatile boolean finished = false;
+        private final java.util.function.Function<String,String> protect;
 
-        BoundedSink(HttpServletResponse response, int maxFrames, long maxBytes, long heartbeatMs) {
+        BoundedSink(HttpServletResponse response, int maxFrames, long maxBytes, long heartbeatMs,
+                    java.util.function.Function<String,String> protect) {
             this.response = response;
             this.maxFrames = Math.max(1, maxFrames);
             this.maxBytes = Math.max(1024, maxBytes);
             this.heartbeatMs = Math.max(1000, heartbeatMs);
             this.queue = new ArrayBlockingQueue<>(this.maxFrames);
+            this.protect = protect;
         }
 
         Thread startWriter(AtomicBoolean closedFlag) {
@@ -310,19 +322,25 @@ public class RunEventStreamService {
                     while (!closed && !closedFlag.get()) {
                         String frame = queue.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS);
                         if (frame == null) {
+                            if (finished && queue.isEmpty()) break;
                             continue;
                         }
                         queuedBytes.addAndGet(-frame.getBytes(StandardCharsets.UTF_8).length);
-                        out.write(frame.getBytes(StandardCharsets.UTF_8));
+                        String protectedFrame = protect.apply(frame);
+                        if (closed || closedFlag.get()) break;
+                        out.write(protectedFrame.getBytes(StandardCharsets.UTF_8));
                         out.flush();
                         lastWriteMs.set(System.currentTimeMillis());
                     }
-                } catch (IOException e) {
+                } catch (IOException | RuntimeException e) {
                     // 客户端断开：只断订阅
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 } finally {
                     closed = true;
+                    closedFlag.set(true);
+                    queue.clear();
+                    wake();
                 }
             }, "p2-sse-writer");
             writer.setDaemon(true);
@@ -332,22 +350,23 @@ public class RunEventStreamService {
 
         boolean enqueue(String frame) {
             int bytes = frame.getBytes(StandardCharsets.UTF_8).length;
-            if (closed || overflow.get()) {
+            if (closed || finished || overflow.get()) {
                 return false;
             }
             if (bytes > maxBytes) {
                 overflow.set(true);
                 return false;
             }
-            if (queuedBytes.get() + bytes > maxBytes) {
+            if (queuedBytes.addAndGet(bytes) > maxBytes) {
+                queuedBytes.addAndGet(-bytes);
                 overflow.set(true);
                 return false;
             }
             if (!queue.offer(frame)) {
+                queuedBytes.addAndGet(-bytes);
                 overflow.set(true);
                 return false;
             }
-            queuedBytes.addAndGet(bytes);
             wake();
             return true;
         }
@@ -374,8 +393,11 @@ public class RunEventStreamService {
                 return false;
             }
             long idleMs = System.currentTimeMillis() - lastWriteMs.get();
-            return idleMs < Duration.ofSeconds(1).toMillis() || enqueue(": ping\n\n");
+            return idleMs < heartbeatMs || !queue.isEmpty() || enqueue(": ping\n\n");
         }
+
+        void finish() { finished = true; wake(); }
+        boolean isClosed() { return closed; }
 
         void close() {
             closed = true;

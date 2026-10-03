@@ -50,6 +50,7 @@ import java.util.UUID;
 @ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
 @ConditionalOnProperty(name = "p04.enabled", havingValue = "false", matchIfMissing = true)
 public class RunController {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(RunController.class);
 
     private final RunAdmissionService admission;
     private final RunLifecycleService lifecycle;
@@ -74,11 +75,12 @@ public class RunController {
 
     @PostMapping("/runs")
     public ResponseEntity<?> submit(@RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
-                                    @RequestBody AdmissionRequest request) {
+                                    @RequestBody String body) {
         String requestId = requestId();
         try {
             ExecutionPrincipal principal = principal();
             require(principal, "run.submit", "run:new");
+            AdmissionRequest request = parseAdmission(body);
             RunAdmissionService.AdmissionResult result = admission.admit(principal, idempotencyKey, request);
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("runId", result.runId());
@@ -89,8 +91,26 @@ public class RunController {
             return RunApiResponses.accepted(data, requestId);
         } catch (RunApiException e) {
             return RunApiResponses.fail(e.errorCode(), e.getMessage(), requestId);
+        } catch (com.nageoffer.ai.ragent.framework.security.P04AiException e) {
+            throw e;
         } catch (RuntimeException e) {
+            log.warn("run admission rejected type={} cause={}", e.getClass().getSimpleName(),
+                    e.getCause()==null ? "none" : e.getCause().getClass().getSimpleName());
             return RunApiResponses.fail(RunErrorCode.INTERNAL_ERROR, requestId);
+        }
+    }
+
+    private AdmissionRequest parseAdmission(String body) {
+        if (body == null || body.length() > 262144) {
+            throw new RunApiException(RunErrorCode.BAD_REQUEST);
+        }
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper()
+                    .enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+                    .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readValue(body, AdmissionRequest.class);
+        } catch (java.io.IOException e) {
+            throw new RunApiException(RunErrorCode.BAD_REQUEST, "invalid admission JSON");
         }
     }
 

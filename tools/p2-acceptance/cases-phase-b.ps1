@@ -1,249 +1,83 @@
-# P2 Phase B：真实本地 MinerU + 版本发布 + 检索问答（synthetic embedding/chat，真实 MinerU）
-# 由 run.ps1 点源执行；结束时汇总与清场。
+﻿Write-Step 'Phase B: persistent private uploads, actual local MinerU, synthetic model product path'
+$open=@($aiReal | Where-Object{$_ -notmatch '^--p2.chat.egress\.'})+@('--p2.chat.egress.enabled=true','--p2.chat.egress.allowed-providers=synthetic')
+Restart-ProductAi $open
+$first=UploadPdf $t1 $kb1 'sample.pdf' 'a23-upload' "a23-$($script:Tag)"
+$docId=$first.Doc;$uploadId=$first.Upload
+$binding=Sql "SELECT u.size_bytes,u.sha256,d.member_id,r.parent_id FROM ai_document_upload u JOIN ai_document d USING(tenant_id,doc_id) JOIN ai_resource r ON r.tenant_id=d.tenant_id AND r.resource_type='DOCUMENT' AND r.resource_id=d.doc_id WHERE u.tenant_id='p2t1' AND u.upload_id='$uploadId';" 'a23-binding'
+Add-Case 'A23-upload' ($first.Status -eq 201 -and $docId -ne '' -and $binding.ExitCode -eq 0 -and $binding.Output -match $kb1) 'private upload + authoritative DOCUMENT/KB/owner binding'
+if($first.Status -ne 201 -or -not $docId){throw 'upload success control failed; downstream cases not claimed'}
 
-function Wait-PortClosed([int]$Port, [int]$Seconds = 30) {
-    for ($i = 0; $i -lt $Seconds; $i++) {
-        $probe = Remote "curl -s -o /dev/null -m 2 -w '%{http_code}' http://127.0.0.1:$Port/ 2>/dev/null; true" ''
-        if (-not ($probe.Output -match '^\s*[1-5]\d\d\s*$')) { return $true }
-        Start-Sleep -Seconds 1
-    }
-    return $false
+foreach($window in @(@{hook='upload.afterObjectStore';name='object'},@{hook='upload.afterDb';name='db'})) {
+    $key="a25-$($window.name)-$($script:Tag)";$filename="intent-$($window.name).pdf"
+    [void](ArmFault 'p2t1' $window.hook 1)
+    $lost=UploadPdf $t1 $kb1 $filename ('a25-'+$window.name+'-lost') $key
+    [void](ClearFaults 'p2t1')
+    $retry=UploadPdf $t1 $kb1 $filename ('a25-'+$window.name+'-retry') $key
+    $again=UploadPdf $t1 $kb1 $filename ('a25-'+$window.name+'-replay') $key
+    $changed=UploadPdf $t1 $kb1 'changed.pdf' ('a25-'+$window.name+'-changed') $key
+    $one=Sql "SELECT (SELECT count(*) FROM ai_upload_intent WHERE tenant_id='p2t1' AND idempotency_key='$key' AND state='STORED'),(SELECT count(*) FROM ai_document_upload WHERE tenant_id='p2t1' AND upload_id='$($retry.Upload)'),(SELECT count(*) FROM ai_document_version WHERE tenant_id='p2t1' AND upload_id='$($retry.Upload)');" ('a25-'+$window.name+'-one')
+    Add-Case ('A25-'+$window.name) ($lost.Status -in @(500,503) -and $retry.Status -eq 201 -and $again.Status -eq 201 -and $retry.Doc -eq $again.Doc -and $retry.Version -eq $again.Version -and $changed.Status -eq 409 -and $one.Output.Trim() -eq '1|1|1') "original key restores one doc/upload/version after $($window.hook); changed hash409 (lost=$($lost.Status))"
 }
-function UploadPdf([string]$Token, [string]$KbId, [string]$FileName = 'sample.pdf', [string]$LogName = 'upload') {
-    $cmd = "cd /tmp/p2http-$($script:Tag); curl -sS -m 60 -o up.json -w '%{http_code}' -X POST 'http://127.0.0.1:$PlatformPort/api/ai/v1/documents/uploads' -H 'clientid: p2c-client' -H 'Authorization: Bearer $Token' -F 'kbId=$KbId' -F 'file=@$($script:RemoteRoot)/sample.pdf;type=application/pdf;filename=$FileName'; echo; cat up.json"
-    $r = Remote $cmd $LogName
-    $status = 0
-    if ($r.Output -match '^(\d{3})') { $status = [int]$Matches[1] }
-    return [pscustomobject]@{ Status = $status; Body = $r.Output }
+$ingest=Ingest $docId $uploadId 'a26-ingest';$done=Wait-RunStatus $t1 $ingest.Run 'SUCCEEDED' 180
+$replayed=Ingest $docId $uploadId 'a26-ingest'
+$pub=Sql "SELECT v.state,v.parse_ref->>'tier',v.parse_ref->>'jobId',(SELECT count(*) FROM ai_document_chunk WHERE tenant_id=d.tenant_id AND version_id=v.version_id AND state='PUBLISHED') FROM ai_document d JOIN ai_document_version v ON v.tenant_id=d.tenant_id AND v.version_id=d.published_version_id WHERE d.tenant_id='p2t1' AND d.doc_id='$docId';" 'a26-publication'
+Add-Case 'A26/A27-flash' ($done -and $ingest.Status -eq 202 -and $replayed.Run -eq $ingest.Run -and $pub.Output -match 'PUBLISHED\|flash\|job_' -and $pub.ExitCode -eq 0) 'actual local flash parse, vector publication, same-key ingestion replay'
+if($done) {
+    $download=Http 'GET' "http://127.0.0.1:$PlatformPort/api/ai/v1/documents/$docId/source" @{'Authorization'="Bearer $t1"} '' 30 'a23-download'
+    Add-Case 'A23-download' ($download.Status -eq 200 -and $download.Body.StartsWith('%PDF')) 'current published private source downloaded through final delivery ACK gateway'
 }
-function UploadBig([string]$Token, [string]$KbId) {
-    $cmd = "cd /tmp/p2http-$($script:Tag); dd if=/dev/zero of=big.bin bs=1M count=21 2>/dev/null; curl -sS -m 120 -o big.json -w '%{http_code}' -X POST 'http://127.0.0.1:$PlatformPort/api/ai/v1/documents/uploads' -H 'clientid: p2c-client' -H 'Authorization: Bearer $Token' -F 'kbId=$KbId' -F 'file=@big.bin;type=application/pdf;filename=big.pdf'; echo; cat big.json"
-    $r = Remote $cmd 'upload-big'
-    $status = 0
-    if ($r.Output -match '^(\d{3})') { $status = [int]$Matches[1] }
-    return [pscustomobject]@{ Status = $status; Body = $r.Output }
-}
-function Ingest([string]$Token, [string]$DocId, [string]$Key, [string]$UploadId, [string]$LogName = 'ingest') {
-    return Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/documents/$DocId/ingestions" @{ 'Content-Type' = 'application/json'; 'Idempotency-Key' = $Key; 'Authorization' = "Bearer $Token" } ('{"uploadId":"' + $UploadId + '"}') 30 $LogName
-}
+if(-not $done){throw 'parser/publish success control failed; no RAG success claimed'}
 
-Write-Step 'Phase B: real local MinerU + versioned publish + retrieval (synthetic embedding/chat)'
-Stop-OwnedJar $AiPort | Out-Null
-Stop-OwnedJar $Ai2Port | Out-Null
-[void](Wait-PortClosed $AiPort)
-Start-Jar 'ai' $AiPort $aiReal | Out-Null
-if (-not (Wait-Ready $AiPort "/opt/p2core-acceptance/$($script:Tag)/ai-$AiPort.log")) { Add-Case 'ENV-ai-real-start' $false 'ai (real executor) did not start'; exit 4 }
-Add-Case 'ENV-ai-real' $true 'ai restarted with real executors (local MinerU, synthetic embedding/chat)'
-$script:AiNodes = @($AiPort)
+$old=UploadPdf $t1 $kb1 'ordered-old.pdf' 'a26-old-upload' "a26-old-$($script:Tag)" 'sample.pdf' $docId
+$new=UploadPdf $t1 $kb1 'ordered-new.pdf' 'a26-new-upload' "a26-new-$($script:Tag)" 'sample.pdf' $docId
+$newIngest=Ingest $docId $new.Upload 'a26-new-ingest';$newDone=Wait-RunStatus $t1 $newIngest.Run 'SUCCEEDED' 180
+$oldIngest=Ingest $docId $old.Upload 'a26-old-ingest';$oldDone=Wait-RunStatus $t1 $oldIngest.Run 'FAILED' 180
+$pointer=DbScalar "SELECT published_version_id FROM ai_document WHERE tenant_id='p2t1' AND doc_id='$docId';" 'a26-pointer'
+Add-Case 'A26-version-order' ($old.Doc -eq $docId -and $new.Doc -eq $docId -and $newDone -and $oldDone -and $pointer.Trim() -eq $new.Version) 'same-document newer version wins; late old job cannot replace publication pointer'
 
-# A23 上传 + A24 拒绝 + 私有下载
-$up1 = UploadPdf $t1 $kb1 'sample.pdf' 'a23-upload'
-$docId = ''; $uploadId = ''
-if ($up1.Body -match '"docId"\s*:\s*"([^"]+)"') { $docId = $Matches[1] }
-if ($up1.Body -match '"uploadId"\s*:\s*"([^"]+)"') { $uploadId = $Matches[1] }
-$upDb = Sql "SELECT (SELECT count(*) FROM ai_document WHERE doc_id='$docId' AND tenant_id='p2t1'), (SELECT count(*) FROM ai_document_upload WHERE upload_id='$uploadId' AND state='STORED'), (SELECT object_key FROM ai_document_upload WHERE upload_id='$uploadId');" 'a23-db'
-$uv = ($upDb.Output -split '\|')
-$objKey = $uv[2].Trim()
-Add-Case 'A23' ($up1.Status -eq 201 -and $uv[0].Trim() -eq '1' -and $uv[1].Trim() -eq '1' -and $objKey -match "^tenants/p2t1/docs/$docId/") "upload -> 201, private document/upload rows, server-generated key ($objKey)"
-$download = Http 'GET' "http://127.0.0.1:$PlatformPort/api/ai/v1/documents/$docId/source" @{ 'Authorization' = "Bearer $t1" } '' 30 'a23-download'
-Add-Case 'A23-download' ($download.Status -eq 200 -and $download.Body -match '^%PDF') "private download through gateway with delivery permit/ACK (status=$($download.Status), magic=$($download.Body.Substring(0, [Math]::Min(5, $download.Body.Length))))"
-
-$mimeSpoof = Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/documents/uploads" @{ 'Authorization' = "Bearer $t1" } '' 20 'a24-mime'
-$badMime = Remote "cd /tmp/p2http-$($script:Tag); curl -sS -m 30 -o mime.json -w '%{http_code}' -X POST 'http://127.0.0.1:$PlatformPort/api/ai/v1/documents/uploads' -H 'clientid: p2c-client' -H 'Authorization: Bearer $t1' -F 'kbId=$kb1' -F 'file=@$($script:RemoteRoot)/sample.pdf;type=text/plain;filename=spoof.txt'; echo; cat mime.json" 'a24-mime-spoof'
-$badMimeStatus = 0; if ($badMime.Output -match '^(\d{3})') { $badMimeStatus = [int]$Matches[1] }
-$traversal = Remote "cd /tmp/p2http-$($script:Tag); curl -sS -m 30 -o trav.json -w '%{http_code}' -X POST 'http://127.0.0.1:$PlatformPort/api/ai/v1/documents/uploads' -H 'clientid: p2c-client' -H 'Authorization: Bearer $t1' -F 'kbId=$kb1' -F 'file=@$($script:RemoteRoot)/sample.pdf;type=application/pdf;filename=../../evil.pdf'; echo; cat trav.json" 'a24-traversal'
-$travStatus = 0; if ($traversal.Output -match '^(\d{3})') { $travStatus = [int]$Matches[1] }
-$travDoc = ''; if ($traversal.Output -match '"docId"\s*:\s*"([^"]+)"') { $travDoc = $Matches[1] }
-$travKey = DbScalar "SELECT object_key FROM ai_document_upload WHERE doc_id='$travDoc' ORDER BY created_at DESC LIMIT 1;" 'a24-trav-key'
-$big = UploadBig $t1 $kb1
-Add-Case 'A24' ($badMimeStatus -eq 400 -and $travStatus -eq 201 -and $travKey.Trim() -notmatch '\.\.' -and $big.Status -eq 400) "MIME spoof -> $badMimeStatus; traversal filename sanitized (key=$($travKey.Trim())); 21MB -> $($big.Status)"
-
-# A27 真实 MinerU flash 解析 + A26 幂等 + 发布
-$ingKey = "a26-$($script:Tag)"
-$ing1 = Ingest $t1 $docId $ingKey $uploadId 'a26-ingest1'
-$ingRun1 = RunId $ing1.Body
-$ingDone = Wait-RunStatus $t1 $ingRun1 'SUCCEEDED' 180
-$ing2 = Ingest $t1 $docId $ingKey $uploadId 'a26-ingest2'
-$ingRun2 = RunId $ing2.Body
-$pub = Sql "SELECT (SELECT state FROM ai_document_version WHERE doc_id='$docId' ORDER BY created_at DESC LIMIT 1), (SELECT published_version_id FROM ai_document WHERE doc_id='$docId'), (SELECT count(*) FROM ai_document_chunk c WHERE c.doc_id='$docId' AND c.state='PUBLISHED'), (SELECT count(*) FROM ai_document_chunk c WHERE c.doc_id='$docId' AND c.embedding IS NULL);" 'a26-publish'
-$pv = ($pub.Output -split '\|')
-Add-Case 'A26' ($null -ne $ingDone -and $ing1.Status -eq 202 -and $ingRun2 -eq $ingRun1 -and $pv[0].Trim() -eq 'PUBLISHED' -and $pv[1].Trim() -ne '' -and [int]$pv[2].Trim() -gt 0 -and $pv[3].Trim() -eq '0') "same-key ingest replay returns same run; version PUBLISHED with $($pv[2].Trim()) embedded chunks (no NULL embeddings)"
-$parseRef = Sql "SELECT parse_ref->>'jobId', parse_ref->>'fileId', parse_ref->>'tier', parse_ref->>'parserVersion' FROM ai_document_version WHERE doc_id='$docId' ORDER BY created_at DESC LIMIT 1;" 'a27-parseref'
-$markdown = Remote "grep -c 'P2-MARKER-XYZZY' $($script:RemoteRoot)/objects/tenants/p2t1/docs/$docId/*/parsed.md | head -1; echo; grep -l 'Marker-Beta-2026' $($script:RemoteRoot)/objects/tenants/p2t1/docs/$docId/*/parsed.md | head -1" 'a27-markdown'
-Add-Case 'A27' ($ingDone -and $parseRef.Output -match 'job_' -and $parseRef.Output -match 'file-' -and $markdown.Output -match '[1-9]') "real local MinerU job completed (parse_ref=$($parseRef.Output.Trim())); parsed markdown contains expected markers"
-
-# 新版本：新 upload → 新 version（A26 后半）
-$up2 = UploadPdf $t1 $kb1 'sample-v2.pdf' 'a26-upload2'
-$doc2 = ''; $upload2 = ''
-if ($up2.Body -match '"docId"\s*:\s*"([^"]+)"') { $doc2 = $Matches[1] }
-if ($up2.Body -match '"uploadId"\s*:\s*"([^"]+)"') { $upload2 = $Matches[1] }
-$ver2 = DbScalar "SELECT version_id FROM ai_document_version WHERE upload_id='$upload2';" 'a26-v2'
-Add-Case 'A26-newversion' ($up2.Status -eq 201 -and $ver2.Trim() -ne '') "new upload produces its own document version ($($ver2.Trim()))"
-
-# A31 发布前退出：staging 不可见，旧版本仍可查
-[void](ArmFault 'p2t1' 'publish.beforeSwap' 1)
-$up3 = UploadPdf $t1 $kb1 'sample-v3.pdf' 'a31-upload'
-$doc3 = ''; $upload3 = ''
-if ($up3.Body -match '"docId"\s*:\s*"([^"]+)"') { $doc3 = $Matches[1] }
-if ($up3.Body -match '"uploadId"\s*:\s*"([^"]+)"') { $upload3 = $Matches[1] }
-$ing3 = Ingest $t1 $doc3 ("a31-$($script:Tag)") $upload3 'a31-ingest'
-$ingRun3 = RunId $ing3.Body
-$failed31 = Wait-RunStatus $t1 $ingRun3 'FAILED' 180
-$st31 = Sql "SELECT (SELECT state FROM ai_document_version WHERE upload_id='$upload3'), (SELECT published_version_id FROM ai_document WHERE doc_id='$doc3'), (SELECT count(*) FROM ai_document_chunk c JOIN ai_document_version v ON v.tenant_id=c.tenant_id AND v.version_id=c.version_id WHERE v.upload_id='$upload3' AND c.state='PUBLISHED');" 'a31-state'
-$sv31 = ($st31.Output -split '\|')
-$oldStill = Sql "SELECT count(*) FROM ai_document_chunk WHERE doc_id='$docId' AND state='PUBLISHED';" 'a31-old'
-Add-Case 'A31' ($null -ne $failed31 -and $sv31[1].Trim() -eq '' -and $sv31[2].Trim() -eq '0' -and [int]$oldStill.Output.Trim() -gt 0) "publish fault before swap: run FAILED, no visible version/chunks, previously published doc still readable ($($oldStill.Output.Trim()) chunks)"
-[void](ClearFaults 'p2t1')
-
-# A32 发布提交后响应丢失：接管不重复发布
 [void](ArmFault 'p2t1' 'publish.afterSwap' 1)
-$up4 = UploadPdf $t1 $kb1 'sample-v4.pdf' 'a32-upload'
-$doc4 = ''; $upload4 = ''
-if ($up4.Body -match '"docId"\s*:\s*"([^"]+)"') { $doc4 = $Matches[1] }
-if ($up4.Body -match '"uploadId"\s*:\s*"([^"]+)"') { $upload4 = $Matches[1] }
-$ing4 = Ingest $t1 $doc4 ("a32-$($script:Tag)") $upload4 'a32-ingest'
-$ingRun4 = RunId $ing4.Body
-$done32 = Wait-RunStatus $t1 $ingRun4 'SUCCEEDED' 240
-$chunk32 = Sql "SELECT (SELECT count(*) FROM ai_document_chunk c JOIN ai_document_version v ON v.tenant_id=c.tenant_id AND v.version_id=c.version_id WHERE v.upload_id='$upload4'), (SELECT count(*) FROM ai_document_version WHERE upload_id='$upload4' AND state='PUBLISHED'), (SELECT count(*) FROM ai_run_event WHERE run_id='$ingRun4' AND event_type='run.terminal');" 'a32-state'
-$cv32 = ($chunk32.Output -split '\|')
-Add-Case 'A32' ($null -ne $done32 -and $cv32[1].Trim() -eq '1' -and $cv32[2].Trim() -eq '1' -and [int]$cv32[0].Trim() -gt 0) "publish-after-swap crash: takeover completed, version PUBLISHED once, chunk set unchanged ($($cv32[0].Trim()) chunks), single terminal"
+$after=UploadPdf $t1 $kb1 'after-swap.pdf' 'a32-upload' "a32-$($script:Tag)"
+$afterIngest=Ingest $after.Doc $after.Upload 'a32-ingest';$afterDone=Wait-RunStatus $t1 $afterIngest.Run 'SUCCEEDED' 180
+$once=Sql "SELECT attempt,(SELECT count(*) FROM ai_run_event WHERE tenant_id='p2t1' AND run_id='$($afterIngest.Run)' AND event_type='run.terminal'),(SELECT count(*) FROM ai_document_version WHERE tenant_id='p2t1' AND version_id='$($after.Version)' AND state='PUBLISHED') FROM ai_run WHERE tenant_id='p2t1' AND run_id='$($afterIngest.Run)';" 'a32-once'
+$values=$once.Output.Trim() -split '\|'
+Add-Case 'A32-after-swap' ($afterDone -and $values.Count -eq 3 -and [int]$values[0] -ge 2 -and $values[1] -eq '1' -and $values[2] -eq '1') 'takeover reuses published version, one terminal event'
 [void](ClearFaults 'p2t1')
+$delete=Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/documents/$($after.Doc)/tombstone" @{'Authorization'="Bearer $t1";'Content-Type'='application/json'} '{}' 20 'a33-delete'
+$late=Ingest $after.Doc $after.Upload 'a33-late'
+$noPublish=DbScalar "SELECT count(*) FROM ai_document_version WHERE tenant_id='p2t1' AND doc_id='$($after.Doc)' AND state='PUBLISHED';" 'a33-none'
+Add-Case 'A33-tombstone' ($delete.Status -eq 200 -and $late.Status -eq 404 -and $noPublish.Trim() -eq '0') 'product tombstone prevents late ingestion without SQL bypass'
 
-# A33 tombstone：删除后旧任务不能复活
-[void](Sql "UPDATE ai_document SET tombstoned_at=now() WHERE doc_id='$doc4'; UPDATE ai_document_version SET state='TOMBSTONED' WHERE doc_id='$doc4';" 'a33-tombstone' 'postgres')
-$up5 = UploadPdf $t1 $kb1 'sample-v5.pdf' 'a33-upload'
-$upload5 = ''
-if ($up5.Body -match '"docId"\s*:\s*"([^"]+)"') { $doc5 = $Matches[1] }
-if ($up5.Body -match '"uploadId"\s*:\s*"([^"]+)"') { $upload5 = $Matches[1] }
-[void](Sql "UPDATE ai_document SET tombstoned_at=now() WHERE doc_id='$doc5';" 'a33-tombstone2' 'postgres')
-$ing5 = Ingest $t1 $doc5 ("a33-$($script:Tag)") $upload5 'a33-ingest'
-$ingRun5 = RunId $ing5.Body
-$revived = Sql "SELECT count(*) FROM ai_document_version WHERE doc_id='$doc5' AND state='PUBLISHED';" 'a33-revived'
-$t2Unaffected = Http 'GET' "http://127.0.0.1:$PlatformPort/api/ai/v1/knowledge-bases/$kb1/documents" @{ 'Authorization' = "Bearer $t1" } '' 20 'a33-other'
-Add-Case 'A33' ($revived.Output.Trim() -eq '0') "tombstoned document cannot be revived by a late ingest run (published versions=0); tenant scoping intact"
-
-# A34 检索问答（合成 embedding + 合成 chat；真实语义签收属 NEEDS_INPUT I1/I2）
-$chatKey = "a34-$($script:Tag)"
-$chatBody = '{"schemaVersion":1,"action":"rag.chat","input":{"text":"what is the marker code for project phase two?"},"resourceRefs":[{"type":"knowledge_base","id":"' + $kb1 + '"}],"budget":{"maxTokens":2000}}'
-$chat = Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/runs" @{ 'Content-Type' = 'application/json'; 'Idempotency-Key' = $chatKey; 'Authorization' = "Bearer $t1" } $chatBody 30 'a34-chat'
-$chatRun = RunId $chat.Body
-$chatDone = Wait-RunStatus $t1 $chatRun 'SUCCEEDED' 120
-$result = Sql "SELECT (SELECT content FROM ai_chat_message WHERE run_id='$chatRun' AND role='assistant'), (SELECT jsonb_array_length(citations) FROM ai_chat_message WHERE run_id='$chatRun' AND role='assistant'), (SELECT terminal_result->>'answer' FROM ai_run WHERE run_id='$chatRun');" 'a34-result'
-$rv = ($result.Output -split '\|')
-Add-Case 'A34' ($null -ne $chatDone -and $rv[0] -match 'P2-MARKER-XYZZY' -and [int]$rv[1].Trim() -ge 1) "synthetic retrieval+chat with persisted citations ($($rv[1].Trim()) citations) and expected marker in the answer (synthetic embedding is NOT real semantic acceptance)"
-
-# A36 外发白名单为空 → 0 提供方调用
-$egressKey = "a36-$($script:Tag)"
-$egress = Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/runs" @{ 'Content-Type' = 'application/json'; 'Idempotency-Key' = $egressKey; 'Authorization' = "Bearer $t1" } $chatBody 30 'a36-chat'
-$egressRun = RunId $egress.Body
-$egressDone = Wait-RunStatus $t1 $egressRun 'FAILED' 120
-$egressCalls = Sql "SELECT count(*) FROM ai_model_call WHERE run_id='$egressRun' AND kind='CHAT';" 'a36-calls'
-Add-Case 'A36' ($null -ne $egressDone -and $egressCalls.Output.Trim() -eq '0') "empty egress whitelist refuses before any provider call (CHAT calls=0, run FAILED)"
-
-# A37 模型窗口故障：失败不盲重调、用量保持待核对
+$body='{"schemaVersion":1,"action":"rag.chat","input":{"text":"What is P2-MARKER-XYZZY?"},"resourceRefs":[{"type":"knowledge_base","id":"'+$kb1+'"}],"budget":{"maxTokens":2000}}'
+$chat=Chat 'a34-chat' $body;$chatDone=Wait-RunStatus $t1 $chat.Run 'SUCCEEDED' 120
+$answer=Sql "SELECT terminal_result->>'answer',jsonb_array_length(terminal_result->'citations') FROM ai_run WHERE tenant_id='p2t1' AND run_id='$($chat.Run)';" 'a34-answer'
+Add-Case 'A34-synthetic' ($chatDone -and $answer.Output -match 'P2-MARKER-XYZZY' -and $answer.Output -match '\|[1-9][0-9]*\s*$') 'PG retrieval + persisted answer/citations with synthetic models; no semantic-provider claim'
 [void](ArmFault 'p2t1' 'chat.afterProvider' 1)
-$faultKey = "a37-$($script:Tag)"
-$faultChat = Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/runs" @{ 'Content-Type' = 'application/json'; 'Idempotency-Key' = $faultKey; 'Authorization' = "Bearer $t1" } $chatBody 30 'a37-chat'
-$faultRun = RunId $faultChat.Body
-$faultDone = Wait-RunStatus $t1 $faultRun 'FAILED' 120
-$faultState = Sql "SELECT (SELECT count(*) FROM ai_model_call WHERE run_id='$faultRun' AND kind='CHAT' AND state='FAILED'), (SELECT state FROM ai_budget_reservation WHERE run_id='$faultRun');" 'a37-state'
-$fv = ($faultState.Output -split '\|')
-Add-Case 'A37' ($null -ne $faultDone -and $fv[0].Trim() -eq '1' -and $fv[1].Trim() -eq 'RESERVED') "model fault after provider: CHAT call FAILED, reservation stays RESERVED (unknown usage never settled as zero)"
+$unknown=Chat 'a37-chat' $body;$pending=Wait-RunStatus $t1 $unknown.Run 'NEEDS_RECONCILIATION' 120
+$snap=Http 'GET' "http://127.0.0.1:$PlatformPort/api/ai/v1/runs/$($unknown.Run)" @{'Authorization'="Bearer $t1"} '' 20 'a37-snapshot'
+$version=($snap.Body|ConvertFrom-Json).data.version
+$resume=Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/runs/$($unknown.Run)/resume" @{'Authorization'="Bearer $t1";'Content-Type'='application/json'} (@{expectedVersion=$version}|ConvertTo-Json -Compress) 20 'a37-resume'
+[void](Wait-RunStatus $t1 $unknown.Run 'NEEDS_RECONCILIATION' 60)
+$noReplay=Sql "SELECT (SELECT count(*) FROM ai_model_call WHERE tenant_id='p2t1' AND run_id='$($unknown.Run)' AND kind='CHAT'),(SELECT state FROM ai_budget_reservation WHERE tenant_id='p2t1' AND run_id='$($unknown.Run)');" 'a37-one-call'
+Add-Case 'A37-synthetic-unknown' ($pending -and $resume.Status -eq 200 -and $noReplay.Output.Trim() -eq '1|RESERVED') 'response-loss preserves unknown usage; manual resume does not blindly call or settle zero'
 [void](ClearFaults 'p2t1')
+$cross=Chat 'a38-cross' $body $t2
+$noRun=DbScalar "SELECT count(*) FROM ai_run WHERE tenant_id='p2t2' AND idempotency_key='a38-cross-$($script:Tag)';" 'a38-zero'
+Add-Case 'A38-cross-source' ($cross.Status -eq 404 -and $noRun.Trim() -eq '0') 'cross-tenant source denied before admission; zero run/model side effects'
 
-# A38 空 scope：跨租户 KB 不检索、不 embedding
-$scopeKey = "a38-$($script:Tag)"
-$scope = Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/runs" @{ 'Content-Type' = 'application/json'; 'Idempotency-Key' = $scopeKey; 'Authorization' = "Bearer $t2" } $chatBody 30 'a38-chat'
-$scopeRun = RunId $scope.Body
-$scopeDone = Wait-RunStatus $t2 $scopeRun 'FAILED' 120
-$scopeCalls = Sql "SELECT count(*) FROM ai_model_call WHERE run_id='$scopeRun';" 'a38-calls'
-Add-Case 'A38' ($null -ne $scopeDone -and $scopeCalls.Output.Trim() -eq '0') "empty authorized scope: no embedding/retrieval/model calls (calls=0, run FAILED)"
-
-# A25 上传故障窗口：对象后 DB 前崩溃（孤儿对象）与 DB 提交后响应丢失
-[void](ArmFault 'p2t1' 'upload.afterObjectStore' 1)
-$upOrphan = UploadPdf $t1 $kb1 'orphan-case.pdf' 'a25-orphan'
-$orphanRows = Sql "SELECT count(*) FROM ai_document_upload WHERE filename='orphan-case.pdf';" 'a25-orphan-rows'
-$knownDocs = Sql "SELECT count(*) FROM ai_document WHERE tenant_id='p2t1';" 'a25-docs'
-$objDirs = Remote "find $($script:RemoteRoot)/objects/tenants/p2t1/docs -maxdepth 1 -mindepth 1 -type d | wc -l" 'a25-objects'
-[void](ClearFaults 'p2t1')
-[void](ArmFault 'p2t1' 'upload.afterDb' 1)
-$upLost = UploadPdf $t1 $kb1 'lost-response.pdf' 'a25-lost'
-$lostRows = Sql "SELECT count(*) FROM ai_document_upload WHERE filename='lost-response.pdf' AND state='STORED';" 'a25-lost-rows'
-[void](ClearFaults 'p2t1')
-$upRetry = UploadPdf $t1 $kb1 'lost-response.pdf' 'a25-retry'
-$oldLost = Http 'GET' "http://127.0.0.1:$PlatformPort/api/ai/v1/knowledge-bases/$kb1/documents" @{ 'Authorization' = "Bearer $t1" } '' 20 'a25-list'
-Add-Case 'A25' ($upOrphan.Status -ge 400 -and $orphanRows.Output.Trim() -eq '0' -and [int]$objDirs.Output.Trim() -gt [int]$knownDocs.Output.Trim() -and $upLost.Status -ge 400 -and $lostRows.Output.Trim() -eq '1' -and $upRetry.Status -eq 201 -and $oldLost.Status -eq 200) "orphan object with no metadata (upload=$($upOrphan.Status), rows=$($orphanRows.Output.Trim()), objects=$($objDirs.Output.Trim()) > docs=$($knownDocs.Output.Trim())); DB committed despite lost response (rows=$($lostRows.Output.Trim())); retry is a new independent intent ($($upRetry.Status)); listing intact"
-
-# A28 MinerU 处理中重启：jobId 进程内丢失 → 持久新 attempt 纯解析重提，单发布
-[void](ArmFault 'p2t1' 'mineru.afterJobCreate' 1)
-$up28 = UploadPdf $t1 $kb1 'restart-parse.pdf' 'a28-upload'
-$doc28 = ''; $upload28 = ''
-if ($up28.Body -match '"docId"\s*:\s*"([^"]+)"') { $doc28 = $Matches[1] }
-if ($up28.Body -match '"uploadId"\s*:\s*"([^"]+)"') { $upload28 = $Matches[1] }
-$ing28 = Ingest $t1 $doc28 ("a28-$($script:Tag)") $upload28 'a28-ingest'
-$run28 = RunId $ing28.Body
-Start-Sleep -Seconds 5
-Stop-OwnedJar $AiPort | Out-Null
-[void](Wait-PortClosed $AiPort)
-Start-Jar 'ai' $AiPort $aiReal | Out-Null
-if (-not (Wait-Ready $AiPort "/opt/p2core-acceptance/$($script:Tag)/ai-$AiPort.log")) { Add-Case 'A28' $false 'ai restart failed'; exit 4 }
-$done28 = Wait-RunStatus $t1 $run28 'SUCCEEDED' 300
-$st28 = Sql "SELECT (SELECT attempt FROM ai_run WHERE run_id='$run28'), (SELECT count(*) FROM ai_document_version WHERE doc_id='$doc28' AND state='PUBLISHED'), (SELECT count(*) FROM ai_document_chunk WHERE doc_id='$doc28' AND state='PUBLISHED' AND embedding IS NULL);" 'a28-state'
-$sv28 = ($st28.Output -split '\|')
-$md28 = Remote "grep -l 'P2-MARKER-XYZZY' $($script:RemoteRoot)/objects/tenants/p2t1/docs/$doc28/*/parsed.md | wc -l" 'a28-markdown'
-Add-Case 'A28' ($null -ne $done28 -and [int]$sv28[0].Trim() -ge 2 -and $sv28[1].Trim() -eq '1' -and $sv28[2].Trim() -eq '0' -and $md28.Output.Trim() -eq '1') "AI killed mid-parse: takeover re-submitted a fresh pure-parse attempt (attempt=$($sv28[0].Trim())), exactly one PUBLISHED version with embedded chunks, parsed markdown verified; in-memory jobId loss never faked completion"
-[void](ClearFaults 'p2t1')
-
-# A29 解析失败有限退避重试：第一次 attempt 注入失败，重试后成功
-[void](ArmFault 'p2t1' 'mineru.beforeJob' 1)
-$up29 = UploadPdf $t1 $kb1 'retry-parse.pdf' 'a29-upload'
-$doc29 = ''; $upload29 = ''
-if ($up29.Body -match '"docId"\s*:\s*"([^"]+)"') { $doc29 = $Matches[1] }
-if ($up29.Body -match '"uploadId"\s*:\s*"([^"]+)"') { $upload29 = $Matches[1] }
-$ing29 = Ingest $t1 $doc29 ("a29-$($script:Tag)") $upload29 'a29-ingest'
-$run29 = RunId $ing29.Body
-$done29 = Wait-RunStatus $t1 $run29 'SUCCEEDED' 240
-$st29 = Sql "SELECT (SELECT attempt FROM ai_run WHERE run_id='$run29'), (SELECT count(*) FROM ai_document_version WHERE doc_id='$doc29' AND state='PUBLISHED');" 'a29-state'
-$sv29 = ($st29.Output -split '\|')
-Add-Case 'A29' ($null -ne $done29 -and [int]$sv29[0].Trim() -ge 2 -and $sv29[1].Trim() -eq '1') "first attempt injected failure retried with backoff (attempt=$($sv29[0].Trim())), published exactly once"
-[void](ClearFaults 'p2t1')
-
-# A43-子集 容量：2 租户并发问答（10 并发问答目标的合成执行器实测子集；50MB/5 万 chunk 按 I5/I1 记 NOT_RUN）
-[void](Sql "INSERT INTO ai_tenant_budget (tenant_id, limit_units) VALUES ('p2t2', 100000) ON CONFLICT (tenant_id) DO UPDATE SET limit_units=100000;" 'a43-budget' 'postgres')
-$kb2Create = Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/knowledge-bases" @{ 'Content-Type' = 'application/json'; 'Authorization' = "Bearer $t2" } '{"name":"p2c-kb-t2","embeddingModel":"synthetic-feature-hash-1536","collectionName":"p2c_collection_t2"}' 20 'a43-kb2'
-$kb2 = ''
-if ($kb2Create.Body -match '"kbId"\s*:\s*"([^"]+)"') { $kb2 = $Matches[1] } elseif ($kb2Create.Body -match '"id"\s*:\s*"([^"]+)"') { $kb2 = $Matches[1] }
-$upT2 = UploadPdf $t2 $kb2 't2-doc.pdf' 'a43-upload-t2'
-$docT2 = ''; $uploadT2 = ''
-if ($upT2.Body -match '"docId"\s*:\s*"([^"]+)"') { $docT2 = $Matches[1] }
-if ($upT2.Body -match '"uploadId"\s*:\s*"([^"]+)"') { $uploadT2 = $Matches[1] }
-$ingT2 = Ingest $t2 $docT2 ("a43-$($script:Tag)") $uploadT2 'a43-ingest-t2'
-$ingT2Done = Wait-RunStatus $t2 (RunId $ingT2.Body) 'SUCCEEDED' 180
-if (-not $ingT2Done) { Add-Case 'A43-subset' $false 't2 ingest did not finish'; exit 5 }
-$chatT1 = '{"schemaVersion":1,"action":"rag.chat","input":{"text":"tenant one question"},"resourceRefs":[{"type":"knowledge_base","id":"' + $kb1 + '"}],"budget":{"maxTokens":2000}}'
-$chatT2 = '{"schemaVersion":1,"action":"rag.chat","input":{"text":"tenant two question"},"resourceRefs":[{"type":"knowledge_base","id":"' + $kb2 + '"}],"budget":{"maxTokens":2000}}'
-$b64t1 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($chatT1))
-$b64t2 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($chatT2))
-$concScript = @'
-cd /tmp/p2http-__TAG__
-rm -f c*.json c.codes ct1.json ct2.json
-printf %s '__B64T1__' | base64 -d > ct1.json
-printf %s '__B64T2__' | base64 -d > ct2.json
-for i in 1 2 3 4 5; do
-  (curl -sS -m 90 -o ct1-$i.json -w '%{http_code}
-' -X POST 'http://127.0.0.1:__PORT__/api/ai/v1/runs' -H 'Content-Type: application/json' -H "Idempotency-Key: a43-t1-$i-__TAG__" -H 'clientid: p2c-client' -H 'Authorization: Bearer __T1__' --data-binary @ct1.json >> c.codes) &
-  (curl -sS -m 90 -o ct2-$i.json -w '%{http_code}
-' -X POST 'http://127.0.0.1:__PORT__/api/ai/v1/runs' -H 'Content-Type: application/json' -H "Idempotency-Key: a43-t2-$i-__TAG__" -H 'clientid: p2c-client' -H 'Authorization: Bearer __T2__' --data-binary @ct2.json >> c.codes) &
-done
-wait
-sort c.codes | uniq -c
-'@
-$concScript = $concScript.Replace('__TAG__', $script:Tag).Replace('__B64T1__', $b64t1).Replace('__B64T2__', $b64t2).Replace('__PORT__', [string]$PlatformPort).Replace('__T1__', $t1).Replace('__T2__', $t2)
-$concB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($concScript -replace "`r`n", "`n")))
-$conc = Remote "printf %s '$concB64' | base64 -d > /tmp/p2http-$($script:Tag)/conc.sh; bash /tmp/p2http-$($script:Tag)/conc.sh" 'a43-concurrent'
-$accepted43 = (($conc.Output -split "`n") | Where-Object { $_ -match '^\s*10\s+202\s*$' }).Count -eq 1
-Start-Sleep -Seconds 15
-$done43 = Sql "SELECT count(*) FROM ai_run WHERE idempotency_key LIKE 'a43-t1-%' AND idempotency_key LIKE '%$($script:Tag)' AND status='SUCCEEDED'; SELECT count(*) FROM ai_run WHERE idempotency_key LIKE 'a43-t2-%' AND idempotency_key LIKE '%$($script:Tag)' AND status='SUCCEEDED';" 'a43-done'
-$dv43 = @(($done43.Output -split "`n") | Where-Object { $_.Trim() -ne '' })
-Add-Case 'A43-subset' ($accepted43 -and $dv43.Count -ge 2 -and $dv43[0].Trim() -eq '5' -and $dv43[1].Trim() -eq '5') "2 tenants x 5 concurrent Q&A all 202 and terminal (t1=$($dv43[0].Trim()), t2=$($dv43[1].Trim())); full 50MB/chunk-capacity targets remain NOT_RUN per I5/I1"
-
+& scp -q (Join-Path $PSScriptRoot 'create-boundary-pdf.py') "${RemoteHost}:$($script:RemoteRoot)/create-boundary-pdf.py"
+if($LASTEXITCODE -ne 0){throw 'owned PDF fixture upload failed'}
+$fixtures=Remote "set -e; python $($script:RemoteRoot)/create-boundary-pdf.py $($script:RemoteRoot)/boundary50.pdf 52428800; python $($script:RemoteRoot)/create-boundary-pdf.py $($script:RemoteRoot)/boundary51.pdf 53477376; sha256sum $($script:RemoteRoot)/boundary50.pdf" 'a43-file-fixtures'
+if($fixtures.ExitCode -ne 0){throw 'valid boundary fixtures failed'}
+$boundary=UploadPdf $t1 $kb1 'boundary50.pdf' 'a43-50-upload' "a43-50-$($script:Tag)" 'boundary50.pdf'
+$oversize=UploadPdf $t1 $kb1 'boundary51.pdf' 'a24-51-reject' "a24-51-$($script:Tag)" 'boundary51.pdf'
+$boundaryIngest=Ingest $boundary.Doc $boundary.Upload 'a43-50-ingest';$boundaryDone=Wait-RunStatus $t1 $boundaryIngest.Run 'SUCCEEDED' 240
+Add-Case 'A24/A43-file-boundary' ($boundary.Status -eq 201 -and $boundaryDone -and $oversize.Status -eq 400) 'valid exactly50MiB one-page PDF uploaded/parsed; valid51MiB rejected; attachment supplies byte load'
+if($boundaryDone) {
+    $bytes=Remote "code=`$(curl -sS -m 120 -o /tmp/p2http-$($script:Tag)/download50.pdf -w '%{http_code}' http://127.0.0.1:$PlatformPort/api/ai/v1/documents/$($boundary.Doc)/source -H 'clientid: p2c-client' -H 'Authorization: Bearer $t1'); echo P2STATUS=`$code; cmp $($script:RemoteRoot)/boundary50.pdf /tmp/p2http-$($script:Tag)/download50.pdf; echo CMP=`$?; stat -c %s /tmp/p2http-$($script:Tag)/download50.pdf" 'a23-private-50-download'
+    Add-Case 'A23-private-50-download' ($bytes.Output -match 'P2STATUS=200' -and $bytes.Output -match 'CMP=0' -and $bytes.Output -match '52428800') 'exact50MiB private source delivered with matching SHA/bytes, bounded dedicated gateway'
+}
+Restart-ProductAi $aiReal
+$denied=Chat 'a36-chat' $body;$deniedDone=Wait-RunStatus $t1 $denied.Run 'FAILED' 90
+$zeroChat=DbScalar "SELECT count(*) FROM ai_model_call WHERE tenant_id='p2t1' AND run_id='$($denied.Run)' AND kind='CHAT';" 'a36-zero-chat'
+Add-Case 'A36-chat-closed' ($deniedDone -and $zeroChat.Trim() -eq '0') 'empty egress denies CHAT; actual zero-HTTP transport denial tested independently'
+Save-Evidence 'phase-b-results.json' ($script:Results|ConvertTo-Json -Depth 6)

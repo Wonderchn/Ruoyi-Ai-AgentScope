@@ -43,6 +43,7 @@
     "element-plus": "^2.10.4",
     "hook-fetch": "2.0.4-beta.1",
     "nprogress": "^0.2.0",
+    "pdfjs-dist": "4.10.38",
     "pinia": "^3.0.3",
     "pinia-plugin-persistedstate": "^4.4.1",
     "qrcode": "^1.5.4",

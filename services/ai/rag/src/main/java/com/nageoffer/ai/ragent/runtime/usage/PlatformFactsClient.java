@@ -42,7 +42,7 @@ import java.util.Map;
 @ConditionalOnProperty(name = "ai.integration.security.enabled", havingValue = "true")
 public class PlatformFactsClient {
 
-    private final HttpClient http = HttpClient.newBuilder()
+    private final HttpClient http = HttpClient.newBuilder().version(java.net.http.HttpClient.Version.HTTP_1_1)
             .connectTimeout(Duration.ofSeconds(2))
             .followRedirects(HttpClient.Redirect.NEVER)
             .build();
@@ -67,7 +67,7 @@ public class PlatformFactsClient {
             String payload = mapper.writeValueAsString(Map.of(
                     "tenantId", tenantId, "subject", subject, "membershipId", membershipId));
             HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/internal/platform/v1/authorization/current"))
-                    .timeout(Duration.ofSeconds(3))
+                    .timeout(Duration.ofSeconds(2))
                     .header("Content-Type", "application/json")
                     .header("X-P04-Service-Credential", credential)
                     .POST(HttpRequest.BodyPublishers.ofString(payload))

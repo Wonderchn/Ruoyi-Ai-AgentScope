@@ -92,6 +92,19 @@ public class RunExecutionGuard {
         return dao.latestCompletedStep(tenantId, runId, stepId);
     }
 
+    public <T> T commitAtomic(java.util.function.Supplier<T> commit) {
+        return dao.withLiveFence(tenantId,runId,workerId,fence,commit);
+    }
+
+    public void suspend(String status,String error) {
+        commitAtomic(() -> {
+            appendEvent(com.nageoffer.ai.ragent.runtime.RunEventAppender.EVENT_STATUS,Map.of("status",status));
+            if(!dao.suspend(tenantId,runId,workerId,fence,status,error)) throw new com.nageoffer.ai.ragent.runtime.RunApiException(
+                    com.nageoffer.ai.ragent.runtime.RunErrorCode.VERSION_CONFLICT);
+            return null;
+        });
+    }
+
     /** 取消信号（持久状态；浏览器断开不改变它）。 */
     public boolean isCancelRequested() {
         return dao.findRun(tenantId, runId)

@@ -88,6 +88,23 @@ public class AiGatewayStreamController {
     }
 
     /** 统一 SSE：afterSeq / Last-Event-ID 游标；空闲/总时长/建连均受限。 */
+    @GetMapping("/documents/{docId}/source")
+    public void source(@PathVariable String docId,HttpServletRequest request,HttpServletResponse response) {
+        try {
+            if(docId==null || !docId.matches("[A-Za-z0-9_-]{1,64}")) throw new P04Exception(P04ErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
+            var authorized=authorizer.authorize(request,"document.download");
+            var headers=GatewayHeaders.sanitize(request);
+            headers.put("Authorization","Bearer "+authorized.delegationToken());
+            headers.put("X-P04-Service-Credential",properties.getServiceCredential());
+            headers.put(RequestId.HEADER,RequestId.currentOrEmpty());
+            client.forwardPrivateDocument(new AiGatewayClient.ForwardRequest("GET",targetUri(request,"/documents/"+docId+"/source"),Map.copyOf(headers),null),
+                    response,50*1024*1024,120000,new AiGatewayClient.DeliveryAck(
+                            URI.create(properties.getAiBaseUrl()+AI_INTERNAL_PREFIX+"/authorization/deliveries/release"),
+                            authorized.member().tenantId(),authorized.member().membershipId(),properties.getServiceCredential()));
+        } catch(P04Exception e){writeError(response,e.errorCode());}
+        catch(AiGatewayClient.UpstreamUnavailableException e){writeError(response,P04ErrorCode.AUTHORIZATION_UNAVAILABLE);}
+    }
+
     @GetMapping("/runs/{runId}/events")
     public void events(@PathVariable String runId, HttpServletRequest request, HttpServletResponse response) {
         try {
@@ -104,7 +121,9 @@ public class AiGatewayStreamController {
             headers.put("Accept", "text/event-stream");
             client.forwardEventStream(new AiGatewayClient.ForwardRequest("GET", target, Map.copyOf(headers), null),
                     response, properties.getSseConnectTimeoutMillis(), properties.getSseIdleTimeoutMillis(),
-                    properties.getSseMaxDurationMillis());
+                    properties.getSseMaxDurationMillis(),new AiGatewayClient.DeliveryAck(
+                            URI.create(properties.getAiBaseUrl()+AI_INTERNAL_PREFIX+"/authorization/deliveries/release"),
+                            authorized.member().tenantId(),authorized.member().membershipId(),properties.getServiceCredential()));
         } catch (P04Exception e) {
             writeError(response, e.errorCode());
         } catch (AiGatewayClient.UpstreamUnavailableException e) {

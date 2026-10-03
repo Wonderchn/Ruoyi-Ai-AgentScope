@@ -41,6 +41,8 @@ public class SyntheticRunExecutor implements RunExecutor {
     public static final String ACTION = "*";
 
     private final ObjectProvider<P2FaultInjector> faultInjector;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.nageoffer.ai.ragent.runtime.RunAccessService access;
 
     public SyntheticRunExecutor(ObjectProvider<P2FaultInjector> faultInjector) {
         this.faultInjector = faultInjector;
@@ -57,6 +59,7 @@ public class SyntheticRunExecutor implements RunExecutor {
         P2FaultInjector faults = faultInjector.getIfAvailable();
         String[] steps = {"synthetic.parse", "synthetic.chunk", "synthetic.embed", "synthetic.publish"};
         for (int i = 0; i < steps.length; i++) {
+            access.current(execution.run(),java.util.Set.of("run.submit"));
             if (guard.isCancelRequested()) {
                 return new Outcome("CANCELLED", Map.of("cancelledAt", steps[i]), null);
             }
@@ -69,6 +72,7 @@ public class SyntheticRunExecutor implements RunExecutor {
             guard.appendEvent(RunEventAppender.EVENT_STEP_STARTED, Map.of(
                     "stepId", stepId, "stepName", stepId, "attemptId", "a-" + guard.attempt()));
             sleep(guard);
+            access.current(execution.run(),java.util.Set.of("run.submit"));
             if (faults != null) {
                 faults.checkpoint(P2FaultInjector.WORKER_BEFORE_STEP_COMMIT);
             }
@@ -93,6 +97,7 @@ public class SyntheticRunExecutor implements RunExecutor {
         if (faults != null) {
             faults.checkpoint(P2FaultInjector.WORKER_BEFORE_TERMINAL);
         }
+        access.current(execution.run(),java.util.Set.of("run.submit"));
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("kind", "synthetic");
         result.put("steps", steps.length);

@@ -64,10 +64,15 @@ public class UploadController {
 
     @PostMapping(value = "/documents/uploads", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<?> upload(@RequestPart("file") MultipartFile file,
-                                    @RequestPart("kbId") String kbId) {
+                                    @RequestPart("kbId") String kbId,
+                                    @RequestPart(value="docId",required=false) String targetDocId,
+                                    @RequestHeader(value="Idempotency-Key",required=false) String key,
+                                    jakarta.servlet.http.HttpServletRequest rawRequest) {
         String requestId = requestId();
         try {
-            UploadService.UploadResult result = uploadService.upload(principal(), kbId, file);
+            validateParts(rawRequest);
+            UploadService.UploadResult result = uploadService.upload(principal(), kbId, file,
+                    key==null ? UUID.randomUUID().toString() : key,targetDocId);
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("uploadId", result.uploadId());
             data.put("docId", result.docId());
@@ -154,10 +159,23 @@ public class UploadController {
     public ResponseEntity<?> tombstone(@PathVariable String docId) {
         String requestId = requestId();
         try {
-            return RunApiResponses.ok(HttpStatus.OK, uploadService.tombstone(principal(), docId), requestId);
+            var principal=principal();
+            try(var permit=permits.enter(principal,"kb.delete","doc:"+docId)) {
+                return RunApiResponses.ok(HttpStatus.OK, uploadService.tombstone(principal, docId), requestId);
+            }
         } catch (RunApiException e) {
             return RunApiResponses.fail(e.errorCode(), e.getMessage(), requestId);
         }
+    }
+
+    private void validateParts(jakarta.servlet.http.HttpServletRequest request) {
+        try {
+            var names=new java.util.HashSet<String>();
+            for(var part:request.getParts()) {
+                if(!java.util.Set.of("file","kbId","docId").contains(part.getName()) || !names.add(part.getName()))
+                    throw new RunApiException(RunErrorCode.BAD_REQUEST,"unknown or duplicate multipart part");
+            }
+        } catch(java.io.IOException | jakarta.servlet.ServletException e) {throw new RunApiException(RunErrorCode.BAD_REQUEST,"invalid multipart input");}
     }
 
     private ExecutionPrincipal principal() {

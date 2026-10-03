@@ -51,6 +51,20 @@ function frame(seq: number, type: string, payload: Record<string, unknown> = {})
 }
 
 describe('runStream: url and credential placement', () => {
+  it('resolves a relative API base against the browser origin', () => {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'location');
+    Object.defineProperty(globalThis, 'location', { configurable: true, value: { origin: 'http://127.0.0.1:35173' } });
+    try {
+      assert.equal(buildRunStreamUrl({ baseURL: '/api/ai/v1', runId: 'r-1', afterSeq: 0 }), 'http://127.0.0.1:35173/api/ai/v1/runs/r-1/events?afterSeq=0');
+    }
+    finally {
+      if (previous)
+        Object.defineProperty(globalThis, 'location', previous);
+      else
+        Reflect.deleteProperty(globalThis, 'location');
+    }
+  });
+
   it('never puts the token in the query string', () => {
     const url = buildRunStreamUrl({ baseURL: BASE, runId: 'r-1', afterSeq: 42 });
     assert.ok(!url.includes(TOKEN));

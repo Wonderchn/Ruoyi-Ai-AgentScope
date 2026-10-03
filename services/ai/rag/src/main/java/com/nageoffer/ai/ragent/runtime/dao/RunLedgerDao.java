@@ -131,6 +131,10 @@ public class RunLedgerDao {
     }
 
     // ---------------------------------------------------------------- events
+    public void registerRun(String tenant,String run,String member,String department) {
+        jdbc.update("INSERT INTO ai_resource(tenant_id,resource_type,resource_id,owner_member_id,owner_dept_id,status,resource_version,created_by_member) "
+                +"VALUES (?,'RUN',?,?,?,'ACTIVE',1,?)",tenant,run,member,department,member);
+    }
 
     public void insertEvent(String tenantId, String runId, long seq, String eventId, String type, String payloadJson) {
         jdbc.update("INSERT INTO ai_run_event (tenant_id, run_id, seq, event_id, event_type, payload, schema_version) "
@@ -228,7 +232,7 @@ public class RunLedgerDao {
         return jdbc.update("UPDATE ai_run SET status='QUEUED', lease_owner=NULL, lease_until=NULL, error_code=NULL, "
                         + "cancel_requested_at=NULL, version=version+1, updated_at=now() "
                         + "WHERE tenant_id=? AND run_id=? AND version=? "
-                        + "AND status IN ('RECOVERING','RETRY_WAIT','CANCEL_REQUESTED')",
+                        + "AND status IN ('RECOVERING','RETRY_WAIT','CANCEL_REQUESTED','NEEDS_RECONCILIATION')",
                 tenantId, runId, expectedVersion) == 1;
     }
 
@@ -263,14 +267,14 @@ public class RunLedgerDao {
 
     /** 续租：owner+fence 校验；失败 = 已被接管。 */
     public boolean renewLease(String tenantId, String runId, String workerId, long fence, int leaseSeconds) {
-        return jdbc.update("UPDATE ai_run SET lease_until=now() + (? * interval '1 second'), version=version+1, updated_at=now() "
-                        + "WHERE tenant_id=? AND run_id=? AND lease_owner=? AND fence=? AND status='RUNNING'",
+        return jdbc.update("UPDATE ai_run SET lease_until=now() + (? * interval '1 second'), updated_at=now() "
+                        + "WHERE tenant_id=? AND run_id=? AND lease_owner=? AND fence=? AND lease_until>now() AND status='RUNNING'",
                 leaseSeconds, tenantId, runId, workerId, fence) == 1;
     }
 
     /** 完成后释放租约（保留 owner/fence 供审计），不改状态。 */
     public void releaseLease(String tenantId, String runId, String workerId, long fence) {
-        jdbc.update("UPDATE ai_run SET lease_until=now(), version=version+1, updated_at=now() "
+        jdbc.update("UPDATE ai_run SET lease_until=now(), updated_at=now() "
                         + "WHERE tenant_id=? AND run_id=? AND lease_owner=? AND fence=?",
                 tenantId, runId, workerId, fence);
     }
@@ -340,6 +344,22 @@ public class RunLedgerDao {
         return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM ai_run WHERE tenant_id=? "
                 + "AND run_id=? AND lease_owner=? AND fence=? AND lease_until>now() "
                 + "AND status NOT IN ('SUCCEEDED','FAILED','CANCELLED'))", Boolean.class, tenantId, runId, owner, fence));
+    }
+
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
+    public <T> T withLiveFence(String tenantId,String runId,String owner,long fence,java.util.function.Supplier<T> commit) {
+        lockRun(tenantId,runId).orElseThrow(() -> new com.nageoffer.ai.ragent.runtime.RunApiException(
+                com.nageoffer.ai.ragent.runtime.RunErrorCode.VERSION_CONFLICT));
+        if(!ownsLiveLease(tenantId,runId,owner,fence)) throw new com.nageoffer.ai.ragent.runtime.RunApiException(
+                com.nageoffer.ai.ragent.runtime.RunErrorCode.VERSION_CONFLICT);
+        return commit.get();
+    }
+
+    public boolean suspend(String tenantId,String runId,String owner,long fence,String status,String error) {
+        if(!java.util.Set.of("WAITING_APPROVAL","NEEDS_RECONCILIATION").contains(status)) throw new IllegalArgumentException("invalid suspension");
+        return jdbc.update("UPDATE ai_run SET status=?,error_code=?,lease_until=now(),version=version+1,updated_at=now() "
+                +"WHERE tenant_id=? AND run_id=? AND lease_owner=? AND fence=? AND lease_until>now() AND status='RUNNING'",
+                status,error,tenantId,runId,owner,fence)==1;
     }
 
     public Optional<StepRow> latestCompletedStep(String tenantId, String runId, String stepId) {

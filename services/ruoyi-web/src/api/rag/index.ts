@@ -6,9 +6,19 @@
  */
 import type { RunSubmitBody } from './logic';
 import { useUserStore } from '@/stores';
-import { get, post } from '@/utils/request';
+import { identityJson } from './transport';
 
 export * from './logic';
+
+function json<T>(path: string, body?: unknown, extra?: Record<string, string>): Promise<T> {
+  const store = useUserStore();
+  const identity = { token: store.token, epoch: store.authEpoch };
+  return identityJson<T>(`${import.meta.env.VITE_API_URL ?? ''}${path}`, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${identity.token ?? ''}`, 'ClientID': import.meta.env.VITE_CLIENT_ID, ...extra },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }, identity, () => ({ token: store.token, epoch: store.authEpoch }), () => store.handleAuthExpired());
+}
 
 export interface KnowledgeBaseView {
   kbId: string;
@@ -59,32 +69,67 @@ export interface RunSnapshot {
 }
 
 export function listKnowledgeBases() {
-  return get<KnowledgeBaseView[]>('/api/ai/v1/knowledge-bases').json();
+  return json<KnowledgeBaseView[]>('/api/ai/v1/knowledge-bases');
 }
 
 export function createKnowledgeBase(name: string, embeddingModel?: string, collectionName?: string) {
-  return post<KnowledgeBaseView>('/api/ai/v1/knowledge-bases', { name, embeddingModel, collectionName }).json();
+  return json<KnowledgeBaseView>('/api/ai/v1/knowledge-bases', { name, embeddingModel, collectionName });
 }
 
 export function listDocuments(kbId: string) {
-  return get<DocumentView[]>(`/api/ai/v1/knowledge-bases/${encodeURIComponent(kbId)}/documents`).json();
+  return json<DocumentView[]>(`/api/ai/v1/knowledge-bases/${encodeURIComponent(kbId)}/documents`);
 }
 
 export function getDocument(docId: string) {
-  return get<DocumentView>(`/api/ai/v1/documents/${encodeURIComponent(docId)}/meta`).json();
+  return json<DocumentView>(`/api/ai/v1/documents/${encodeURIComponent(docId)}/meta`);
+}
+
+export async function downloadSource(docId: string, versionId: string, signal?: AbortSignal): Promise<Blob> {
+  const store = useUserStore();
+  const identity = { token: store.token, epoch: store.authEpoch };
+  const check = () => {
+    if (store.authEpoch !== identity.epoch || store.token !== identity.token)
+      throw new DOMException('Request identity changed', 'AbortError');
+  };
+  const response = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/ai/v1/documents/${encodeURIComponent(docId)}/source?versionId=${encodeURIComponent(versionId)}`, {
+    headers: { Authorization: `Bearer ${identity.token ?? ''}`, ClientID: import.meta.env.VITE_CLIENT_ID },
+    signal,
+  });
+  check();
+  if (!response.ok || !response.headers.get('content-type')?.startsWith('application/pdf'))
+    throw new Error(`当前引用不可访问 (${response.status})`);
+  const blob = await response.blob();
+  check();
+  if (blob.size > 50 * 1024 * 1024)
+    throw new Error('来源超过下载上限');
+  return blob;
 }
 
 /** 专用流式上传（带进度）；返回服务端生成的 docId/uploadId/versionId。 */
-export function uploadDocument(kbId: string, file: File, onProgress?: (percent: number) => void): Promise<UploadResult> {
+export function uploadDocument(kbId: string, file: File, onProgress?: (percent: number) => void, uploadKey: string = crypto.randomUUID(), signal?: AbortSignal, docId?: string): Promise<UploadResult> {
   const token = useUserStore().token;
   const base = (import.meta.env.VITE_API_URL as string | undefined) ?? '';
   return new Promise((resolve, reject) => {
     const form = new FormData();
     form.append('kbId', kbId);
+    if (docId)
+      form.append('docId', docId);
     form.append('file', file, file.name);
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${base}/api/ai/v1/documents/uploads`);
+    xhr.timeout = 120000;
+    const abort = () => xhr.abort();
+    xhr.onabort = () => reject(new DOMException('Upload cancelled', 'AbortError'));
+    xhr.ontimeout = () => reject(new Error('upload timeout; retry the same request'));
+    xhr.onloadend = () => signal?.removeEventListener('abort', abort);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) {
+      reject(new DOMException('Upload cancelled', 'AbortError'));
+      return;
+    }
     xhr.setRequestHeader('Authorization', `Bearer ${token ?? ''}`);
+    xhr.setRequestHeader('ClientID', import.meta.env.VITE_CLIENT_ID);
+    xhr.setRequestHeader('Idempotency-Key', uploadKey);
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && onProgress) {
         onProgress(Math.round((event.loaded / event.total) * 100));
@@ -93,7 +138,7 @@ export function uploadDocument(kbId: string, file: File, onProgress?: (percent: 
     xhr.onload = () => {
       try {
         const body = JSON.parse(xhr.responseText || '{}');
-        if (xhr.status === 201 || body?.code === 200) {
+        if (xhr.status === 201 && body?.code === 200 && body.data?.docId && body.data?.uploadId && body.data?.versionId) {
           resolve(body.data as UploadResult);
         }
         else {
@@ -117,26 +162,26 @@ export interface RunAccepted {
 
 /** 正式受理 rag.chat 等 run；幂等键进 Idempotency-Key 头。 */
 export function submitRun(body: RunSubmitBody, idempotencyKey: string): Promise<RunAccepted> {
-  return post('/api/ai/v1/runs', body, { headers: { 'Idempotency-Key': idempotencyKey } }).json();
+  return json('/api/ai/v1/runs', body, { 'Idempotency-Key': idempotencyKey });
 }
 
 /** 摄入任务：正式 document.ingest run（同键同体同 run）。 */
 export function createIngestion(docId: string, uploadId: string, idempotencyKey: string): Promise<IngestionResult> {
-  return post(
+  return json(
     `/api/ai/v1/documents/${encodeURIComponent(docId)}/ingestions`,
     { uploadId },
-    { headers: { 'Idempotency-Key': idempotencyKey } },
-  ).json();
+    { 'Idempotency-Key': idempotencyKey },
+  );
 }
 
 export function getRun(runId: string): Promise<RunSnapshot> {
-  return get<RunSnapshot>(`/api/ai/v1/runs/${encodeURIComponent(runId)}`).json();
+  return json<RunSnapshot>(`/api/ai/v1/runs/${encodeURIComponent(runId)}`);
 }
 
 export function cancelRun(runId: string, expectedVersion?: number): Promise<RunSnapshot> {
-  return post(`/api/ai/v1/runs/${encodeURIComponent(runId)}/cancel`, { expectedVersion }).json();
+  return json(`/api/ai/v1/runs/${encodeURIComponent(runId)}/cancel`, { expectedVersion });
 }
 
 export function resumeRun(runId: string, expectedVersion: number): Promise<RunSnapshot> {
-  return post(`/api/ai/v1/runs/${encodeURIComponent(runId)}/resume`, { expectedVersion }).json();
+  return json(`/api/ai/v1/runs/${encodeURIComponent(runId)}/resume`, { expectedVersion });
 }

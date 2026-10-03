@@ -97,14 +97,15 @@ public class RunWorker {
             finalizeCancelledRuns();
             for (int i = 0; i < properties.getWorker().getBatch(); i++) {
                 if (!capacity.tryAcquire()) { return; }
-                Optional<RunLedgerDao.ClaimedRun> claimed = dao.claimNext(workerId,
-                        properties.getWorker().getLeaseSeconds());
-                if (claimed.isEmpty()) {
-                    capacity.release();
-                    return;
-                }
-                RunLedgerDao.ClaimedRun claim = claimed.get();
-                pool.submit(() -> runOne(claim));
+                boolean dispatched=false;
+                try {
+                    Optional<RunLedgerDao.ClaimedRun> claimed = dao.claimNext(workerId,
+                            properties.getWorker().getLeaseSeconds());
+                    if (claimed.isEmpty()) { return; }
+                    RunLedgerDao.ClaimedRun claim=claimed.get();
+                    pool.submit(() -> runOne(claim));
+                    dispatched=true;
+                } finally { if(!dispatched) capacity.release(); }
             }
         } catch (RuntimeException e) {
             log.warn("worker tick failed: {}", e.getClass().getSimpleName());
@@ -130,6 +131,14 @@ public class RunWorker {
                 run.tenantId(), run.runId(), claim.newAttempt(), claim.newFence(), workerId);
         P2FaultInjector faults = faultInjector.getIfAvailable();
         ScheduledFuture<?> heartbeat = startHeartbeat(guard);
+        int wall=Math.min(600,Math.max(1,properties.getWorker().getMaxWallClockSeconds()));
+        try {
+            var budget=CanonicalJson.strictMapper().readTree(run.budgetJson()==null?"{}":run.budgetJson());
+            if(budget.hasNonNull("maxWallClockSeconds")) wall=Math.min(wall,budget.path("maxWallClockSeconds").asInt(wall));
+        } catch(java.io.IOException ignored) {wall=1;}
+        Thread executionThread=Thread.currentThread();
+        var expired=new java.util.concurrent.atomic.AtomicBoolean();
+        ScheduledFuture<?> deadline=heartbeats.schedule(()->{expired.set(true);executionThread.interrupt();},wall,TimeUnit.SECONDS);
         try {
             if (faults != null) {
                 faults.checkpoint(P2FaultInjector.WORKER_AFTER_CLAIM);
@@ -143,11 +152,14 @@ public class RunWorker {
                 return;
             }
             RunExecutor.Outcome outcome = executor.execute(new RunExecution(run, guard));
+            if(expired.get()) {safeFail(guard,"BUDGET_EXCEEDED");return;}
             if (!guard.stillOwned()) {
                 log.warn("run {} lost lease before terminal; skipping terminal write", run.runId());
                 return;
             }
-            if (RunStatus.CANCELLED.equals(outcome.status())) {
+            if (java.util.Set.of(RunStatus.WAITING_APPROVAL,RunStatus.NEEDS_RECONCILIATION).contains(outcome.status())) {
+                guard.suspend(outcome.status(),outcome.errorCode());
+            } else if (RunStatus.CANCELLED.equals(outcome.status())) {
                 guard.terminal(RunStatus.CANCELLED, outcome.terminalResult(), null);
             } else if (RunStatus.FAILED.equals(outcome.status())) {
                 guard.terminal(RunStatus.FAILED, outcome.terminalResult(), outcome.errorCode());
@@ -165,10 +177,12 @@ public class RunWorker {
             safeFail(guard, e.errorCode().name());
         } catch (Exception e) {
             log.warn("run {} failed: {}", run.runId(), e.getClass().getSimpleName());
-            safeFail(guard, "EXECUTION_FAILED");
+            safeFail(guard, expired.get()?"BUDGET_EXCEEDED":"EXECUTION_FAILED");
         } finally {
             capacity.release();
             heartbeat.cancel(false);
+            deadline.cancel(false);
+            Thread.interrupted();
             try {
                 if (guard.stillOwned()) {
                     dao.releaseLease(run.tenantId(), run.runId(), workerId, claim.newFence());

@@ -72,6 +72,8 @@ public class RagChatExecutor implements RunExecutor {
     private final ObjectProvider<P2FaultInjector> faultInjector;
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.nageoffer.ai.ragent.runtime.RunAccessService access;
 
     public RagChatExecutor(DocumentDao documentDao, EmbeddingGateway embeddingGateway, ChatGateway chatGateway,
                            EgressPolicy egressPolicy, UsageLedgerService usageLedger,
@@ -112,6 +114,7 @@ public class RagChatExecutor implements RunExecutor {
             return Outcome.failed("CHAT_INPUT_INVALID");
         }
         Set<String> requestedKbs = requestedKbs(execution.run().resourceRefsJson());
+        access.current(execution.run(),Set.of("kb.read"));
 
         // ---------------- step: authorize（异步重新获取当前主体/策略事实） ----------------
         ExecutionPrincipal principal;
@@ -174,10 +177,13 @@ public class RagChatExecutor implements RunExecutor {
             return Outcome.failed("NO_AUTHORIZED_SCOPE");
         }
 
+        if(!documentDao.matchesEmbeddingModel(execution.tenantId(),authorizedKbs,embeddingGateway.model())) return Outcome.failed("MODEL_CONFIG_CHANGED");
+
         // ---------------- step: retrieve ----------------
         List<DocumentDao.RetrievedChunk> chunks;
         Map<String, Object> retrieveRef = completedStepRef(guard, "retrieve");
         if (retrieveRef != null) {
+            if(!embeddingGateway.model().equals(retrieveRef.get("embeddingModel"))) return Outcome.failed("MODEL_CONFIG_CHANGED");
             chunks = loadChunksFromRef(execution.tenantId(), retrieveRef);
         } else {
             if (guard.isCancelRequested()) {
@@ -185,29 +191,27 @@ public class RagChatExecutor implements RunExecutor {
             }
             guard.appendEvent(RunEventAppender.EVENT_STEP_STARTED, Map.of(
                     "stepId", "retrieve", "stepName", "retrieve", "attemptId", "a-" + execution.attempt()));
-            String callId = usageLedger.startCall(execution.tenantId(), execution.runId(), execution.attempt(),
+            access.current(execution.run(),Set.of("kb.read"));
+            if(usageLedger.unresolved(execution.tenantId(),execution.runId(),"retrieve")) return new Outcome("NEEDS_RECONCILIATION",Map.of(),"MODEL_USAGE_UNKNOWN");
+            String callId = guard.commitAtomic(() -> usageLedger.startCall(execution.tenantId(), execution.runId(), execution.attempt(),
                     "retrieve", UsageLedgerService.KIND_EMBEDDING, embeddingGateway.provider(),
-                    embeddingGateway.model(), null);
-            List<Float> queryVector;
+                    embeddingGateway.model(), com.nageoffer.ai.ragent.runtime.CanonicalJson.sha256(question)));
+            EmbeddingGateway.EmbeddingResult embedded;
             try {
-                queryVector = embeddingGateway.embed(question);
+                embedded = embeddingGateway.embedBatchWithUsage(List.of(question));
             } catch (RuntimeException e) {
-                usageLedger.markFailed(execution.tenantId(), callId, e.getClass().getSimpleName());
+                guard.commitAtomic(()->{usageLedger.markUnknown(execution.tenantId(),callId);return null;});
                 throw e;
             }
-            Map<String, Object> embedUsage = new LinkedHashMap<>();
-            embedUsage.put("query", true);
-            if ("synthetic".equals(embeddingGateway.provider())) {
-                embedUsage.put("synthetic", true);
-                usageLedger.settle(execution.tenantId(), callId, null, embedUsage);
-            } else {
-                usageLedger.settle(execution.tenantId(), callId, null, null);
-            }
-            chunks = documentDao.searchPublished(execution.tenantId(), authorizedKbs, queryVector, TOP_K, MIN_SCORE);
+            Map<String,Object> embedUsage=embedded.usageRaw();
+            guard.commitAtomic(()->{usageLedger.settle(execution.tenantId(),callId,embedded.providerRequestId(),embedUsage);return null;});
+            access.current(execution.run(),Set.of("kb.read"));
+            chunks = documentDao.searchPublished(execution.tenantId(), authorizedKbs, embedded.vectors().get(0), TOP_K, MIN_SCORE);
             Map<String, Object> ref = new LinkedHashMap<>();
             ref.put("chunks", chunkRefs(chunks));
             ref.put("embeddingModel", embeddingGateway.model());
             ref.put("minScore", MIN_SCORE);
+            if(currentCitations(principal,chunks).size()!=chunks.size()) return Outcome.failed("SOURCE_CHANGED");
             guard.commitStep("retrieve", "retrieve", toJson(ref), null, toJson(embedUsage));
             guard.appendEvent(RunEventAppender.EVENT_STEP_COMPLETED, Map.of(
                     "stepId", "retrieve", "state", "COMPLETED", "ref", ref,
@@ -221,10 +225,16 @@ public class RagChatExecutor implements RunExecutor {
             result.put("citations", List.of());
             result.put("evidenceInsufficient", true);
             result.put("providerCalls", 0);
-            usageLedger.finalizeReservation(execution.tenantId(), execution.runId());
-            persistMessage(execution, result.get("answer").toString(), List.of(), 1);
+            access.current(execution.run(),Set.of("kb.read"));
+            guard.commitAtomic(()->{
+                usageLedger.finalizeReservation(execution.tenantId(), execution.runId());
+                persistMessage(execution, result.get("answer").toString(), List.of(), 1);
+                return null;
+            });
             return Outcome.succeeded(result);
         }
+        principal=access.current(execution.run(),Set.of("kb.read"));
+        if(currentCitations(principal,chunks).size()!=chunks.size()) return Outcome.failed("SOURCE_CHANGED");
 
         // ---------------- step: model（外发白名单 → 流式 → 持久事件） ----------------
         Map<String, Object> modelRef = completedStepRef(guard, "model");
@@ -233,11 +243,13 @@ public class RagChatExecutor implements RunExecutor {
                 return new Outcome("CANCELLED", Map.of("at", "model"), null);
             }
             egressPolicy.requireAllowed(chatGateway.provider());
+            access.current(execution.run(),Set.of("kb.read"));
+            if(usageLedger.unresolved(execution.tenantId(),execution.runId(),"model")) return new Outcome("NEEDS_RECONCILIATION",Map.of(),"MODEL_USAGE_UNKNOWN");
             guard.appendEvent(RunEventAppender.EVENT_STEP_STARTED, Map.of(
                     "stepId", "model", "stepName", "model", "attemptId", "a-" + execution.attempt()));
-            String callId = usageLedger.startCall(execution.tenantId(), execution.runId(), execution.attempt(),
-                    "model", UsageLedgerService.KIND_CHAT, chatGateway.provider(), chatGateway.model(), null);
             fault(P2FaultInjector.CHAT_BEFORE_PROVIDER);
+            String callId = guard.commitAtomic(() -> usageLedger.startCall(execution.tenantId(), execution.runId(), execution.attempt(),
+                    "model", UsageLedgerService.KIND_CHAT, chatGateway.provider(), chatGateway.model(), null));
             StringBuilder answer = new StringBuilder();
             StringBuilder pending = new StringBuilder();
             final boolean[] cancelled = {false};
@@ -246,47 +258,51 @@ public class RagChatExecutor implements RunExecutor {
                 chatResult = chatGateway.stream(chatMessages(question, chunks), maxTokens(execution),
                         delta -> {
                             if (cancelled[0]) {
-                                return;
+                                throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.RUN_STATE_CONFLICT);
                             }
                             answer.append(delta);
                             pending.append(delta);
                             if (pending.length() >= DELTA_FLUSH_CHARS) {
+                                access.current(execution.run(),Set.of("kb.read"));
                                 guard.appendEvent(RunEventAppender.EVENT_OUTPUT_DELTA,
                                         Map.of("text", pending.toString(), "dropped", false));
                                 pending.setLength(0);
                             }
                             if (guard.isCancelRequested()) {
                                 cancelled[0] = true;
+                                throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.RUN_STATE_CONFLICT);
                             }
                         });
             } catch (RuntimeException e) {
-                usageLedger.markFailed(execution.tenantId(), callId, e.getClass().getSimpleName());
+                guard.commitAtomic(()->{usageLedger.markUnknown(execution.tenantId(),callId);return null;});
+                if(cancelled[0]) return new Outcome("CANCELLED",Map.of("usage","PENDING_RECONCILIATION"),null);
                 throw e;
             }
             fault(P2FaultInjector.CHAT_AFTER_PROVIDER);
             if (pending.length() > 0) {
+                access.current(execution.run(),Set.of("kb.read"));
                 guard.appendEvent(RunEventAppender.EVENT_OUTPUT_DELTA,
                         Map.of("text", pending.toString(), "dropped", false));
             }
-            if (chatResult.usageRaw() == null) {
-                // 提供方 usage 未知：待核对，不按 0 结算
-                usageLedger.settle(execution.tenantId(), callId, chatResult.providerRequestId(), null);
-            } else {
-                usageLedger.settle(execution.tenantId(), callId, chatResult.providerRequestId(), chatResult.usageRaw());
-            }
+            guard.commitAtomic(()->{usageLedger.settle(execution.tenantId(),callId,chatResult.providerRequestId(),chatResult.usageRaw());return null;});
+            principal=access.current(execution.run(),Set.of("kb.read"));
             List<Map<String, Object>> citations = currentCitations(principal, chunks);
+            if(citations.size()!=chunks.size()) return Outcome.failed("SOURCE_CHANGED");
             Map<String, Object> ref = new LinkedHashMap<>();
             ref.put("callId", callId);
             ref.put("chars", answer.length());
-            ref.put("citations", citations.size());
+            ref.put("citations", citations);
+            ref.put("answer",answer.toString());
             ref.put("provider", chatGateway.provider());
             ref.put("model", chatGateway.model());
-            guard.commitStep("model", "model", toJson(ref), null, toJson(Map.of("calls", 1)));
+            guard.commitAtomic(()->{
+                persistMessage(execution,answer.toString(),citations,1);
+                return guard.commitStep("model", "model", toJson(ref), null, toJson(Map.of("calls", 1)));
+            });
             guard.appendEvent(RunEventAppender.EVENT_STEP_COMPLETED, Map.of(
                     "stepId", "model", "state", "COMPLETED", "ref", ref,
                     "attemptId", "a-" + execution.attempt()));
-            persistMessage(execution, answer.toString(), citations, 1);
-            usageLedger.finalizeReservation(execution.tenantId(), execution.runId());
+            guard.commitAtomic(()->{usageLedger.finalizeReservation(execution.tenantId(), execution.runId());return null;});
             if (cancelled[0] || guard.isCancelRequested()) {
                 return new Outcome("CANCELLED", Map.of("partial", answer.length(), "citations", citations), null);
             }
@@ -303,8 +319,8 @@ public class RagChatExecutor implements RunExecutor {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("resumedFrom", "model");
         result.put("citations", modelRef.get("citations"));
-        result.put("answer", readPersistedAnswer(execution));
-        usageLedger.finalizeReservation(execution.tenantId(), execution.runId());
+        result.put("answer", modelRef.get("answer"));
+        guard.commitAtomic(()->{usageLedger.finalizeReservation(execution.tenantId(), execution.runId());return null;});
         return Outcome.succeeded(result);
     }
 
@@ -334,6 +350,7 @@ public class RagChatExecutor implements RunExecutor {
         try {
             JsonNode refs = objectMapper.readTree(resourceRefsJson);
             for (JsonNode ref : refs) {
+                if(ref.path("ref").asText("").startsWith("kb:")){kbs.add(ref.path("ref").asText().substring(3));continue;}
                 if ("knowledge_base".equals(ref.path("type").asText())) {
                     String id = ref.path("id").asText("");
                     if (!id.isBlank() && id.matches("[A-Za-z0-9_-]{1,64}")) {
@@ -374,9 +391,10 @@ public class RagChatExecutor implements RunExecutor {
             if (!chunk.versionId().equals(document.publishedVersionId())) {
                 continue;
             }
-            if (resources != null) {
+            if (resources == null) continue;
+            {
                 try {
-                    if (resources.check(principal, "kb.read", "kb:" + document.kbId())
+                    if (resources.check(com.nageoffer.ai.ragent.runtime.RunAccessService.scoped(principal,Set.of("document.read")), "document.read", "doc:" + document.docId())
                             != ResourceAuthorizationService.Verdict.GRANT) {
                         continue;
                     }

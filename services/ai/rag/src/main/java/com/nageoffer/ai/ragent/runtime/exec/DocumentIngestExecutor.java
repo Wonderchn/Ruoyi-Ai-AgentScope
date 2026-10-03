@@ -51,7 +51,7 @@ import java.util.Map;
 public class DocumentIngestExecutor implements RunExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentIngestExecutor.class);
-    private static final int EMBED_BATCH = 16;
+    private static final int EMBED_BATCH = 10;
 
     private final DocumentDao documentDao;
     private final PrivateObjectStore objectStore;
@@ -61,6 +61,8 @@ public class DocumentIngestExecutor implements RunExecutor {
     private final UsageLedgerService usageLedger;
     private final ObjectProvider<P2FaultInjector> faultInjector;
     private final ObjectMapper objectMapper;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.nageoffer.ai.ragent.runtime.RunAccessService access;
 
     public DocumentIngestExecutor(DocumentDao documentDao, PrivateObjectStore objectStore,
                                   ObjectProvider<LocalMinerUClient> mineru, MarkdownChunker chunker,
@@ -101,9 +103,16 @@ public class DocumentIngestExecutor implements RunExecutor {
         }
         DocumentDao.DocumentRow document = documentDao.findDocument(execution.tenantId(), docId).orElse(null);
         DocumentDao.UploadRow upload = documentDao.findUpload(execution.tenantId(), uploadId).orElse(null);
-        if (document == null || upload == null || document.tombstoned()) {
+        var version=documentDao.findVersion(execution.tenantId(),versionId).orElse(null);
+        if (document == null || upload == null || version==null || document.tombstoned()
+                || !document.kbId().equals(kbId) || !upload.docId().equals(docId) || !upload.kbId().equals(kbId)
+                || !version.docId().equals(docId) || !version.uploadId().equals(uploadId)) {
             return Outcome.failed("DOCUMENT_UNAVAILABLE");
         }
+        access.current(execution.run(),java.util.Set.of("kb.read","document.read"));
+
+        if(!documentDao.matchesEmbeddingModel(execution.tenantId(),java.util.List.of(kbId),embeddingGateway.model())
+                || version.embeddingModel()!=null && !version.embeddingModel().equals(embeddingGateway.model())) return Outcome.failed("MODEL_CONFIG_CHANGED");
 
         // ---------------- step: parse ----------------
         Map<String, Object> parseRef = completedStepRef(guard, "parse");
@@ -123,15 +132,31 @@ public class DocumentIngestExecutor implements RunExecutor {
                     execution.fence(), "PARSING", null, null, null, null)) {
                 return Outcome.failed("VERSION_STATE_CONFLICT");
             }
-            byte[] bytes = objectStore.get(upload.objectKey());
             LocalMinerUClient.ParseResult result;
             try {
-                result = client.parse(bytes, upload.filename(), upload.sha256(), 600);
+                var saved=completedStepRef(guard,"parse-job");
+                LocalMinerUClient.ParseJob submitted;
+                if(saved==null) {
+                    fault(P2FaultInjector.MINERU_BEFORE_JOB);
+                    byte[] bytes=objectStore.get(upload.objectKey());
+                    submitted=client.submit(bytes,upload.filename(),upload.sha256());
+                    guard.commitStep("parse-job","mineru job",toJson(Map.of("jobId",submitted.jobId(),"fileId",submitted.fileId())),null,null);
+                    fault(P2FaultInjector.MINERU_AFTER_JOB_CREATE);
+                } else {submitted=new LocalMinerUClient.ParseJob((String)saved.get("jobId"),(String)saved.get("fileId"));}
+                result=client.awaitResult(submitted,600,()->{
+                    access.current(execution.run(),java.util.Set.of("kb.read","document.read"));
+                    if(!guard.stillOwned()) throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.VERSION_CONFLICT);
+                    return guard.isCancelRequested();
+                });
+            } catch(LocalMinerUClient.ParseCancelledException e) {
+                return new Outcome("CANCELLED",Map.of("at","parse"),null);
             } catch (LocalMinerUClient.JobLostException e) {
-                // 服务重启丢任务索引：有完整持久产物则复用，否则本 attempt 明确失败并由上层重试新 attempt
+                // Durable job vanished. End this run honestly; a new run may repeat pure parsing.
                 return Outcome.failed("MINERU_JOB_LOST");
             }
-            String parseKey = "tenants/" + execution.tenantId() + "/docs/" + docId + "/" + versionId + "/parsed.md";
+            access.current(execution.run(),java.util.Set.of("kb.read","document.read"));
+            if(!guard.stillOwned()) throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.VERSION_CONFLICT);
+            String parseKey = "tenants/" + execution.tenantId() + "/docs/" + docId + "/" + versionId + "/parsed-"+result.markdownSha256()+".md";
             objectStore.put(parseKey, result.markdown().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             parseRef = new LinkedHashMap<>();
             parseRef.put("objectKey", parseKey);
@@ -200,43 +225,45 @@ public class DocumentIngestExecutor implements RunExecutor {
             for (MarkdownChunker.ChunkDraft draft : slice) {
                 texts.add(draft.content());
             }
-            String callId = usageLedger.startCall(execution.tenantId(), execution.runId(), execution.attempt(),
+            access.current(execution.run(),java.util.Set.of("kb.read","document.read"));
+            if(usageLedger.unresolved(execution.tenantId(),execution.runId(),stepId)) return new Outcome("NEEDS_RECONCILIATION",Map.of(),"MODEL_USAGE_UNKNOWN");
+            String callId = guard.commitAtomic(()->usageLedger.startCall(execution.tenantId(), execution.runId(), execution.attempt(),
                     stepId, UsageLedgerService.KIND_EMBEDDING, embeddingGateway.provider(),
-                    embeddingGateway.model(), null);
-            List<List<Float>> vectors;
+                    embeddingGateway.model(), null));
+            EmbeddingGateway.EmbeddingResult embedded;
             try {
-                vectors = embeddingGateway.embedBatch(texts);
+                embedded = embeddingGateway.embedBatchWithUsage(texts);
             } catch (RuntimeException e) {
-                usageLedger.markFailed(execution.tenantId(), callId, e.getClass().getSimpleName());
+                guard.commitAtomic(()->{usageLedger.markUnknown(execution.tenantId(),callId);return null;});
                 throw e;
             }
-            Map<String, Object> usage = new LinkedHashMap<>();
-            usage.put("batchSize", texts.size());
-            if ("synthetic".equals(embeddingGateway.provider())) {
-                usage.put("synthetic", true);
-                usageLedger.settle(execution.tenantId(), callId, null, usage);
-            } else {
-                // 真实提供方 usage 未知：保持待核对，不按 0 结算
-                usageLedger.settle(execution.tenantId(), callId, null, null);
-            }
+            Map<String, Object> usage = embedded.usageRaw();
+            int batchIndex=batch;
+            access.current(execution.run(),java.util.Set.of("kb.read","document.read"));
+            guard.commitAtomic(()->{
+            usageLedger.settle(execution.tenantId(),callId,embedded.providerRequestId(),usage);
             for (int i = 0; i < slice.size(); i++) {
                 MarkdownChunker.ChunkDraft draft = slice.get(i);
                 documentDao.insertStagingChunk(execution.tenantId(), versionId, draft.chunkKey(), draft.index(),
                         docId, kbId, draft.content(), draft.contentHash(), draft.charCount(),
-                        draft.pageFrom(), draft.pageTo(), vectors.get(i), embeddingGateway.model());
+                        draft.pageFrom(), draft.pageTo(), embedded.vectors().get(i), embeddingGateway.model());
+                fault(P2FaultInjector.EMBEDDING_AFTER_STAGING_CHUNK);
             }
-            Map<String, Object> ref = Map.of("batch", batch, "chunks", slice.size(),
+            Map<String, Object> ref = Map.of("batch", batchIndex, "chunks", slice.size(),
                     "model", embeddingGateway.model(), "dimension", embeddingGateway.dimension());
             guard.commitStep(stepId, "embedding", toJson(ref), null, toJson(usage));
             guard.appendEvent(RunEventAppender.EVENT_STEP_COMPLETED, Map.of(
-                    "stepId", stepId, "state", "COMPLETED", "ref", ref, "usage", usage,
+                    "stepId", stepId, "state", "COMPLETED", "ref", ref, "usage", usage==null?Map.of("pending",true):usage,
                     "attemptId", "a-" + execution.attempt()));
+            return null;
+            });
         }
         documentDao.updateVersionStateFenced(execution.tenantId(), versionId, execution.runId(), execution.fence(),
                 "READY_TO_PUBLISH", null, drafts.size(), embeddingGateway.model(), embeddingGateway.dimension());
 
         // ---------------- step: publish ----------------
         if (completedStepRef(guard, "publish") == null) {
+            access.current(execution.run(),java.util.Set.of("kb.read","document.read"));
             if (guard.isCancelRequested()) {
                 return new Outcome("CANCELLED", Map.of("at", "publish"), null);
             }
@@ -245,13 +272,14 @@ public class DocumentIngestExecutor implements RunExecutor {
                 // tombstone 优先：旧任务不能复活
                 return new Outcome("CANCELLED", Map.of("reason", "document tombstoned"), null);
             }
-            long staged = documentDao.countChunks(execution.tenantId(), versionId, "STAGING");
+            boolean alreadyPublished=versionId.equals(current.publishedVersionId());
+            long staged = documentDao.countChunks(execution.tenantId(), versionId, alreadyPublished?"PUBLISHED":"STAGING");
             if (staged == 0) {
                 return Outcome.failed("PUBLISH_NO_CHUNKS");
             }
             fault(P2FaultInjector.PUBLISH_BEFORE_SWAP);
-            boolean published = documentDao.publishVersionFenced(execution.tenantId(), docId, versionId,
-                    execution.runId(), execution.fence());
+            boolean published = guard.commitAtomic(()->documentDao.publishVersionFenced(execution.tenantId(), docId, versionId,
+                    execution.runId(), execution.fence()));
             if (!published) {
                 return Outcome.failed("PUBLISH_REJECTED");
             }
@@ -264,7 +292,7 @@ public class DocumentIngestExecutor implements RunExecutor {
                     "attemptId", "a-" + execution.attempt()));
         }
 
-        usageLedger.finalizeReservation(execution.tenantId(), execution.runId());
+        guard.commitAtomic(()->{usageLedger.finalizeReservation(execution.tenantId(), execution.runId());return null;});
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("docId", docId);
         result.put("versionId", versionId);

@@ -232,7 +232,7 @@ public class P2RuntimeProperties {
 
     public static class Upload {
         /** 产品 API 首期上限（20MB，与部署一致）；50MB 目标未签收。 */
-        private long maxBytes = 20L * 1024L * 1024L;
+        private long maxBytes = 50L * 1024L * 1024L;
         private String allowedMime = "application/pdf";
 
         public long getMaxBytes() {

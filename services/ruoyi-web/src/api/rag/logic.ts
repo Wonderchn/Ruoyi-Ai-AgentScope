@@ -51,7 +51,15 @@ export function dedupeCitations(citations: Citation[]): Citation[] {
 /** 从 run.terminal 事件 payload 提取答案与引用（缺失时返回空）。 */
 export function terminalSummary(payload: unknown): { answer: string; citations: Citation[]; evidenceInsufficient: boolean } {
   const data = (payload ?? {}) as Record<string, unknown>;
-  const result = (data.resultRef ?? data) as Record<string, unknown>;
+  let result = (data.resultRef ?? data) as Record<string, unknown>;
+  if (typeof result === 'string') {
+    try {
+      result = JSON.parse(result);
+    }
+    catch {
+      result = {};
+    }
+  }
   const answer = typeof result.answer === 'string' ? result.answer : '';
   const citations = Array.isArray(result.citations) ? (result.citations as Citation[]) : [];
   return { answer, citations: dedupeCitations(citations), evidenceInsufficient: result.evidenceInsufficient === true };

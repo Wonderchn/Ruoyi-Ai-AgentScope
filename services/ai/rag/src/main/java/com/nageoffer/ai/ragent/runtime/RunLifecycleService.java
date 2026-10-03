@@ -37,6 +37,8 @@ public class RunLifecycleService {
 
     private final RunLedgerDao dao;
     private final RunEventAppender events;
+    @org.springframework.beans.factory.annotation.Autowired
+    private RunAccessService access;
 
     public RunLifecycleService(RunLedgerDao dao, RunEventAppender events) {
         this.dao = dao;
@@ -49,13 +51,16 @@ public class RunLifecycleService {
     }
 
     public RunRecord get(ExecutionPrincipal principal, String runId) {
-        return dao.findRun(principal.tenantId(), runId)
+        RunRecord run=dao.findRun(principal.tenantId(), runId)
                 .orElseThrow(() -> new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
+        if(run.idempotencyKey()!=null) access.visible(principal,run);
+        return run;
     }
 
     /** 幂等取消：非终态 → CANCEL_REQUESTED；终态不改写。 */
     @Transactional(rollbackFor = Exception.class)
     public RunRecord cancel(ExecutionPrincipal principal, String runId, Long expectedVersion) {
+        get(principal,runId);
         RunRecord run = dao.lockRun(principal.tenantId(), runId)
                 .orElseThrow(() -> new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
         if (RunStatus.isTerminal(run.status())) {
@@ -75,6 +80,7 @@ public class RunLifecycleService {
     /** 非终态白名单 + expectedVersion CAS；终端拒绝。 */
     @Transactional(rollbackFor = Exception.class)
     public RunRecord resume(ExecutionPrincipal principal, String runId, long expectedVersion) {
+        get(principal,runId);
         RunRecord run = dao.lockRun(principal.tenantId(), runId)
                 .orElseThrow(() -> new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
         if (RunStatus.isTerminal(run.status())) {
@@ -99,6 +105,7 @@ public class RunLifecycleService {
     }
 
     public List<RunLedgerDao.StepRow> steps(ExecutionPrincipal principal, String runId) {
+        get(principal,runId);
         return dao.listSteps(principal.tenantId(), runId);
     }
 
@@ -146,8 +153,10 @@ public class RunLifecycleService {
 
     /** 保持 JSON 原样（不二次转义）的包装，供 Jackson 以 RawValue 输出。 */
     public record RawJson(String json) implements com.fasterxml.jackson.databind.JsonSerializable {
-        public static RawJson of(String json) {
-            return new RawJson(json);
+        public static Object of(String json) {
+            if(json==null || json.isBlank()) return null;
+            try{return CanonicalJson.strictMapper().readValue(json,Object.class);}
+            catch(java.io.IOException e){throw new RunApiException(RunErrorCode.INTERNAL_ERROR);}
         }
 
         @Override

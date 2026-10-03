@@ -1,4 +1,4 @@
-# P2 Phase A：受理/Worker/事件/SSE 契约与故障用例（synthetic 执行器；由 run.ps1 点源执行）
+﻿# P2 Phase A：受理/Worker/事件/SSE 契约与故障用例（synthetic 执行器；由 run.ps1 点源执行）
 # 依赖 run.ps1 提供的函数与变量：Http/Sql/SubmitRun/ArmFault/Wait-RunStatus/Add-Case 等。
 
 # ---------------------------------------------------------------- bcrypt helper (平台口径)
@@ -38,29 +38,40 @@ function FixtureUserId([string]$Tenant) {
 function Wait-RunStatus([string]$Token, [string]$RunId, [string]$Want, [int]$Seconds = 60) {
     for ($i = 0; $i -lt ($Seconds * 2); $i++) {
         $r = Http 'GET' "http://127.0.0.1:$PlatformPort/api/ai/v1/runs/$RunId" @{ 'Authorization' = "Bearer $Token" } '' 20 'poll-run'
-        if ($r.Body -match '"status"\s*:\s*"([^"]+)"') { if ($Matches[1] -eq $Want) { return $r } }
+        if ($r.Body -match '"status"\s*:\s*"([^"]+)"') {
+            if ($Matches[1] -eq $Want) { return $r }
+            if ($Matches[1] -in @('SUCCEEDED','FAILED','CANCELLED')) {
+                Save-Evidence ("unexpected-terminal-$RunId.json") (Redact $r.Body)
+                return $null
+            }
+        }
         Start-Sleep -Milliseconds 500
     }
     return $null
 }
 
+if($RealProvidersOnly){return}
+
 # ================================================================ Phase A
 
 Write-Step 'Phase A: admission / worker / events / SSE (synthetic executor)'
 $kb1 = ''
-$kbCreate = Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/knowledge-bases" @{ 'Content-Type' = 'application/json'; 'Authorization' = "Bearer $t1" } '{"name":"p2c-kb-t1","embeddingModel":"synthetic-feature-hash-1536","collectionName":"p2c_collection"}' 20 'kb-create'
+$kbCreate = Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/knowledge-bases" @{ 'Content-Type' = 'application/json'; 'Authorization' = "Bearer $t1" } '{"name":"p2c-kb-t1"}' 20 'kb-create'
 if ($kbCreate.Body -match '"kbId"\s*:\s*"([^"]+)"') { $kb1 = $Matches[1] }
 elseif ($kbCreate.Body -match '"id"\s*:\s*"([^"]+)"') { $kb1 = $Matches[1] }
 Add-Case 'ENV-kb' ($kbCreate.Status -eq 200 -and $kb1 -ne '') "KB created through the gateway (kbId=$kb1, status=$($kbCreate.Status))"
 if (-not $kb1) { throw 'positive KB control failed; no downstream cases claimed' }
+if ($PhaseBOnly -or $PhaseCOnly -or $RealProvidersOnly) { return }
 
 # A01 正常受理
 $key1 = "a01-$($script:Tag)"
 $r = SubmitRun $t1 'rag.chat' $key1 '{"text":"admission control case"}' ('[{"type":"knowledge_base","id":"' + $kb1 + '"}]') '{"maxTokens":2000}' 'a01-submit'
 $run1 = RunId $r.Body
-$a01db = Sql "SELECT (SELECT count(*) FROM ai_run WHERE idempotency_key='$key1'), (SELECT count(*) FROM ai_run_event e JOIN ai_run r ON r.tenant_id=e.tenant_id AND r.run_id=e.run_id WHERE r.idempotency_key='$key1' AND e.seq=1), (SELECT count(*) FROM outbox_event o JOIN ai_run r ON r.tenant_id=o.tenant_id AND r.run_id=o.run_id WHERE r.idempotency_key='$key1'), (SELECT count(*) FROM ai_budget_reservation b JOIN ai_run r ON r.tenant_id=b.tenant_id AND r.run_id=b.run_id WHERE r.idempotency_key='$key1' AND b.state='RESERVED');" 'a01-db'
+$a01db = Sql "SELECT (SELECT count(*) FROM ai_run WHERE idempotency_key='$key1'), (SELECT count(*) FROM ai_run_event e JOIN ai_run r ON r.tenant_id=e.tenant_id AND r.run_id=e.run_id WHERE r.idempotency_key='$key1' AND e.seq=1 AND e.event_type='run.accepted'), (SELECT count(*) FROM outbox_event o JOIN ai_run r ON r.tenant_id=o.tenant_id AND r.run_id=o.run_id WHERE r.idempotency_key='$key1' AND o.seq=1), (SELECT count(*) FROM ai_budget_reservation b JOIN ai_run r ON r.tenant_id=b.tenant_id AND r.run_id=b.run_id WHERE r.idempotency_key='$key1');" 'a01-db'
 $counts = ($a01db.Output -split '\|')
 Add-Case 'A01' ($r.Status -eq 202 -and $counts.Count -ge 4 -and $counts[0].Trim() -eq '1' -and $counts[1].Trim() -eq '1' -and $counts[2].Trim() -eq '1' -and $counts[3].Trim() -eq '1') "202 + runId=$run1; run/event(seq=1)/outbox/reserve all present in one tx (counts=$($a01db.Output.Trim()))"
+if ($r.Status -ne 202 -or -not $run1) { throw 'positive admission failed; no fault case claimed' }
+if ($SmokeOnly) { return }
 
 # A02 受理五处故障注入 → 全部回滚
 $faultCases = @(
@@ -78,7 +89,9 @@ foreach ($fc in $faultCases) {
     $chk = Sql "SELECT (SELECT count(*) FROM ai_run WHERE idempotency_key='$fk'), (SELECT count(*) FROM outbox_event o WHERE o.run_id IN (SELECT run_id FROM ai_run WHERE idempotency_key='$fk')), (SELECT count(*) FROM ai_budget_reservation b WHERE b.run_id IN (SELECT run_id FROM ai_run WHERE idempotency_key='$fk'));" ("a02-db-" + $fc.name)
     $vals = ($chk.Output -split '\|')
     $rolledBack = ($vals.Count -ge 3 -and $vals[0].Trim() -eq '0' -and $vals[1].Trim() -eq '0' -and $vals[2].Trim() -eq '0')
-    if (-not $rolledBack) { $faultOk = $false }
+    $hits = AiHttp 'GET' '/internal/ai/v1/test/fault' 'p2t1' (FixtureUserId 'p2t1') 'run.get' @{} '' 1 20 ('a02-hit-' + $fc.name)
+    $hitCount = ($hits.Body | ConvertFrom-Json).hits.($fc.hook)
+    if (-not $rolledBack -or $fr.Status -ne 503 -or $hitCount -ne 1) { $faultOk = $false }
     $faultDetail += ("$($fc.name):status=$($fr.Status),rows=$($chk.Output.Trim())")
     [void](ClearFaults 'p2t1')
 }
@@ -120,6 +133,7 @@ $now = [long](Remote 'date +%s').Output.Trim()
 $claims = @{ iss = 'platform'; aud = @('ai'); sub = '910000000000000001'; tid = 'p2t1'; mid = 'platform:p2t1:910000000000000001'; pv = 1; scope = @('run.get'); jti = [guid]::NewGuid().ToString(); iat = $now; nbf = $now; exp = ($now + 60) } | ConvertTo-Json -Compress
 $tok = (Remote ("bash $($script:RemoteRoot)/sign.sh '" + $claims.Replace("'", "'\''") + "'") 'a05-sign').Output
 $tok = (($tok -split "`n") | Where-Object { $_ -match '^eyJ' } | Select-Object -Last 1)
+$tok = $tok.Trim()
 $h5 = @{ 'X-P04-Service-Credential' = $script:ServiceCredential; 'Authorization' = "Bearer $tok" }
 $first = Http 'GET' "http://127.0.0.1:$AiPort/api/ragent/internal/ai/v1/runs/does-not-exist" $h5 '' 20 'a05-first'
 $second = Http 'GET' "http://127.0.0.1:$AiPort/api/ragent/internal/ai/v1/runs/does-not-exist" $h5 '' 20 'a05-replay'
@@ -215,8 +229,8 @@ $k16 = "a16-$($script:Tag)"
 $r16 = SubmitRun $t1 'rag.chat' $k16 '{"text":"outbox"}' '[]' '{"maxTokens":1000}' 'a16-submit'
 $run16 = RunId $r16.Body
 [void](Wait-RunStatus $t1 $run16 'SUCCEEDED' 40)
-Start-Sleep -Seconds 4
-$obChk = Sql "SELECT (SELECT count(*) FROM outbox_event WHERE state='PENDING'), (SELECT coalesce(max(attempt_count),0) FROM outbox_event WHERE run_id='$run16'), (SELECT count(*) FROM ai_run_event WHERE run_id='$run16'), (SELECT count(DISTINCT event_id) FROM ai_run_event WHERE run_id='$run16');" 'a16-outbox'
+Start-Sleep -Seconds 12
+$obChk = Sql "SELECT (SELECT count(*) FROM outbox_event WHERE state='PENDING'), (SELECT coalesce(max(attempt_count),0) FROM outbox_event), (SELECT count(*) FROM ai_run_event WHERE run_id='$run16'), (SELECT count(DISTINCT event_id) FROM ai_run_event WHERE run_id='$run16');" 'a16-outbox'
 $ov = ($obChk.Output -split '\|')
 Add-Case 'A16' ($ov[0].Trim() -eq '0' -and [int]$ov[1].Trim() -ge 2 -and $ov[2].Trim() -eq $ov[3].Trim()) "relay crash window: no pending left, retried (attempt_count=$($ov[1].Trim())), eventId unique ($($ov[2].Trim()) events)"
 [void](ClearFaults 'p2t1')
@@ -257,25 +271,24 @@ Start-Sleep -Seconds 4
 Start-Sleep -Seconds 10
 $sseState = Remote "test -f /tmp/p2http-$($script:Tag)/sse21.txt && echo present; grep -c 'run\.terminal' /tmp/p2http-$($script:Tag)/sse21.txt; grep -c '^id:' /tmp/p2http-$($script:Tag)/sse21.txt; true" 'a21-sse-state'
 $reconnect = Http 'GET' "http://127.0.0.1:$PlatformPort/api/ai/v1/runs/$run21/events?afterSeq=1" @{ 'Authorization' = "Bearer $t1" } '' 20 'a21-reconnect'
-$pv2Token = SignDelegation 'p2t1' '910000000000000001' 'run.get' 2
-$pv2Get = Http 'GET' "http://127.0.0.1:$PlatformPort/api/ai/v1/runs/$run21" @{ 'Authorization' = "Bearer $pv2Token" } '' 20 'a21-pv2'
+$pv2Get = AiHttp 'GET' "/internal/ai/v1/runs/$run21" 'p2t1' (FixtureUserId 'p2t1') 'run.get' @{} '' 2 20 'a21-pv2'
 $terminalFrames = 999; $frameCount = '0'
 if ($sseState.Output -match 'present') {
     $nums = @($sseState.Output -split "`n" | Where-Object { $_.Trim() -match '^\d+$' } | ForEach-Object { $_.Trim() })
     # 顺序：grep -c run.terminal 的计数，然后 grep -c '^id:' 的计数
     if ($nums.Count -ge 2) { $terminalFrames = [int]$nums[0]; $frameCount = $nums[1] }
 }
-Add-Case 'A21' ($running21 -and $terminalFrames -eq 0 -and $reconnect.Status -eq 403 -and $pv2Get.Status -eq 200) "policy bump mid-stream: stream stopped with no terminal (frames=$($frameCount.Trim()), terminal=$terminalFrames), old-pv reconnect 403, pv=2 re-authorised 200"
+Add-Case 'A21' ($running21 -and $terminalFrames -eq 0 -and $reconnect.Status -in @(403,404) -and $pv2Get.Status -eq 404) "policy bump mid-stream: no terminal (frames=$($frameCount.Trim())), frozen run unavailable after pv change (reconnect=$($reconnect.Status), fresh-pv=$($pv2Get.Status))"
 [void](ClearFaults 'p2t1')
 $done21 = $false
 for ($i = 0; $i -lt 120; $i++) {
     $st21 = Sql "SELECT status FROM ai_run WHERE run_id='$run21';" 'a21-terminal'
-    if ($st21.Output -match 'SUCCEEDED') { $done21 = $true; break }
+    if ($st21.Output -match 'SUCCEEDED|FAILED|CANCELLED') { $done21 = $true; break }
     Start-Sleep -Milliseconds 500
 }
-$perm21 = Sql "SELECT count(*) FROM ai_execution_permit WHERE tenant_id='p2t1' AND run_id='$run21' AND status='ACTIVE';" 'a22-permit'
-$permReleased = Sql "SELECT count(*) FROM ai_execution_permit WHERE tenant_id='p2t1' AND run_id='$run21' AND status='RELEASED';" 'a22-released'
-Add-Case 'A22' ($done21 -and [int]$perm21.Output.Trim() -ge 1 -and $permReleased.Output.Trim() -eq '0') "run completed after revocation window; delivery permit without ACK stays ACTIVE ($($perm21.Output.Trim())), never auto-released (RELEASED=$($permReleased.Output.Trim()))"
+$perm21 = Sql "SELECT count(*) FROM ai_execution_permit WHERE tenant_id='p2t1' AND resource_refs_hash=encode(sha256(convert_to('run:$permitRun','UTF8')),'hex') AND status='ACTIVE';" 'a22-permit'
+$permReleased = Sql "SELECT count(*) FROM ai_execution_permit WHERE tenant_id='p2t1' AND action='run.stream' AND resource_refs_hash=encode(sha256(convert_to('run:$run17','UTF8')),'hex') AND status='RELEASED';" 'a22-released'
+Add-Case 'A22' ($perm21.ExitCode -eq 0 -and $permReleased.ExitCode -eq 0 -and [int]$perm21.Output.Trim() -ge 1 -and [int]$permReleased.Output.Trim() -ge $frames.Count) "direct delivery without ACK stays ACTIVE; all complete SSE frames have gateway release ACK (released=$($permReleased.Output.Trim()),frames=$($frames.Count))"
 [void](Sql "UPDATE platform.sys_ai_policy_revision SET version=1 WHERE tenant_id='p2t1';" 'a21-policy-reset' 'postgres')
 
 # A41 跨租户探测

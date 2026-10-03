@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet('Integration')][string]$Mode = 'Integration',
     [string]$EvidenceDir = 'D:\AI-project\mydocs\p2\evidence',
@@ -6,7 +6,8 @@ param(
     [string]$RemoteHost = 'root@192.168.139.103',
     [string]$RunTag = ('p2c' + (Get-Date -Format 'yyyyMMddHHmmss')),
     [int]$AiPort = 0, [int]$Ai2Port = 0, [int]$PlatformPort = 0,
-    [switch]$SkipBuild, [switch]$SkipSetup, [switch]$KeepEnvironment, [switch]$ReclaimStale
+    [int]$DedicatedPgPort = 0,[int]$DedicatedRedisPort = 0,
+    [switch]$SkipBuild, [switch]$SkipSetup, [switch]$KeepEnvironment, [switch]$ReclaimStale, [switch]$SmokeOnly, [switch]$PhaseAOnly, [switch]$PhaseBOnly, [switch]$PhaseCOnly, [switch]$ParserRecoveryOnly, [string]$CaseAttempt = '1', [switch]$RealProvidersOnly, [string]$ProviderSecretFile, [string]$OwnedMetadataFile
 )
 # P2 专属合成环境验收 runner。
 #
@@ -37,11 +38,22 @@ $script:Slot = Get-TagSlot $script:Tag 120
 $script:HalfSlot = [int]($script:Slot / 2)
 $script:PgHostPort = 15400 + $script:Slot
 $script:RedisHostPort = 15700 + $script:Slot
+if($DedicatedPgPort -gt 0){$script:PgHostPort=$DedicatedPgPort}
+if($DedicatedRedisPort -gt 0){$script:RedisHostPort=$DedicatedRedisPort}
 if ($PlatformPort -le 0) { $PlatformPort = 28082 + $script:HalfSlot }
 if ($AiPort -le 0) { $AiPort = 29090 + $script:HalfSlot }
 if ($Ai2Port -le 0) { $Ai2Port = $AiPort + 100 }
 $script:Results = New-Object System.Collections.ArrayList
 $script:Pids = @()
+if($ReclaimStale) {
+    $priorPath=Join-Path 'D:\AI-project\mydocs\p2\evidence' "$($script:Tag)/run-meta.json"
+    if($OwnedMetadataFile){$priorPath=$OwnedMetadataFile}
+    if(Test-Path -LiteralPath $priorPath) {
+        $prior=Get-Content -LiteralPath $priorPath -Raw|ConvertFrom-Json
+        if($prior.runTag -ne $script:Tag){throw 'owned metadata tag mismatch'}
+        $script:Pids=@($prior.pids)
+    }
+}
 $script:AiNodes = @()
 $script:HttpLogs = New-Object System.Collections.ArrayList
 
@@ -68,7 +80,7 @@ function Save-Evidence([string]$Name, [string]$Content) {
 }
 function Redact([string]$Text) {
     if (-not $Text) { return $Text }
-    foreach ($secret in @($script:PgPass, $script:RedisPass, $script:ServiceCredential, $script:FixturePassword)) {
+    foreach ($secret in @($script:PgPass, $script:RedisPass, $script:ServiceCredential, $script:FixturePassword, $script:DeepSeekKey, $script:DashScopeKey)) {
         if ($secret) { $Text = $Text.Replace($secret, '<redacted>') }
     }
     $Text = [regex]::Replace($Text, 'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', '<redacted-jwt>')
@@ -82,7 +94,8 @@ function Remote([string]$Command, [string]$LogName = '') {
     $ErrorActionPreference = 'Continue'
     $previousEncoding = $OutputEncoding
     $OutputEncoding = New-Object Text.UTF8Encoding($false)
-    try { $out = (($Command -replace "`r`n", "`n") + "`n") | & ssh -o BatchMode=yes -o LogLevel=ERROR $RemoteHost bash -s 2>&1 } finally { $ErrorActionPreference = $previous; $OutputEncoding = $previousEncoding }
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($Command -replace "`r`n", "`n") + "`n"))
+    try { $out = & ssh -o BatchMode=yes -o LogLevel=ERROR $RemoteHost "printf %s $encoded | base64 -d | bash" 2>&1 } finally { $ErrorActionPreference = $previous; $OutputEncoding = $previousEncoding }
     $code = $LASTEXITCODE
     $text = ($out | Out-String)
     if ($LogName) { Save-Evidence ($LogName + '.log') (Redact $text) }
@@ -117,6 +130,7 @@ function Http([string]$Method, [string]$Url, [hashtable]$Headers = @{}, [string]
     $dir = "/tmp/p2http-$($script:Tag)"
     $lines = New-Object System.Collections.ArrayList
     [void]$lines.Add("cd $dir")
+    [void]$lines.Add('rm -f resp.txt resp.hdr')
     # 平台网关校验 clientid 头与 token 内 clientId 一致；AI 内部接口忽略多余头
     if (-not $Headers.ContainsKey('clientid')) { $Headers['clientid'] = 'p2c-client' }
     if ($Body) {
@@ -131,7 +145,7 @@ function Http([string]$Method, [string]$Url, [hashtable]$Headers = @{}, [string]
     }
     [void]$lines.Add("STATUS=`$(curl -sS -m $Timeout -o resp.txt -D resp.hdr -w '%{http_code}' -X $Method '$Url'$hdr `$BODYARG)")
     [void]$lines.Add("echo `"P2STATUS=`$STATUS`"")
-    [void]$lines.Add("cat resp.txt")
+    [void]$lines.Add('test ! -f resp.txt || cat resp.txt')
     $script = ($lines -join "`n")
     $scriptB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
     $result = RemoteStdin ("mkdir -p $dir; umask 077; printf %s '$scriptB64' | base64 -d > $dir/req.sh; bash $dir/req.sh") '' ($LogName + '.http')
@@ -139,7 +153,8 @@ function Http([string]$Method, [string]$Url, [hashtable]$Headers = @{}, [string]
     $status = 0
     if ($text -match 'P2STATUS=(\d+)') { $status = [int]$Matches[1] }
     $body = ($text -replace '(?s)^.*?P2STATUS=\d+\s*', '').Trim()
-    [void]$script:HttpLogs.Add([pscustomobject]@{ log = $LogName; status = $status; body = (Redact $body).Substring(0, [Math]::Min(600, $body.Length)) })
+    $safeBody = Redact $body
+    [void]$script:HttpLogs.Add([pscustomobject]@{ log = $LogName; status = $status; body = $safeBody.Substring(0, [Math]::Min(600, $safeBody.Length)) })
     return [pscustomobject]@{ Status = $status; Body = $body }
 }
 function Token([string]$Tenant, [string]$User, [string]$Password) {
@@ -155,16 +170,16 @@ function SignDelegation([string]$Tenant, [string]$User, [string]$Action, [int]$P
     $claims = @{ iss = 'platform'; aud = @('ai'); sub = $User; tid = $Tenant; mid = ("platform:$Tenant`:$User")
         pv = $Pv; scope = @($Action); jti = [guid]::NewGuid().ToString(); iat = $now; nbf = $now; exp = ($now + 60) } | ConvertTo-Json -Compress
     $r = Remote "bash $($script:RemoteRoot)/sign.sh '$($claims.Replace("'", "'\''"))'" 'sign-token'
-    return (($r.Output -split "`n") | Where-Object { $_ -match '^eyJ' } | Select-Object -Last 1)
+    return ((($r.Output -split "`n") | Where-Object { $_ -match '^eyJ' } | Select-Object -Last 1).Trim())
 }
 function AiHttp([string]$Method, [string]$Path, [string]$Tenant, [string]$User, [string]$Action, [hashtable]$Headers = @{}, [string]$Body = '', [int]$Pv = 1, [int]$Timeout = 30, [string]$LogName = 'ai-http', [int]$TargetPort = 0) {
     $token = SignDelegation $Tenant $User $Action $Pv
     # 合并到新表：边枚举 Keys 边写入同一 hashtable 会抛“集合已修改”
-    $headers = @{ 'X-P04-Service-Credential' = $script:ServiceCredential }
-    foreach ($k in @($Headers.Keys)) { $headers[$k] = $Headers[$k] }
-    $headers['Authorization'] = "Bearer $token"
+    $forwardHeaders = @{ 'X-P04-Service-Credential' = $script:ServiceCredential }
+    foreach ($k in @($Headers.Keys)) { $forwardHeaders[$k] = $Headers[$k] }
+    $forwardHeaders['Authorization'] = "Bearer $token"
     $port = if ($TargetPort -gt 0) { $TargetPort } else { $AiPort }
-    return Http $Method "http://127.0.0.1:$port/api/ragent$Path" $headers $Body $Timeout $LogName
+    return Http $Method "http://127.0.0.1:$port/api/ragent$Path" $forwardHeaders $Body $Timeout $LogName
 }
 function DbScalar([string]$Query, [string]$LogName = 'db-scalar') {
     $r = Sql $Query $LogName 'p2app'
@@ -173,11 +188,13 @@ function DbScalar([string]$Query, [string]$LogName = 'db-scalar') {
 
 # ---------------------------------------------------------------- setup
 
-function Stop-OwnedJar([int]$Port) {
+function Stop-OwnedJar([int]$Port,[bool]$Hard=$false) {
     foreach ($p in @($script:Pids | Where-Object { $_.port -eq $Port })) {
         $expected = "$($script:RemoteRoot)/$($p.side).jar"
-        $r = Remote "if test -r /proc/$($p.pid)/cmdline; then tr '\0' '\n' < /proc/$($p.pid)/cmdline | grep -Fx -- '$expected' >/dev/null && tr '\0' '\n' < /proc/$($p.pid)/cmdline | grep -Fx -- '--server.port=$Port' >/dev/null || exit 2; kill $($p.pid); fi" "stop-owned-$Port"
+        $killCommand=if($Hard){"kill -9"}else{"kill"}
+        $r = Remote "if test -r /proc/$($p.pid)/cmdline; then tr '\0' '\n' < /proc/$($p.pid)/cmdline | grep -Fx -- '$expected' >/dev/null && tr '\0' '\n' < /proc/$($p.pid)/cmdline | grep -Fx -- '--server.port=$Port' >/dev/null || exit 2; $killCommand $($p.pid); fi" "stop-owned-$Port"
         if ($r.ExitCode -ne 0) { throw "PID ownership check failed for port $Port" }
+        for($wait=0;$wait -lt 30 -and (Get-PortOwnerPid $Port) -eq $p.pid;$wait++){Start-Sleep -Seconds 1}
         $script:Pids = @($script:Pids | Where-Object { $_.pid -ne $p.pid })
     }
 }
@@ -268,15 +285,18 @@ if (-not $SkipSetup) {
 DO `$`$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='p2mig') THEN CREATE ROLE p2mig LOGIN; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='p2app') THEN CREATE ROLE p2app LOGIN; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='p2platform') THEN CREATE ROLE p2platform LOGIN; END IF;
 END `$`$;
 ALTER ROLE p2mig LOGIN PASSWORD '$($script:PgPass)';
 ALTER ROLE p2app LOGIN PASSWORD '$($script:PgPass)';
+ALTER ROLE p2platform LOGIN PASSWORD '$($script:PgPass)';
 CREATE SCHEMA IF NOT EXISTS platform;
 CREATE SCHEMA IF NOT EXISTS ai;
 CREATE SCHEMA IF NOT EXISTS extensions;
 GRANT USAGE, CREATE ON SCHEMA platform, ai, extensions TO p2mig;
 GRANT CREATE ON DATABASE $($script:Db) TO p2mig;
-GRANT USAGE ON SCHEMA platform, ai, extensions TO p2app;
+GRANT USAGE ON SCHEMA ai, extensions TO p2app;
+GRANT USAGE ON SCHEMA platform TO p2platform;
 CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions;
 "@
     $r = Sql $roleSql 'db-roles'
@@ -289,7 +309,7 @@ CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions;
     )
     foreach ($spec in $migrations) {
         $full = Join-Path $RepoRoot ($spec.dir -replace '/', '\')
-        foreach ($file in @(Get-ChildItem -LiteralPath $full -File -Filter '*.sql' | Sort-Object Name)) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $full -File -Filter '*.sql' | Sort-Object @{Expression={ [int]($_.Name -replace '^V(\d+)__.*$', '$1') }})) {
             $sql = [IO.File]::ReadAllText($file.FullName)
             $prefix = "CREATE SCHEMA IF NOT EXISTS $($spec.schema);`r`nCREATE SCHEMA IF NOT EXISTS extensions;`r`nSET search_path TO $($spec.schema),extensions;`r`n"
             $r = Sql ($prefix + $sql) ("migration-$($spec.schema)-$($file.Name)") 'p2mig'
@@ -300,19 +320,20 @@ CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions;
     Save-Evidence 'migrations-applied.txt' (($applied -join "`n") + "`n")
     Add-Case 'ENV-migrations' ($applied.Count -ge 12) ("applied byte-identical: " + ($applied -join ','))
     $grantSql = @"
-GRANT USAGE ON SCHEMA platform, ai, extensions TO p2app;
-GRANT ALL ON ALL TABLES IN SCHEMA platform TO p2app;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA platform TO p2app;
-GRANT ALL ON ALL TABLES IN SCHEMA ai TO p2app;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA ai TO p2app;
-GRANT ALL ON ALL TABLES IN SCHEMA extensions TO p2app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT ALL ON TABLES TO p2app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA platform GRANT ALL ON SEQUENCES TO p2app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA ai GRANT ALL ON TABLES TO p2app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA ai GRANT ALL ON SEQUENCES TO p2app;
+GRANT USAGE ON SCHEMA ai, extensions TO p2app;
+GRANT USAGE ON SCHEMA platform TO p2platform;
+GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA platform TO p2platform;
+GRANT USAGE,SELECT,UPDATE ON ALL SEQUENCES IN SCHEMA platform TO p2platform;
+GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA ai TO p2app;
+GRANT USAGE,SELECT,UPDATE ON ALL SEQUENCES IN SCHEMA ai TO p2app;
+ALTER DEFAULT PRIVILEGES FOR ROLE p2mig IN SCHEMA platform GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO p2platform;
+ALTER DEFAULT PRIVILEGES FOR ROLE p2mig IN SCHEMA ai GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO p2app;
 "@
     $r = Sql $grantSql 'db-grants'
     Add-Case 'ENV-db-grants' ($r.ExitCode -eq 0) 'app role grants applied'
+    $aiDenied=Sql 'SELECT count(*) FROM platform.sys_user;' 'role-ai-cross-schema' 'p2app'
+    $platformDenied=Sql 'SELECT count(*) FROM ai.ai_run;' 'role-platform-cross-schema' 'p2platform'
+    Add-Case 'ENV-runtime-isolation' ($aiDenied.ExitCode -ne 0 -and $platformDenied.ExitCode -ne 0 -and $aiDenied.Output -match 'permission denied' -and $platformDenied.Output -match 'permission denied') 'both runtime roles denied the other authority schema'
     # fixtures：两租户同名用户、角色/岗位/客户端、AI 权限菜单（V4+V5 全量）、policy revision、acl epoch
     $fixtureSql = @"
 INSERT INTO platform.sys_tenant_package (package_id, package_name, menu_ids, remark, menu_check_strictly, status, del_flag, create_dept, create_by, create_time, update_by, update_time)
@@ -365,7 +386,7 @@ function Start-Jar([string]$Side, [int]$Port, [string[]]$Extra) {
     $log = "/opt/p2core-acceptance/$($script:Tag)/$Side-$Port.log"
     # 清场：先结束占用该端口的上一轮 jar（以命令行里的 server.port 精确匹配），否则
     # 残留进程会让 Wait-Ready 误判就绪、把流量打到带旧凭据的僵尸服务上。
-    foreach ($owned in @($script:Pids | Where-Object { $_.port -eq $Port })) { Stop-OwnedJar $owned.side $owned.port }
+    foreach ($owned in @($script:Pids | Where-Object { $_.port -eq $Port })) { Stop-OwnedJar $owned.port }
     $holder = Remote "ss -tln | grep -c ':$Port ' || true" ("port-check-$Port")
     if (($holder.Output.Trim() -as [int]) -gt 0) {
         Add-Case "ENV-port-$Port" $false "port $Port still held by an unknown process after cleanup"
@@ -374,10 +395,10 @@ function Start-Jar([string]$Side, [int]$Port, [string[]]$Extra) {
     $envLine = if ($Side -eq 'ai') {
         "export P2_MINERU_TOKEN=`$(cat /opt/ragent-ai-lab-20261003/secrets/mineru_token); export AI_DB_PASSWORD='$($script:PgPass)'; export AI_DB_USER=p2app; export AI_DB_USERNAME=p2app;"
     } else {
-        "export PLATFORM_DB_PASSWORD='$($script:PgPass)'; export PLATFORM_DB_USERNAME=p2app; export REDIS_PASSWORD='$($script:RedisPass)';"
+        "export PLATFORM_DB_PASSWORD='$($script:PgPass)'; export PLATFORM_DB_USERNAME=p2platform; export REDIS_PASSWORD='$($script:RedisPass)';"
     }
     $argsLine = ($Extra | ForEach-Object { "'" + $_.Replace("'", "'\''") + "'" }) -join ' '
-    $cmd = "cd /opt/p2core-acceptance/$($script:Tag) || exit 1`nsource ./env.sh`n$envLine`nnohup java -Dfile.encoding=UTF-8 -Xmx1024m -jar $jar --server.port=$Port $argsLine > $log 2>&1 < /dev/null &`necho PID=`$!"
+    $cmd = "cd /opt/p2core-acceptance/$($script:Tag) || exit 1`nsource ./env.sh`nif [ -f ./provider.env ]; then source ./provider.env; fi`n$envLine`nnohup java -Dfile.encoding=UTF-8 -Xmx1024m -jar $jar --server.port=$Port $argsLine > $log 2>&1 < /dev/null &`necho PID=`$!"
     $r = Remote $cmd "start-$Side-$Port"
     if ($r.Output -match 'PID=(\d+)') { $script:Pids += [pscustomobject]@{ side = $Side; port = $Port; pid = [int]$Matches[1] } }
     return $r
@@ -413,8 +434,8 @@ $aiCommon = @(
     '--mineru.local.enabled=true', '--mineru.local.base-url=http://127.0.0.1:18000',
     '--mineru.local.token=${P2_MINERU_TOKEN}', '--mineru.local.tier=flash', '--mineru.local.poll-interval-ms=500',
     '--p2.chat.egress.enabled=false', '--p2.chat.egress.allowed-providers=',
-    '--p2.upload.max-bytes=20971520', '--p2.budget.default-tenant-units=100000',
-    '--p2.executor.mode=synthetic'
+    '--p2.upload.max-bytes=52428800', '--p2.budget.default-tenant-units=100000',
+    '--p2.executor.mode=synthetic', '--p2.executor.synthetic-step-delay-ms=1500'
 )
 $aiReal = @(
     '--p2.enabled=true', '--p2.worker.enabled=true', '--p2.outbox.relay-enabled=true',
@@ -434,19 +455,19 @@ $aiReal = @(
     '--mineru.local.enabled=true', '--mineru.local.base-url=http://127.0.0.1:18000',
     '--mineru.local.token=${P2_MINERU_TOKEN}', '--mineru.local.tier=flash', '--mineru.local.poll-interval-ms=500',
     '--p2.chat.egress.enabled=false', '--p2.chat.egress.allowed-providers=',
-    '--p2.upload.max-bytes=20971520', '--p2.budget.default-tenant-units=100000',
+    '--p2.upload.max-bytes=52428800', '--p2.budget.default-tenant-units=100000',
     '--p2.executor.mode=real'
 )
 $platformArgs = @(
     "--spring.datasource.dynamic.datasource.master.url=jdbc:postgresql://127.0.0.1:$($script:PgHostPort)/$($script:Db)?currentSchema=platform,extensions",
-    '--PLATFORM_DB_USERNAME=p2app', '--REDIS_HOST=127.0.0.1', "--REDIS_PORT=$($script:RedisHostPort)",
+    '--PLATFORM_DB_USERNAME=p2platform', '--REDIS_HOST=127.0.0.1', "--REDIS_PORT=$($script:RedisHostPort)",
     '--ai.integration.enabled=true', "--ai.integration.ai-base-url=http://127.0.0.1:$AiPort/api/ragent",
-    '--ai.integration.forward-timeout-millis=60000',
+    '--ai.integration.forward-timeout-millis=2000',
     "--ai.integration.service-credential=$($script:ServiceCredential)",
     "--ai.integration.authorization.service-credential=$($script:ServiceCredential)",
     "--ai.integration.delegation.private-key-path=$($script:RemoteRoot)/keys/private.pem",
     '--ai.integration.sse.connect-timeout-millis=5000', '--ai.integration.sse.idle-timeout-millis=120000',
-    '--ai.integration.sse.max-duration-millis=1800000', '--ai.integration.upload-max-bytes=20971520'
+    '--ai.integration.sse.max-duration-millis=1800000', '--ai.integration.upload-max-bytes=52559872'
 )
 
 Remote "mkdir -p $($script:RemoteRoot)/objects $($script:RemoteRoot)/keys /tmp/p2http-$($script:Tag)" 'remote-mkdir' | Out-Null
@@ -473,7 +494,7 @@ function Initialize-ExternalizedPlaceholders {
     [void]$lines.Add("export AI_DB_USER='p2app'")
     [void]$lines.Add("export AI_DB_USERNAME='p2app'")
     [void]$lines.Add("export PLATFORM_DB_PASSWORD='$($script:PgPass)'")
-    [void]$lines.Add("export PLATFORM_DB_USERNAME='p2app'")
+    [void]$lines.Add("export PLATFORM_DB_USERNAME='p2platform'")
     [void]$lines.Add("export REDIS_PASSWORD='$($script:RedisPass)'")
     [void]$lines.Add("export P2_MINERU_TOKEN=`$(cat /opt/ragent-ai-lab-20261003/secrets/mineru_token)")
     foreach ($name in $names) {
@@ -496,6 +517,25 @@ function Initialize-ExternalizedPlaceholders {
 }
 $placeholderCount = Initialize-ExternalizedPlaceholders
 Add-Case 'ENV-placeholders' ($placeholderCount -gt 50) "$placeholderCount externalized PROJECT_SERVICES_* placeholders resolved with synthetic values (env.sh on the VM, 0600)"
+
+if ($RealProvidersOnly) {
+    if(-not $SkipSetup){throw 'real provider acceptance must reuse the designated owned environment; cannot reset envelope'}
+    $config=Get-Content -LiteralPath $ProviderSecretFile -Raw | ConvertFrom-Json
+    function Unprotect-Provider([string]$Cipher) {
+        $secure=ConvertTo-SecureString $Cipher
+        $ptr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+        try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
+        finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
+    }
+    $script:DeepSeekKey=Unprotect-Provider $config.deepseek
+    $script:DashScopeKey=Unprotect-Provider $config.dashscope
+    if($script:DeepSeekKey -notmatch '^sk-[a-zA-Z0-9_-]+$' -or $script:DashScopeKey -notmatch '^sk-[a-zA-Z0-9_-]+$'){throw 'provider references invalid'}
+    $providerFile=Join-Path $script:Work 'provider.env'
+    [IO.File]::WriteAllText($providerFile, "export DEEPSEEK_API_KEY='$($script:DeepSeekKey)'`nexport DASHSCOPE_API_KEY='$($script:DashScopeKey)'`n",(New-Object Text.UTF8Encoding($false)))
+    & scp -q $providerFile "${RemoteHost}:$($script:RemoteRoot)/provider.env"
+    if($LASTEXITCODE -ne 0){throw 'controlled provider injection failed'}
+    [void](Remote "chmod 600 $($script:RemoteRoot)/provider.env" '')
+}
 
 Write-Step 'copy jars to the VM and start services (synthetic executor phase)'
 Remote "scp -q /dev/null /dev/null 2>/dev/null; true" '' | Out-Null
@@ -524,10 +564,21 @@ $t2 = Token 'p2t2' 'p2admin' $script:FixturePassword
 Add-Case 'ENV-login' ($null -ne $t1 -and $null -ne $t2) 'both synthetic tenants logged in through the real platform login flow'
 if (-not $t1) { Write-Host 'cannot continue without a token'; exit 3 }
 
+for($warm=0;$warm -lt 3;$warm++) {
+    $read=Http 'GET' "http://127.0.0.1:$PlatformPort/api/ai/v1/knowledge-bases" @{'Authorization'="Bearer $t1"} '' 20 ("warm-read-$warm")
+    if($read.Status -eq 200){break}
+}
+
 # ---------------------------------------------------------------- case suites
 . (Join-Path $PSScriptRoot 'cases-phase-a.ps1')
-. (Join-Path $PSScriptRoot 'cases-phase-b.ps1')
+. (Join-Path $PSScriptRoot 'helpers-product.ps1')
+if ($RealProvidersOnly) { . (Join-Path $PSScriptRoot 'cases-real-providers.ps1') }
+elseif ($PhaseCOnly) { . (Join-Path $PSScriptRoot 'cases-phase-c.ps1') }
+elseif (-not $SmokeOnly -and -not $PhaseAOnly) { . (Join-Path $PSScriptRoot 'cases-phase-b.ps1') }
 if (@($script:Results | Where-Object { -not $_.ok }).Count -gt 0) { exit 1 }
+} catch {
+    Add-Case 'RUNNER-ERROR' $false $_.Exception.GetType().Name
+    exit 1
 } finally {
     if (-not $KeepEnvironment) {
         foreach ($p in @($script:Pids)) { Stop-OwnedJar $p.port }
@@ -535,5 +586,5 @@ if (@($script:Results | Where-Object { -not $_.ok }).Count -gt 0) { exit 1 }
     }
     Save-Evidence 'results.json' ($script:Results | ConvertTo-Json -Depth 5)
     Save-Evidence 'http-log.json' ($script:HttpLogs | ConvertTo-Json -Depth 5)
-    Save-Evidence 'run-meta.json' (@{ runTag=$script:Tag; pids=$script:Pids; aiPort=$AiPort; ai2Port=$Ai2Port; platformPort=$PlatformPort; db=$script:Db; sourceHead=(& git -C $RepoRoot rev-parse HEAD); aiJarHash=(Get-FileHash $aiJar).Hash; platformJarHash=(Get-FileHash $platformJar).Hash } | ConvertTo-Json -Depth 5)
+    Save-Evidence 'run-meta.json' (@{ runTag=$script:Tag; pids=$script:Pids; aiPort=$AiPort; ai2Port=$Ai2Port; platformPort=$PlatformPort; db=$script:Db; sourceHead=(& git -C $RepoRoot rev-parse HEAD); aiJarHash=$(if($aiJar){(Get-FileHash $aiJar).Hash}); platformJarHash=$(if($platformJar){(Get-FileHash $platformJar).Hash}) } | ConvertTo-Json -Depth 5)
 }

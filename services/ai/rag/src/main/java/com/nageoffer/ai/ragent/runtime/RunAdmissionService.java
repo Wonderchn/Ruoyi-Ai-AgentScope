@@ -58,6 +58,8 @@ public class RunAdmissionService {
     private final P2RuntimeProperties properties;
     private final TransactionTemplate transactionTemplate;
     private final org.springframework.beans.factory.ObjectProvider<P2FaultInjector> faultInjector;
+    @org.springframework.beans.factory.annotation.Autowired
+    private RunAccessService access;
 
     public RunAdmissionService(RunLedgerDao dao, RunEventAppender events, P2RuntimeProperties properties,
                                PlatformTransactionManager transactionManager,
@@ -81,20 +83,24 @@ public class RunAdmissionService {
 
     public AdmissionResult admit(ExecutionPrincipal principal, String idempotencyKey, AdmissionRequest request) {
         validate(principal, idempotencyKey, request);
+        String sources=access.capture(principal,request.resourceRefs());
         String requestHash = CanonicalJson.requestHash(request);
         Optional<RunRecord> fastPath = dao.findByIdempotency(
                 principal.tenantId(), principal.userId(), request.action(), idempotencyKey);
         if (fastPath.isPresent()) {
+            access.visibleWithCaptured(principal,fastPath.get(),sources);
             return replayOrConflict(fastPath.get(), requestHash);
         }
         try {
-            return transactionTemplate.execute(status -> doAdmit(principal, idempotencyKey, request, requestHash));
+            String ownerDept=access.resources().currentOwnerDept(principal,"run.submit");
+            return transactionTemplate.execute(status -> doAdmit(principal, idempotencyKey, request, requestHash,sources,ownerDept));
         } catch (DuplicateKeyException e) {
             Optional<RunRecord> existing = dao.findByIdempotency(
                     principal.tenantId(), principal.userId(), request.action(), idempotencyKey);
             if (existing.isEmpty()) {
                 throw new RunApiException(RunErrorCode.INTERNAL_ERROR, "admission conflict without persisted run");
             }
+            access.visibleWithCaptured(principal,existing.get(),sources);
             return replayOrConflict(existing.get(), requestHash);
         }
     }
@@ -107,7 +113,7 @@ public class RunAdmissionService {
     }
 
     private AdmissionResult doAdmit(ExecutionPrincipal principal, String idempotencyKey,
-                                    AdmissionRequest request, String requestHash) {
+                                    AdmissionRequest request, String requestHash,String sources,String ownerDept) {
         String tenantId = principal.tenantId();
         // 1) 预算：锁租户行 → 叠加预占不超上限（并发失败方 BUDGET_EXCEEDED）
         long limit = dao.lockTenantBudget(tenantId, properties.getBudget().getDefaultTenantUnits());
@@ -119,8 +125,9 @@ public class RunAdmissionService {
         String runId = RunEventAppender.newRunId();
         dao.insertRun(tenantId, runId, principal.membershipId(), principal.userId(), request.action(),
                 idempotencyKey, requestHash, toJson(request.input()), toJson(request.budget()),
-                "p2-v1", principal.policyVersion(), principal.aclVersion(), toJson(request.resourceRefs()),
+                "p2-v1", principal.policyVersion(), principal.aclVersion(), sources,
                 request.retryOf());
+        dao.registerRun(tenantId,runId,principal.membershipId(),ownerDept);
         fault(P2FaultInjector.ADMISSION_AFTER_RUN);
         // 3) 受理事件 seq=1 + outbox（引用已持久化 eventId）
         Map<String, Object> accepted = new LinkedHashMap<>();
@@ -163,6 +170,16 @@ public class RunAdmissionService {
         }
         if (request.action() == null || !P2_ACTIONS.contains(request.action())) {
             throw new RunApiException(RunErrorCode.BAD_REQUEST, "action is not enabled in P2 core");
+        }
+        JsonNode budget=request.budget();
+        if(budget!=null && !budget.isNull()) {
+            if(!budget.isObject()) throw new RunApiException(RunErrorCode.BAD_REQUEST,"budget must be an object");
+            budget.fieldNames().forEachRemaining(name->{
+                if(!Set.of("maxTokens","maxWallClockSeconds").contains(name)) throw new RunApiException(RunErrorCode.BAD_REQUEST,"unknown budget field");
+                JsonNode value=budget.get(name);
+                int limit="maxTokens".equals(name)?8192:600;
+                if(!value.isIntegralNumber() || !value.canConvertToInt() || value.intValue()<1 || value.intValue()>limit) throw new RunApiException(RunErrorCode.BAD_REQUEST,"invalid budget limit");
+            });
         }
         if (request.resourceRefs() != null && request.resourceRefs().size() > 32) {
             throw new RunApiException(RunErrorCode.BAD_REQUEST, "too many resource refs");
