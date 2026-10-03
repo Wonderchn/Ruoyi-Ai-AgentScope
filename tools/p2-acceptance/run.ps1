@@ -60,6 +60,7 @@ function Add-Case([string]$Id, [bool]$Ok, [string]$Detail, [string]$Class = 'int
     [void]$script:Results.Add([pscustomobject]@{ id = $Id; ok = $Ok; detail = $Detail; class = $Class; at = (Get-Date).ToUniversalTime().ToString('o') })
     $mark = if ($Ok) { 'PASS' } else { 'FAIL' }
     Write-Host ("  [{0}] {1} :: {2}" -f $mark, $Id, $Detail)
+    Save-Evidence 'results-partial.json' ($script:Results | ConvertTo-Json -Depth 5)
 }
 function Save-Evidence([string]$Name, [string]$Content) {
     $path = Join-Path $script:Evidence $Name
@@ -70,7 +71,8 @@ function Redact([string]$Text) {
     foreach ($secret in @($script:PgPass, $script:RedisPass, $script:ServiceCredential, $script:FixturePassword)) {
         if ($secret) { $Text = $Text.Replace($secret, '<redacted>') }
     }
-    return $Text
+    $Text = [regex]::Replace($Text, 'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', '<redacted-jwt>')
+    return [regex]::Replace($Text, '("(?:access_token|accessToken|token)"\s*:\s*")[^"]+', '$1<redacted-token>')
 }
 
 # ---------------------------------------------------------------- remote helpers
@@ -78,7 +80,9 @@ function Redact([string]$Text) {
 function Remote([string]$Command, [string]$LogName = '') {
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    try { $out = & ssh -o BatchMode=yes -o LogLevel=ERROR $RemoteHost $Command 2>&1 } finally { $ErrorActionPreference = $previous }
+    $previousEncoding = $OutputEncoding
+    $OutputEncoding = New-Object Text.UTF8Encoding($false)
+    try { $out = (($Command -replace "`r`n", "`n") + "`n") | & ssh -o BatchMode=yes -o LogLevel=ERROR $RemoteHost bash -s 2>&1 } finally { $ErrorActionPreference = $previous; $OutputEncoding = $previousEncoding }
     $code = $LASTEXITCODE
     $text = ($out | Out-String)
     if ($LogName) { Save-Evidence ($LogName + '.log') (Redact $text) }
@@ -147,7 +151,7 @@ function Token([string]$Tenant, [string]$User, [string]$Password) {
     return $null
 }
 function SignDelegation([string]$Tenant, [string]$User, [string]$Action, [int]$Pv) {
-    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $now = [long](Remote 'date +%s').Output.Trim()
     $claims = @{ iss = 'platform'; aud = @('ai'); sub = $User; tid = $Tenant; mid = ("platform:$Tenant`:$User")
         pv = $Pv; scope = @($Action); jti = [guid]::NewGuid().ToString(); iat = $now; nbf = $now; exp = ($now + 60) } | ConvertTo-Json -Compress
     $r = Remote "bash $($script:RemoteRoot)/sign.sh '$($claims.Replace("'", "'\''"))'" 'sign-token'
@@ -169,6 +173,16 @@ function DbScalar([string]$Query, [string]$LogName = 'db-scalar') {
 
 # ---------------------------------------------------------------- setup
 
+function Stop-OwnedJar([int]$Port) {
+    foreach ($p in @($script:Pids | Where-Object { $_.port -eq $Port })) {
+        $expected = "$($script:RemoteRoot)/$($p.side).jar"
+        $r = Remote "if test -r /proc/$($p.pid)/cmdline; then tr '\0' '\n' < /proc/$($p.pid)/cmdline | grep -Fx -- '$expected' >/dev/null && tr '\0' '\n' < /proc/$($p.pid)/cmdline | grep -Fx -- '--server.port=$Port' >/dev/null || exit 2; kill $($p.pid); fi" "stop-owned-$Port"
+        if ($r.ExitCode -ne 0) { throw "PID ownership check failed for port $Port" }
+        $script:Pids = @($script:Pids | Where-Object { $_.pid -ne $p.pid })
+    }
+}
+
+try {
 Write-Step "runTag=$($script:Tag) evidence=$($script:Evidence)"
 $script:PgPass = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
 $script:RedisPass = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
@@ -351,7 +365,7 @@ function Start-Jar([string]$Side, [int]$Port, [string[]]$Extra) {
     $log = "/opt/p2core-acceptance/$($script:Tag)/$Side-$Port.log"
     # 清场：先结束占用该端口的上一轮 jar（以命令行里的 server.port 精确匹配），否则
     # 残留进程会让 Wait-Ready 误判就绪、把流量打到带旧凭据的僵尸服务上。
-    [void](Remote "pkill -f -- '--server.port=$Port' 2>/dev/null; sleep 1; true" ("clear-port-$Port"))
+    foreach ($owned in @($script:Pids | Where-Object { $_.port -eq $Port })) { Stop-OwnedJar $owned.side $owned.port }
     $holder = Remote "ss -tln | grep -c ':$Port ' || true" ("port-check-$Port")
     if (($holder.Output.Trim() -as [int]) -gt 0) {
         Add-Case "ENV-port-$Port" $false "port $Port still held by an unknown process after cleanup"
@@ -363,7 +377,7 @@ function Start-Jar([string]$Side, [int]$Port, [string[]]$Extra) {
         "export PLATFORM_DB_PASSWORD='$($script:PgPass)'; export PLATFORM_DB_USERNAME=p2app; export REDIS_PASSWORD='$($script:RedisPass)';"
     }
     $argsLine = ($Extra | ForEach-Object { "'" + $_.Replace("'", "'\''") + "'" }) -join ' '
-    $cmd = "cd /opt/p2core-acceptance/$($script:Tag) && source ./env.sh && $envLine nohup java -Dfile.encoding=UTF-8 -Xmx1024m -jar $jar --server.port=$Port $argsLine > $log 2>&1 & echo PID=`$!"
+    $cmd = "cd /opt/p2core-acceptance/$($script:Tag) || exit 1`nsource ./env.sh`n$envLine`nnohup java -Dfile.encoding=UTF-8 -Xmx1024m -jar $jar --server.port=$Port $argsLine > $log 2>&1 < /dev/null &`necho PID=`$!"
     $r = Remote $cmd "start-$Side-$Port"
     if ($r.Output -match 'PID=(\d+)') { $script:Pids += [pscustomobject]@{ side = $Side; port = $Port; pid = [int]$Matches[1] } }
     return $r
@@ -371,7 +385,10 @@ function Start-Jar([string]$Side, [int]$Port, [string[]]$Extra) {
 function Wait-Ready([int]$Port, [string]$LogPath, [int]$Seconds = 240) {
     for ($i = 0; $i -lt $Seconds; $i++) {
         $probe = Remote "curl -s -o /dev/null -w '%{http_code}' -m 2 http://127.0.0.1:$Port/ 2>/dev/null; true" ''
-        if ($probe.Output -match '^\s*[2-5]\d\d\s*$') { return $true }
+        if ($probe.Output -match '^\s*[2-5]\d\d\s*$') {
+            $expected = @($script:Pids | Where-Object { $_.port -eq $Port } | Select-Object -Last 1)
+            return $expected.Count -eq 1 -and (Get-PortOwnerPid $Port) -eq $expected[0].pid
+        }
         Start-Sleep -Seconds 1
         if ($i % 20 -eq 19) { Remote "tail -3 $LogPath" 'ready-tail' | Out-Null }
     }
@@ -510,3 +527,13 @@ if (-not $t1) { Write-Host 'cannot continue without a token'; exit 3 }
 # ---------------------------------------------------------------- case suites
 . (Join-Path $PSScriptRoot 'cases-phase-a.ps1')
 . (Join-Path $PSScriptRoot 'cases-phase-b.ps1')
+if (@($script:Results | Where-Object { -not $_.ok }).Count -gt 0) { exit 1 }
+} finally {
+    if (-not $KeepEnvironment) {
+        foreach ($p in @($script:Pids)) { Stop-OwnedJar $p.port }
+        Add-Case 'A44-cleanup' ($script:Pids.Count -eq 0) 'stopped command-line verified owned PIDs; test containers and data retained'
+    }
+    Save-Evidence 'results.json' ($script:Results | ConvertTo-Json -Depth 5)
+    Save-Evidence 'http-log.json' ($script:HttpLogs | ConvertTo-Json -Depth 5)
+    Save-Evidence 'run-meta.json' (@{ runTag=$script:Tag; pids=$script:Pids; aiPort=$AiPort; ai2Port=$Ai2Port; platformPort=$PlatformPort; db=$script:Db; sourceHead=(& git -C $RepoRoot rev-parse HEAD); aiJarHash=(Get-FileHash $aiJar).Hash; platformJarHash=(Get-FileHash $platformJar).Hash } | ConvertTo-Json -Depth 5)
+}

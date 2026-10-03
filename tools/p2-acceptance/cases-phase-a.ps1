@@ -52,6 +52,7 @@ $kbCreate = Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/knowledge-base
 if ($kbCreate.Body -match '"kbId"\s*:\s*"([^"]+)"') { $kb1 = $Matches[1] }
 elseif ($kbCreate.Body -match '"id"\s*:\s*"([^"]+)"') { $kb1 = $Matches[1] }
 Add-Case 'ENV-kb' ($kbCreate.Status -eq 200 -and $kb1 -ne '') "KB created through the gateway (kbId=$kb1, status=$($kbCreate.Status))"
+if (-not $kb1) { throw 'positive KB control failed; no downstream cases claimed' }
 
 # A01 正常受理
 $key1 = "a01-$($script:Tag)"
@@ -93,7 +94,7 @@ rm -f par*.json par.codes
 printf %s '__B64__' | base64 -d > par.bin
 for i in $(seq 1 20); do
   (curl -sS -m 30 -o par$i.json -w '%{http_code}
-' -X POST 'http://127.0.0.1:__PORT__/api/ai/v1/runs' -H 'Content-Type: application/json' -H 'Idempotency-Key: __KEY__' -H 'Authorization: Bearer __TOKEN__' --data-binary @par.bin >> par.codes) &
+' -X POST 'http://127.0.0.1:__PORT__/api/ai/v1/runs' -H 'Content-Type: application/json' -H 'Idempotency-Key: __KEY__' -H 'clientid: p2c-client' -H 'Authorization: Bearer __TOKEN__' --data-binary @par.bin >> par.codes) &
 done
 wait
 echo '---CODES---'
@@ -104,7 +105,7 @@ grep -ho '"runId":"[^"]*"' par*.json | sort -u
 $parScript = $parScript.Replace('__TAG__', $script:Tag).Replace('__B64__', $b64body).Replace('__PORT__', [string]$PlatformPort).Replace('__KEY__', $key3).Replace('__TOKEN__', $t1)
 $parB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($parScript -replace "`r`n", "`n")))
 $parallel = Remote "mkdir -p /tmp/p2http-$($script:Tag); printf %s '$parB64' | base64 -d > /tmp/p2http-$($script:Tag)/par.sh; bash /tmp/p2http-$($script:Tag)/par.sh" 'a03-parallel'
-$accepted202 = (($parallel.Output -split "`n") | Where-Object { $_ -match '^\s*\d+\s+202\s*$' }).Count -ge 1
+$accepted202 = (($parallel.Output -split "`n") | Where-Object { $_ -match '^\s*20\s+202\s*$' }).Count -eq 1
 $uniqRuns = (($parallel.Output -split "`n") | Where-Object { $_ -match '"runId":"([^"]+)"' }).Count
 $resv = Sql "SELECT (SELECT count(*) FROM ai_run WHERE idempotency_key='$key3'), (SELECT count(*) FROM ai_budget_reservation b JOIN ai_run r ON r.tenant_id=b.tenant_id AND r.run_id=b.run_id WHERE r.idempotency_key='$key3');" 'a03-db'
 $vals3 = ($resv.Output -split '\|')
@@ -115,14 +116,14 @@ $r4 = Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/runs" @{ 'Content-Ty
 Add-Case 'A04' ($r4.Status -eq 409) "same key different body -> HTTP $($r4.Status)"
 
 # A05 jti 重放
-$now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$now = [long](Remote 'date +%s').Output.Trim()
 $claims = @{ iss = 'platform'; aud = @('ai'); sub = '910000000000000001'; tid = 'p2t1'; mid = 'platform:p2t1:910000000000000001'; pv = 1; scope = @('run.get'); jti = [guid]::NewGuid().ToString(); iat = $now; nbf = $now; exp = ($now + 60) } | ConvertTo-Json -Compress
 $tok = (Remote ("bash $($script:RemoteRoot)/sign.sh '" + $claims.Replace("'", "'\''") + "'") 'a05-sign').Output
 $tok = (($tok -split "`n") | Where-Object { $_ -match '^eyJ' } | Select-Object -Last 1)
 $h5 = @{ 'X-P04-Service-Credential' = $script:ServiceCredential; 'Authorization' = "Bearer $tok" }
 $first = Http 'GET' "http://127.0.0.1:$AiPort/api/ragent/internal/ai/v1/runs/does-not-exist" $h5 '' 20 'a05-first'
 $second = Http 'GET' "http://127.0.0.1:$AiPort/api/ragent/internal/ai/v1/runs/does-not-exist" $h5 '' 20 'a05-replay'
-Add-Case 'A05' ($second.Status -eq 401) "same jti replayed -> 401 (first=$($first.Status), replay=$($second.Status))"
+Add-Case 'A05' ($first.Status -eq 404 -and $second.Status -eq 401) "valid first request -> 404; same jti replayed -> 401 (first=$($first.Status), replay=$($second.Status))"
 
 # A06 缺身份 / 伪造身份头
 $noauth = Http 'POST' "http://127.0.0.1:$AiPort/api/ragent/internal/ai/v1/runs" @{ 'Content-Type' = 'application/json'; 'Idempotency-Key' = "a06-$($script:Tag)" } '{"schemaVersion":1,"action":"rag.chat","input":{"text":"x"}}' 20 'a06-noauth'
@@ -224,7 +225,7 @@ Add-Case 'A16' ($ov[0].Trim() -eq '0' -and [int]$ov[1].Trim() -ge 2 -and $ov[2].
 $k17 = "a17-$($script:Tag)"
 $r17 = SubmitRun $t1 'rag.chat' $k17 '{"text":"stream"}' '[]' '{"maxTokens":1000}' 'a17-submit'
 $run17 = RunId $r17.Body
-[void](Remote "cd /tmp/p2http-$($script:Tag); rm -f sse.txt; curl -sS -N -m 30 'http://127.0.0.1:$PlatformPort/api/ai/v1/runs/$run17/events?afterSeq=0' -H 'Authorization: Bearer $t1' -o sse.txt; echo done" 'a17-sse')
+[void](Remote "cd /tmp/p2http-$($script:Tag); rm -f sse.txt; curl -sS -N -m 30 'http://127.0.0.1:$PlatformPort/api/ai/v1/runs/$run17/events?afterSeq=0' -H 'clientid: p2c-client' -H 'Authorization: Bearer $t1' -o sse.txt; echo done" 'a17-sse')
 $sseFetch = Remote "cat /tmp/p2http-$($script:Tag)/sse.txt" 'a17-sse-body'
 $frames = @()
 foreach ($line in ($sseFetch.Output -split "`n")) { if ($line -match '^id:\s*(\d+)') { $frames += [int]$Matches[1] } }
@@ -250,7 +251,7 @@ for ($i = 0; $i -lt 60; $i++) {
     if ($st21.Output -match 'RUNNING') { $running21 = $true; break }
     Start-Sleep -Milliseconds 500
 }
-[void](Remote "cd /tmp/p2http-$($script:Tag); rm -f sse21.txt; nohup curl -sS -N -m 40 'http://127.0.0.1:$PlatformPort/api/ai/v1/runs/$run21/events?afterSeq=0' -H 'Authorization: Bearer $t1' -o sse21.txt >/dev/null 2>&1 & echo bg" 'a21-sse-start')
+[void](Remote "cd /tmp/p2http-$($script:Tag); rm -f sse21.txt; nohup curl -sS -N -m 40 'http://127.0.0.1:$PlatformPort/api/ai/v1/runs/$run21/events?afterSeq=0' -H 'clientid: p2c-client' -H 'Authorization: Bearer $t1' -o sse21.txt >/dev/null 2>&1 & echo bg" 'a21-sse-start')
 Start-Sleep -Seconds 4
 [void](Sql "UPDATE platform.sys_ai_policy_revision SET version=version+1 WHERE tenant_id='p2t1';" 'a21-revoke' 'postgres')
 Start-Sleep -Seconds 10

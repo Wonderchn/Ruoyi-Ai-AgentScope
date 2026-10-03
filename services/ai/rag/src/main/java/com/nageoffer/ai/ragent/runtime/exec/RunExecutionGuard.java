@@ -85,11 +85,11 @@ public class RunExecutionGuard {
     /** 幂等检查点提交；重复提交返回既有行（已完成步骤不重复执行/计量）。 */
     public RunLedgerDao.StepRow commitStep(String stepId, String stepName, String refJson, String refHash,
                                            String usageJson) {
-        return dao.commitStep(tenantId, runId, stepId, attempt, stepName, refJson, refHash, usageJson, fence);
+        return dao.commitStep(tenantId, runId, stepId, attempt, stepName, refJson, refHash, usageJson, fence, workerId);
     }
 
     public java.util.Optional<RunLedgerDao.StepRow> findStep(String stepId) {
-        return dao.findStep(tenantId, runId, stepId, attempt);
+        return dao.latestCompletedStep(tenantId, runId, stepId);
     }
 
     /** 取消信号（持久状态；浏览器断开不改变它）。 */
@@ -101,10 +101,7 @@ public class RunExecutionGuard {
 
     /** 是否仍持有租约与 fence。 */
     public boolean stillOwned() {
-        return dao.findRun(tenantId, runId)
-                .map(run -> run.fence() == fence && workerId.equals(run.leaseOwner())
-                        && !RunStatus.isTerminal(run.status()))
-                .orElse(false);
+        return dao.ownsLiveLease(tenantId, runId, workerId, fence);
     }
 
     public RunRecord currentRun() {

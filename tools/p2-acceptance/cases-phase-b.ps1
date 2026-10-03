@@ -1,10 +1,6 @@
 # P2 Phase B：真实本地 MinerU + 版本发布 + 检索问答（synthetic embedding/chat，真实 MinerU）
 # 由 run.ps1 点源执行；结束时汇总与清场。
 
-function Stop-OwnedJar([int]$Port) {
-    $pids = @($script:Pids | Where-Object { $_.port -eq $Port })
-    foreach ($p in $pids) { [void](Remote "kill $($p.pid) 2>/dev/null; true" ("stop-$($p.side)-$Port")) }
-}
 function Wait-PortClosed([int]$Port, [int]$Seconds = 30) {
     for ($i = 0; $i -lt $Seconds; $i++) {
         $probe = Remote "curl -s -o /dev/null -m 2 -w '%{http_code}' http://127.0.0.1:$Port/ 2>/dev/null; true" ''
@@ -14,14 +10,14 @@ function Wait-PortClosed([int]$Port, [int]$Seconds = 30) {
     return $false
 }
 function UploadPdf([string]$Token, [string]$KbId, [string]$FileName = 'sample.pdf', [string]$LogName = 'upload') {
-    $cmd = "cd /tmp/p2http-$($script:Tag); curl -sS -m 60 -o up.json -w '%{http_code}' -X POST 'http://127.0.0.1:$PlatformPort/api/ai/v1/documents/uploads' -H 'Authorization: Bearer $Token' -F 'kbId=$KbId' -F 'file=@$($script:RemoteRoot)/sample.pdf;type=application/pdf;filename=$FileName'; echo; cat up.json"
+    $cmd = "cd /tmp/p2http-$($script:Tag); curl -sS -m 60 -o up.json -w '%{http_code}' -X POST 'http://127.0.0.1:$PlatformPort/api/ai/v1/documents/uploads' -H 'clientid: p2c-client' -H 'Authorization: Bearer $Token' -F 'kbId=$KbId' -F 'file=@$($script:RemoteRoot)/sample.pdf;type=application/pdf;filename=$FileName'; echo; cat up.json"
     $r = Remote $cmd $LogName
     $status = 0
     if ($r.Output -match '^(\d{3})') { $status = [int]$Matches[1] }
     return [pscustomobject]@{ Status = $status; Body = $r.Output }
 }
 function UploadBig([string]$Token, [string]$KbId) {
-    $cmd = "cd /tmp/p2http-$($script:Tag); dd if=/dev/zero of=big.bin bs=1M count=21 2>/dev/null; curl -sS -m 120 -o big.json -w '%{http_code}' -X POST 'http://127.0.0.1:$PlatformPort/api/ai/v1/documents/uploads' -H 'Authorization: Bearer $Token' -F 'kbId=$KbId' -F 'file=@big.bin;type=application/pdf;filename=big.pdf'; echo; cat big.json"
+    $cmd = "cd /tmp/p2http-$($script:Tag); dd if=/dev/zero of=big.bin bs=1M count=21 2>/dev/null; curl -sS -m 120 -o big.json -w '%{http_code}' -X POST 'http://127.0.0.1:$PlatformPort/api/ai/v1/documents/uploads' -H 'clientid: p2c-client' -H 'Authorization: Bearer $Token' -F 'kbId=$KbId' -F 'file=@big.bin;type=application/pdf;filename=big.pdf'; echo; cat big.json"
     $r = Remote $cmd 'upload-big'
     $status = 0
     if ($r.Output -match '^(\d{3})') { $status = [int]$Matches[1] }
@@ -53,9 +49,9 @@ $download = Http 'GET' "http://127.0.0.1:$PlatformPort/api/ai/v1/documents/$docI
 Add-Case 'A23-download' ($download.Status -eq 200 -and $download.Body -match '^%PDF') "private download through gateway with delivery permit/ACK (status=$($download.Status), magic=$($download.Body.Substring(0, [Math]::Min(5, $download.Body.Length))))"
 
 $mimeSpoof = Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/documents/uploads" @{ 'Authorization' = "Bearer $t1" } '' 20 'a24-mime'
-$badMime = Remote "cd /tmp/p2http-$($script:Tag); curl -sS -m 30 -o mime.json -w '%{http_code}' -X POST 'http://127.0.0.1:$PlatformPort/api/ai/v1/documents/uploads' -H 'Authorization: Bearer $t1' -F 'kbId=$kb1' -F 'file=@$($script:RemoteRoot)/sample.pdf;type=text/plain;filename=spoof.txt'; echo; cat mime.json" 'a24-mime-spoof'
+$badMime = Remote "cd /tmp/p2http-$($script:Tag); curl -sS -m 30 -o mime.json -w '%{http_code}' -X POST 'http://127.0.0.1:$PlatformPort/api/ai/v1/documents/uploads' -H 'clientid: p2c-client' -H 'Authorization: Bearer $t1' -F 'kbId=$kb1' -F 'file=@$($script:RemoteRoot)/sample.pdf;type=text/plain;filename=spoof.txt'; echo; cat mime.json" 'a24-mime-spoof'
 $badMimeStatus = 0; if ($badMime.Output -match '^(\d{3})') { $badMimeStatus = [int]$Matches[1] }
-$traversal = Remote "cd /tmp/p2http-$($script:Tag); curl -sS -m 30 -o trav.json -w '%{http_code}' -X POST 'http://127.0.0.1:$PlatformPort/api/ai/v1/documents/uploads' -H 'Authorization: Bearer $t1' -F 'kbId=$kb1' -F 'file=@$($script:RemoteRoot)/sample.pdf;type=application/pdf;filename=../../evil.pdf'; echo; cat trav.json" 'a24-traversal'
+$traversal = Remote "cd /tmp/p2http-$($script:Tag); curl -sS -m 30 -o trav.json -w '%{http_code}' -X POST 'http://127.0.0.1:$PlatformPort/api/ai/v1/documents/uploads' -H 'clientid: p2c-client' -H 'Authorization: Bearer $t1' -F 'kbId=$kb1' -F 'file=@$($script:RemoteRoot)/sample.pdf;type=application/pdf;filename=../../evil.pdf'; echo; cat trav.json" 'a24-traversal'
 $travStatus = 0; if ($traversal.Output -match '^(\d{3})') { $travStatus = [int]$Matches[1] }
 $travDoc = ''; if ($traversal.Output -match '"docId"\s*:\s*"([^"]+)"') { $travDoc = $Matches[1] }
 $travKey = DbScalar "SELECT object_key FROM ai_document_upload WHERE doc_id='$travDoc' ORDER BY created_at DESC LIMIT 1;" 'a24-trav-key'
@@ -235,9 +231,9 @@ printf %s '__B64T1__' | base64 -d > ct1.json
 printf %s '__B64T2__' | base64 -d > ct2.json
 for i in 1 2 3 4 5; do
   (curl -sS -m 90 -o ct1-$i.json -w '%{http_code}
-' -X POST 'http://127.0.0.1:__PORT__/api/ai/v1/runs' -H 'Content-Type: application/json' -H "Idempotency-Key: a43-t1-$i-__TAG__" -H 'Authorization: Bearer __T1__' --data-binary @ct1.json >> c.codes) &
+' -X POST 'http://127.0.0.1:__PORT__/api/ai/v1/runs' -H 'Content-Type: application/json' -H "Idempotency-Key: a43-t1-$i-__TAG__" -H 'clientid: p2c-client' -H 'Authorization: Bearer __T1__' --data-binary @ct1.json >> c.codes) &
   (curl -sS -m 90 -o ct2-$i.json -w '%{http_code}
-' -X POST 'http://127.0.0.1:__PORT__/api/ai/v1/runs' -H 'Content-Type: application/json' -H "Idempotency-Key: a43-t2-$i-__TAG__" -H 'Authorization: Bearer __T2__' --data-binary @ct2.json >> c.codes) &
+' -X POST 'http://127.0.0.1:__PORT__/api/ai/v1/runs' -H 'Content-Type: application/json' -H "Idempotency-Key: a43-t2-$i-__TAG__" -H 'clientid: p2c-client' -H 'Authorization: Bearer __T2__' --data-binary @ct2.json >> c.codes) &
 done
 wait
 sort c.codes | uniq -c
@@ -251,22 +247,3 @@ $done43 = Sql "SELECT count(*) FROM ai_run WHERE idempotency_key LIKE 'a43-t1-%'
 $dv43 = @(($done43.Output -split "`n") | Where-Object { $_.Trim() -ne '' })
 Add-Case 'A43-subset' ($accepted43 -and $dv43.Count -ge 2 -and $dv43[0].Trim() -eq '5' -and $dv43[1].Trim() -eq '5') "2 tenants x 5 concurrent Q&A all 202 and terminal (t1=$($dv43[0].Trim()), t2=$($dv43[1].Trim())); full 50MB/chunk-capacity targets remain NOT_RUN per I5/I1"
 
-# ---------------------------------------------------------------- summary + cleanup
-
-Add-Case 'A44-cleanup' $true "owned jars stopped by recorded PID (cmdline-verified at start); containers kept with label p2core.owner=$($script:Tag) for review; capability defaults-off asserted in A44-defaults; no business DB/volume touched"
-
-# A44 清场：先停本轮自有 jar（按记录 PID），再落证据
-if (-not $KeepEnvironment) {
-    foreach ($p in $script:Pids) { [void](Remote "kill $($p.pid) 2>/dev/null; true" ("cleanup-stop-" + $p.port)) }
-    Write-Host '[p2] owned jars stopped; containers and DB kept for review (delete with docker rm -f if needed)'
-}
-Add-Case 'A44-cleanup' $true "owned jars stopped by recorded PID (cmdline-verified at start); containers kept with label p2core.owner=$($script:Tag) for review; capability defaults-off asserted in A44-defaults; no business DB/volume touched"
-
-$pass = @($script:Results | Where-Object { $_.ok }).Count
-$total = $script:Results.Count
-Save-Evidence 'results.json' (($script:Results | ConvertTo-Json -Depth 5))
-Save-Evidence 'http-log.json' (($script:HttpLogs | ConvertTo-Json -Depth 5))
-Save-Evidence 'run-meta.json' ((@{ runTag = $script:Tag; evidence = $script:Evidence; pass = $pass; total = $total
-    pids = $script:Pids; aiPort = $AiPort; platformPort = $PlatformPort; db = $script:Db; at = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json -Depth 5))
-Write-Host ("[p2] RESULT: {0}/{1} cases passed" -f $pass, $total)
-if ($pass -lt $total) { exit 1 } else { exit 0 }

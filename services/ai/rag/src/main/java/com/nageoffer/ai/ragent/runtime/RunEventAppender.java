@@ -102,7 +102,7 @@ public class RunEventAppender {
                              String type, Object payload) {
         RunRecord run = dao.lockRun(tenantId, runId)
                 .orElseThrow(() -> new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
-        if (run.fence() != fence || !workerId.equals(run.leaseOwner())) {
+        if (!dao.ownsLiveLease(tenantId, runId, workerId, fence)) {
             throw new RunApiException(RunErrorCode.VERSION_CONFLICT, "worker fence is stale");
         }
         if (RunStatus.isTerminal(run.status())) {
@@ -140,7 +140,7 @@ public class RunEventAppender {
         if (RunStatus.isTerminal(run.status())) {
             throw new RunApiException(RunErrorCode.RUN_STATE_CONFLICT, "run already terminal");
         }
-        if (workerId != null && (run.fence() != fence || !workerId.equals(run.leaseOwner()))) {
+        if (workerId != null && !dao.ownsLiveLease(tenantId, runId, workerId, fence)) {
             throw new RunApiException(RunErrorCode.VERSION_CONFLICT, "worker fence is stale");
         }
         String resultJson = toJson(terminalResult == null ? Map.of() : terminalResult);

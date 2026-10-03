@@ -64,6 +64,7 @@ public class RunWorker {
     private final ObjectProvider<P2FaultInjector> faultInjector;
     private final String workerId = "worker-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
     private final ExecutorService pool;
+    private final java.util.concurrent.Semaphore capacity;
     private final ScheduledExecutorService heartbeats = Executors.newScheduledThreadPool(2, runnable -> {
         Thread thread = new Thread(runnable, "p2-heartbeat");
         thread.setDaemon(true);
@@ -77,6 +78,7 @@ public class RunWorker {
         this.executors = executors;
         this.properties = properties;
         this.faultInjector = faultInjector;
+        this.capacity = new java.util.concurrent.Semaphore(Math.max(1, properties.getWorker().getBatch()));
         this.pool = Executors.newFixedThreadPool(Math.max(1, properties.getWorker().getBatch()), runnable -> {
             Thread thread = new Thread(runnable, "p2-worker");
             thread.setDaemon(true);
@@ -94,9 +96,11 @@ public class RunWorker {
             dao.sweepExpiredLeases();
             finalizeCancelledRuns();
             for (int i = 0; i < properties.getWorker().getBatch(); i++) {
+                if (!capacity.tryAcquire()) { return; }
                 Optional<RunLedgerDao.ClaimedRun> claimed = dao.claimNext(workerId,
                         properties.getWorker().getLeaseSeconds());
                 if (claimed.isEmpty()) {
+                    capacity.release();
                     return;
                 }
                 RunLedgerDao.ClaimedRun claim = claimed.get();
@@ -163,6 +167,7 @@ public class RunWorker {
             log.warn("run {} failed: {}", run.runId(), e.getClass().getSimpleName());
             safeFail(guard, "EXECUTION_FAILED");
         } finally {
+            capacity.release();
             heartbeat.cancel(false);
             try {
                 if (guard.stillOwned()) {

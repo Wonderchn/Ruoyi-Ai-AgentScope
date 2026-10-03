@@ -242,7 +242,7 @@ public class RunLedgerDao {
         List<ClaimedRun> claimed = jdbc.query(
                 "WITH candidate AS ("
                         + " SELECT tenant_id, run_id FROM ai_run "
-                        + " WHERE status IN ('QUEUED','RETRY_WAIT','RECOVERING') AND (lease_until IS NULL OR lease_until < now()) "
+                        + " WHERE idempotency_key IS NOT NULL AND status IN ('QUEUED','RETRY_WAIT','RECOVERING') AND (lease_until IS NULL OR lease_until < now()) "
                         + " ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) "
                         + "UPDATE ai_run r SET status='RUNNING', lease_owner=?, lease_until=now() + (? * interval '1 second'), "
                         + "attempt=r.attempt+1, fence=r.fence+1, version=r.version+1, "
@@ -308,8 +308,15 @@ public class RunLedgerDao {
     }
 
     /** fence 校验下幂等插入检查点；已存在时返回既有行。 */
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
     public StepRow commitStep(String tenantId, String runId, String stepId, int attempt, String stepName,
-                              String refJson, String refHash, String usageJson, long fence) {
+                              String refJson, String refHash, String usageJson, long fence, String owner) {
+        lockRun(tenantId, runId).orElseThrow(() -> new com.nageoffer.ai.ragent.runtime.RunApiException(
+                com.nageoffer.ai.ragent.runtime.RunErrorCode.VERSION_CONFLICT));
+        if (!ownsLiveLease(tenantId, runId, owner, fence)) {
+            throw new com.nageoffer.ai.ragent.runtime.RunApiException(
+                    com.nageoffer.ai.ragent.runtime.RunErrorCode.VERSION_CONFLICT);
+        }
         int inserted = jdbc.update("INSERT INTO ai_run_step (tenant_id, run_id, step_id, attempt, checkpoint_version, "
                         + "step_name, state, ref, ref_hash, usage, fence) "
                         + "SELECT ?,?,?,?,1,?,'COMPLETED',?::jsonb,?,?::jsonb,? "
@@ -327,6 +334,17 @@ public class RunLedgerDao {
         }
         return new StepRow(stepId, attempt, 1, stepName, "COMPLETED", refJson, refHash, usageJson, fence,
                 Instant.now(), Instant.now());
+    }
+
+    public boolean ownsLiveLease(String tenantId, String runId, String owner, long fence) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM ai_run WHERE tenant_id=? "
+                + "AND run_id=? AND lease_owner=? AND fence=? AND lease_until>now() "
+                + "AND status NOT IN ('SUCCEEDED','FAILED','CANCELLED'))", Boolean.class, tenantId, runId, owner, fence));
+    }
+
+    public Optional<StepRow> latestCompletedStep(String tenantId, String runId, String stepId) {
+        return listSteps(tenantId, runId).stream().filter(step -> stepId.equals(step.stepId())
+                && "COMPLETED".equals(step.state())).max(java.util.Comparator.comparingInt(StepRow::attempt));
     }
 
     public Optional<StepRow> findStep(String tenantId, String runId, String stepId, int attempt) {

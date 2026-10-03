@@ -78,6 +78,7 @@ public class RunController {
         String requestId = requestId();
         try {
             ExecutionPrincipal principal = principal();
+            require(principal, "run.submit", "run:new");
             RunAdmissionService.AdmissionResult result = admission.admit(principal, idempotencyKey, request);
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("runId", result.runId());

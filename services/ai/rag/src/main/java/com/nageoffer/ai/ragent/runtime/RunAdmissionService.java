@@ -83,7 +83,7 @@ public class RunAdmissionService {
         validate(principal, idempotencyKey, request);
         String requestHash = CanonicalJson.requestHash(request);
         Optional<RunRecord> fastPath = dao.findByIdempotency(
-                principal.tenantId(), principal.membershipId(), request.action(), idempotencyKey);
+                principal.tenantId(), principal.userId(), request.action(), idempotencyKey);
         if (fastPath.isPresent()) {
             return replayOrConflict(fastPath.get(), requestHash);
         }
@@ -91,7 +91,7 @@ public class RunAdmissionService {
             return transactionTemplate.execute(status -> doAdmit(principal, idempotencyKey, request, requestHash));
         } catch (DuplicateKeyException e) {
             Optional<RunRecord> existing = dao.findByIdempotency(
-                    principal.tenantId(), principal.membershipId(), request.action(), idempotencyKey);
+                    principal.tenantId(), principal.userId(), request.action(), idempotencyKey);
             if (existing.isEmpty()) {
                 throw new RunApiException(RunErrorCode.INTERNAL_ERROR, "admission conflict without persisted run");
             }
