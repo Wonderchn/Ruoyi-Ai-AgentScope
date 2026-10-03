@@ -26,6 +26,7 @@ $script:RedisName = "p2core-redis-$($script:Tag)"
 $script:Db = 'ragent_p2core'
 $script:Results = New-Object System.Collections.ArrayList
 $script:Pids = @()
+$script:AiNodes = @()
 $script:HttpLogs = New-Object System.Collections.ArrayList
 
 function Write-Step([string]$Text) { Write-Host ("[p2] " + $Text) }
@@ -118,12 +119,13 @@ function SignDelegation([string]$Tenant, [string]$User, [string]$Action, [int]$P
     $r = Remote "bash $($script:RemoteRoot)/sign.sh '$($claims.Replace("'", "'\''"))'" 'sign-token'
     return (($r.Output -split "`n") | Where-Object { $_ -match '^eyJ' } | Select-Object -Last 1)
 }
-function AiHttp([string]$Method, [string]$Path, [string]$Tenant, [string]$User, [string]$Action, [hashtable]$Headers = @{}, [string]$Body = '', [int]$Pv = 1, [int]$Timeout = 30, [string]$LogName = 'ai-http') {
+function AiHttp([string]$Method, [string]$Path, [string]$Tenant, [string]$User, [string]$Action, [hashtable]$Headers = @{}, [string]$Body = '', [int]$Pv = 1, [int]$Timeout = 30, [string]$LogName = 'ai-http', [int]$TargetPort = 0) {
     $token = SignDelegation $Tenant $User $Action $Pv
     $headers = @{ 'X-P04-Service-Credential' = $script:ServiceCredential }
     foreach ($k in $Headers.Keys) { $headers[$k] = $Headers[$k] }
     $headers['Authorization'] = "Bearer $token"
-    return Http $Method "http://127.0.0.1:$AiPort$Path" $headers $Body $Timeout $LogName
+    $port = if ($TargetPort -gt 0) { $TargetPort } else { $AiPort }
+    return Http $Method "http://127.0.0.1:$port$Path" $headers $Body $Timeout $LogName
 }
 function DbScalar([string]$Query, [string]$LogName = 'db-scalar') {
     $r = Sql $Query $LogName 'p2app'
@@ -447,6 +449,7 @@ Start-Jar 'ai' $AiPort $aiCommon | Out-Null
 if (-not (Wait-Ready $AiPort "/opt/p2core-acceptance/$($script:Tag)/ai-$AiPort.log")) {
     Add-Case 'ENV-ai-start' $false 'ai did not become ready'; exit 2
 }
+$script:AiNodes = @($AiPort)
 Add-Case 'ENV-services' $true 'platform + ai node1 started (owned pids recorded)'
 
 $t1 = Token 'p2t1' 'p2admin' $script:FixturePassword

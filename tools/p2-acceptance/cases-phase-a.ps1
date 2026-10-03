@@ -12,10 +12,22 @@ function SubmitRun([string]$Token, [string]$Action, [string]$Key, [string]$Input
 }
 function RunId([string]$Body) { if ($Body -match '"runId"\s*:\s*"([^"]+)"') { return $Matches[1] } return '' }
 function ArmFault([string]$Tenant, [string]$Hook, [int]$Times = 1) {
-    return AiHttp 'POST' '/internal/ai/v1/test/fault' $Tenant 'p2admin' 'run.get' @{ 'Content-Type' = 'application/json' } (@{ hook = $Hook; times = $Times } | ConvertTo-Json -Compress) 1 20 'arm-fault'
+    # 故障钩子按进程内存布点：双节点阶段必须 fan-out 到所有存活 AI 节点，
+    # 否则钩子可能布在未执行该代码路径的节点上（假通过/假失败）。
+    $nodes = if ($script:AiNodes.Count -gt 0) { $script:AiNodes } else { @($AiPort) }
+    $results = @()
+    foreach ($port in $nodes) {
+        $results += AiHttp 'POST' "/internal/ai/v1/test/fault" $Tenant 'p2admin' 'run.get' @{ 'Content-Type' = 'application/json' } (@{ hook = $Hook; times = $Times } | ConvertTo-Json -Compress) 1 20 ("arm-fault-" + $port) $port
+    }
+    return $results[0]
 }
 function ClearFaults([string]$Tenant) {
-    return AiHttp 'DELETE' '/internal/ai/v1/test/fault' $Tenant 'p2admin' 'run.get' @{} '' 1 20 'clear-faults'
+    $nodes = if ($script:AiNodes.Count -gt 0) { $script:AiNodes } else { @($AiPort) }
+    $results = @()
+    foreach ($port in $nodes) {
+        $results += AiHttp 'DELETE' "/internal/ai/v1/test/fault" $Tenant 'p2admin' 'run.get' @{} '' 1 20 ("clear-faults-" + $port) $port
+    }
+    return $results[0]
 }
 function Wait-RunStatus([string]$Token, [string]$RunId, [string]$Want, [int]$Seconds = 60) {
     for ($i = 0; $i -lt ($Seconds * 2); $i++) {
@@ -132,6 +144,7 @@ Start-Jar 'ai' $Ai2Port $aiCommon | Out-Null
 if (-not (Wait-Ready $Ai2Port "/opt/p2core-acceptance/$($script:Tag)/ai-$Ai2Port.log")) {
     Add-Case 'A09' $false 'ai node2 did not start'
 } else {
+    $script:AiNodes = @($AiPort, $Ai2Port)
     $keys9 = @(); for ($i = 1; $i -le 4; $i++) { $keys9 += "a09-$i-$($script:Tag)" }
     foreach ($k in $keys9) { [void](SubmitRun $t1 'rag.chat' $k '{"text":"two workers"}' '[]' '{"maxTokens":1000}' ("a09-" + $k)) }
     Start-Sleep -Seconds 10

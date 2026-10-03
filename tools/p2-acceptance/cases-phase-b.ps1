@@ -38,6 +38,7 @@ Stop-OwnedJar $Ai2Port | Out-Null
 Start-Jar 'ai' $AiPort $aiReal | Out-Null
 if (-not (Wait-Ready $AiPort "/opt/p2core-acceptance/$($script:Tag)/ai-$AiPort.log")) { Add-Case 'ENV-ai-real-start' $false 'ai (real executor) did not start'; exit 4 }
 Add-Case 'ENV-ai-real' $true 'ai restarted with real executors (local MinerU, synthetic embedding/chat)'
+$script:AiNodes = @($AiPort)
 
 # A23 上传 + A24 拒绝 + 私有下载
 $up1 = UploadPdf $t1 $kb1 'sample.pdf' 'a23-upload'
