@@ -14,20 +14,26 @@ function RunId([string]$Body) { if ($Body -match '"runId"\s*:\s*"([^"]+)"') { re
 function ArmFault([string]$Tenant, [string]$Hook, [int]$Times = 1) {
     # 故障钩子按进程内存布点：双节点阶段必须 fan-out 到所有存活 AI 节点，
     # 否则钩子可能布在未执行该代码路径的节点上（假通过/假失败）。
+    # subject 必须是数字 user_id（平台 identity 校验 [0-9]{1,20}），mid 同步构造。
+    $uid = FixtureUserId $Tenant
     $nodes = if ($script:AiNodes.Count -gt 0) { $script:AiNodes } else { @($AiPort) }
     $results = @()
     foreach ($port in $nodes) {
-        $results += AiHttp 'POST' "/internal/ai/v1/test/fault" $Tenant 'p2admin' 'run.get' @{ 'Content-Type' = 'application/json' } (@{ hook = $Hook; times = $Times } | ConvertTo-Json -Compress) 1 20 ("arm-fault-" + $port) $port
+        $results += AiHttp 'POST' "/internal/ai/v1/test/fault" $Tenant $uid 'run.get' @{ 'Content-Type' = 'application/json' } (@{ hook = $Hook; times = $Times } | ConvertTo-Json -Compress) 1 20 ("arm-fault-" + $port) $port
     }
     return $results[0]
 }
 function ClearFaults([string]$Tenant) {
+    $uid = FixtureUserId $Tenant
     $nodes = if ($script:AiNodes.Count -gt 0) { $script:AiNodes } else { @($AiPort) }
     $results = @()
     foreach ($port in $nodes) {
-        $results += AiHttp 'DELETE' "/internal/ai/v1/test/fault" $Tenant 'p2admin' 'run.get' @{} '' 1 20 ("clear-faults-" + $port) $port
+        $results += AiHttp 'DELETE' "/internal/ai/v1/test/fault" $Tenant $uid 'run.get' @{} '' 1 20 ("clear-faults-" + $port) $port
     }
     return $results[0]
+}
+function FixtureUserId([string]$Tenant) {
+    return @{ p2t1 = '910000000000000001'; p2t2 = '910000000000000002' }[$Tenant]
 }
 function Wait-RunStatus([string]$Token, [string]$RunId, [string]$Want, [int]$Seconds = 60) {
     for ($i = 0; $i -lt ($Seconds * 2); $i++) {
@@ -250,7 +256,7 @@ Start-Sleep -Seconds 4
 Start-Sleep -Seconds 10
 $sseState = Remote "test -f /tmp/p2http-$($script:Tag)/sse21.txt && echo present; grep -c 'run\.terminal' /tmp/p2http-$($script:Tag)/sse21.txt; grep -c '^id:' /tmp/p2http-$($script:Tag)/sse21.txt; true" 'a21-sse-state'
 $reconnect = Http 'GET' "http://127.0.0.1:$PlatformPort/api/ai/v1/runs/$run21/events?afterSeq=1" @{ 'Authorization' = "Bearer $t1" } '' 20 'a21-reconnect'
-$pv2Token = SignDelegation 'p2t1' 'p2admin' 'run.get' 2
+$pv2Token = SignDelegation 'p2t1' '910000000000000001' 'run.get' 2
 $pv2Get = Http 'GET' "http://127.0.0.1:$PlatformPort/api/ai/v1/runs/$run21" @{ 'Authorization' = "Bearer $pv2Token" } '' 20 'a21-pv2'
 $terminalFrames = 999; $frameCount = '0'
 if ($sseState.Output -match 'present') {
