@@ -121,7 +121,8 @@ public class AiGatewayController {
             new Route("GET", "/runs/{id}/events", "run.stream"),
             new Route("POST", "/documents/uploads", "document.upload"),
             new Route("POST", "/documents/{id}/ingestions", "document.ingest"),
-            new Route("GET", "/documents/{id}", "document.read"),
+            new Route("GET", "/documents/{id}/meta", "document.read"),
+            new Route("GET", "/documents/{id}/source", "document.download"),
             new Route("GET", "/knowledge-bases/{id}/documents", "document.list"));
 
     private final CurrentPrincipalResolver principalResolver;

@@ -393,7 +393,7 @@ public class RagChatExecutor implements RunExecutor {
             citation.put("pageFrom", chunk.pageFrom());
             citation.put("pageTo", chunk.pageTo());
             citation.put("score", Math.round(chunk.score() * 10000) / 10000.0);
-            citation.put("viewRef", "/api/ai/v1/documents/" + chunk.docId() + "/content");
+            citation.put("viewRef", "/api/ai/v1/documents/" + chunk.docId() + "/source");
             citations.add(citation);
         }
         return citations;

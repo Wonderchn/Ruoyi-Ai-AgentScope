@@ -97,7 +97,7 @@ public class UploadController {
         }
     }
 
-    @GetMapping("/documents/{docId}")
+    @GetMapping("/documents/{docId}/meta")
     public ResponseEntity<?> document(@PathVariable String docId) {
         String requestId = requestId();
         com.nageoffer.ai.ragent.runtime.web.DeliveryPermits.Permit permit = null;
@@ -135,7 +135,7 @@ public class UploadController {
         }
     }
 
-    @GetMapping("/documents/{docId}/content")
+    @GetMapping("/documents/{docId}/source")
     public ResponseEntity<byte[]> content(@PathVariable String docId,
                                           @RequestParam(value = "versionId", required = false) String versionId) {
         ExecutionPrincipal principal = principal();
