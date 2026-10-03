@@ -358,7 +358,7 @@ function Start-Jar([string]$Side, [int]$Port, [string[]]$Extra) {
         exit 2
     }
     $envLine = if ($Side -eq 'ai') {
-        "export P2_MINERU_TOKEN=`$(cat /opt/ragent-ai-lab-20261003/secrets/mineru_token); export AI_DB_PASSWORD='$($script:PgPass)'; export AI_DB_USERNAME=p2app;"
+        "export P2_MINERU_TOKEN=`$(cat /opt/ragent-ai-lab-20261003/secrets/mineru_token); export AI_DB_PASSWORD='$($script:PgPass)'; export AI_DB_USER=p2app; export AI_DB_USERNAME=p2app;"
     } else {
         "export PLATFORM_DB_PASSWORD='$($script:PgPass)'; export PLATFORM_DB_USERNAME=p2app; export REDIS_PASSWORD='$($script:RedisPass)';"
     }
@@ -450,6 +450,7 @@ function Initialize-ExternalizedPlaceholders {
     $lines = New-Object System.Collections.ArrayList
     [void]$lines.Add('#!/bin/sh')
     [void]$lines.Add("export AI_DB_PASSWORD='$($script:PgPass)'")
+    [void]$lines.Add("export AI_DB_USER='p2app'")
     [void]$lines.Add("export AI_DB_USERNAME='p2app'")
     [void]$lines.Add("export PLATFORM_DB_PASSWORD='$($script:PgPass)'")
     [void]$lines.Add("export PLATFORM_DB_USERNAME='p2app'")
