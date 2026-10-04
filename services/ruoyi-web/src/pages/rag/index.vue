@@ -10,6 +10,7 @@ import {
   getRun,
   listDocuments,
   listKnowledgeBases,
+  newRequestId,
   submitRun,
   terminalFailureNote,
   terminalSummary,
@@ -200,7 +201,7 @@ async function onFilePicked(event: Event) {
   input.value = '';
   if (!file || !rag.currentKbId)
     return;
-  pendingUpload.value = { file, kbId: rag.currentKbId, key: crypto.randomUUID(), docId: versionTarget.value || undefined };
+  pendingUpload.value = { file, kbId: rag.currentKbId, key: newRequestId(), docId: versionTarget.value || undefined };
   await retryUpload();
 }
 
@@ -293,7 +294,7 @@ async function ask() {
   try {
     const body = chatRunBody([rag.currentKbId], question.value);
     if (!pendingChat || JSON.stringify(pendingChat.body) !== JSON.stringify(body))
-      pendingChat = { body, key: `web-chat-${crypto.randomUUID()}` };
+      pendingChat = { body, key: `web-chat-${newRequestId()}` };
     const created = await submitRun(pendingChat.body, pendingChat.key);
     if (!current(epoch, kbId))
       return;

@@ -47,6 +47,29 @@ export function chatRunBody(kbIds: string[], text: string, retryOf?: string): Ru
   };
 }
 
+/**
+ * Idempotency-key UUID that also works outside secure contexts.
+ *
+ * `crypto.randomUUID` is undefined on plain-HTTP origins (including the dev
+ * delivery's http://<host>:8080), where using it made run submission throw and
+ * surface as a misleading permission error. `crypto.getRandomValues` exists in
+ * insecure contexts, so build a RFC 4122 v4 value from it, falling back to
+ * Math.random only if even that is missing.
+ */
+export function newRequestId(): string {
+  const cryptoObj = globalThis.crypto;
+  if (cryptoObj && typeof cryptoObj.randomUUID === 'function')
+    return cryptoObj.randomUUID();
+  if (cryptoObj && typeof cryptoObj.getRandomValues === 'function') {
+    const bytes = cryptoObj.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
 /** 引用去重（同 doc/version/chunk 只保留一次）并保持顺序。 */
 export function dedupeCitations(citations: Citation[]): Citation[] {
   const seen = new Set<string>();

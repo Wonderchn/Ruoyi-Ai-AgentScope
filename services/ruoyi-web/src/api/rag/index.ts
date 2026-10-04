@@ -6,6 +6,7 @@
  */
 import type { RunSubmitBody } from './logic';
 import { useUserStore } from '@/stores';
+import { newRequestId } from './logic';
 import { identityJson } from './transport';
 
 export * from './logic';
@@ -140,7 +141,7 @@ export async function downloadSource(docId: string, versionId: string, signal?: 
 }
 
 /** 专用流式上传（带进度）；返回服务端生成的 docId/uploadId/versionId。 */
-export function uploadDocument(kbId: string, file: File, onProgress?: (percent: number) => void, uploadKey: string = crypto.randomUUID(), signal?: AbortSignal, docId?: string): Promise<UploadResult> {
+export function uploadDocument(kbId: string, file: File, onProgress?: (percent: number) => void, uploadKey: string = newRequestId(), signal?: AbortSignal, docId?: string): Promise<UploadResult> {
   const token = useUserStore().token;
   const base = (import.meta.env.VITE_API_URL as string | undefined) ?? '';
   return new Promise((resolve, reject) => {

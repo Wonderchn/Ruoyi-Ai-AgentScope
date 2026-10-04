@@ -3,7 +3,7 @@ import type { AgentAction, Citation, KnowledgeBaseView, RunSnapshot, RunSubmitBo
 import { ElMessage } from 'element-plus';
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { agentRunBody, approveAgentAction, cancelRun, downloadSource, getRun, listAgentActions, listKnowledgeBases, queryAgentAction, resumeRun, submitRun, terminalSummary } from '@/api/rag';
+import { agentRunBody, approveAgentAction, cancelRun, downloadSource, getRun, listAgentActions, listKnowledgeBases, newRequestId, queryAgentAction, resumeRun, submitRun, terminalSummary } from '@/api/rag';
 import PrivatePdf from '@/components/rag/PrivatePdf.vue';
 import { useUserStore } from '@/stores';
 import { openRunStream } from '@/utils/sse/RunStreamClient';
@@ -186,7 +186,7 @@ async function submit(retryOf?: string, inherited?: AgentAction) {
   busy.value = true;
   const body = agentRunBody(kbId.value, question.value, mode.value === 'sandbox' ? { title: title.value, details: details.value } : undefined, retryOf, inherited?.actionId);
   if (!pending || JSON.stringify(pending.body) !== JSON.stringify(body))
-    pending = { body, key: `web-agent-${crypto.randomUUID()}` };
+    pending = { body, key: `web-agent-${newRequestId()}` };
   try {
     const created = await submitRun(pending.body, pending.key);
     if (!valid(captured))
