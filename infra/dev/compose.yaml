@@ -177,7 +177,7 @@ services:
       MINERU_LOCAL_TOKEN: ${MINERU_LOCAL_TOKEN:-}
       MINERU_LOCAL_TIER: ${MINERU_LOCAL_TIER:-flash}
       AI_INTEGRATION_ENABLED: "true"
-      AI_INTEGRATION_PLATFORM_BASE_URL: http://platform:8080
+      AI_INTEGRATION_PLATFORM_BASE_URL: http://platform:6039
       # This pair is the approved integration path and also what lets the
       # production AuthorizationChecker bean exist (delegated identity checks).
       AI_INTEGRATION_SECURITY_ENABLED: "true"
