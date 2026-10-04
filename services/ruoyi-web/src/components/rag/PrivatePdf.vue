@@ -96,9 +96,11 @@ watch(() => props.sourceUrl, async (url) => {
     page.value = Math.min(count.value, Math.max(1, Number.isInteger(props.initialPage) ? props.initialPage! : 1));
     await draw();
   }
-  catch {
-    if (epoch === generation)
+  catch (cause) {
+    if (epoch === generation) {
+      console.warn('[private-pdf] load failed', cause);
       error.value = 'PDF 无法显示，请核对文件是否有效';
+    }
   }
   finally {
     if (epoch === generation)
