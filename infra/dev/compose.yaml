@@ -193,6 +193,16 @@ services:
       - dev-private-objects:/data/private-objects
       - dev-delivery-keys:/keys:ro
 
+  # Optional forwarder for a host-local MinerU parser: when MinerU listens only on
+  # the host loopback, containers cannot reach it through host-gateway. Start this
+  # profile (docker compose --profile mineru-host up -d) and point
+  # MINERU_LOCAL_BASE_URL at host.docker.internal:18001.
+  mineru-forward:
+    image: alpine/socat@sha256:82ad20f6f6e29b91ff33b6662d24063522b1378f08fd8569cd3ab412cac13f50
+    profiles: ["mineru-host"]
+    network_mode: host
+    command: ["TCP-LISTEN:18001,fork,reuseaddr", "TCP:127.0.0.1:18000"]
+
   web:
     build:
       context: ..
