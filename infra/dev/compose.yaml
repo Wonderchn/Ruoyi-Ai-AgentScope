@@ -187,6 +187,10 @@ services:
       # the env file; the host is reachable through the host-gateway mapping.
       # Model/embedding egress: explicitly allow only the synthetic provider
       # (no external call); real providers require their own keys and approval.
+      # Model boundaries: synthetic providers only (never billed calls); switch to
+      # real providers only with their own approved keys and budget.
+      P2_EMBEDDING_MODE: ${P2_EMBEDDING_MODE:-synthetic}
+      P2_CHAT_MODE: ${P2_CHAT_MODE:-synthetic}
       P2_CHAT_EGRESS_ENABLED: ${P2_CHAT_EGRESS_ENABLED:-false}
       P2_CHAT_EGRESS_ALLOWED_PROVIDERS: ${P2_CHAT_EGRESS_ALLOWED_PROVIDERS:-synthetic}
       MINERU_LOCAL_ENABLED: ${MINERU_LOCAL_ENABLED:-false}
