@@ -41,10 +41,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_acl_epoch')
@@ -52,24 +49,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_acl_epoch';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_acl_epoch';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_acl_epoch -> platform.ai_acl_epoch: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'version', 'update_time']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_acl_epoch'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_acl_epoch is missing column(s) required by ai.ai_acl_epoch: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_acl_epoch;
-    INSERT INTO platform.ai_acl_epoch
-        SELECT * FROM ai.ai_acl_epoch
+    INSERT INTO platform.ai_acl_epoch ("tenant_id", "version", "update_time")
+        SELECT "tenant_id", "version", "update_time" FROM ai.ai_acl_epoch
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_acl_epoch;
 
@@ -87,10 +81,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_action_approval')
@@ -98,24 +89,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_action_approval';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_action_approval';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_action_approval -> platform.ai_action_approval: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'action_id', 'approval_version', 'args_hash', 'tool_version', 'target', 'initiator_member', 'decision', 'decided_by', 'decided_at', 'expires_at', 'policy_version', 'acl_version']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_action_approval'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_action_approval is missing column(s) required by ai.ai_action_approval: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_action_approval;
-    INSERT INTO platform.ai_action_approval
-        SELECT * FROM ai.ai_action_approval
+    INSERT INTO platform.ai_action_approval ("tenant_id", "action_id", "approval_version", "args_hash", "tool_version", "target", "initiator_member", "decision", "decided_by", "decided_at", "expires_at", "policy_version", "acl_version")
+        SELECT "tenant_id", "action_id", "approval_version", "args_hash", "tool_version", "target", "initiator_member", "decision", "decided_by", "decided_at", "expires_at", "policy_version", "acl_version" FROM ai.ai_action_approval
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_action_approval;
 
@@ -133,10 +121,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_action_inheritance')
@@ -144,24 +129,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_action_inheritance';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_action_inheritance';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_action_inheritance -> platform.ai_action_inheritance: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'new_run_id', 'source_run_id', 'source_action_id', 'member_id', 'args_hash', 'created_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_action_inheritance'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_action_inheritance is missing column(s) required by ai.ai_action_inheritance: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_action_inheritance;
-    INSERT INTO platform.ai_action_inheritance
-        SELECT * FROM ai.ai_action_inheritance
+    INSERT INTO platform.ai_action_inheritance ("tenant_id", "new_run_id", "source_run_id", "source_action_id", "member_id", "args_hash", "created_at")
+        SELECT "tenant_id", "new_run_id", "source_run_id", "source_action_id", "member_id", "args_hash", "created_at" FROM ai.ai_action_inheritance
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_action_inheritance;
 
@@ -179,10 +161,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_action_reconciliation')
@@ -190,24 +169,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_action_reconciliation';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_action_reconciliation';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_action_reconciliation -> platform.ai_action_reconciliation: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'action_id', 'seq', 'actor_member', 'evidence', 'evidence_hash', 'external_id', 'finality', 'policy_version', 'acl_version', 'created_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_action_reconciliation'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_action_reconciliation is missing column(s) required by ai.ai_action_reconciliation: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_action_reconciliation;
-    INSERT INTO platform.ai_action_reconciliation
-        SELECT * FROM ai.ai_action_reconciliation
+    INSERT INTO platform.ai_action_reconciliation ("tenant_id", "action_id", "seq", "actor_member", "evidence", "evidence_hash", "external_id", "finality", "policy_version", "acl_version", "created_at")
+        SELECT "tenant_id", "action_id", "seq", "actor_member", "evidence", "evidence_hash", "external_id", "finality", "policy_version", "acl_version", "created_at" FROM ai.ai_action_reconciliation
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_action_reconciliation;
 
@@ -225,10 +201,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_agent_checkpoint')
@@ -236,24 +209,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_agent_checkpoint';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_agent_checkpoint';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_agent_checkpoint -> platform.ai_agent_checkpoint: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'run_id', 'member_id', 'state_key', 'payload', 'payload_hash', 'attempt', 'fence', 'engine_version', 'agent_version', 'model', 'tool_catalog', 'policy_version', 'acl_version', 'checkpoint_version', 'source_refs', 'updated_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_agent_checkpoint'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_agent_checkpoint is missing column(s) required by ai.ai_agent_checkpoint: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_agent_checkpoint;
-    INSERT INTO platform.ai_agent_checkpoint
-        SELECT * FROM ai.ai_agent_checkpoint
+    INSERT INTO platform.ai_agent_checkpoint ("tenant_id", "run_id", "member_id", "state_key", "payload", "payload_hash", "attempt", "fence", "engine_version", "agent_version", "model", "tool_catalog", "policy_version", "acl_version", "checkpoint_version", "source_refs", "updated_at")
+        SELECT "tenant_id", "run_id", "member_id", "state_key", "payload", "payload_hash", "attempt", "fence", "engine_version", "agent_version", "model", "tool_catalog", "policy_version", "acl_version", "checkpoint_version", "source_refs", "updated_at" FROM ai.ai_agent_checkpoint
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_agent_checkpoint;
 
@@ -271,10 +241,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_agent_run')
@@ -282,24 +249,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_agent_run';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_agent_run';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_agent_run -> platform.ai_agent_run: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'run_id', 'member_id', 'agent_version', 'engine_version', 'model', 'tool_catalog', 'checkpoint_version', 'max_steps', 'max_tool_calls', 'max_tokens', 'steps_used', 'tools_used', 'tokens_used', 'source_refs']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_agent_run'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_agent_run is missing column(s) required by ai.ai_agent_run: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_agent_run;
-    INSERT INTO platform.ai_agent_run
-        SELECT * FROM ai.ai_agent_run
+    INSERT INTO platform.ai_agent_run ("tenant_id", "run_id", "member_id", "agent_version", "engine_version", "model", "tool_catalog", "checkpoint_version", "max_steps", "max_tool_calls", "max_tokens", "steps_used", "tools_used", "tokens_used", "source_refs")
+        SELECT "tenant_id", "run_id", "member_id", "agent_version", "engine_version", "model", "tool_catalog", "checkpoint_version", "max_steps", "max_tool_calls", "max_tokens", "steps_used", "tools_used", "tokens_used", "source_refs" FROM ai.ai_agent_run
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_agent_run;
 
@@ -317,10 +281,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_budget_reservation')
@@ -328,24 +289,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_budget_reservation';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_budget_reservation';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_budget_reservation -> platform.ai_budget_reservation: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'reservation_id', 'run_id', 'member_id', 'units', 'state', 'created_at', 'updated_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_budget_reservation'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_budget_reservation is missing column(s) required by ai.ai_budget_reservation: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_budget_reservation;
-    INSERT INTO platform.ai_budget_reservation
-        SELECT * FROM ai.ai_budget_reservation
+    INSERT INTO platform.ai_budget_reservation ("tenant_id", "reservation_id", "run_id", "member_id", "units", "state", "created_at", "updated_at")
+        SELECT "tenant_id", "reservation_id", "run_id", "member_id", "units", "state", "created_at", "updated_at" FROM ai.ai_budget_reservation
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_budget_reservation;
 
@@ -363,10 +321,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_chat_message')
@@ -374,24 +329,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_chat_message';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_chat_message';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_chat_message -> platform.ai_chat_message: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'message_id', 'run_id', 'sequence', 'role', 'content', 'citations', 'created_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_chat_message'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_chat_message is missing column(s) required by ai.ai_chat_message: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_chat_message;
-    INSERT INTO platform.ai_chat_message
-        SELECT * FROM ai.ai_chat_message
+    INSERT INTO platform.ai_chat_message ("tenant_id", "message_id", "run_id", "sequence", "role", "content", "citations", "created_at")
+        SELECT "tenant_id", "message_id", "run_id", "sequence", "role", "content", "citations", "created_at" FROM ai.ai_chat_message
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_chat_message;
 
@@ -409,10 +361,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_delegation_replay')
@@ -420,24 +369,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_delegation_replay';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_delegation_replay';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_delegation_replay -> platform.ai_delegation_replay: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['issuer', 'jti', 'tenant_id', 'consumed_at', 'expires_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_delegation_replay'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_delegation_replay is missing column(s) required by ai.ai_delegation_replay: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_delegation_replay;
-    INSERT INTO platform.ai_delegation_replay
-        SELECT * FROM ai.ai_delegation_replay
+    INSERT INTO platform.ai_delegation_replay ("issuer", "jti", "tenant_id", "consumed_at", "expires_at")
+        SELECT "issuer", "jti", "tenant_id", "consumed_at", "expires_at" FROM ai.ai_delegation_replay
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_delegation_replay;
 
@@ -455,10 +401,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_document')
@@ -466,24 +409,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_document';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_document';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_document -> platform.ai_document: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'doc_id', 'kb_id', 'name', 'member_id', 'published_version_id', 'tombstoned_at', 'created_at', 'updated_at', 'version_counter']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_document'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_document is missing column(s) required by ai.ai_document: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_document;
-    INSERT INTO platform.ai_document
-        SELECT * FROM ai.ai_document
+    INSERT INTO platform.ai_document ("tenant_id", "doc_id", "kb_id", "name", "member_id", "published_version_id", "tombstoned_at", "created_at", "updated_at", "version_counter")
+        SELECT "tenant_id", "doc_id", "kb_id", "name", "member_id", "published_version_id", "tombstoned_at", "created_at", "updated_at", "version_counter" FROM ai.ai_document
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_document;
 
@@ -501,10 +441,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_document_chunk')
@@ -512,24 +449,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_document_chunk';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_document_chunk';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_document_chunk -> platform.ai_document_chunk: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'version_id', 'chunk_key', 'chunk_index', 'doc_id', 'kb_id', 'content', 'content_hash', 'char_count', 'page_from', 'page_to', 'state', 'embedding', 'embedding_model', 'created_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_document_chunk'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_document_chunk is missing column(s) required by ai.ai_document_chunk: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_document_chunk;
-    INSERT INTO platform.ai_document_chunk
-        SELECT * FROM ai.ai_document_chunk
+    INSERT INTO platform.ai_document_chunk ("tenant_id", "version_id", "chunk_key", "chunk_index", "doc_id", "kb_id", "content", "content_hash", "char_count", "page_from", "page_to", "state", "embedding", "embedding_model", "created_at")
+        SELECT "tenant_id", "version_id", "chunk_key", "chunk_index", "doc_id", "kb_id", "content", "content_hash", "char_count", "page_from", "page_to", "state", "embedding", "embedding_model", "created_at" FROM ai.ai_document_chunk
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_document_chunk;
 
@@ -547,10 +481,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_document_upload')
@@ -558,24 +489,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_document_upload';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_document_upload';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_document_upload -> platform.ai_document_upload: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'upload_id', 'doc_id', 'kb_id', 'member_id', 'filename', 'mime_type', 'size_bytes', 'sha256', 'object_key', 'state', 'created_at', 'updated_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_document_upload'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_document_upload is missing column(s) required by ai.ai_document_upload: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_document_upload;
-    INSERT INTO platform.ai_document_upload
-        SELECT * FROM ai.ai_document_upload
+    INSERT INTO platform.ai_document_upload ("tenant_id", "upload_id", "doc_id", "kb_id", "member_id", "filename", "mime_type", "size_bytes", "sha256", "object_key", "state", "created_at", "updated_at")
+        SELECT "tenant_id", "upload_id", "doc_id", "kb_id", "member_id", "filename", "mime_type", "size_bytes", "sha256", "object_key", "state", "created_at", "updated_at" FROM ai.ai_document_upload
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_document_upload;
 
@@ -593,10 +521,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_document_version')
@@ -604,24 +529,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_document_version';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_document_version';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_document_version -> platform.ai_document_version: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'version_id', 'doc_id', 'upload_id', 'run_id', 'state', 'parse_ref', 'chunk_count', 'embedding_model', 'embedding_dimension', 'published_at', 'created_at', 'updated_at', 'version_order']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_document_version'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_document_version is missing column(s) required by ai.ai_document_version: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_document_version;
-    INSERT INTO platform.ai_document_version
-        SELECT * FROM ai.ai_document_version
+    INSERT INTO platform.ai_document_version ("tenant_id", "version_id", "doc_id", "upload_id", "run_id", "state", "parse_ref", "chunk_count", "embedding_model", "embedding_dimension", "published_at", "created_at", "updated_at", "version_order")
+        SELECT "tenant_id", "version_id", "doc_id", "upload_id", "run_id", "state", "parse_ref", "chunk_count", "embedding_model", "embedding_dimension", "published_at", "created_at", "updated_at", "version_order" FROM ai.ai_document_version
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_document_version;
 
@@ -639,10 +561,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_execution_permit')
@@ -650,24 +569,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_execution_permit';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_execution_permit';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_execution_permit -> platform.ai_execution_permit: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['permit_id', 'tenant_id', 'member_id', 'action', 'policy_version', 'acl_version', 'resource_refs_hash', 'operation_id', 'status', 'acquired_at', 'expires_at', 'released_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_execution_permit'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_execution_permit is missing column(s) required by ai.ai_execution_permit: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_execution_permit;
-    INSERT INTO platform.ai_execution_permit
-        SELECT * FROM ai.ai_execution_permit
+    INSERT INTO platform.ai_execution_permit ("permit_id", "tenant_id", "member_id", "action", "policy_version", "acl_version", "resource_refs_hash", "operation_id", "status", "acquired_at", "expires_at", "released_at")
+        SELECT "permit_id", "tenant_id", "member_id", "action", "policy_version", "acl_version", "resource_refs_hash", "operation_id", "status", "acquired_at", "expires_at", "released_at" FROM ai.ai_execution_permit
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_execution_permit;
 
@@ -685,10 +601,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_model_call')
@@ -696,24 +609,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_model_call';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_model_call';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_model_call -> platform.ai_model_call: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'call_id', 'run_id', 'attempt', 'step_id', 'kind', 'provider', 'model', 'provider_request_id', 'request_hash', 'usage_raw', 'state', 'error_code', 'created_at', 'updated_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_model_call'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_model_call is missing column(s) required by ai.ai_model_call: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_model_call;
-    INSERT INTO platform.ai_model_call
-        SELECT * FROM ai.ai_model_call
+    INSERT INTO platform.ai_model_call ("tenant_id", "call_id", "run_id", "attempt", "step_id", "kind", "provider", "model", "provider_request_id", "request_hash", "usage_raw", "state", "error_code", "created_at", "updated_at")
+        SELECT "tenant_id", "call_id", "run_id", "attempt", "step_id", "kind", "provider", "model", "provider_request_id", "request_hash", "usage_raw", "state", "error_code", "created_at", "updated_at" FROM ai.ai_model_call
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_model_call;
 
@@ -731,10 +641,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_provider_envelope')
@@ -742,24 +649,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_provider_envelope';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_provider_envelope';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_provider_envelope -> platform.ai_provider_envelope: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['execution_id', 'cap_cny', 'reserved_cny', 'created_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_provider_envelope'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_provider_envelope is missing column(s) required by ai.ai_provider_envelope: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_provider_envelope;
-    INSERT INTO platform.ai_provider_envelope
-        SELECT * FROM ai.ai_provider_envelope
+    INSERT INTO platform.ai_provider_envelope ("execution_id", "cap_cny", "reserved_cny", "created_at")
+        SELECT "execution_id", "cap_cny", "reserved_cny", "created_at" FROM ai.ai_provider_envelope
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_provider_envelope;
 
@@ -777,10 +681,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_provider_spend')
@@ -788,24 +689,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_provider_spend';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_provider_spend';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_provider_spend -> platform.ai_provider_spend: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['call_id', 'execution_id', 'provider', 'model', 'reserved_cny', 'provider_request_id', 'usage_raw', 'state', 'created_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_provider_spend'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_provider_spend is missing column(s) required by ai.ai_provider_spend: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_provider_spend;
-    INSERT INTO platform.ai_provider_spend
-        SELECT * FROM ai.ai_provider_spend
+    INSERT INTO platform.ai_provider_spend ("call_id", "execution_id", "provider", "model", "reserved_cny", "provider_request_id", "usage_raw", "state", "created_at")
+        SELECT "call_id", "execution_id", "provider", "model", "reserved_cny", "provider_request_id", "usage_raw", "state", "created_at" FROM ai.ai_provider_spend
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_provider_spend;
 
@@ -823,10 +721,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_resource')
@@ -834,24 +729,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_resource';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_resource';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_resource -> platform.ai_resource: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'resource_type', 'resource_id', 'owner_member_id', 'owner_dept_id', 'parent_type', 'parent_id', 'status', 'resource_version', 'created_by_member', 'create_time', 'update_time']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_resource'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_resource is missing column(s) required by ai.ai_resource: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_resource;
-    INSERT INTO platform.ai_resource
-        SELECT * FROM ai.ai_resource
+    INSERT INTO platform.ai_resource ("tenant_id", "resource_type", "resource_id", "owner_member_id", "owner_dept_id", "parent_type", "parent_id", "status", "resource_version", "created_by_member", "create_time", "update_time")
+        SELECT "tenant_id", "resource_type", "resource_id", "owner_member_id", "owner_dept_id", "parent_type", "parent_id", "status", "resource_version", "created_by_member", "create_time", "update_time" FROM ai.ai_resource
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_resource;
 
@@ -869,10 +761,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_resource_acl')
@@ -880,24 +769,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_resource_acl';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_resource_acl';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_resource_acl -> platform.ai_resource_acl: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'tenant_id', 'resource_type', 'resource_id', 'subject_type', 'subject_id', 'action', 'expires_at', 'granted_by', 'create_time']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_resource_acl'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_resource_acl is missing column(s) required by ai.ai_resource_acl: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_resource_acl;
-    INSERT INTO platform.ai_resource_acl
-        SELECT * FROM ai.ai_resource_acl
+    INSERT INTO platform.ai_resource_acl ("id", "tenant_id", "resource_type", "resource_id", "subject_type", "subject_id", "action", "expires_at", "granted_by", "create_time")
+        SELECT "id", "tenant_id", "resource_type", "resource_id", "subject_type", "subject_id", "action", "expires_at", "granted_by", "create_time" FROM ai.ai_resource_acl
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_resource_acl;
 
@@ -915,10 +801,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_run')
@@ -926,24 +809,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_run';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_run';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_run -> platform.ai_run: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'run_id', 'member_id', 'action', 'status', 'policy_version', 'acl_version', 'resource_refs', 'created_at', 'updated_at', 'idempotency_key', 'request_hash', 'subject', 'input', 'budget', 'execution_version', 'version', 'next_seq', 'attempt', 'fence', 'lease_owner', 'lease_until', 'terminal_result', 'error_code', 'retry_of', 'cancel_requested_at', 'started_at', 'finished_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_run'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_run is missing column(s) required by ai.ai_run: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_run;
-    INSERT INTO platform.ai_run
-        SELECT * FROM ai.ai_run
+    INSERT INTO platform.ai_run ("tenant_id", "run_id", "member_id", "action", "status", "policy_version", "acl_version", "resource_refs", "created_at", "updated_at", "idempotency_key", "request_hash", "subject", "input", "budget", "execution_version", "version", "next_seq", "attempt", "fence", "lease_owner", "lease_until", "terminal_result", "error_code", "retry_of", "cancel_requested_at", "started_at", "finished_at")
+        SELECT "tenant_id", "run_id", "member_id", "action", "status", "policy_version", "acl_version", "resource_refs", "created_at", "updated_at", "idempotency_key", "request_hash", "subject", "input", "budget", "execution_version", "version", "next_seq", "attempt", "fence", "lease_owner", "lease_until", "terminal_result", "error_code", "retry_of", "cancel_requested_at", "started_at", "finished_at" FROM ai.ai_run
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_run;
 
@@ -961,10 +841,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_run_event')
@@ -972,24 +849,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_run_event';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_run_event';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_run_event -> platform.ai_run_event: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'run_id', 'seq', 'event_type', 'payload', 'created_at', 'event_id', 'schema_version']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_run_event'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_run_event is missing column(s) required by ai.ai_run_event: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_run_event;
-    INSERT INTO platform.ai_run_event
-        SELECT * FROM ai.ai_run_event
+    INSERT INTO platform.ai_run_event ("tenant_id", "run_id", "seq", "event_type", "payload", "created_at", "event_id", "schema_version")
+        SELECT "tenant_id", "run_id", "seq", "event_type", "payload", "created_at", "event_id", "schema_version" FROM ai.ai_run_event
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_run_event;
 
@@ -1007,10 +881,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_run_step')
@@ -1018,24 +889,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_run_step';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_run_step';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_run_step -> platform.ai_run_step: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'run_id', 'step_id', 'attempt', 'checkpoint_version', 'step_name', 'state', 'ref', 'ref_hash', 'usage', 'fence', 'created_at', 'updated_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_run_step'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_run_step is missing column(s) required by ai.ai_run_step: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_run_step;
-    INSERT INTO platform.ai_run_step
-        SELECT * FROM ai.ai_run_step
+    INSERT INTO platform.ai_run_step ("tenant_id", "run_id", "step_id", "attempt", "checkpoint_version", "step_name", "state", "ref", "ref_hash", "usage", "fence", "created_at", "updated_at")
+        SELECT "tenant_id", "run_id", "step_id", "attempt", "checkpoint_version", "step_name", "state", "ref", "ref_hash", "usage", "fence", "created_at", "updated_at" FROM ai.ai_run_step
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_run_step;
 
@@ -1053,10 +921,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_tenant_barrier')
@@ -1064,24 +929,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_tenant_barrier';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_tenant_barrier';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_tenant_barrier -> platform.ai_tenant_barrier: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'status', 'barrier_id', 'target_acl_version', 'reason', 'updated_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_tenant_barrier'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_tenant_barrier is missing column(s) required by ai.ai_tenant_barrier: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_tenant_barrier;
-    INSERT INTO platform.ai_tenant_barrier
-        SELECT * FROM ai.ai_tenant_barrier
+    INSERT INTO platform.ai_tenant_barrier ("tenant_id", "status", "barrier_id", "target_acl_version", "reason", "updated_at")
+        SELECT "tenant_id", "status", "barrier_id", "target_acl_version", "reason", "updated_at" FROM ai.ai_tenant_barrier
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_tenant_barrier;
 
@@ -1099,10 +961,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_tenant_budget')
@@ -1110,24 +969,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_tenant_budget';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_tenant_budget';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_tenant_budget -> platform.ai_tenant_budget: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'limit_units', 'updated_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_tenant_budget'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_tenant_budget is missing column(s) required by ai.ai_tenant_budget: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_tenant_budget;
-    INSERT INTO platform.ai_tenant_budget
-        SELECT * FROM ai.ai_tenant_budget
+    INSERT INTO platform.ai_tenant_budget ("tenant_id", "limit_units", "updated_at")
+        SELECT "tenant_id", "limit_units", "updated_at" FROM ai.ai_tenant_budget
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_tenant_budget;
 
@@ -1145,10 +1001,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_tool_call')
@@ -1156,24 +1009,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_tool_call';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_tool_call';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_tool_call -> platform.ai_tool_call: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'action_id', 'member_id', 'run_id', 'tool_name', 'tool_version', 'args', 'args_hash', 'target', 'operation_key', 'approval_version', 'state', 'permit_id', 'permit_operation', 'sender_stopped', 'result', 'source_refs', 'provider_request_id', 'external_id', 'attempt', 'fence', 'version', 'created_at', 'updated_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_tool_call'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_tool_call is missing column(s) required by ai.ai_tool_call: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_tool_call;
-    INSERT INTO platform.ai_tool_call
-        SELECT * FROM ai.ai_tool_call
+    INSERT INTO platform.ai_tool_call ("tenant_id", "action_id", "member_id", "run_id", "tool_name", "tool_version", "args", "args_hash", "target", "operation_key", "approval_version", "state", "permit_id", "permit_operation", "sender_stopped", "result", "source_refs", "provider_request_id", "external_id", "attempt", "fence", "version", "created_at", "updated_at")
+        SELECT "tenant_id", "action_id", "member_id", "run_id", "tool_name", "tool_version", "args", "args_hash", "target", "operation_key", "approval_version", "state", "permit_id", "permit_operation", "sender_stopped", "result", "source_refs", "provider_request_id", "external_id", "attempt", "fence", "version", "created_at", "updated_at" FROM ai.ai_tool_call
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_tool_call;
 
@@ -1191,10 +1041,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_upload_intent')
@@ -1202,24 +1049,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_upload_intent';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_upload_intent';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_upload_intent -> platform.ai_upload_intent: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'member_id', 'idempotency_key', 'request_hash', 'doc_id', 'upload_id', 'version_id', 'object_key', 'state', 'sha256', 'size_bytes', 'created_at', 'updated_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_upload_intent'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_upload_intent is missing column(s) required by ai.ai_upload_intent: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_upload_intent;
-    INSERT INTO platform.ai_upload_intent
-        SELECT * FROM ai.ai_upload_intent
+    INSERT INTO platform.ai_upload_intent ("tenant_id", "member_id", "idempotency_key", "request_hash", "doc_id", "upload_id", "version_id", "object_key", "state", "sha256", "size_bytes", "created_at", "updated_at")
+        SELECT "tenant_id", "member_id", "idempotency_key", "request_hash", "doc_id", "upload_id", "version_id", "object_key", "state", "sha256", "size_bytes", "created_at", "updated_at" FROM ai.ai_upload_intent
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_upload_intent;
 
@@ -1237,10 +1081,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'ai_usage_ledger')
@@ -1248,24 +1089,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'ai_usage_ledger';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_usage_ledger';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.ai_usage_ledger -> platform.ai_usage_ledger: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'ledger_id', 'member_id', 'run_id', 'feature', 'quantity', 'created_at']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_usage_ledger'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_usage_ledger is missing column(s) required by ai.ai_usage_ledger: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.ai_usage_ledger;
-    INSERT INTO platform.ai_usage_ledger
-        SELECT * FROM ai.ai_usage_ledger
+    INSERT INTO platform.ai_usage_ledger ("tenant_id", "ledger_id", "member_id", "run_id", "feature", "quantity", "created_at")
+        SELECT "tenant_id", "ledger_id", "member_id", "run_id", "feature", "quantity", "created_at" FROM ai.ai_usage_ledger
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_usage_ledger;
 
@@ -1283,10 +1121,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 'outbox_event')
@@ -1294,24 +1129,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 'outbox_event';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'outbox_event';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.outbox_event -> platform.outbox_event: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['tenant_id', 'event_id', 'run_id', 'event_type', 'payload', 'state', 'created_at', 'published_at', 'attempt_count', 'next_attempt_at', 'locked_by', 'locked_until', 'last_error', 'seq', 'schema_version']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'outbox_event'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.outbox_event is missing column(s) required by ai.outbox_event: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.outbox_event;
-    INSERT INTO platform.outbox_event
-        SELECT * FROM ai.outbox_event
+    INSERT INTO platform.outbox_event ("tenant_id", "event_id", "run_id", "event_type", "payload", "state", "created_at", "published_at", "attempt_count", "next_attempt_at", "locked_by", "locked_until", "last_error", "seq", "schema_version")
+        SELECT "tenant_id", "event_id", "run_id", "event_type", "payload", "state", "created_at", "published_at", "attempt_count", "next_attempt_at", "locked_by", "locked_until", "last_error", "seq", "schema_version" FROM ai.outbox_event
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.outbox_event;
 
@@ -1329,10 +1161,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_agent_context_compaction')
@@ -1340,24 +1169,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_agent_context_compaction';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_agent_context_compaction';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_agent_context_compaction -> platform.ai_agent_context_compaction: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'user_id', 'conversation_id', 'generation', 'summary', 'material_msg_count', 'material_chars', 'summary_chars', 'context_chars_before', 'context_chars_after', 'create_time', 'tenant_id', 'member_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_agent_context_compaction'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_agent_context_compaction is missing column(s) required by ai.t_agent_context_compaction: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_agent_context_compaction;
-    INSERT INTO platform.ai_agent_context_compaction
-        SELECT * FROM ai.t_agent_context_compaction
+    INSERT INTO platform.ai_agent_context_compaction ("id", "user_id", "conversation_id", "generation", "summary", "material_msg_count", "material_chars", "summary_chars", "context_chars_before", "context_chars_after", "create_time", "tenant_id", "member_id")
+        SELECT "id", "user_id", "conversation_id", "generation", "summary", "material_msg_count", "material_chars", "summary_chars", "context_chars_before", "context_chars_after", "create_time", "tenant_id", "member_id" FROM ai.t_agent_context_compaction
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_agent_context_compaction;
 
@@ -1375,10 +1201,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_agent_conversation')
@@ -1386,24 +1209,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_agent_conversation';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_agent_conversation';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_agent_conversation -> platform.ai_agent_conversation: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'conversation_id', 'user_id', 'title', 'last_time', 'create_time', 'update_time', 'deleted', 'tenant_id', 'member_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_agent_conversation'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_agent_conversation is missing column(s) required by ai.t_agent_conversation: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_agent_conversation;
-    INSERT INTO platform.ai_agent_conversation
-        SELECT * FROM ai.t_agent_conversation
+    INSERT INTO platform.ai_agent_conversation ("id", "conversation_id", "user_id", "title", "last_time", "create_time", "update_time", "deleted", "tenant_id", "member_id")
+        SELECT "id", "conversation_id", "user_id", "title", "last_time", "create_time", "update_time", "deleted", "tenant_id", "member_id" FROM ai.t_agent_conversation
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_agent_conversation;
 
@@ -1421,10 +1241,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_agent_memory')
@@ -1432,24 +1249,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_agent_memory';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_agent_memory';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_agent_memory -> platform.ai_agent_memory: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'user_id', 'content', 'source_type', 'invalid_at', 'superseded_by', 'create_time', 'tenant_id', 'member_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_agent_memory'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_agent_memory is missing column(s) required by ai.t_agent_memory: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_agent_memory;
-    INSERT INTO platform.ai_agent_memory
-        SELECT * FROM ai.t_agent_memory
+    INSERT INTO platform.ai_agent_memory ("id", "user_id", "content", "source_type", "invalid_at", "superseded_by", "create_time", "tenant_id", "member_id")
+        SELECT "id", "user_id", "content", "source_type", "invalid_at", "superseded_by", "create_time", "tenant_id", "member_id" FROM ai.t_agent_memory
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_agent_memory;
 
@@ -1467,10 +1281,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_agent_memory_control')
@@ -1478,24 +1289,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_agent_memory_control';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_agent_memory_control';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_agent_memory_control -> platform.ai_agent_memory_control: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['user_id', 'revision', 'create_time', 'update_time', 'tenant_id', 'member_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_agent_memory_control'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_agent_memory_control is missing column(s) required by ai.t_agent_memory_control: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_agent_memory_control;
-    INSERT INTO platform.ai_agent_memory_control
-        SELECT * FROM ai.t_agent_memory_control
+    INSERT INTO platform.ai_agent_memory_control ("user_id", "revision", "create_time", "update_time", "tenant_id", "member_id")
+        SELECT "user_id", "revision", "create_time", "update_time", "tenant_id", "member_id" FROM ai.t_agent_memory_control
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_agent_memory_control;
 
@@ -1513,10 +1321,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_agent_memory_extraction')
@@ -1524,24 +1329,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_agent_memory_extraction';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_agent_memory_extraction';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_agent_memory_extraction -> platform.ai_agent_memory_extraction: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'user_id', 'conversation_id', 'from_message_id', 'to_message_id', 'status', 'trigger_type', 'decision_count', 'attempt_count', 'create_time', 'settle_time', 'tenant_id', 'member_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_agent_memory_extraction'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_agent_memory_extraction is missing column(s) required by ai.t_agent_memory_extraction: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_agent_memory_extraction;
-    INSERT INTO platform.ai_agent_memory_extraction
-        SELECT * FROM ai.t_agent_memory_extraction
+    INSERT INTO platform.ai_agent_memory_extraction ("id", "user_id", "conversation_id", "from_message_id", "to_message_id", "status", "trigger_type", "decision_count", "attempt_count", "create_time", "settle_time", "tenant_id", "member_id")
+        SELECT "id", "user_id", "conversation_id", "from_message_id", "to_message_id", "status", "trigger_type", "decision_count", "attempt_count", "create_time", "settle_time", "tenant_id", "member_id" FROM ai.t_agent_memory_extraction
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_agent_memory_extraction;
 
@@ -1559,10 +1361,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_agent_message')
@@ -1570,24 +1369,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_agent_message';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_agent_message';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_agent_message -> platform.ai_agent_message: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'conversation_id', 'user_id', 'role', 'content', 'thinking_content', 'blocks', 'reply_to_message_id', 'message_status', 'duration_ms', 'create_time', 'update_time', 'deleted', 'tenant_id', 'member_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_agent_message'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_agent_message is missing column(s) required by ai.t_agent_message: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_agent_message;
-    INSERT INTO platform.ai_agent_message
-        SELECT * FROM ai.t_agent_message
+    INSERT INTO platform.ai_agent_message ("id", "conversation_id", "user_id", "role", "content", "thinking_content", "blocks", "reply_to_message_id", "message_status", "duration_ms", "create_time", "update_time", "deleted", "tenant_id", "member_id")
+        SELECT "id", "conversation_id", "user_id", "role", "content", "thinking_content", "blocks", "reply_to_message_id", "message_status", "duration_ms", "create_time", "update_time", "deleted", "tenant_id", "member_id" FROM ai.t_agent_message
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_agent_message;
 
@@ -1605,10 +1401,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_agent_profile')
@@ -1616,24 +1409,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_agent_profile';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_agent_profile';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_agent_profile -> platform.ai_agent_profile: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'name', 'description', 'avatar', 'builtin', 'active', 'create_by', 'update_by', 'create_time', 'update_time', 'deleted', 'tenant_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_agent_profile'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_agent_profile is missing column(s) required by ai.t_agent_profile: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_agent_profile;
-    INSERT INTO platform.ai_agent_profile
-        SELECT * FROM ai.t_agent_profile
+    INSERT INTO platform.ai_agent_profile ("id", "name", "description", "avatar", "builtin", "active", "create_by", "update_by", "create_time", "update_time", "deleted", "tenant_id")
+        SELECT "id", "name", "description", "avatar", "builtin", "active", "create_by", "update_by", "create_time", "update_time", "deleted", "tenant_id" FROM ai.t_agent_profile
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_agent_profile;
 
@@ -1651,10 +1441,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_agent_prompt')
@@ -1662,24 +1449,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_agent_prompt';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_agent_prompt';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_agent_prompt -> platform.ai_agent_prompt: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'agent_id', 'slot_key', 'content', 'create_by', 'update_by', 'create_time', 'update_time', 'deleted', 'tenant_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_agent_prompt'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_agent_prompt is missing column(s) required by ai.t_agent_prompt: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_agent_prompt;
-    INSERT INTO platform.ai_agent_prompt
-        SELECT * FROM ai.t_agent_prompt
+    INSERT INTO platform.ai_agent_prompt ("id", "agent_id", "slot_key", "content", "create_by", "update_by", "create_time", "update_time", "deleted", "tenant_id")
+        SELECT "id", "agent_id", "slot_key", "content", "create_by", "update_by", "create_time", "update_time", "deleted", "tenant_id" FROM ai.t_agent_prompt
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_agent_prompt;
 
@@ -1697,10 +1481,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_agent_skill')
@@ -1708,24 +1489,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_agent_skill';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_agent_skill';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_agent_skill -> platform.ai_agent_skill: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'skill_code', 'name', 'description', 'content', 'tool_ids', 'sort_order', 'enabled', 'create_by', 'update_by', 'create_time', 'update_time', 'deleted', 'tenant_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_agent_skill'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_agent_skill is missing column(s) required by ai.t_agent_skill: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_agent_skill;
-    INSERT INTO platform.ai_agent_skill
-        SELECT * FROM ai.t_agent_skill
+    INSERT INTO platform.ai_agent_skill ("id", "skill_code", "name", "description", "content", "tool_ids", "sort_order", "enabled", "create_by", "update_by", "create_time", "update_time", "deleted", "tenant_id")
+        SELECT "id", "skill_code", "name", "description", "content", "tool_ids", "sort_order", "enabled", "create_by", "update_by", "create_time", "update_time", "deleted", "tenant_id" FROM ai.t_agent_skill
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_agent_skill;
 
@@ -1743,10 +1521,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_agent_state')
@@ -1754,24 +1529,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_agent_state';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_agent_state';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_agent_state -> platform.ai_agent_state: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['user_id', 'session_id', 'state_key', 'payload', 'create_time', 'update_time', 'tenant_id', 'member_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_agent_state'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_agent_state is missing column(s) required by ai.t_agent_state: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_agent_state;
-    INSERT INTO platform.ai_agent_state
-        SELECT * FROM ai.t_agent_state
+    INSERT INTO platform.ai_agent_state ("user_id", "session_id", "state_key", "payload", "create_time", "update_time", "tenant_id", "member_id")
+        SELECT "user_id", "session_id", "state_key", "payload", "create_time", "update_time", "tenant_id", "member_id" FROM ai.t_agent_state
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_agent_state;
 
@@ -1789,10 +1561,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_biz_change_log')
@@ -1800,24 +1569,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_biz_change_log';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_biz_change_log';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_biz_change_log -> platform.ai_biz_change_log: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'biz_type', 'biz_id', 'operation_type', 'action_desc', 'before_snapshot', 'after_snapshot', 'change_diff', 'operator_id', 'operator_name', 'operator_role', 'success', 'error_message', 'class_name', 'method_name', 'ip', 'user_agent', 'create_time', 'tenant_id', 'member_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_biz_change_log'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_biz_change_log is missing column(s) required by ai.t_biz_change_log: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_biz_change_log;
-    INSERT INTO platform.ai_biz_change_log
-        SELECT * FROM ai.t_biz_change_log
+    INSERT INTO platform.ai_biz_change_log ("id", "biz_type", "biz_id", "operation_type", "action_desc", "before_snapshot", "after_snapshot", "change_diff", "operator_id", "operator_name", "operator_role", "success", "error_message", "class_name", "method_name", "ip", "user_agent", "create_time", "tenant_id", "member_id")
+        SELECT "id", "biz_type", "biz_id", "operation_type", "action_desc", "before_snapshot", "after_snapshot", "change_diff", "operator_id", "operator_name", "operator_role", "success", "error_message", "class_name", "method_name", "ip", "user_agent", "create_time", "tenant_id", "member_id" FROM ai.t_biz_change_log
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_biz_change_log;
 
@@ -1835,10 +1601,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_conversation')
@@ -1846,24 +1609,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_conversation';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_conversation';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_conversation -> platform.ai_conversation: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'conversation_id', 'user_id', 'title', 'last_time', 'create_time', 'update_time', 'deleted', 'tenant_id', 'member_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_conversation'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_conversation is missing column(s) required by ai.t_conversation: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_conversation;
-    INSERT INTO platform.ai_conversation
-        SELECT * FROM ai.t_conversation
+    INSERT INTO platform.ai_conversation ("id", "conversation_id", "user_id", "title", "last_time", "create_time", "update_time", "deleted", "tenant_id", "member_id")
+        SELECT "id", "conversation_id", "user_id", "title", "last_time", "create_time", "update_time", "deleted", "tenant_id", "member_id" FROM ai.t_conversation
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_conversation;
 
@@ -1881,10 +1641,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_conversation_summary')
@@ -1892,24 +1649,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_conversation_summary';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_conversation_summary';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_conversation_summary -> platform.ai_conversation_summary: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'conversation_id', 'user_id', 'last_message_id', 'content', 'create_time', 'update_time', 'deleted', 'tenant_id', 'member_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_conversation_summary'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_conversation_summary is missing column(s) required by ai.t_conversation_summary: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_conversation_summary;
-    INSERT INTO platform.ai_conversation_summary
-        SELECT * FROM ai.t_conversation_summary
+    INSERT INTO platform.ai_conversation_summary ("id", "conversation_id", "user_id", "last_message_id", "content", "create_time", "update_time", "deleted", "tenant_id", "member_id")
+        SELECT "id", "conversation_id", "user_id", "last_message_id", "content", "create_time", "update_time", "deleted", "tenant_id", "member_id" FROM ai.t_conversation_summary
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_conversation_summary;
 
@@ -1927,10 +1681,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_ingestion_pipeline')
@@ -1938,24 +1689,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_ingestion_pipeline';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_ingestion_pipeline';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_ingestion_pipeline -> platform.ai_ingestion_pipeline: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'name', 'description', 'created_by', 'updated_by', 'create_time', 'update_time', 'deleted', 'tenant_id', 'owner_member_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_ingestion_pipeline'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_ingestion_pipeline is missing column(s) required by ai.t_ingestion_pipeline: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_ingestion_pipeline;
-    INSERT INTO platform.ai_ingestion_pipeline
-        SELECT * FROM ai.t_ingestion_pipeline
+    INSERT INTO platform.ai_ingestion_pipeline ("id", "name", "description", "created_by", "updated_by", "create_time", "update_time", "deleted", "tenant_id", "owner_member_id")
+        SELECT "id", "name", "description", "created_by", "updated_by", "create_time", "update_time", "deleted", "tenant_id", "owner_member_id" FROM ai.t_ingestion_pipeline
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_ingestion_pipeline;
 
@@ -1973,10 +1721,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_ingestion_pipeline_node')
@@ -1984,24 +1729,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_ingestion_pipeline_node';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_ingestion_pipeline_node';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_ingestion_pipeline_node -> platform.ai_ingestion_pipeline_node: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'pipeline_id', 'node_id', 'node_type', 'next_node_id', 'settings_json', 'condition_json', 'created_by', 'updated_by', 'create_time', 'update_time', 'deleted', 'tenant_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_ingestion_pipeline_node'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_ingestion_pipeline_node is missing column(s) required by ai.t_ingestion_pipeline_node: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_ingestion_pipeline_node;
-    INSERT INTO platform.ai_ingestion_pipeline_node
-        SELECT * FROM ai.t_ingestion_pipeline_node
+    INSERT INTO platform.ai_ingestion_pipeline_node ("id", "pipeline_id", "node_id", "node_type", "next_node_id", "settings_json", "condition_json", "created_by", "updated_by", "create_time", "update_time", "deleted", "tenant_id")
+        SELECT "id", "pipeline_id", "node_id", "node_type", "next_node_id", "settings_json", "condition_json", "created_by", "updated_by", "create_time", "update_time", "deleted", "tenant_id" FROM ai.t_ingestion_pipeline_node
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_ingestion_pipeline_node;
 
@@ -2019,10 +1761,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_ingestion_task')
@@ -2030,24 +1769,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_ingestion_task';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_ingestion_task';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_ingestion_task -> platform.ai_ingestion_task: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'pipeline_id', 'source_type', 'source_location', 'source_file_name', 'status', 'chunk_count', 'error_message', 'logs_json', 'metadata_json', 'started_at', 'completed_at', 'created_by', 'updated_by', 'create_time', 'update_time', 'deleted', 'tenant_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_ingestion_task'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_ingestion_task is missing column(s) required by ai.t_ingestion_task: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_ingestion_task;
-    INSERT INTO platform.ai_ingestion_task
-        SELECT * FROM ai.t_ingestion_task
+    INSERT INTO platform.ai_ingestion_task ("id", "pipeline_id", "source_type", "source_location", "source_file_name", "status", "chunk_count", "error_message", "logs_json", "metadata_json", "started_at", "completed_at", "created_by", "updated_by", "create_time", "update_time", "deleted", "tenant_id")
+        SELECT "id", "pipeline_id", "source_type", "source_location", "source_file_name", "status", "chunk_count", "error_message", "logs_json", "metadata_json", "started_at", "completed_at", "created_by", "updated_by", "create_time", "update_time", "deleted", "tenant_id" FROM ai.t_ingestion_task
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_ingestion_task;
 
@@ -2065,10 +1801,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_ingestion_task_node')
@@ -2076,24 +1809,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_ingestion_task_node';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_ingestion_task_node';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_ingestion_task_node -> platform.ai_ingestion_task_node: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'task_id', 'pipeline_id', 'node_id', 'node_type', 'node_order', 'status', 'duration_ms', 'message', 'error_message', 'output_json', 'create_time', 'update_time', 'deleted', 'tenant_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_ingestion_task_node'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_ingestion_task_node is missing column(s) required by ai.t_ingestion_task_node: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_ingestion_task_node;
-    INSERT INTO platform.ai_ingestion_task_node
-        SELECT * FROM ai.t_ingestion_task_node
+    INSERT INTO platform.ai_ingestion_task_node ("id", "task_id", "pipeline_id", "node_id", "node_type", "node_order", "status", "duration_ms", "message", "error_message", "output_json", "create_time", "update_time", "deleted", "tenant_id")
+        SELECT "id", "task_id", "pipeline_id", "node_id", "node_type", "node_order", "status", "duration_ms", "message", "error_message", "output_json", "create_time", "update_time", "deleted", "tenant_id" FROM ai.t_ingestion_task_node
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_ingestion_task_node;
 
@@ -2111,10 +1841,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_intent_node')
@@ -2122,24 +1849,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_intent_node';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_intent_node';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_intent_node -> platform.ai_intent_node: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'kb_id', 'intent_code', 'name', 'level', 'parent_code', 'description', 'examples', 'collection_name', 'collection_names', 'top_k', 'mcp_tool_id', 'require_confirm', 'kind', 'prompt_snippet', 'prompt_template', 'sort_order', 'enabled', 'create_by', 'update_by', 'create_time', 'update_time', 'deleted', 'tenant_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_intent_node'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_intent_node is missing column(s) required by ai.t_intent_node: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_intent_node;
-    INSERT INTO platform.ai_intent_node
-        SELECT * FROM ai.t_intent_node
+    INSERT INTO platform.ai_intent_node ("id", "kb_id", "intent_code", "name", "level", "parent_code", "description", "examples", "collection_name", "collection_names", "top_k", "mcp_tool_id", "require_confirm", "kind", "prompt_snippet", "prompt_template", "sort_order", "enabled", "create_by", "update_by", "create_time", "update_time", "deleted", "tenant_id")
+        SELECT "id", "kb_id", "intent_code", "name", "level", "parent_code", "description", "examples", "collection_name", "collection_names", "top_k", "mcp_tool_id", "require_confirm", "kind", "prompt_snippet", "prompt_template", "sort_order", "enabled", "create_by", "update_by", "create_time", "update_time", "deleted", "tenant_id" FROM ai.t_intent_node
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_intent_node;
 
@@ -2157,10 +1881,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_knowledge_base')
@@ -2168,24 +1889,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_knowledge_base';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_knowledge_base';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_knowledge_base -> platform.ai_knowledge_base: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'name', 'embedding_model', 'collection_name', 'created_by', 'updated_by', 'create_time', 'update_time', 'deleted', 'tenant_id', 'owner_member_id', 'owner_dept_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_knowledge_base'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_knowledge_base is missing column(s) required by ai.t_knowledge_base: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_knowledge_base;
-    INSERT INTO platform.ai_knowledge_base
-        SELECT * FROM ai.t_knowledge_base
+    INSERT INTO platform.ai_knowledge_base ("id", "name", "embedding_model", "collection_name", "created_by", "updated_by", "create_time", "update_time", "deleted", "tenant_id", "owner_member_id", "owner_dept_id")
+        SELECT "id", "name", "embedding_model", "collection_name", "created_by", "updated_by", "create_time", "update_time", "deleted", "tenant_id", "owner_member_id", "owner_dept_id" FROM ai.t_knowledge_base
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_knowledge_base;
 
@@ -2203,10 +1921,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_knowledge_chunk')
@@ -2214,24 +1929,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_knowledge_chunk';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_knowledge_chunk';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_knowledge_chunk -> platform.ai_knowledge_chunk: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'kb_id', 'doc_id', 'chunk_index', 'content', 'content_hash', 'char_count', 'token_count', 'embedding_text', 'enabled', 'created_by', 'updated_by', 'create_time', 'update_time', 'deleted', 'tenant_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_knowledge_chunk'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_knowledge_chunk is missing column(s) required by ai.t_knowledge_chunk: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_knowledge_chunk;
-    INSERT INTO platform.ai_knowledge_chunk
-        SELECT * FROM ai.t_knowledge_chunk
+    INSERT INTO platform.ai_knowledge_chunk ("id", "kb_id", "doc_id", "chunk_index", "content", "content_hash", "char_count", "token_count", "embedding_text", "enabled", "created_by", "updated_by", "create_time", "update_time", "deleted", "tenant_id")
+        SELECT "id", "kb_id", "doc_id", "chunk_index", "content", "content_hash", "char_count", "token_count", "embedding_text", "enabled", "created_by", "updated_by", "create_time", "update_time", "deleted", "tenant_id" FROM ai.t_knowledge_chunk
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_knowledge_chunk;
 
@@ -2249,10 +1961,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_knowledge_document')
@@ -2260,24 +1969,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_knowledge_document';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_knowledge_document';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_knowledge_document -> platform.ai_knowledge_document: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'kb_id', 'doc_name', 'enabled', 'chunk_count', 'file_url', 'file_type', 'mime_type', 'file_size', 'process_mode', 'status', 'source_type', 'source_location', 'schedule_enabled', 'schedule_cron', 'ingestion_spec', 'pipeline_id', 'created_by', 'updated_by', 'create_time', 'update_time', 'deleted', 'tenant_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_knowledge_document'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_knowledge_document is missing column(s) required by ai.t_knowledge_document: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_knowledge_document;
-    INSERT INTO platform.ai_knowledge_document
-        SELECT * FROM ai.t_knowledge_document
+    INSERT INTO platform.ai_knowledge_document ("id", "kb_id", "doc_name", "enabled", "chunk_count", "file_url", "file_type", "mime_type", "file_size", "process_mode", "status", "source_type", "source_location", "schedule_enabled", "schedule_cron", "ingestion_spec", "pipeline_id", "created_by", "updated_by", "create_time", "update_time", "deleted", "tenant_id")
+        SELECT "id", "kb_id", "doc_name", "enabled", "chunk_count", "file_url", "file_type", "mime_type", "file_size", "process_mode", "status", "source_type", "source_location", "schedule_enabled", "schedule_cron", "ingestion_spec", "pipeline_id", "created_by", "updated_by", "create_time", "update_time", "deleted", "tenant_id" FROM ai.t_knowledge_document
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_knowledge_document;
 
@@ -2295,10 +2001,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_knowledge_document_chunk_log')
@@ -2306,24 +2009,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_knowledge_document_chunk_log';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_knowledge_document_chunk_log';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_knowledge_document_chunk_log -> platform.ai_knowledge_document_chunk_log: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'doc_id', 'status', 'process_mode', 'parse_profile', 'pipeline_id', 'extract_duration', 'chunk_duration', 'embed_duration', 'persist_duration', 'total_duration', 'chunk_count', 'error_message', 'start_time', 'end_time', 'create_time', 'update_time', 'tenant_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_knowledge_document_chunk_log'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_knowledge_document_chunk_log is missing column(s) required by ai.t_knowledge_document_chunk_log: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_knowledge_document_chunk_log;
-    INSERT INTO platform.ai_knowledge_document_chunk_log
-        SELECT * FROM ai.t_knowledge_document_chunk_log
+    INSERT INTO platform.ai_knowledge_document_chunk_log ("id", "doc_id", "status", "process_mode", "parse_profile", "pipeline_id", "extract_duration", "chunk_duration", "embed_duration", "persist_duration", "total_duration", "chunk_count", "error_message", "start_time", "end_time", "create_time", "update_time", "tenant_id")
+        SELECT "id", "doc_id", "status", "process_mode", "parse_profile", "pipeline_id", "extract_duration", "chunk_duration", "embed_duration", "persist_duration", "total_duration", "chunk_count", "error_message", "start_time", "end_time", "create_time", "update_time", "tenant_id" FROM ai.t_knowledge_document_chunk_log
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_knowledge_document_chunk_log;
 
@@ -2341,10 +2041,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_knowledge_document_schedule')
@@ -2352,24 +2049,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_knowledge_document_schedule';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_knowledge_document_schedule';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_knowledge_document_schedule -> platform.ai_knowledge_document_schedule: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'doc_id', 'kb_id', 'cron_expr', 'enabled', 'next_run_time', 'last_run_time', 'last_success_time', 'last_status', 'last_error', 'last_etag', 'last_modified', 'last_content_hash', 'lock_owner', 'lock_until', 'create_time', 'update_time', 'tenant_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_knowledge_document_schedule'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_knowledge_document_schedule is missing column(s) required by ai.t_knowledge_document_schedule: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_knowledge_document_schedule;
-    INSERT INTO platform.ai_knowledge_document_schedule
-        SELECT * FROM ai.t_knowledge_document_schedule
+    INSERT INTO platform.ai_knowledge_document_schedule ("id", "doc_id", "kb_id", "cron_expr", "enabled", "next_run_time", "last_run_time", "last_success_time", "last_status", "last_error", "last_etag", "last_modified", "last_content_hash", "lock_owner", "lock_until", "create_time", "update_time", "tenant_id")
+        SELECT "id", "doc_id", "kb_id", "cron_expr", "enabled", "next_run_time", "last_run_time", "last_success_time", "last_status", "last_error", "last_etag", "last_modified", "last_content_hash", "lock_owner", "lock_until", "create_time", "update_time", "tenant_id" FROM ai.t_knowledge_document_schedule
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_knowledge_document_schedule;
 
@@ -2387,10 +2081,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_knowledge_document_schedule_exec')
@@ -2398,24 +2089,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_knowledge_document_schedule_exec';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_knowledge_document_schedule_exec';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_knowledge_document_schedule_exec -> platform.ai_knowledge_document_schedule_exec: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'schedule_id', 'doc_id', 'kb_id', 'status', 'message', 'start_time', 'end_time', 'file_name', 'file_size', 'content_hash', 'etag', 'last_modified', 'create_time', 'update_time', 'tenant_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_knowledge_document_schedule_exec'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_knowledge_document_schedule_exec is missing column(s) required by ai.t_knowledge_document_schedule_exec: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_knowledge_document_schedule_exec;
-    INSERT INTO platform.ai_knowledge_document_schedule_exec
-        SELECT * FROM ai.t_knowledge_document_schedule_exec
+    INSERT INTO platform.ai_knowledge_document_schedule_exec ("id", "schedule_id", "doc_id", "kb_id", "status", "message", "start_time", "end_time", "file_name", "file_size", "content_hash", "etag", "last_modified", "create_time", "update_time", "tenant_id")
+        SELECT "id", "schedule_id", "doc_id", "kb_id", "status", "message", "start_time", "end_time", "file_name", "file_size", "content_hash", "etag", "last_modified", "create_time", "update_time", "tenant_id" FROM ai.t_knowledge_document_schedule_exec
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_knowledge_document_schedule_exec;
 
@@ -2433,10 +2121,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_knowledge_vector')
@@ -2444,24 +2129,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_knowledge_vector';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_knowledge_vector';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_knowledge_vector -> platform.ai_knowledge_vector: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'collection_name', 'content', 'metadata', 'embedding', 'tenant_id', 'deleted', 'document_id', 'doc_version']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_knowledge_vector'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_knowledge_vector is missing column(s) required by ai.t_knowledge_vector: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_knowledge_vector;
-    INSERT INTO platform.ai_knowledge_vector
-        SELECT * FROM ai.t_knowledge_vector
+    INSERT INTO platform.ai_knowledge_vector ("id", "collection_name", "content", "metadata", "embedding", "tenant_id", "deleted", "document_id", "doc_version")
+        SELECT "id", "collection_name", "content", "metadata", "embedding", "tenant_id", "deleted", "document_id", "doc_version" FROM ai.t_knowledge_vector
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_knowledge_vector;
 
@@ -2479,10 +2161,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_message')
@@ -2490,24 +2169,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_message';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_message';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_message -> platform.ai_message: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'conversation_id', 'user_id', 'role', 'content', 'thinking_content', 'thinking_duration', 'sources', 'recommended_questions', 'retrieved_chunks', 'reply_to_message_id', 'message_status', 'create_time', 'update_time', 'deleted', 'tenant_id', 'member_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_message'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_message is missing column(s) required by ai.t_message: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_message;
-    INSERT INTO platform.ai_message
-        SELECT * FROM ai.t_message
+    INSERT INTO platform.ai_message ("id", "conversation_id", "user_id", "role", "content", "thinking_content", "thinking_duration", "sources", "recommended_questions", "retrieved_chunks", "reply_to_message_id", "message_status", "create_time", "update_time", "deleted", "tenant_id", "member_id")
+        SELECT "id", "conversation_id", "user_id", "role", "content", "thinking_content", "thinking_duration", "sources", "recommended_questions", "retrieved_chunks", "reply_to_message_id", "message_status", "create_time", "update_time", "deleted", "tenant_id", "member_id" FROM ai.t_message
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_message;
 
@@ -2525,10 +2201,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_message_feedback')
@@ -2536,24 +2209,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_message_feedback';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_message_feedback';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_message_feedback -> platform.ai_message_feedback: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'message_id', 'conversation_id', 'user_id', 'vote', 'reason', 'comment', 'create_time', 'update_time', 'deleted', 'tenant_id', 'member_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_message_feedback'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_message_feedback is missing column(s) required by ai.t_message_feedback: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_message_feedback;
-    INSERT INTO platform.ai_message_feedback
-        SELECT * FROM ai.t_message_feedback
+    INSERT INTO platform.ai_message_feedback ("id", "message_id", "conversation_id", "user_id", "vote", "reason", "comment", "create_time", "update_time", "deleted", "tenant_id", "member_id")
+        SELECT "id", "message_id", "conversation_id", "user_id", "vote", "reason", "comment", "create_time", "update_time", "deleted", "tenant_id", "member_id" FROM ai.t_message_feedback
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_message_feedback;
 
@@ -2571,10 +2241,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_query_term_mapping')
@@ -2582,24 +2249,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_query_term_mapping';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_query_term_mapping';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_query_term_mapping -> platform.ai_query_term_mapping: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'domain', 'source_term', 'target_term', 'match_type', 'priority', 'enabled', 'remark', 'create_by', 'update_by', 'create_time', 'update_time', 'deleted', 'tenant_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_query_term_mapping'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_query_term_mapping is missing column(s) required by ai.t_query_term_mapping: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_query_term_mapping;
-    INSERT INTO platform.ai_query_term_mapping
-        SELECT * FROM ai.t_query_term_mapping
+    INSERT INTO platform.ai_query_term_mapping ("id", "domain", "source_term", "target_term", "match_type", "priority", "enabled", "remark", "create_by", "update_by", "create_time", "update_time", "deleted", "tenant_id")
+        SELECT "id", "domain", "source_term", "target_term", "match_type", "priority", "enabled", "remark", "create_by", "update_by", "create_time", "update_time", "deleted", "tenant_id" FROM ai.t_query_term_mapping
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_query_term_mapping;
 
@@ -2617,10 +2281,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_rag_trace_node')
@@ -2628,24 +2289,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_rag_trace_node';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_rag_trace_node';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_rag_trace_node -> platform.ai_rag_trace_node: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'trace_id', 'node_id', 'parent_node_id', 'depth', 'node_type', 'node_name', 'class_name', 'method_name', 'status', 'error_message', 'start_time', 'end_time', 'duration_ms', 'extra_data', 'create_time', 'update_time', 'deleted', 'tenant_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_rag_trace_node'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_rag_trace_node is missing column(s) required by ai.t_rag_trace_node: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_rag_trace_node;
-    INSERT INTO platform.ai_rag_trace_node
-        SELECT * FROM ai.t_rag_trace_node
+    INSERT INTO platform.ai_rag_trace_node ("id", "trace_id", "node_id", "parent_node_id", "depth", "node_type", "node_name", "class_name", "method_name", "status", "error_message", "start_time", "end_time", "duration_ms", "extra_data", "create_time", "update_time", "deleted", "tenant_id")
+        SELECT "id", "trace_id", "node_id", "parent_node_id", "depth", "node_type", "node_name", "class_name", "method_name", "status", "error_message", "start_time", "end_time", "duration_ms", "extra_data", "create_time", "update_time", "deleted", "tenant_id" FROM ai.t_rag_trace_node
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_rag_trace_node;
 
@@ -2663,10 +2321,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_rag_trace_run')
@@ -2674,24 +2329,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_rag_trace_run';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_rag_trace_run';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_rag_trace_run -> platform.ai_rag_trace_run: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'trace_id', 'trace_name', 'entry_method', 'conversation_id', 'task_id', 'user_id', 'status', 'error_message', 'start_time', 'end_time', 'duration_ms', 'extra_data', 'create_time', 'update_time', 'deleted', 'tenant_id', 'member_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_rag_trace_run'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_rag_trace_run is missing column(s) required by ai.t_rag_trace_run: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_rag_trace_run;
-    INSERT INTO platform.ai_rag_trace_run
-        SELECT * FROM ai.t_rag_trace_run
+    INSERT INTO platform.ai_rag_trace_run ("id", "trace_id", "trace_name", "entry_method", "conversation_id", "task_id", "user_id", "status", "error_message", "start_time", "end_time", "duration_ms", "extra_data", "create_time", "update_time", "deleted", "tenant_id", "member_id")
+        SELECT "id", "trace_id", "trace_name", "entry_method", "conversation_id", "task_id", "user_id", "status", "error_message", "start_time", "end_time", "duration_ms", "extra_data", "create_time", "update_time", "deleted", "tenant_id", "member_id" FROM ai.t_rag_trace_run
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_rag_trace_run;
 
@@ -2709,10 +2361,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_sample_question')
@@ -2720,24 +2369,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_sample_question';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_sample_question';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_sample_question -> platform.ai_sample_question: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'title', 'description', 'question', 'create_time', 'update_time', 'deleted', 'tenant_id']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_sample_question'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_sample_question is missing column(s) required by ai.t_sample_question: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_sample_question;
-    INSERT INTO platform.ai_sample_question
-        SELECT * FROM ai.t_sample_question
+    INSERT INTO platform.ai_sample_question ("id", "title", "description", "question", "create_time", "update_time", "deleted", "tenant_id")
+        SELECT "id", "title", "description", "question", "create_time", "update_time", "deleted", "tenant_id" FROM ai.t_sample_question
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_sample_question;
 
@@ -2755,10 +2401,7 @@ DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = 't_user')
@@ -2766,24 +2409,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = 't_user';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = 'ai_legacy_user';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.t_user -> platform.ai_legacy_user: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY['id', 'username', 'password', 'role', 'avatar', 'create_time', 'update_time', 'deleted']) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = 'ai_legacy_user'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.ai_legacy_user is missing column(s) required by ai.t_user: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.t_user;
-    INSERT INTO platform.ai_legacy_user
-        SELECT * FROM ai.t_user
+    INSERT INTO platform.ai_legacy_user ("id", "username", "password", "role", "avatar", "create_time", "update_time", "deleted")
+        SELECT "id", "username", "password", "role", "avatar", "create_time", "update_time", "deleted" FROM ai.t_user
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.ai_legacy_user;
 

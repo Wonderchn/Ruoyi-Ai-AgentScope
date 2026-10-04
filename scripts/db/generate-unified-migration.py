@@ -23,6 +23,8 @@ import os
 import re
 import sys
 
+from sql_lint import assert_no_orphan_comment_lines
+
 # Statements whose target object must be schema-qualified.
 QUALIFY = [
     (re.compile(r"(\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)(?!platform\.)", re.I), r"\1platform."),
@@ -68,11 +70,27 @@ def load_rename_map(table_map_path):
     return mapping
 
 
+# Suffixes PostgreSQL appends when it auto-names a constraint or index after its table.
+AUTO_NAME_SUFFIXES = ("pkey", "key", "fkey", "check", "idx")
+
+
 def rename_identifiers(sql, mapping):
-    """Whole-identifier replacement, longest name first so t_message_feedback wins over t_message."""
+    """Whole-identifier replacement, longest name first so t_message_feedback wins over t_message.
+
+    Also renames auto-generated constraint/index names derived from a renamed table.
+    PostgreSQL names an unnamed PRIMARY KEY `<table>_pkey`, a UNIQUE `<table>_<col>_key`, and
+    so on, so a migration that drops or alters such a constraint by name refers to the OLD
+    table's auto-generated name. Those references are not caught by the table rename itself
+    (the identifier continues with an underscore, so the table pattern's trailing boundary
+    does not match) and a real run fails with "constraint <old>_pkey does not exist".
+    """
     for old in sorted(mapping, key=len, reverse=True):
         sql = re.sub(r"(?<![\w.])%s(?![\w])" % re.escape(old), mapping[old], sql)
-    return sql
+    pattern = r"(?<![\w.])(%s)_(%s)(?![\w])" % (
+        "|".join(re.escape(o) for o in sorted(mapping, key=len, reverse=True)),
+        "|".join(AUTO_NAME_SUFFIXES),
+    )
+    return re.sub(pattern, lambda m: "%s_%s" % (mapping[m.group(1)], m.group(2)), sql)
 
 
 def qualify_targets(sql):
@@ -121,6 +139,7 @@ def main():
         chunks.append(body.rstrip() + "\n")
 
     out = "".join(chunks)
+    assert_no_orphan_comment_lines(out, out_path)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     open(out_path, "w", encoding="utf-8", newline="\n").write(out)
 

@@ -2178,7 +2178,7 @@ ALTER TABLE platform.ai_agent_state ALTER COLUMN tenant_id SET NOT NULL;
 ALTER TABLE platform.ai_agent_state ALTER COLUMN member_id  SET NOT NULL;
 ALTER TABLE platform.ai_agent_state ADD CONSTRAINT ck_t_agent_state_tenant CHECK (btrim(tenant_id) <> '');
 
-ALTER TABLE platform.ai_agent_state DROP CONSTRAINT t_agent_state_pkey;
+ALTER TABLE platform.ai_agent_state DROP CONSTRAINT ai_agent_state_pkey;
 ALTER TABLE platform.ai_agent_state ADD CONSTRAINT pk_t_agent_state
     PRIMARY KEY (tenant_id, member_id, session_id, state_key);
 -- user_id 不再参与键：它只是 20 位 legacy 展示引用，权威主体引用是 member_id。
@@ -2191,7 +2191,7 @@ ALTER TABLE platform.ai_agent_memory_control ALTER COLUMN tenant_id SET NOT NULL
 ALTER TABLE platform.ai_agent_memory_control ALTER COLUMN member_id  SET NOT NULL;
 ALTER TABLE platform.ai_agent_memory_control ADD CONSTRAINT ck_t_agent_memory_control_tenant CHECK (btrim(tenant_id) <> '');
 
-ALTER TABLE platform.ai_agent_memory_control DROP CONSTRAINT t_agent_memory_control_pkey;
+ALTER TABLE platform.ai_agent_memory_control DROP CONSTRAINT ai_agent_memory_control_pkey;
 ALTER TABLE platform.ai_agent_memory_control ADD CONSTRAINT pk_t_agent_memory_control
     PRIMARY KEY (tenant_id, member_id);
 

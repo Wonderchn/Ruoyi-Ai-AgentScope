@@ -20,6 +20,9 @@ import json
 import os
 import sys
 
+from sql_lint import assert_no_orphan_comment_lines
+from table_shape import parse_created_tables
+
 HEADER = """-- ---------------------------------------------------------------------------
 -- E2 unified AI domain: copy legacy `ai` schema rows into the unified tables.
 --
@@ -91,16 +94,36 @@ def load_pairs(table_map_path):
     return sorted(set(pairs))
 
 
+# Populated from the V7 migration: the unified shape as it stands when the copy runs. The
+# copy must name those columns explicitly rather than using SELECT *, so that a later
+# migration adding platform-side columns (V9's additive merges) does not make this
+# migration fail a shape equality check or silently shift columns.
+SHAPES = {}
+
+
+def column_literals(unified):
+    """The same column names as SQL string literals, for the guard's ARRAY[...]."""
+    cols = SHAPES.get(unified)
+    if not cols:
+        raise SystemExit("no parsed shape for platform.%s" % unified)
+    return ", ".join("'%s'" % c for c in cols)
+
+
+def column_list(unified):
+    cols = SHAPES.get(unified)
+    if not cols:
+        raise SystemExit("no parsed shape for platform.%s; pass the V7 migration so the "
+                         "copy can emit an explicit column list" % unified)
+    return ", ".join('"%s"' % c for c in cols)
+
+
 BLOCK = '''
 -- ===== {legacy} -> {unified} =====
 DO $$
 DECLARE
     copied bigint := 0;
     present bigint := 0;
-    legacy_cols int;
-    unified_cols int;
-    legacy_names text;
-    unified_names text;
+    missing text;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables
                    WHERE table_schema = 'ai' AND table_name = '{legacy}')
@@ -108,24 +131,21 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 列名与列数必须一致，否则拒绝复制（不做隐式列映射）
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO legacy_cols, legacy_names
-      FROM information_schema.columns
-     WHERE table_schema = 'ai' AND table_name = '{legacy}';
-    SELECT count(*), string_agg(column_name, ',' ORDER BY ordinal_position)
-      INTO unified_cols, unified_names
-      FROM information_schema.columns
-     WHERE table_schema = 'platform' AND table_name = '{unified}';
-
-    IF legacy_cols IS DISTINCT FROM unified_cols OR legacy_names IS DISTINCT FROM unified_names THEN
-        RAISE EXCEPTION 'column mismatch for ai.{legacy} -> platform.{unified}: legacy(%) unified(%)',
-            legacy_names, unified_names;
+    -- 复制使用显式列清单：既避免 SELECT * 的列序依赖，也让本迁移在后续版本给统一表
+    -- 追加列（V9 的平台侧合并列）之后仍然可重跑。
+    -- 守卫：清单里的每个列都必须在统一表中存在，否则拒绝复制而不是隐式错位。
+    SELECT string_agg(c, ', ') INTO missing
+      FROM unnest(ARRAY[{column_literals}]) AS c
+     WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'platform' AND table_name = '{unified}'
+                          AND column_name = c);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'unified table platform.{unified} is missing column(s) required by ai.{legacy}: %', missing;
     END IF;
 
     SELECT count(*) INTO copied FROM ai.{legacy};
-    INSERT INTO platform.{unified}
-        SELECT * FROM ai.{legacy}
+    INSERT INTO platform.{unified} ({columns})
+        SELECT {columns} FROM ai.{legacy}
         ON CONFLICT DO NOTHING;
     SELECT count(*) INTO present FROM platform.{unified};
 
@@ -141,18 +161,30 @@ END $$;
 
 
 def main():
-    map_path, out_path = sys.argv[1], sys.argv[2]
+    if len(sys.argv) < 4:
+        print("usage: python generate-unified-copy.py <tableMapJson> <V7Sql> <outFile>",
+              file=sys.stderr)
+        return 2
+    map_path, v7_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
     pairs = load_pairs(map_path)
     if not pairs:
         print("no AI table pairs found; refusing to emit an empty migration", file=sys.stderr)
         return 1
+    SHAPES.update(parse_created_tables(v7_path))
+    if not SHAPES:
+        print("could not parse any table from %s" % v7_path, file=sys.stderr)
+        return 1
     body = [HEADER]
     for legacy, unified in pairs:
-        body.append(BLOCK.format(legacy=legacy, unified=unified))
+        body.append(BLOCK.format(legacy=legacy, unified=unified,
+                                columns=column_list(unified),
+                                column_literals=column_literals(unified)))
     body.append(FOOTER)
+    assert_no_orphan_comment_lines("".join(body), out_path)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     open(out_path, "w", encoding="utf-8", newline="\n").write("".join(body))
-    print("wrote %s with %d table copies" % (out_path, len(pairs)))
+    print("wrote %s with %d table copies (explicit column lists from %s)"
+          % (out_path, len(pairs), os.path.basename(v7_path)))
     return 0
 
 

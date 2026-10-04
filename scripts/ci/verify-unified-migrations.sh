@@ -44,6 +44,7 @@ done
 [ -f "$PLATFORM_SQL/V7__unified_ai_domain.sql" ] || { echo "missing unified AI domain migration"; exit 2; }
 [ -f "$PLATFORM_SQL/V8__unified_ai_data.sql" ] || { echo "missing unified AI data migration"; exit 2; }
 [ -f "$PLATFORM_SQL/V9__legacy_ai_domain_ddl.sql" ] || { echo "missing legacy AI domain DDL migration"; exit 2; }
+[ -f "$PLATFORM_SQL/V10__entity_only_tables.sql" ] || { echo "missing entity-only tables migration"; exit 2; }
 
 umask 077
 rm -rf $WORK; mkdir -p "$WORK/platform" "$WORK/ai" "$WORK/bootstrap"
@@ -143,6 +144,30 @@ assert_eq 'marker row present in unified table' 1 \
   "$(q "select count(*) from platform.ai_sample_question where id='E2-MARKER'")"
 assert_eq 'audit rows match copied tables' 1 \
   "$(q "select count(*) from platform.ai_unified_migration_audit where legacy_table='t_sample_question' and unified_rows >= rows_copied")"
+
+# ---- upgrade-path assertions added after the first end-to-end run ----
+assert_eq 'every legacy table was audited' "$AI_LEGACY_TABLES" \
+  "$(q "select count(*) from platform.ai_unified_migration_audit")"
+assert_eq 'no table lost rows' 0 \
+  "$(q "select count(*) from platform.ai_unified_migration_audit where unified_rows < rows_copied")"
+# historical identity must survive verbatim: the copy must not re-encode tenant or member ids
+assert_eq 'tenant id preserved verbatim' 'T-UPGRADE' \
+  "$(q "select tenant_id from platform.ai_conversation where id='E2-MARKER-CONV'")"
+assert_eq 'member id preserved verbatim' 'platform:T-UPGRADE:2101' \
+  "$(q "select member_id from platform.ai_conversation where id='E2-MARKER-CONV'")"
+# V10 authors the table that had no DDL anywhere in the repository
+assert_eq 'entity-only table exists' 1 \
+  "$(q "select count(*) from information_schema.tables where table_schema='platform' and table_name='ai_model_config'")"
+# the additive merges must keep the AI columns, add the platform ones, and keep AI types
+assert_eq 'merge kept AI column' 1 \
+  "$(q "select count(*) from information_schema.columns where table_schema='platform' and table_name='ai_conversation' and column_name='conversation_id'")"
+assert_eq 'merge added platform column' 1 \
+  "$(q "select count(*) from information_schema.columns where table_schema='platform' and table_name='ai_conversation' and column_name='session_title'")"
+assert_eq 'conflicting id kept the AI varchar type' 'character varying' \
+  "$(q "select data_type from information_schema.columns where table_schema='platform' and table_name='ai_conversation' and column_name='id'")"
+assert_eq 'merged columns are nullable' 'YES' \
+  "$(q "select is_nullable from information_schema.columns where table_schema='platform' and table_name='ai_conversation' and column_name='session_title'")"
+
 
 echo "### 5. every AI-domain table from the table map exists in platform"
 EXPECTED=$(python - "$TABLE_MAP" <<'PY'
