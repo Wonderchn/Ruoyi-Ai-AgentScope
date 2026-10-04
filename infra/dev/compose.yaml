@@ -81,6 +81,23 @@ services:
       export FLYWAY_URL FLYWAY_USER FLYWAY_SCHEMAS FLYWAY_DEFAULT_SCHEMA FLYWAY_TABLE FLYWAY_LOCATIONS;
       flyway migrate'
 
+  # Platform signs delegated identities for the AI service; the keypair is
+  # generated once into a shared volume so both sides always match. Reuses the
+  # already-pinned postgres image (it ships openssl) instead of pulling another base.
+  delivery-keys:
+    image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    volumes:
+      - dev-delivery-keys:/keys
+    entrypoint: >
+      sh -c '
+      if [ ! -f /keys/private.pem ]; then
+        openssl genrsa -out /keys/private-pkcs1.pem 2048 2>/dev/null;
+        openssl pkcs8 -topk8 -nocrypt -in /keys/private-pkcs1.pem -out /keys/private.pem 2>/dev/null;
+        openssl rsa -in /keys/private.pem -pubout -out /keys/public.pem 2>/dev/null;
+        rm -f /keys/private-pkcs1.pem;
+      fi;
+      test -f /keys/private.pem && test -f /keys/public.pem'
+
   redis:
     image: redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     command: ["redis-server", "--requirepass", "${DEV_REDIS_PASSWORD:?set DEV_REDIS_PASSWORD in the env file}"]
@@ -101,6 +118,8 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      delivery-keys:
+        condition: service_completed_successfully
     environment:
       SPRING_PROFILES_ACTIVE: dev
       PLATFORM_DB_HOST: postgres
@@ -115,11 +134,14 @@ services:
       AI_INTEGRATION_AI_BASE_URL: http://ai:9090/api/ragent
       AI_INTEGRATION_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL:?set DEV_SERVICE_CREDENTIAL in the env file}
       AI_INTEGRATION_AUTHORIZATION_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL}
+      AI_INTEGRATION_DELEGATION_PRIVATE_KEY_PATH: /keys/private.pem
       # Every externalized PROJECT_SERVICES_* slot must be provided through the
       # controlled env file (DEV_ENV_FILE); this compose never carries real secrets.
     env_file:
       - path: ${DEV_ENV_FILE:-/dev/null}
         required: false
+    volumes:
+      - dev-delivery-keys:/keys:ro
 
   ai:
     image: ${DEV_AI_IMAGE:-ghcr.io/wonderchn/ruoyi-ai-agentscope-ai:latest}
@@ -128,6 +150,8 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      delivery-keys:
+        condition: service_completed_successfully
     environment:
       AI_DB_URL: jdbc:postgresql://postgres:5432/ruoyi_agent?client_encoding=UTF8&currentSchema=ai,extensions
       AI_DB_USER: ai_app
@@ -140,15 +164,25 @@ services:
       P3_ENABLED: ${P3_ENABLED:-false}
       P2_OBJECT_STORE_TYPE: fs
       P2_OBJECT_STORE_ROOT: /data/private-objects
+      # Optional local MinerU parser (host service): set MINERU_LOCAL_ENABLED=true in
+      # the env file; the host is reachable through the host-gateway mapping.
+      MINERU_LOCAL_ENABLED: ${MINERU_LOCAL_ENABLED:-false}
+      MINERU_LOCAL_BASE_URL: ${MINERU_LOCAL_BASE_URL:-http://host.docker.internal:18000}
+      MINERU_LOCAL_TOKEN: ${MINERU_LOCAL_TOKEN:-}
+      MINERU_LOCAL_TIER: ${MINERU_LOCAL_TIER:-flash}
       AI_INTEGRATION_ENABLED: "true"
       AI_INTEGRATION_PLATFORM_BASE_URL: http://platform:8080
       AI_INTEGRATION_SECURITY_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL}
       AI_INTEGRATION_PLATFORM_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL}
+      AI_INTEGRATION_SECURITY_PUBLIC_KEY_PATH: /keys/public.pem
     env_file:
       - path: ${DEV_ENV_FILE:-/dev/null}
         required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - dev-private-objects:/data/private-objects
+      - dev-delivery-keys:/keys:ro
 
   web:
     build:
@@ -164,3 +198,4 @@ volumes:
   dev-pgdata:
   dev-redisdata:
   dev-private-objects:
+  dev-delivery-keys:
