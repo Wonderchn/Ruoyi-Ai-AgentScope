@@ -61,6 +61,29 @@ public class AiIntegrationProperties {
     /** 专用上传传输：单请求上限（字节，默认 20MB，与 AI 首期一致）。 */
     private long uploadMaxBytes = 20L * 1024L * 1024L;
 
+    /**
+     * AI 侧传输方式（E3/C3）：
+     * <ul>
+     *   <li>{@code http}（默认）：跨进程 HTTP 转发，需要 {@code ai-base-url}、签名密钥与服务凭证；</li>
+     *   <li>{@code local}：内嵌同进程转送（servlet forward，非 localhost HTTP）。
+     *       委托凭证不铸造、服务凭证不要求；AI 侧内部控制器在同一进程内装配，
+     *       身份由 {@code AiIdentityPort} 经 {@code PrincipalContext} 桥接。</li>
+     * </ul>
+     */
+    private String transport = "http";
+
+    public boolean isLocalTransport() {
+        return "local".equalsIgnoreCase(transport);
+    }
+
+    public String getTransport() {
+        return transport;
+    }
+
+    public void setTransport(String transport) {
+        this.transport = transport;
+    }
+
     public boolean isEnabled() {
         return enabled;
     }

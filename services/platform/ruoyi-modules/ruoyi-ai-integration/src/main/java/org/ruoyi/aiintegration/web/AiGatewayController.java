@@ -132,13 +132,17 @@ public class AiGatewayController {
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;
-    private final ProductionSigningKeySource signingKeys;
+    /**
+     * 委托签名密钥。仅 {@code transport=http} 需要存在（生产装配 fail-fast 保证）；
+     * {@code transport=local}（E3/C3 内嵌同进程转送）下不铸造委托凭证，本依赖可为空。
+     */
+    private final ObjectProvider<ProductionSigningKeySource> signingKeys;
     private final AiGatewayClient client;
     private final AiIntegrationProperties properties;
 
     public AiGatewayController(CurrentPrincipalResolver principalResolver,
                                ObjectProvider<PlatformIdentitySource> identitySource,
-                               ProductionSigningKeySource signingKeys,
+                               ObjectProvider<ProductionSigningKeySource> signingKeys,
                                AiGatewayClient client,
                                AiIntegrationProperties properties) {
         this.principalResolver = principalResolver;
@@ -209,12 +213,21 @@ public class AiGatewayController {
             throw new P04Exception(P04ErrorCode.FORBIDDEN);
         }
 
-        // 5. 签发委托（只带本路由所需 scope）并转发
-        ProductionSigningKeySource.Issued issued = signingKeys.issue(
-                member.tenantId(), member.userId(), member.membershipId(),
-                List.of(route.action()), identity.policyVersion(), null);
+        // 5. 签发委托（只带本路由所需 scope）并转发。
+        //    transport=local（E3/C3）：同进程转送，不铸造委托凭证；本地执行事实
+        //    由 LocalAiGatewayClient 经 AiIdentityPort 桥接进 AI 侧上下文。
+        String delegationToken = null;
+        if (!properties.isLocalTransport()) {
+            ProductionSigningKeySource keys = signingKeys.getIfAvailable();
+            if (keys == null) {
+                throw new P04Exception(P04ErrorCode.AUTHORIZATION_UNAVAILABLE);
+            }
+            delegationToken = keys.issue(
+                    member.tenantId(), member.userId(), member.membershipId(),
+                    List.of(route.action()), identity.policyVersion(), null).token();
+        }
 
-        return forward(request,response,member,route.action(), method, subPath, issued.token(), body);
+        return forward(request,response,member,route.action(), method, subPath, delegationToken, body);
     }
 
     /** 组装转发请求并透传 AI 状态码。 */
@@ -231,7 +244,10 @@ public class AiGatewayController {
         }
 
         String query = request.getQueryString();
-        String target = properties.getAiBaseUrl() + AI_INTERNAL_PREFIX + subPath
+        // transport=local（E3/C3）：基地址是本进程，转送只用路径与 query，
+        // 用占位主机保持 URI 绝对形状；跨进程 HTTP 传输仍取真实 ai-base-url。
+        String base = properties.isLocalTransport() ? "http://local" : properties.getAiBaseUrl();
+        String target = base + AI_INTERNAL_PREFIX + subPath
                 + (query == null || query.isBlank() ? "" : "?" + query);
         URI uri;
         try {
@@ -241,12 +257,18 @@ public class AiGatewayController {
         }
 
         Map<String, String> headers = sanitizedHeaders(request);
-        if (properties.getServiceCredential() == null || properties.getServiceCredential().isBlank()) {
+        if (!properties.isLocalTransport()
+                && (properties.getServiceCredential() == null || properties.getServiceCredential().isBlank())) {
             throw new P04Exception(P04ErrorCode.AUTHORIZATION_UNAVAILABLE);
         }
-        // 委托凭证是唯一身份载体；浏览器凭证已在黑名单中剥除
-        headers.put("Authorization", "Bearer " + delegationToken);
-        headers.put("X-P04-Service-Credential", properties.getServiceCredential());
+        // 委托凭证是唯一身份载体（http 传输）；浏览器凭证已在黑名单中剥除。
+        // transport=local 时身份不经头传递：LocalAiGatewayClient 从 AiIdentityPort 桥接。
+        if (delegationToken != null) {
+            headers.put("Authorization", "Bearer " + delegationToken);
+        }
+        if (!properties.isLocalTransport()) {
+            headers.put("X-P04-Service-Credential", properties.getServiceCredential());
+        }
         headers.put(RequestId.HEADER, RequestId.currentOrEmpty());
 
         if(action.equals("document.download") || action.equals("conversation.export")
@@ -265,7 +287,7 @@ public class AiGatewayController {
                 servletResponse.setHeader("Accept-Ranges","bytes");
                 servletResponse.setHeader(RequestId.HEADER,RequestId.currentOrEmpty());
                 if(!transfer.contentRange().isBlank()){servletResponse.setHeader("Content-Range",transfer.contentRange());}
-                servletResponse.setContentLength(transfer.bytes().length);
+                    servletResponse.setContentLength(transfer.bytes().length);
                 var out=servletResponse.getOutputStream();
                 for(int offset=0;offset<transfer.bytes().length;offset+=8192){
                     out.write(transfer.bytes(),offset,Math.min(8192,transfer.bytes().length-offset));
@@ -282,9 +304,14 @@ public class AiGatewayController {
                 try{acknowledgement=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsBytes(Map.of(
                         "tenantId",member.tenantId(),"memberId",member.membershipId(),"permitId",transfer.permitId(),"operationId",transfer.operationId()));
                 }catch(Exception e){throw new AiGatewayClient.UpstreamUnavailableException("delivery acknowledgement invalid");}
+                var ackHeaders = new java.util.LinkedHashMap<String,String>();
+                ackHeaders.put("Content-Type","application/json");
+                if (!properties.isLocalTransport()) {
+                    ackHeaders.put("X-P04-Service-Credential", properties.getServiceCredential());
+                }
                 var released=client.forward(new AiGatewayClient.ForwardRequest("POST",
-                        URI.create(properties.getAiBaseUrl()+AI_INTERNAL_PREFIX+"/authorization/deliveries/release"),
-                        Map.of("Content-Type","application/json","X-P04-Service-Credential",properties.getServiceCredential()),acknowledgement));
+                        URI.create(base+AI_INTERNAL_PREFIX+"/authorization/deliveries/release"),
+                        ackHeaders,acknowledgement));
                 if(released.status()!=204 || !released.body().isBlank()){throw new AiGatewayClient.UpstreamUnavailableException("delivery release unconfirmed");}
             }
         }

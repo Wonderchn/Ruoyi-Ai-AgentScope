@@ -15,6 +15,7 @@
         <module>ruoyi-ai-infra</module>
         <module>ruoyi-ai-rag</module>
         <module>ruoyi-ai-agent</module>
+        <module>ruoyi-ai-web</module>
         <module>ruoyi-ai-runtime</module>
         <module>ruoyi-aiflow</module>
         <module>ruoyi-chat</module>

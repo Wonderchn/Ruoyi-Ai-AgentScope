@@ -120,7 +120,7 @@ class P1GatewayIdentityTest {
         identitySource = mock(PlatformIdentitySource.class);
         client = mock(AiGatewayClient.class);
         controller = new AiGatewayController(principalResolver, provider(identitySource),
-                new ProductionSigningKeySource(privateKeyPath(), Clock.fixed(NOW, ZoneOffset.UTC)),
+                signingKeys(new ProductionSigningKeySource(privateKeyPath(), Clock.fixed(NOW, ZoneOffset.UTC))),
                 client, properties);
     }
 
@@ -140,6 +140,15 @@ class P1GatewayIdentityTest {
             beanFactory.addBean("identitySource", source);
         }
         return beanFactory.getBeanProvider(PlatformIdentitySource.class);
+    }
+
+    private static ObjectProvider<ProductionSigningKeySource> signingKeys(
+            ProductionSigningKeySource source) {
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        if (source != null) {
+            beanFactory.addBean("signingKeys", source);
+        }
+        return beanFactory.getBeanProvider(ProductionSigningKeySource.class);
     }
 
     private static PlatformIdentitySource.PlatformIdentity enabledIdentity(Set<String> scopes) {
@@ -325,7 +334,7 @@ class P1GatewayIdentityTest {
     void missingIdentitySourceIs503() {
         stubMember();
         controller = new AiGatewayController(principalResolver, provider(null),
-                new ProductionSigningKeySource(privateKeyPath(), Clock.fixed(NOW, ZoneOffset.UTC)),
+                signingKeys(new ProductionSigningKeySource(privateKeyPath(), Clock.fixed(NOW, ZoneOffset.UTC))),
                 client, properties);
         ResponseEntity<?> response = controller.gateway(request("GET", "/api/ai/v1/knowledge-bases"), null);
         assertEquals(503, status(response));

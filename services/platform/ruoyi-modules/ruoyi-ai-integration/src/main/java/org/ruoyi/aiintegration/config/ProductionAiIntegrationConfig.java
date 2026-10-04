@@ -112,7 +112,13 @@ public class ProductionAiIntegrationConfig {
         return new ProductionSigningKeySource(privateKeyPath, clock);
     }
 
+    /**
+     * 跨进程 HTTP 转发客户端。仅 {@code transport=http}（默认）装配；
+     * {@code transport=local}（E3/C3 内嵌同进程转送）时由 ruoyi-ai-web 的
+     * {@code LocalAiGatewayClient} 取代（同进程 servlet 转送，不经 localhost HTTP）。
+     */
     @Bean
+    @ConditionalOnProperty(name = "ai.integration.transport", havingValue = "http", matchIfMissing = true)
     public AiGatewayClient productionAiGatewayClient(AiIntegrationProperties properties) {
         if (properties.getAiBaseUrl() == null || properties.getAiBaseUrl().isBlank()) {
             throw new IllegalStateException("ai.integration.ai-base-url is required when enabled=true");
