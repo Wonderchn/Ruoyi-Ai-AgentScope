@@ -11,6 +11,7 @@ import {
   listDocuments,
   listKnowledgeBases,
   submitRun,
+  terminalFailureNote,
   terminalSummary,
   uploadDocument,
 } from '@/api/rag';
@@ -356,6 +357,12 @@ function streamChat(runId: string) {
             if (summary.answer)
               rag.answer = summary.answer;
             rag.citations = summary.citations;
+            const errorCode = String(payload?.errorCode ?? '');
+            if (errorCode)
+              rag.errorCode = errorCode;
+            const failureNote = terminalFailureNote(rag.chatStatus, errorCode, true);
+            if (failureNote)
+              rag.streamNote = failureNote;
             if (summary.evidenceInsufficient)
               rag.streamNote = '证据不足，未生成引用';
             break;

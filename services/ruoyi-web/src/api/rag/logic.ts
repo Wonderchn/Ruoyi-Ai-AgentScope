@@ -77,3 +77,19 @@ export function terminalSummary(payload: unknown): { answer: string; citations: 
   const citations = Array.isArray(result.citations) ? (result.citations as Citation[]) : [];
   return { answer, citations: dedupeCitations(citations), evidenceInsufficient: result.evidenceInsufficient === true };
 }
+
+/**
+ * 服务端已验证终态的用户表达（R01）。
+ *
+ * 终态 FAILED/CANCELLED 必须原样给出服务端 errorCode——依赖不可用（AUTHORIZATION_UNAVAILABLE）、
+ * 真实来源变化（SOURCE_CHANGED）等含义不同，不得吞成“流不完整”；只有在流里从未出现终态帧时
+ * （isTerminalFrame=false）才允许表达为流中断，且不携带任何编造的结果。
+ */
+export function terminalFailureNote(status: string, errorCode: string, isTerminalFrame: boolean): string {
+  if (status === 'FAILED' || status === 'CANCELLED') {
+    return errorCode ? `服务端终态失败：${errorCode}` : `服务端终态失败：${status}`;
+  }
+  if (!isTerminalFrame)
+    return '事件流在终态前中断（未收到 run.terminal）';
+  return '';
+}

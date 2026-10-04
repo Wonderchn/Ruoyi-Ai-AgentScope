@@ -5,7 +5,7 @@ import type { Citation } from '../src/api/rag/logic.ts';
  */
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { chatRunBody, dedupeCitations, terminalSummary } from '../src/api/rag/logic.ts';
+import { chatRunBody, dedupeCitations, terminalFailureNote, terminalSummary } from '../src/api/rag/logic.ts';
 
 test('chatRunBody builds the contract body with knowledge base refs', () => {
   const body = chatRunBody(['kb-1', 'kb-2'], 'question?');
@@ -59,4 +59,17 @@ test('terminalSummary decodes persisted resultRef JSON with citations', () => {
   assert.equal(terminalSummary(payload).answer, 'persisted');
   assert.equal(terminalSummary(payload).citations.length, 1);
   assert.equal(terminalSummary({ resultRef: '{broken' }).answer, '');
+});
+
+test('terminalFailureNote surfaces the verified server terminal error verbatim (R01)', () => {
+  // 服务端已验证终态：必须原样给出 errorCode，不得吞成“流不完整”。
+  assert.equal(terminalFailureNote('FAILED', 'SOURCE_CHANGED', true), '服务端终态失败：SOURCE_CHANGED');
+  assert.equal(terminalFailureNote('FAILED', 'AUTHORIZATION_UNAVAILABLE', true), '服务端终态失败：AUTHORIZATION_UNAVAILABLE');
+  // 终态但缺 errorCode：仍表达为服务端终态失败（不编造原因）。
+  assert.equal(terminalFailureNote('FAILED', '', true), '服务端终态失败：FAILED');
+  assert.equal(terminalFailureNote('CANCELLED', '', true), '服务端终态失败：CANCELLED');
+  // 无终态帧：才允许表达为流中断。
+  assert.equal(terminalFailureNote('RUNNING', '', false), '事件流在终态前中断（未收到 run.terminal）');
+  // 成功终态：不产生失败表达。
+  assert.equal(terminalFailureNote('SUCCEEDED', '', true), '');
 });
