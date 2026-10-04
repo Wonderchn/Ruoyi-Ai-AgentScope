@@ -450,6 +450,14 @@
                 <version>${revision}</version>
             </dependency>
 
+            <!-- E3：AI 能力的本地边界（执行事实、身份/授权端口、规范动作表）。
+                 零依赖，边界由该模块 POM 的 enforcer 禁令保证。 -->
+            <dependency>
+                <groupId>org.ruoyi</groupId>
+                <artifactId>ruoyi-ai-api</artifactId>
+                <version>${revision}</version>
+            </dependency>
+
             <dependency>
                 <groupId>org.ruoyi</groupId>
                 <artifactId>ruoyi-generator</artifactId>

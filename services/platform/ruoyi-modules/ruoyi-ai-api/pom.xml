@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <groupId>org.ruoyi</groupId>
+        <artifactId>ruoyi-modules</artifactId>
+        <version>${revision}</version>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+
+    <artifactId>ruoyi-ai-api</artifactId>
+
+    <description>
+        AI 能力的本地边界：执行事实、身份/授权/撤权端口与规范动作表。
+        E3 之前 platform 与 services/ai 通过 HTTP 交换这些事实；内嵌后由本模块定义契约，
+        两侧实现同一套接口，不再构造内部 JSON。
+    </description>
+
+    <!--
+      刻意不声明任何依赖。这个模块是内嵌后 platform 与 AI 模块之间的唯一契约面，
+      它一旦依赖 Servlet、Spring 或 AgentScope，AI 模块就会顺着它重新依赖运行时容器，
+      "通过本地 Java 接口调用"就退化成同一进程里的隐式耦合。
+
+      下面的 enforcer 规则把这条约束变成构建期失败，而不是靠代码评审发现：
+      任何新增依赖都会让构建红掉，除非同时修改这份禁令并说明理由。
+    -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <id>enforce-neutral-boundary</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <bannedDependencies>
+                                    <searchTransitive>true</searchTransitive>
+                                    <message>
+                                        ruoyi-ai-api 必须保持零依赖（只允许编译期注解与 JDK）。
+                                        需要 Spring/Servlet/AgentScope 的类型说明契约设计越界了：
+                                        把那部分放进实现模块，或使用本模块的端口接口。
+                                    </message>
+                                    <excludes>
+                                        <exclude>org.springframework*</exclude>
+                                        <exclude>org.springframework.boot*</exclude>
+                                        <exclude>jakarta.servlet*</exclude>
+                                        <exclude>jakarta.annotation*</exclude>
+                                        <exclude>io.agentscope*</exclude>
+                                        <exclude>com.baomidou*</exclude>
+                                        <exclude>cn.dev33*</exclude>
+                                        <exclude>org.mybatis*</exclude>
+                                        <exclude>org.apache.ibatis*</exclude>
+                                        <exclude>org.redisson*</exclude>
+                                        <exclude>dev.langchain4j*</exclude>
+                                        <exclude>io.modelcontextprotocol*</exclude>
+                                        <exclude>org.ruoyi:*</exclude>
+                                    </excludes>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

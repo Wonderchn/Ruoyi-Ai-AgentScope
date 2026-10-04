@@ -24,9 +24,24 @@
     </properties>
 
     <dependencies>
+        <!-- E3：AI 能力的本地边界。规范动作表与执行事实从这里取，避免网关与运行模块各存一份。
+             该模块是零依赖的纯契约模块，不会把 Spring/Servlet/AgentScope 带进来。 -->
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>ruoyi-ai-api</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- AiGatewayClient 解析 AI 侧响应信封需要 Jackson 2。
+             此前它只是"碰巧"在编译期可见（jjwt-jackson 是 runtime 作用域，不该提供编译期类型），
+             显式声明依赖而不是继续依赖传递巧合。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-jackson2</artifactId>
         </dependency>
 
         <!-- 委托签名：两侧同版本；impl/jackson 只在运行期需要 -->
