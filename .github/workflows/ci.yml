@@ -77,6 +77,43 @@ jobs:
         working-directory: services/ai/frontend
         run: npm run build
 
+  ruoyi-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Pinned runtimes: node 22.23.2 (engines >=22.13.0) and the packageManager-pinned
+      # pnpm 11.0.9. The version is installed explicitly, not via mutable "latest".
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: pnpm
+          cache-dependency-path: services/ruoyi-web/pnpm-lock.yaml
+      - name: Install pinned pnpm
+        run: npm install -g pnpm@11.0.9
+      - name: Install locked dependencies
+        working-directory: services/ruoyi-web
+        run: pnpm install --frozen-lockfile
+      # The test loader transpiles without type checking, so the test project's
+      # type check must run on its own or TS errors ship silently.
+      - name: Type-check the test project
+        working-directory: services/ruoyi-web
+        run: pnpm exec tsc -p tsconfig.tests.json --noEmit
+      - name: Run the Node protocol tests
+        working-directory: services/ruoyi-web
+        run: node --import ./tests/ts-loader.mjs --test ./tests/RunStreamClient.test.ts ./tests/SseSyntax.test.ts ./tests/RagApi.test.ts ./tests/RagTransport.test.ts
+      - name: Lint
+        working-directory: services/ruoyi-web
+        run: pnpm lint
+      - name: Build (includes the app type check via vue-tsc -b)
+        working-directory: services/ruoyi-web
+        run: pnpm build
+      - name: Ensure the checks left sources unchanged
+        working-directory: services/ruoyi-web
+        run: git diff --exit-code
+
   db:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -101,7 +138,7 @@ jobs:
 
   ci-required:
     if: always()
-    needs: [platform, ai, frontend, policy, db]
+    needs: [platform, ai, frontend, ruoyi-web, policy, db]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -110,10 +147,11 @@ jobs:
           PLATFORM: ${{ needs.platform.result }}
           AI: ${{ needs.ai.result }}
           FRONTEND: ${{ needs.frontend.result }}
+          RUOYI_WEB: ${{ needs.ruoyi-web.result }}
           POLICY: ${{ needs.policy.result }}
           DB: ${{ needs.db.result }}
         run: |
-          for result in "$PLATFORM" "$AI" "$FRONTEND" "$POLICY" "$DB"; do
+          for result in "$PLATFORM" "$AI" "$FRONTEND" "$RUOYI_WEB" "$POLICY" "$DB"; do
             if [ "$result" != success ]; then
               echo "A required job did not succeed: $result" >&2
               exit 1
