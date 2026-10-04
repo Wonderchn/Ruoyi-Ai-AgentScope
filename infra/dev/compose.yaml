@@ -185,6 +185,10 @@ services:
       P2_OBJECT_STORE_ROOT: /data/private-objects
       # Optional local MinerU parser (host service): set MINERU_LOCAL_ENABLED=true in
       # the env file; the host is reachable through the host-gateway mapping.
+      # Model/embedding egress: explicitly allow only the synthetic provider
+      # (no external call); real providers require their own keys and approval.
+      P2_CHAT_EGRESS_ENABLED: ${P2_CHAT_EGRESS_ENABLED:-false}
+      P2_CHAT_EGRESS_ALLOWED_PROVIDERS: ${P2_CHAT_EGRESS_ALLOWED_PROVIDERS:-synthetic}
       MINERU_LOCAL_ENABLED: ${MINERU_LOCAL_ENABLED:-false}
       MINERU_LOCAL_BASE_URL: ${MINERU_LOCAL_BASE_URL:-http://host.docker.internal:18000}
       MINERU_LOCAL_TOKEN: ${MINERU_LOCAL_TOKEN:-}
