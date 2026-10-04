@@ -47,6 +47,11 @@ import com.nageoffer.ai.ragent.framework.exception.ClientException;
  *
  * <p>本类无状态（无任何字段）：全部校验失败抛 {@link ClientException}，
  * 字段缺失、租户含冒号/超长一律拒绝，绝不"尽力拼接"。
+ *
+ * <p><b>前缀统一（E3/C5）</b>：本键自带 {@code p1:} 命名空间，{@code tenantId} 与
+ * {@code memberId} 段是跨租户/跨主体缓存串号的防线——任何 Redis 前缀机制
+ * （platform {@code redisson.keyPrefix}、租户键前缀）只允许在键<b>外层</b>追加，
+ * 不得剥离或改写这两段；剥离即等于把授权缓存变成跨租户共享。
  */
 public final class AuthorizedCacheKey {
 

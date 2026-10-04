@@ -27,7 +27,12 @@ import org.springframework.stereotype.Component;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Redis Key 序列化
+ * Redis Key 序列化（独立运行专用：{@code framework.cache.redis.prefix}）。
+ *
+ * <p><b>内嵌（E3/C5）不装配本类</b>：内嵌后唯一 Redis 前缀机制是 platform 的
+ * {@code redisson.keyPrefix}（{@code KeyPrefixHandler}，Redisson NameMapper 层）；
+ * AI 侧键按<b>形状</b>自带命名空间（如 {@code AuthorizedCacheKey} 的 {@code p1:} 前缀、
+ * 幂等注解的 {@code keyPrefix()}），不依赖第二个前缀通道——避免双前缀与前缀漂移。
  */
 @RequiredArgsConstructor
 @Component
