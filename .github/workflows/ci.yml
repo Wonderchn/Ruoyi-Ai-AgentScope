@@ -138,6 +138,36 @@ jobs:
       - name: Ensure the check left the sources unchanged
         run: git diff --exit-code
 
+  native-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: |
+            services/platform/pom.xml
+            services/ai/pom.xml
+      - name: Build both Boot JARs
+        run: |
+          mvn -B -ntp -f services/platform/pom.xml -Pdev -DskipTests package
+          mvn -B -ntp -f services/ai/pom.xml -Pci -DskipTests package
+      # Owner tag is unique per run; the script refuses any resource-name or port
+      # collision instead of reusing or deleting anything.
+      - name: Run the native failure matrix (N1 admission / N2 worker takeover / N3 SSE continuity)
+        env:
+          OWNER: nativerun-${{ github.run_id }}-${{ github.run_attempt }}
+          AI_JAR: ${{ github.workspace }}/services/ai/bootstrap/target/bootstrap-0.0.1-SNAPSHOT.jar
+          PLATFORM_JAR: ${{ github.workspace }}/services/platform/ruoyi-admin/target/ruoyi-admin.jar
+        run: bash scripts/ci/verify-native-runtime.sh
+      - name: Ensure the checks left the sources unchanged
+        run: git diff --exit-code
+
   policy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -150,7 +180,7 @@ jobs:
 
   ci-required:
     if: always()
-    needs: [platform, ai, frontend, ruoyi-web, policy, db, db-ai]
+    needs: [platform, ai, frontend, ruoyi-web, policy, db, db-ai, native-runtime]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -163,8 +193,9 @@ jobs:
           POLICY: ${{ needs.policy.result }}
           DB: ${{ needs.db.result }}
           DB_AI: ${{ needs.db-ai.result }}
+          NATIVE: ${{ needs.native-runtime.result }}
         run: |
-          for result in "$PLATFORM" "$AI" "$FRONTEND" "$RUOYI_WEB" "$POLICY" "$DB" "$DB_AI"; do
+          for result in "$PLATFORM" "$AI" "$FRONTEND" "$RUOYI_WEB" "$POLICY" "$DB" "$DB_AI" "$NATIVE"; do
             if [ "$result" != success ]; then
               echo "A required job did not succeed: $result" >&2
               exit 1
