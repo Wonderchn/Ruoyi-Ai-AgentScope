@@ -1,2 +1,3 @@
 org.ruoyi.aiweb.AiWebEmbeddedConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedRagConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedRunConfiguration

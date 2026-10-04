@@ -21,3 +21,8 @@ ai:
     # 高危写路径（KB 创建/ACL 授予等）仍按既有开关门控，按需显式开启：
     # high-risk:
     #   enabled: true
+
+# P2 正式运行路径（受理/生命周期/事件流）——与独立 AI 应用同一开关；
+# P0.4 实验路径保持关闭（p04.enabled 缺省 false，与 P2 互斥）。
+p2:
+  enabled: true
