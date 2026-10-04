@@ -58,22 +58,17 @@ public class DefaultRevocationGuard implements RevocationGuard {
     static final long LEASE_SECONDS = 300;
 
     private final JdbcTemplate jdbc;
-    private String platformBaseUrl;
-    private String platformCredential;
-    private final java.net.http.HttpClient http = java.net.http.HttpClient.newBuilder().version(java.net.http.HttpClient.Version.HTTP_1_1)
-            .connectTimeout(java.time.Duration.ofSeconds(2)).followRedirects(java.net.http.HttpClient.Redirect.NEVER).build();
-    private final com.fasterxml.jackson.databind.ObjectMapper json = new com.fasterxml.jackson.databind.ObjectMapper()
-            .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY)
-            .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+    private com.nageoffer.ai.ragent.framework.security.PlatformPermitPort platformPermits;
 
-    @org.springframework.beans.factory.annotation.Autowired
-    public void configurePlatform(@org.springframework.beans.factory.annotation.Value("${ai.integration.platform-base-url:}") String url,
-            @org.springframework.beans.factory.annotation.Value("${ai.integration.platform-service-credential:}") String credential) {
-        if (url.isBlank() || credential.isBlank()) {
-            throw new IllegalStateException("production permit platform URL/credential required");
-        }
-        platformBaseUrl = url;
-        platformCredential = credential;
+    /**
+     * platform 层许可镜像端口。内嵌装配提供本地实现（同进程调用 platform 许可提供者，
+     * 不经 localhost HTTP）；端口缺席时保持"仅本层 permit"的形态
+     * （与迁移前 {@code ai.integration.platform-base-url} 未配置时一致）。
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void configurePlatformPermits(org.springframework.beans.factory.ObjectProvider<
+            com.nageoffer.ai.ragent.framework.security.PlatformPermitPort> permits) {
+        this.platformPermits = permits == null ? null : permits.getIfAvailable();
     }
 
     public DefaultRevocationGuard(JdbcTemplate jdbc) {
@@ -121,20 +116,17 @@ public class DefaultRevocationGuard implements RevocationGuard {
 
         // 3) 登记 ACTIVE permit（跨节点共享）。
         String permitId = UUID.randomUUID().toString();
-        if (platformBaseUrl != null) {
+        if (platformPermits != null) {
             String subject = request.memberId().substring(request.memberId().lastIndexOf(':') + 1);
-            var result = platformCall("acquire", java.util.Map.of("tenantId", request.tenantId(),
-                    "subject", subject, "membershipId", request.memberId(), "policyVersion", request.policyVersion(),
-                    "aclVersion", request.aclVersion(), "action", request.action(), "resourceRef", request.resourceRef(),
-                    "resourceRefsHash", request.resourceRefsHash(), "operationId", request.operationId()));
-            var data = result.path("data");
-            if (!data.path("permitId").isTextual() || data.path("permitId").textValue().isBlank()
-                    || !data.path("policyVersion").isIntegralNumber()
-                    || data.path("policyVersion").intValue() != request.policyVersion()
-                    || !request.operationId().equals(data.path("operationId").textValue())) {
+            var result = platformPermits.acquire(new com.nageoffer.ai.ragent.framework.security.PlatformPermitPort.AcquireRequest(
+                    request.tenantId(), subject, request.memberId(), request.policyVersion(), request.aclVersion(),
+                    request.action(), request.resourceRef(), request.resourceRefsHash(), request.operationId()));
+            if (result == null || result.permitId() == null || result.permitId().isBlank()
+                    || result.policyVersion() != request.policyVersion()
+                    || !request.operationId().equals(result.operationId())) {
                 throw new ServiceException("平台 permit 回执非法");
             }
-            permitId = data.path("permitId").textValue();
+            permitId = result.permitId();
             String registeredId = permitId;
             if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
                 org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
@@ -142,9 +134,8 @@ public class DefaultRevocationGuard implements RevocationGuard {
                             @Override public void afterCompletion(int status) {
                                 if (status != STATUS_COMMITTED) {
                                     try {
-                                        platformCall("release", java.util.Map.of("tenantId", request.tenantId(),
-                                                "membershipId", request.memberId(), "permitId", registeredId,
-                                                "operationId", request.operationId()));
+                                        platformPermits.release(new com.nageoffer.ai.ragent.framework.security.PlatformPermitPort.ReleaseRequest(
+                                                request.tenantId(), request.memberId(), registeredId, request.operationId()));
                                     } catch (RuntimeException e) {
                                         log.error("permit rollback release unconfirmed; keep platform ACTIVE, operationId={}", request.operationId());
                                     }
@@ -182,37 +173,15 @@ public class DefaultRevocationGuard implements RevocationGuard {
                 throw new ClientException("permit 不存在或 operationId 不匹配");
             }
         }
-        if (platformBaseUrl != null) {
+        if (platformPermits != null) {
             var rows = jdbc.query("SELECT tenant_id,member_id FROM ai_execution_permit WHERE permit_id=? AND operation_id=?",
                     (rs, n) -> java.util.Map.of("tenantId", rs.getString(1), "membershipId", rs.getString(2),
                             "permitId", permitId, "operationId", operationId), permitId, operationId);
             if (rows.isEmpty()) { throw new ServiceException("permit 释放事实缺失"); }
-            platformCall("release", rows.get(0));
+            var row = rows.get(0);
+            platformPermits.release(new com.nageoffer.ai.ragent.framework.security.PlatformPermitPort.ReleaseRequest(
+                    row.get("tenantId"), row.get("membershipId"), permitId, operationId));
         }
-    }
-
-    private com.fasterxml.jackson.databind.JsonNode platformCall(String action, Object body) {
-        try {
-            var request = java.net.http.HttpRequest.newBuilder(java.net.URI.create(platformBaseUrl
-                            + "/internal/platform/v1/authorization/permits/" + action))
-                    .timeout(java.time.Duration.ofSeconds(2)).header("Content-Type", "application/json")
-                    .header("X-P04-Service-Credential", platformCredential)
-                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body))).build();
-            var response = http.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
-            if (action.equals("release") && response.statusCode() == 204 && response.body().isBlank()) {
-                return json.createObjectNode();
-            }
-            var node = json.readTree(response.body());
-            if (node == null || !node.isObject() || !node.path("code").isIntegralNumber()
-                    || node.path("code").intValue() != response.statusCode()) { throw new ServiceException("平台 permit 响应非法"); }
-            if (response.statusCode() == 409) { throw new com.nageoffer.ai.ragent.framework.security.StaleVersionException("policyVersion changed"); }
-            if (response.statusCode() != 200) { throw new ServiceException("平台 permit 拒绝"); }
-            return node;
-        } catch (com.nageoffer.ai.ragent.framework.security.StaleVersionException | ServiceException e) { throw e;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ServiceException("平台 permit 中断");
-        } catch (Exception e) { throw new ServiceException("平台 permit 不可用"); }
     }
 
     @Override

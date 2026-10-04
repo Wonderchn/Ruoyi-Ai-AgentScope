@@ -23,6 +23,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import org.ruoyi.ai.api.AiExecutionFacts;
+import org.ruoyi.ai.api.action.AiCanonicalAction;
 import org.ruoyi.ai.api.identity.AiIdentityPort;
 import org.ruoyi.aiintegration.web.AiGatewayClient;
 
@@ -34,9 +35,13 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.function.Supplier;
@@ -80,7 +85,9 @@ import org.springframework.web.util.ServletRequestPathUtils;
  *       已验证登录态 + 真实成员事实 + {@code ai_acl_epoch} 权威版本），
  *       事实不可得即 503 语义，不放行；</li>
  *   <li>事实映射为 AI 侧 {@link ExecutionPrincipal} 放入 {@link PrincipalContext}
- *       （AI 冻结代码统一从这里取主体），转发结束在 {@code finally} 中恢复旧值；</li>
+ *       （AI 冻结代码统一从这里取主体），转发结束在 {@code finally} 中恢复旧值；
+ *       scopes 由身份权限反查 canonical 动作集合（HTTP 形态委托凭证携带路由动作的
+ *       内嵌等价，见 {@link #canonicalActions(AiExecutionFacts)}）；</li>
  *   <li>{@code ExecutionPrincipal} 的传输型字段（jti/issuer/iat/exp）按"本地请求
  *       标识"诚实填充：jti = 每次转送的随机关联标识、issuer = {@code platform:local}、
  *       有效期 5 分钟与许可租约同型——<b>没有</b>任何 JWT 被构造、签名或消费。</li>
@@ -272,7 +279,12 @@ public class LocalAiGatewayClient extends AiGatewayClient {
         try {
             adapter.handle(wrapped, capture, chain.getHandler());
         } catch (Exception handlerException) {
-            for (HandlerExceptionResolver resolver : webContext.getBeansOfType(HandlerExceptionResolver.class).values()) {
+            // AI 侧异常解析器（@Order 最高优先级）先于 Spring 复合解析器运行，
+            // 保证 AI 信封形状不被 platform 全局 @RestControllerAdvice 改写
+            List<HandlerExceptionResolver> resolvers = new ArrayList<>(
+                    webContext.getBeansOfType(HandlerExceptionResolver.class).values());
+            org.springframework.core.annotation.AnnotationAwareOrderComparator.sort(resolvers);
+            for (HandlerExceptionResolver resolver : resolvers) {
                 if (resolver.resolveException(wrapped, capture, chain.getHandler(), handlerException) != null) {
                     return;
                 }
@@ -284,9 +296,29 @@ public class LocalAiGatewayClient extends AiGatewayClient {
     private ExecutionPrincipal toLocalPrincipal(AiExecutionFacts facts) {
         Instant now = Instant.now();
         return new ExecutionPrincipal(facts.tenantId(), facts.userId(), facts.membershipId(),
-                facts.policyVersion(), facts.aclVersion(), facts.scopes(),
+                facts.policyVersion(), facts.aclVersion(), canonicalActions(facts),
                 UUID.randomUUID().toString(), LOCAL_ISSUER,
                 now.getEpochSecond(), now.plus(PRINCIPAL_TTL).getEpochSecond());
+    }
+
+    /**
+     * 身份权限 → canonical 动作集合。
+     *
+     * <p>HTTP 形态下委托凭证只携带本路由的那一个 canonical 动作（网关签发时确定）；
+     * 内嵌形态没有凭证，改由身份的 {@code ai:*} 权限反查 {@link AiCanonicalAction}
+     * 得到其可执行动作集合。AI 侧 {@code principal.hasScope(action)} 预检的语义
+     * （"本路由动作是否在委托范围内"）保持不变——权威判定仍在 platform 许可检查
+     * （按权限精确比较，无通配豁免）。
+     */
+    private static Set<String> canonicalActions(AiExecutionFacts facts) {
+        Set<String> actions = new LinkedHashSet<>();
+        for (String action : AiCanonicalAction.knownActions()) {
+            String permission = AiCanonicalAction.permissionOf(action).orElse(null);
+            if (permission != null && facts.hasScope(permission)) {
+                actions.add(action);
+            }
+        }
+        return Set.copyOf(actions);
     }
 
     /** 与 {@code AiGatewayClient.requireSingleJsonObject} 同一条 fail-closed 规则。 */

@@ -71,6 +71,14 @@
             <artifactId>ruoyi-ai-integration</artifactId>
         </dependency>
 
+        <!-- E3 内嵌装配：AI 公开面本地传输（transport=local）+ AI 侧控制器分组装配。
+             transport=http（默认）时不注册任何 AI 侧 bean，行为与迁移前一致。 -->
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>ruoyi-ai-web</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
         <!--  工作流模块  -->
         <dependency>
             <groupId>org.ruoyi</groupId>

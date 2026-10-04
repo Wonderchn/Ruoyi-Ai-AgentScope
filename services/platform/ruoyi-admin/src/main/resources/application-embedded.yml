@@ -1,0 +1,23 @@
+# 内嵌 AI 运行形态（E3 单元二收尾起）：AI 能力以模块形式在 platform 进程内执行。
+#
+# 启用方式：--spring.profiles.active=embedded（与默认 dev/prod 组合使用，
+# 例如 --spring.profiles.active=dev,embedded）。
+#
+# 形态语义：
+# - 不启动独立 AI 应用；/api/ai/v1/** 白名单路由经 MVC 基础设施直调内嵌 AI 控制器
+#   （LocalAiGatewayClient），不产生任何 localhost HTTP 转发；
+# - AI → platform 的三处回调（授权复核、组织事实匹配、许可登记）全部替换为同进程
+#   本地接口（LocalPlatformAuthorizationChecker / LocalPlatformFacts / LocalPlatformPermits）；
+# - /internal/ai/v1/** 对外一律 404（AiInternalAccessBoundaryFilter，C3 负例语义）；
+# - 流式路由（SSE/上传/私有 PDF）在专用本地流传输落地前 fail-closed 503，不静默降级。
+#
+# 数据库：统一主库（platform schema），无 AI 专用数据源；许可表为
+# sys_ai_execution_permit（platform 层）与 ai_execution_permit（AI 运行时层）。
+ai:
+  integration:
+    enabled: true
+    # local = 内嵌同进程转送；http = 转发到独立 AI 应用（迁移前形态，默认）
+    transport: local
+    # 高危写路径（KB 创建/ACL 授予等）仍按既有开关门控，按需显式开启：
+    # high-risk:
+    #   enabled: true

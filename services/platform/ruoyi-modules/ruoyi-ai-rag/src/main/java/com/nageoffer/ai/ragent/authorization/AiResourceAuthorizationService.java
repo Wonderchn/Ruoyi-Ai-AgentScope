@@ -52,9 +52,12 @@ import java.util.Set;
  *   <li>{@link FactPort}：从 {@link AiResourceMapper} 读资源事实、从
  *       {@link AiResourceAclMapper} 读规则行，父链 tombstone 传播所需的 parent
  *       状态随事实一起给出；</li>
- *   <li>{@link SubjectMatchPort}：本单元为<b>本地 ACL 存活判定</b>——候选主体必须
- *       在当前租户仍有未过期的 ACL 行；platform 组织候选匹配（成员/部门/角色的
- *       在线核实）在后续单元接线。撤权即删行 + epoch bump，本端口立刻收窄。</li>
+ *   <li>{@link SubjectMatchPort}：<b>本地 ACL 存活判定</b>——候选主体必须在
+ *       当前租户仍有未过期的 ACL 行；组织候选（成员/部门/角色）的在线核实走
+ *       {@code PlatformFactsPort}：内嵌装配注入本地实现（直接读 platform 身份源，
+ *       不经 localhost HTTP），独立运行时由 HTTP 实现回调 platform 的
+ *       {@code /authorization/subjects/match}（services/ai 冻结拷贝）。
+ *       撤权即删行 + epoch bump，本端口立刻收窄。</li>
  * </ul>
  * 判定本体在 {@link DefaultResourceAuthorizationService}（交集/tombstone/expiry/epoch
  * 已实现并通过单测），这里只做事实装配：<code>new DefaultResourceAuthorizationService(this, this, clock)</code>。
@@ -81,8 +84,7 @@ public class AiResourceAuthorizationService
     private final Clock clock;
     private final DefaultResourceAuthorizationService delegate;
     private com.nageoffer.ai.ragent.framework.security.AuthorizationChecker platformAuthorization;
-    private String platformBaseUrl;
-    private String platformCredential;
+    private com.nageoffer.ai.ragent.framework.security.PlatformFactsPort platformFacts;
     private org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate projectionJdbc;
 
     @Autowired
@@ -157,57 +159,50 @@ public class AiResourceAuthorizationService
     private final com.fasterxml.jackson.databind.ObjectMapper matchJson = new com.fasterxml.jackson.databind.ObjectMapper()
             .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY)
             .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
-    private final java.net.http.HttpClient matchHttp = java.net.http.HttpClient.newBuilder().version(java.net.http.HttpClient.Version.HTTP_1_1)
-            .connectTimeout(java.time.Duration.ofSeconds(2)).followRedirects(java.net.http.HttpClient.Redirect.NEVER).build();
 
-    @Autowired
-    public void configureSubjectMatch(@org.springframework.beans.factory.annotation.Value("${ai.integration.platform-base-url:}") String url,
-            @org.springframework.beans.factory.annotation.Value("${ai.integration.platform-service-credential:}") String credential) {
-        if (url.isBlank() || credential.isBlank()) { throw new IllegalStateException("platform subject match configuration required"); }
-        platformBaseUrl = url;
-        platformCredential = credential;
+    /**
+     * platform 主体/组织事实端口。内嵌装配提供本地实现（直接读 platform 身份源）；
+     * 端口缺席时保持"仅本地 ACL 存活判定"的独立运行形态（与迁移前
+     * {@code ai.integration.platform-base-url} 未配置时的行为一致）。
+     */
+    @Autowired(required = false)
+    public void configurePlatformFacts(org.springframework.beans.factory.ObjectProvider<
+            com.nageoffer.ai.ragent.framework.security.PlatformFactsPort> facts) {
+        this.platformFacts = facts == null ? null : facts.getIfAvailable();
     }
 
     @Override
     public MatchResult match(ExecutionPrincipal principal, Collection<String> subjectRefs, int policyVersion, String action) {
-        if (platformBaseUrl == null) { return match(principal, subjectRefs, policyVersion); }
-        try {
-            var refs = List.copyOf(subjectRefs);
-            var candidates = refs.stream().map(ref -> Map.of("subjectRefs", List.of(ref))).toList();
-            var payload = Map.of("tenantId", principal.tenantId(), "subject", principal.userId(),
-                    "membershipId", principal.membershipId(), "policyVersion", policyVersion,
-                    "action", action, "candidates", candidates);
-            var request = java.net.http.HttpRequest.newBuilder(java.net.URI.create(platformBaseUrl
-                            + "/internal/platform/v1/authorization/subjects/match"))
-                    .timeout(java.time.Duration.ofSeconds(2)).header("Content-Type", "application/json")
-                    .header("X-P04-Service-Credential", platformCredential)
-                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(matchJson.writeValueAsString(payload))).build();
-            var response = matchHttp.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
-            var root = matchJson.readTree(response.body());
-            if (response.statusCode() == 409 && root != null && root.path("code").isIntegralNumber()
-                    && root.path("code").intValue() == 409
-                    && "POLICY_VERSION_STALE".equals(root.path("data").path("errorCode").textValue())) {
-                throw new com.nageoffer.ai.ragent.framework.security.StaleVersionException("platform policy changed during subject match");
+        if (platformFacts == null) {
+            // 无平台事实端口：独立运行的本地 ACL 存活判定（迁移前 platform-base-url 未配置的同一形态）
+            return match(principal, subjectRefs, policyVersion);
+        }
+        var refs = List.copyOf(subjectRefs);
+        var candidates = refs.stream().map(ref ->
+                com.nageoffer.ai.ragent.framework.security.PlatformFactsPort.Candidate.subjectRefs(List.of(ref))).toList();
+        var outcome = platformFacts.match(principal, candidates, action);
+        requireMatchOutcome(outcome, refs.size(), policyVersion);
+        Set<String> matched = new LinkedHashSet<>();
+        for (int i = 0; i < refs.size(); i++) {
+            if (Boolean.TRUE.equals(outcome.matches().get(i))) {
+                matched.add(refs.get(i));
             }
-            var data = root.path("data");
-            if (response.statusCode() != 200 || !root.path("code").isIntegralNumber()
-                    || root.path("code").intValue() != 200 || !data.path("policyVersion").isIntegralNumber()
-                    || data.path("policyVersion").intValue() != policyVersion
-                    || !data.path("matches").isArray() || data.path("matches").size() != refs.size()) {
-                throw new ServiceException("subject match response invalid");
+        }
+        return new MatchResult(matched, policyVersion);
+    }
+
+    /** 平台事实回执形状校验：版本与候选数必须精确对应，任一不符即拒绝（不放行）。 */
+    private static void requireMatchOutcome(com.nageoffer.ai.ragent.framework.security.PlatformFactsPort.MatchOutcome outcome,
+                                            int expected, int policyVersion) {
+        if (outcome == null || outcome.policyVersion() != policyVersion
+                || outcome.matches() == null || outcome.matches().size() != expected) {
+            throw new ServiceException("platform facts response invalid");
+        }
+        for (Boolean value : outcome.matches()) {
+            if (value == null) {
+                throw new ServiceException("platform facts response invalid");
             }
-            Set<String> matched = new LinkedHashSet<>();
-            for (int i = 0; i < refs.size(); i++) {
-                var value = data.path("matches").get(i);
-                if (!value.isBoolean()) { throw new ServiceException("subject match response invalid"); }
-                if (value.booleanValue()) { matched.add(refs.get(i)); }
-            }
-            return new MatchResult(matched, policyVersion);
-        } catch (com.nageoffer.ai.ragent.framework.security.StaleVersionException e) { throw e;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ServiceException("subject match interrupted");
-        } catch (Exception e) { throw new ServiceException("subject match unavailable"); }
+        }
     }
 
     @Autowired
@@ -231,50 +226,36 @@ public class AiResourceAuthorizationService
     }
     public void requireFunction(ExecutionPrincipal principal,String action,String ref){requirePlatform(principal,action,ref);}
 
-    private com.fasterxml.jackson.databind.JsonNode queryCandidates(ExecutionPrincipal principal,String action,List<?> candidates) {
-        try {
-            var payload=Map.of("tenantId",principal.tenantId(),"subject",principal.userId(),"membershipId",principal.membershipId(),
-                    "policyVersion",principal.policyVersion(),"action",action,"candidates",candidates);
-            var request=java.net.http.HttpRequest.newBuilder(java.net.URI.create(platformBaseUrl+"/internal/platform/v1/authorization/subjects/match"))
-                    .timeout(java.time.Duration.ofSeconds(2)).header("Content-Type","application/json")
-                    .header("X-P04-Service-Credential",platformCredential)
-                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(matchJson.writeValueAsString(payload))).build();
-            var response=matchHttp.send(request,java.net.http.HttpResponse.BodyHandlers.ofString());
-            var root=matchJson.readTree(response.body());
-            if(response.statusCode()==409 && root!=null && root.path("code").asInt()==409
-                    && "POLICY_VERSION_STALE".equals(root.path("data").path("errorCode").textValue())){
-                throw new com.nageoffer.ai.ragent.framework.security.StaleVersionException("platform data scope version changed");
-            }
-            if(response.statusCode()!=200 || root==null || !root.path("code").isIntegralNumber() || root.path("code").intValue()!=200
-                    || !root.path("data").path("policyVersion").isIntegralNumber() || root.path("data").path("policyVersion").intValue()!=principal.policyVersion()
-                    || !root.path("data").path("matches").isArray() || root.path("data").path("matches").size()!=candidates.size()){
-                throw new ServiceException("platform candidate response invalid");
-            }
-            return root.path("data");
-        }catch(com.nageoffer.ai.ragent.framework.security.StaleVersionException e){throw e;}
-        catch(InterruptedException e){Thread.currentThread().interrupt();throw new ServiceException("platform match interrupted");}
-        catch(Exception e){throw new ServiceException("platform candidate facts unavailable");}
+    /**
+     * 逐候选读取平台事实；端口缺席即事实不可得（ServiceException，绝不默认放行）。
+     * 回执形状与版本精确校验，任一不符按 UNKNOWN 收敛。
+     */
+    private com.nageoffer.ai.ragent.framework.security.PlatformFactsPort.MatchOutcome queryFacts(
+            ExecutionPrincipal principal, String action,
+            List<com.nageoffer.ai.ragent.framework.security.PlatformFactsPort.Candidate> candidates) {
+        if (platformFacts == null) { throw new ServiceException("platform candidate facts unavailable"); }
+        var outcome = platformFacts.match(principal, candidates, action);
+        requireMatchOutcome(outcome, candidates.size(), principal.policyVersion());
+        return outcome;
     }
 
     public String currentOwnerDept(ExecutionPrincipal principal,String action) {
-        if(platformBaseUrl==null){throw new ServiceException("platform owner facts unavailable");}
-        var data=queryCandidates(principal,action,List.of());
-        var dept=data.path("principalDeptId");
-        if(dept.isMissingNode() || dept.isNull()){return null;}
-        if(!dept.isTextual() || !dept.textValue().matches("[0-9]{1,19}")){throw new ServiceException("platform owner facts invalid");}
-        return dept.textValue();
+        var outcome=queryFacts(principal,action,List.of());
+        var dept=outcome.principalDeptId();
+        if(dept==null || dept.isBlank()){return null;}
+        if(!dept.matches("[0-9]{1,19}")){throw new ServiceException("platform owner facts invalid");}
+        return dept;
     }
     public void requireCurrentSubject(ExecutionPrincipal principal,String subjectRef){
-        if(platformBaseUrl==null){throw new ServiceException("platform subject facts unavailable");}
-        var value=queryCandidates(principal,"kb.acl.manage",List.of(Map.of("validateOnly",true,"subjectRefs",List.of(subjectRef)))).path("matches").get(0);
-        if(!value.isBoolean()){throw new ServiceException("platform subject facts invalid");}
-        if(!value.booleanValue()){throw new com.nageoffer.ai.ragent.framework.security.P04AiException(
+        var outcome=queryFacts(principal,"kb.acl.manage",
+                List.of(com.nageoffer.ai.ragent.framework.security.PlatformFactsPort.Candidate.validateOnly(subjectRef)));
+        if(!Boolean.TRUE.equals(outcome.matches().get(0))){throw new com.nageoffer.ai.ragent.framework.security.P04AiException(
                 com.nageoffer.ai.ragent.framework.security.P04AiErrorCode.BAD_REQUEST,"acl subject is not a current tenant member or organization");}
     }
 
     private boolean dataScopeAllows(ExecutionPrincipal principal,String action,String ref) {
-        if(platformBaseUrl==null){return true;}
-        var candidates=new ArrayList<Map<String,Object>>();
+        if(platformFacts==null){return true;}
+        var candidates=new ArrayList<com.nageoffer.ai.ragent.framework.security.PlatformFactsPort.Candidate>();
         Set<String> visited=new LinkedHashSet<>();
         String current=ref;
         while(current!=null){
@@ -282,13 +263,11 @@ public class AiResourceAuthorizationService
             var parsed=parseResourceRef(current);
             var row=resourceMapper.findByPk(principal.tenantId(),parsed.resourceType(),parsed.resourceId()).orElse(null);
             if(row==null || !"ACTIVE".equals(row.status())){return false;}
-            var candidate=new LinkedHashMap<String,Object>();candidate.put("dataScope",true);
-            candidate.put("ownerMemberId",row.ownerMemberId());candidate.put("ownerDeptId",row.ownerDeptId());
-            candidates.add(candidate);
+            candidates.add(com.nageoffer.ai.ragent.framework.security.PlatformFactsPort.Candidate
+                    .dataScope(row.ownerMemberId(),row.ownerDeptId()));
             current=row.parentType()==null?null:resourceRef(row.parentType(),row.parentId());
         }
-        for(var matched:queryCandidates(principal,action,candidates).path("matches")){
-            if(!matched.isBoolean()){throw new ServiceException("platform data scope invalid");}
+        for(var matched:queryFacts(principal,action,candidates).matches()){
             if(!matched.booleanValue()){return false;}
         }
         return true;
