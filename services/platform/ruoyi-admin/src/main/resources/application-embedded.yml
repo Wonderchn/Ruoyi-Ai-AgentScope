@@ -22,7 +22,11 @@ ai:
     # high-risk:
     #   enabled: true
 
-# P2 正式运行路径（受理/生命周期/事件流）——与独立 AI 应用同一开关；
+# P2 正式运行路径（受理/生命周期/上传摄取/私有对象/事件流）——与独立 AI 应用同一开关；
 # P0.4 实验路径保持关闭（p04.enabled 缺省 false，与 P2 互斥）。
 p2:
   enabled: true
+  object-store:
+    # 私有对象存储只认 fs（专属目录）；s3/minio 未实现即启动失败，不静默回退。
+    type: fs
+    root: ${P2_OBJECT_STORE_ROOT:./data/private-objects}
