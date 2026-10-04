@@ -48,6 +48,10 @@ import org.springframework.core.env.Profiles;
  *       {@code ai.integration.legacy-listeners-enabled}）时<b>拒绝启动</b>，
  *       在 <i>ApplicationReadyEvent</i> 之后给出脱敏配置错误而非静默降级。</li>
  * </ol>
+ *
+ * <p><b>归属（E3/C3）</b>：仅独立运行的 ragent 应用装配。内嵌后公开面语义
+ * （"未授权路径不暴露"）由 platform 侧以本地装配等价约束重新表达并保留负例，
+ * {@code SaasEntryFilter} 的"生产只放行 /internal/ai/v1/**"规则不进入内嵌装配清单。
  */
 @Configuration
 @EnableConfigurationProperties(SaasBoundaryProperties.class)

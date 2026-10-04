@@ -29,6 +29,14 @@ import org.springframework.context.annotation.Configuration;
 /**
  * 数据库持久层配置类
  * 配置 MyBatis-Plus 相关分页插件等
+ *
+ * <p><b>归属（E3/C1、C7）</b>：本类只服务独立运行的 ragent 应用（bootstrap）。
+ * 内嵌进 platform 后唯一 {@code MybatisPlusInterceptor} 由 platform
+ * {@code MybatisPlusConfig} 提供（租户行 → 数据权限 → 分页 → 乐观锁），
+ * 唯一 {@code MetaObjectHandler} 由 platform {@code InjectionMetaObjectHandler} 提供
+ * （其对非 BaseEntity 实体按 createTime/updateTime(Date) 填充，与 AI 实体字段兼容；
+ * {@code deleted} 无 INSERT fill 注解，由列默认值兜底）。
+ * 内嵌装配清单<b>不得</b>注册本类，禁止用 allow-bean-definition-overriding 绕过。
  */
 @Configuration
 public class DataBaseConfiguration {

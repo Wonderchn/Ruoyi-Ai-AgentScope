@@ -35,6 +35,12 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
 @PropertySource(value = "classpath:common-mybatis.yml", factory = YmlPropertySourceFactory.class)
 public class MybatisPlusConfig {
 
+    /**
+     * 唯一插件链（E3/C1）：内嵌 AI 模块共用本链，链序固定为
+     * 租户行 → 数据权限 → 分页 → 乐观锁；AI 侧不得再注册第二个
+     * {@code MybatisPlusInterceptor}/{@code MetaObjectHandler}/{@code IdentifierGenerator}，
+     * 禁止用 allow-bean-definition-overriding 绕过。
+     */
     @Bean
     public MybatisPlusInterceptor mybatisPlusInterceptor() {
         MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();

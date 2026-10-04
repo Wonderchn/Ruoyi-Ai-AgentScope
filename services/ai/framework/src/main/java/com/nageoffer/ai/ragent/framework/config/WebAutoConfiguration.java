@@ -23,6 +23,11 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * Web 组件自动装配
+ *
+ * <p><b>归属（E3/C9）</b>：仅独立运行的 ragent 应用装配。内嵌后 AI 侧
+ * {@code GlobalExceptionHandler}/{@code Result} 让位 platform 信封
+ * （platform {@code GlobalExceptionHandler} + {@code R}），公开响应面统一走
+ * platform 信封；本类不进入内嵌装配清单。
  */
 @Configuration
 public class WebAutoConfiguration {

@@ -51,12 +51,15 @@ public class TenantContextGuard {
      *
      * <p>刻意用精确集合而不是前缀匹配："以 public_ 开头就放行" 这类规则一旦被
      * 命名迁移或注入命中，就会变成一整片免检区。
+     *
+     * <p>E3/C8 起不含任何迁移历史表：AI 迁移链已退役（E2 归档为
+     * {@code platform.flyway_schema_history_ai_legacy}），运行时不再存在访问
+     * {@code flyway_schema_history_ai} 的代码路径，白名单相应收窄。
      */
     private static final List<String> TENANTLESS_ALLOWLIST = List.of(
             "public_template",
             "ai_acl_epoch",
-            "ai_execution_permit",
-            "flyway_schema_history_ai");
+            "ai_execution_permit");
 
     /** 当前主体，缺失即拒绝。 */
     public ExecutionPrincipal requirePrincipal() {
