@@ -126,6 +126,18 @@ jobs:
       - name: Ensure the check left the sources unchanged
         run: git diff --exit-code
 
+  db-ai:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Rebuild both domains from the repository PostgreSQL files (platform V1..V6, AI V1..V12)
+        run: bash scripts/ci/verify-ai-migrations.sh
+      - name: Ensure the check left the sources unchanged
+        run: git diff --exit-code
+
   policy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -138,7 +150,7 @@ jobs:
 
   ci-required:
     if: always()
-    needs: [platform, ai, frontend, ruoyi-web, policy, db]
+    needs: [platform, ai, frontend, ruoyi-web, policy, db, db-ai]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -150,8 +162,9 @@ jobs:
           RUOYI_WEB: ${{ needs.ruoyi-web.result }}
           POLICY: ${{ needs.policy.result }}
           DB: ${{ needs.db.result }}
+          DB_AI: ${{ needs.db-ai.result }}
         run: |
-          for result in "$PLATFORM" "$AI" "$FRONTEND" "$RUOYI_WEB" "$POLICY" "$DB"; do
+          for result in "$PLATFORM" "$AI" "$FRONTEND" "$RUOYI_WEB" "$POLICY" "$DB" "$DB_AI"; do
             if [ "$result" != success ]; then
               echo "A required job did not succeed: $result" >&2
               exit 1
