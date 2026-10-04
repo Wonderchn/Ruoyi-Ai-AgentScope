@@ -21,7 +21,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.ruoyi.aiintegration.config.AiIntegrationProperties;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
@@ -38,10 +38,14 @@ import java.util.Optional;
  * <p>失败一律返回 empty（调用方把"不可达"读作"无法证明已停"：保持 PENDING/
  * UNKNOWN，而不是假设节点已停）。不跟随重定向；2s 超时；只认单个 JSON 对象
  * 且 {@code code=200}。
+ *
+ * <p>仅在 {@code transport=http}（独立 AI 应用，默认）装配；内嵌
+ * {@code transport=local} 由 {@link LocalAiBarrierPort} 提供同一端口。
  */
 @Slf4j
 @Component
-@ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
+@ConditionalOnExpression("'${ai.integration.enabled:false}' == 'true'"
+        + " and '${ai.integration.transport:http}' != 'local'")
 public class HttpAiBarrierClient implements RevocationBarrierCoordinator.AiBarrierPort {
 
     private final String baseUrl;
