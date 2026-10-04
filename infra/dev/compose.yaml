@@ -100,6 +100,14 @@ services:
       chmod 644 /keys/public.pem;
       test -f /keys/private.pem && test -f /keys/public.pem'
 
+  # Named volumes come up root-owned; the app containers run as uid 10001/gid 0,
+  # so the private-object volume needs its ownership prepared once.
+  delivery-dirs:
+    image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    volumes:
+      - dev-private-objects:/data/private-objects
+    entrypoint: ["sh", "-c", "mkdir -p /data/private-objects && chown -R 10001:0 /data/private-objects && chmod 750 /data/private-objects"]
+
   redis:
     image: redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     command: ["redis-server", "--requirepass", "${DEV_REDIS_PASSWORD:?set DEV_REDIS_PASSWORD in the env file}"]
@@ -157,6 +165,8 @@ services:
       redis:
         condition: service_healthy
       delivery-keys:
+        condition: service_completed_successfully
+      delivery-dirs:
         condition: service_completed_successfully
     environment:
       AI_DB_URL: jdbc:postgresql://postgres:5432/ruoyi_agent?client_encoding=UTF8&currentSchema=ai,extensions
