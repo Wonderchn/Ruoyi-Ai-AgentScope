@@ -1,7 +1,7 @@
 package org.ruoyi.workflow.service;
 
 import cn.hutool.core.collection.CollUtil;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.baomidou.mybatisplus.extension.toolkit.ChainWrappers;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;

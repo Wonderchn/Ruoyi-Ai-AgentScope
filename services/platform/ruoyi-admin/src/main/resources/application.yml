@@ -5,20 +5,14 @@ server:
   servlet:
     # 应用的访问路径
     context-path: /
-  # undertow 配置
-  undertow:
-    # HTTP post内容的最大大小。当值为-1时，默认值为大小是无限的
-    max-http-post-size: -1
-    # 以下的配置会影响buffer,这些buffer会用于服务器连接的IO操作,有点类似netty的池化内存管理
-    # 每块buffer的空间大小,越小的空间被利用越充分
-    buffer-size: 512
-    # 是否分配的直接内存
-    direct-buffers: true
+  # tomcat 配置（Boot 4 已移除 Undertow 支持，原 undertow 参数按 Tomcat 语义等价映射）
+  tomcat:
+    # 原 undertow max-http-post-size: -1（不限制 POST 体）；Tomcat 分别限制表单体与请求体吞读
+    max-http-form-post-size: -1
+    max-swallow-size: -1
     threads:
-      # 设置IO线程数, 它主要执行非阻塞的任务,它们会负责多个连接, 默认设置每个CPU核心一个线程
-      io: 8
-      # 阻塞任务线程池, 当执行类似servlet请求阻塞操作, undertow会从这个线程池中取得线程,它的值设置取决于系统的负载
-      worker: 256
+      # 原 undertow worker 线程数 256；Tomcat 无独立 IO/worker 划分，poller 由容器自动管理
+      max: 256
 
 # execute_process 只能经由固定镜像的 Docker OS sandbox；缺任一配置均 fail closed。
 coding:
@@ -130,7 +124,13 @@ spring:
     static-path-pattern: /static/**
     format:
       date-time: yyyy-MM-dd HH:mm:ss
-  jackson:
+  # 应用面统一使用 Jackson 2（Boot 4 默认 Jackson 3，已从 web starter 传递路径摘除）。
+  # 因此 Jackson 2 的绑定属性从 spring.jackson.* 迁移到 Boot 4 的 spring.jackson2.*；
+  # 同时必须显式声明优先使用 jackson2，否则 Boot 4 不会注册 Jackson 2 的消息转换器。
+  http:
+    converters:
+      preferred-json-mapper: jackson2
+  jackson2:
     # 日期格式化
     date-format: yyyy-MM-dd HH:mm:ss
     serialization:

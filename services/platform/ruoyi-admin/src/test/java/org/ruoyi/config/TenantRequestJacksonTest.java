@@ -8,10 +8,13 @@ import org.ruoyi.common.json.config.JacksonConfig;
 import org.ruoyi.common.json.config.PlatformObjectMapperConfig;
 import org.ruoyi.system.domain.bo.SysTenantBo;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
-import org.springframework.boot.autoconfigure.http.HttpMessageConvertersAutoConfiguration;
-import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
+import org.springframework.boot.http.converter.autoconfigure.HttpMessageConvertersAutoConfiguration;
+import org.springframework.boot.http.converter.autoconfigure.ServerHttpMessageConvertersCustomizer;
+import org.springframework.boot.jackson2.autoconfigure.Jackson2AutoConfiguration;
+import org.springframework.boot.test.context.assertj.AssertableApplicationContext;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.http.MediaType;
+import org.springframework.http.converter.HttpMessageConverters;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.mock.http.MockHttpInputMessage;
@@ -21,6 +24,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
 import java.util.Optional;
+import java.util.stream.StreamSupport;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -46,13 +50,15 @@ class TenantRequestJacksonTest {
         """;
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
-        .withConfiguration(AutoConfigurations.of(JacksonConfig.class, JacksonAutoConfiguration.class,
+        // Boot 4 默认 Jackson 3；应用面使用 Jackson 2，需要显式声明优先映射器与 Jackson2 自动装配
+        .withPropertyValues("spring.http.converters.preferred-json-mapper=jackson2")
+        .withConfiguration(AutoConfigurations.of(JacksonConfig.class, Jackson2AutoConfiguration.class,
             PlatformObjectMapperConfig.class, HttpMessageConvertersAutoConfiguration.class));
 
     @Test
     void readsTenantRequestWithApplicationDateFormat() {
-        contextRunner.withPropertyValues("spring.jackson.date-format=yyyy-MM-dd HH:mm:ss").run(context -> {
-            MappingJackson2HttpMessageConverter converter = context.getBean(MappingJackson2HttpMessageConverter.class);
+        contextRunner.withPropertyValues("spring.jackson2.date-format=yyyy-MM-dd HH:mm:ss").run(context -> {
+            MappingJackson2HttpMessageConverter converter = jsonConverter(context);
             assertSame(context.getBean(ObjectMapper.class), converter.getObjectMapper());
 
             SysTenantBo tenant = readTenant(converter, TENANT_REQUEST);
@@ -68,7 +74,7 @@ class TenantRequestJacksonTest {
     @Test
     void keepsRegisteredDateDeserializerWithoutDateFormatProperty() {
         contextRunner.run(context -> {
-            SysTenantBo tenant = readTenant(context.getBean(MappingJackson2HttpMessageConverter.class), TENANT_REQUEST);
+            SysTenantBo tenant = readTenant(jsonConverter(context), TENANT_REQUEST);
 
             assertEquals(expirationDate(), tenant.getExpireTime());
         });
@@ -76,7 +82,7 @@ class TenantRequestJacksonTest {
 
     @Test
     void honorsConfiguredDateSerializationFormat() {
-        contextRunner.withPropertyValues("spring.jackson.date-format=yyyy/MM/dd HH:mm:ss").run(context -> {
+        contextRunner.withPropertyValues("spring.jackson2.date-format=yyyy/MM/dd HH:mm:ss").run(context -> {
             ObjectMapper mapper = context.getBean(ObjectMapper.class);
 
             String json = mapper.writeValueAsString(new DateValue(expirationDate()));
@@ -108,7 +114,7 @@ class TenantRequestJacksonTest {
     void acceptsNullExpirationDate() {
         contextRunner.run(context -> {
             String request = TENANT_REQUEST.replace("\"2027-09-11 00:00:00\"", "null");
-            SysTenantBo tenant = readTenant(context.getBean(MappingJackson2HttpMessageConverter.class), request);
+            SysTenantBo tenant = readTenant(jsonConverter(context), request);
 
             assertNull(tenant.getExpireTime());
         });
@@ -118,10 +124,30 @@ class TenantRequestJacksonTest {
     void rejectsInvalidExpirationDate() {
         contextRunner.run(context -> {
             String request = TENANT_REQUEST.replace("2027-09-11 00:00:00", "invalid-date");
-            MappingJackson2HttpMessageConverter converter = context.getBean(MappingJackson2HttpMessageConverter.class);
+            MappingJackson2HttpMessageConverter converter = jsonConverter(context);
 
             assertThrows(HttpMessageNotReadableException.class, () -> readTenant(converter, request));
         });
+    }
+
+    /**
+     * Boot 4 不再把 JSON 转换器注册为 {@code MappingJackson2HttpMessageConverter} bean，
+     * 而是通过 {@link ServerHttpMessageConvertersCustomizer} 把转换器加入
+     * {@link HttpMessageConverters} 构建结果。这里走同一条装配路径取值，
+     * 从而仍然验证「HTTP JSON 使用应用权威 ObjectMapper」这一契约。
+     */
+    private static MappingJackson2HttpMessageConverter jsonConverter(AssertableApplicationContext context) {
+        HttpMessageConverters.ServerBuilder builder = HttpMessageConverters.forServer();
+        // 服务端转换器由多个 customizer 共同贡献（string / jackson2 / 其它），按 @Order 全部套用，
+        // 与 Boot 4 装配路径一致，而不是只取其中一个。
+        context.getBeanProvider(ServerHttpMessageConvertersCustomizer.class).orderedStream()
+            .forEach(customizer -> customizer.customize(builder));
+        // Spring 7 的 HttpMessageConverters 是 Iterable（不再暴露 getConverters()）
+        return StreamSupport.stream(builder.build().spliterator(), false)
+            .filter(MappingJackson2HttpMessageConverter.class::isInstance)
+            .map(MappingJackson2HttpMessageConverter.class::cast)
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("Boot 4 未按 preferred-json-mapper=jackson2 注册 Jackson 2 JSON 转换器"));
     }
 
     private static SysTenantBo readTenant(MappingJackson2HttpMessageConverter converter, String json) throws Exception {

@@ -1,6 +1,8 @@
 package org.ruoyi.mcp.service.core;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sun.net.httpserver.HttpServer;
@@ -11,6 +13,8 @@ import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.ruoyi.agent.WebSearchAgent;
@@ -32,6 +36,16 @@ import static org.mockito.Mockito.when;
 class RemoteMcpBearerKeyTest {
 
     private final ObjectMapper json = new ObjectMapper();
+
+    /**
+     * MyBatis-Plus 3.5.17 起 LambdaQueryWrapper 需要实体已注册 TableInfo，
+     * 否则报 "can not find lambda cache for this entity"。本测试直接构造服务（不启动 MyBatis 上下文），
+     * 因此这里显式注册，与运行时由 MapperScan 初始化的状态对齐。
+     */
+    @BeforeAll
+    static void registerTableInfo() {
+        TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "test"), McpTool.class);
+    }
 
     @Test
     void selectedRemoteToolSendsBearerKeyDuringDiscoveryAndCall() throws Exception {

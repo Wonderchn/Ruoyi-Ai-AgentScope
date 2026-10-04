@@ -616,7 +616,7 @@ public class FlwTaskServiceImpl implements IFlwTaskService {
         } else {
             flowTaskVo.setVarList(new HashMap<>());
         }
-        flowTaskVo.setNodeRatio(flowNode.getNodeRatio());
+        flowTaskVo.setNodeRatio(parseNodeRatio(flowNode.getNodeRatio()));
         flowTaskVo.setApplyNode(flowNode.getNodeCode().equals(flwCommonService.applyNodeCode(task.getDefinitionId())));
         return flowTaskVo;
     }
@@ -739,7 +739,7 @@ public class FlwTaskServiceImpl implements IFlwTaskService {
         Task task = taskService.getById(taskId);
         FlowNode flowNode = getByNodeCode(task.getNodeCode(), task.getDefinitionId());
         if (ADD_SIGNATURE.equals(taskOperation) || REDUCTION_SIGNATURE.equals(taskOperation)) {
-            if (flowNode.getNodeRatio().compareTo(BigDecimal.ZERO) == 0) {
+            if (parseNodeRatio(flowNode.getNodeRatio()).compareTo(BigDecimal.ZERO) == 0) {
                 throw new ServiceException(task.getNodeName() + "不是会签节点！");
             }
         }
@@ -856,5 +856,22 @@ public class FlwTaskServiceImpl implements IFlwTaskService {
             throw new ServiceException(e.getMessage());
         }
         return true;
+    }
+
+    /**
+     * WarmFlow 1.8.9 起 {@code Node.getNodeRatio()} 由 BigDecimal 改为 String，
+     * 而平台对外 VO 与「大于 0 即会签」的判定仍按数值语义。这里在边界统一转换，
+     * 空值与非法文本按 0 处理，保持迁移前「比例为 0 不是会签节点」的行为。
+     */
+    private static BigDecimal parseNodeRatio(String nodeRatio) {
+        if (StringUtils.isBlank(nodeRatio)) {
+            return BigDecimal.ZERO;
+        }
+        try {
+            return new BigDecimal(nodeRatio.trim());
+        } catch (NumberFormatException ex) {
+            log.warn("非法的流程节点签署比例，按 0 处理: {}", nodeRatio);
+            return BigDecimal.ZERO;
+        }
     }
 }

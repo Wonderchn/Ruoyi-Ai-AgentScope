@@ -29,12 +29,29 @@
         <!-- dynamic-datasource 多数据源-->
         <dependency>
             <groupId>com.baomidou</groupId>
-            <artifactId>dynamic-datasource-spring-boot3-starter</artifactId>
+            <artifactId>dynamic-datasource-spring-boot4-starter</artifactId>
         </dependency>
 
         <dependency>
             <groupId>com.baomidou</groupId>
-            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+            <artifactId>mybatis-plus-spring-boot4-starter</artifactId>
+        </dependency>
+
+        <!-- MP 3.5.17 拆分后 starter 不再传递这两个制品，但平台大量使用 ServiceImpl/插件/条件构造器 -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-extension</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring</artifactId>
+        </dependency>
+
+        <!-- Boot 4 默认 Jackson 3；本模块的 JSON 类型处理器与既有 SDK 仍使用 Jackson 2 API -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-jackson2</artifactId>
         </dependency>
 
         <dependency>
