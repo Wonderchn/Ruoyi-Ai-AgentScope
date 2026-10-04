@@ -112,6 +112,10 @@ services:
 
   platform:
     image: ${DEV_PLATFORM_IMAGE:-ghcr.io/wonderchn/ruoyi-ai-agentscope-platform:latest}
+    # The shipped image pins --spring.profiles.active=prod on its command line,
+    # which outranks environment variables; a dev delivery must run the dev
+    # profile explicitly.
+    entrypoint: ["java", "-Djava.io.tmpdir=/app/tmp", "-jar", "/app/application.jar", "--spring.profiles.active=dev"]
     depends_on:
       db-migrate:
         condition: service_completed_successfully
