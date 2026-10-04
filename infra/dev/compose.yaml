@@ -95,6 +95,9 @@ services:
         openssl rsa -in /keys/private.pem -pubout -out /keys/public.pem 2>/dev/null;
         rm -f /keys/private-pkcs1.pem;
       fi;
+      chown 10001:0 /keys/private.pem /keys/public.pem 2>/dev/null || true;
+      chmod 640 /keys/private.pem;
+      chmod 644 /keys/public.pem;
       test -f /keys/private.pem && test -f /keys/public.pem'
 
   redis:
