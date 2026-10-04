@@ -231,6 +231,8 @@ services:
     build:
       context: ..
       dockerfile: infra/docker/ruoyi-web.Dockerfile
+      args:
+        VITE_CLIENT_ID: ${DEV_CLIENT_ID:-dev-client}
     image: ruoyi-ai-agentscope-web:dev
     depends_on:
       - platform
