@@ -181,6 +181,9 @@ services:
       # This pair is the approved integration path and also what lets the
       # production AuthorizationChecker bean exist (delegated identity checks).
       AI_INTEGRATION_SECURITY_ENABLED: "true"
+      # KB/resource writes go through the high-risk write path (permit + audit);
+      # without this flag the write service refuses with AUTHORIZATION_UNAVAILABLE.
+      AI_INTEGRATION_HIGH_RISK_ENABLED: "true"
       AI_INTEGRATION_SECURITY_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL}
       AI_INTEGRATION_PLATFORM_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL}
       AI_INTEGRATION_SECURITY_PUBLIC_KEY_PATH: /keys/public.pem
