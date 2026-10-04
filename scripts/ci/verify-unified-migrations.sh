@@ -43,6 +43,7 @@ done
 [ -f "$PLATFORM_SQL/V1__platform_baseline.sql" ] || { echo "missing platform baseline"; exit 2; }
 [ -f "$PLATFORM_SQL/V7__unified_ai_domain.sql" ] || { echo "missing unified AI domain migration"; exit 2; }
 [ -f "$PLATFORM_SQL/V8__unified_ai_data.sql" ] || { echo "missing unified AI data migration"; exit 2; }
+[ -f "$PLATFORM_SQL/V9__legacy_ai_domain_ddl.sql" ] || { echo "missing legacy AI domain DDL migration"; exit 2; }
 
 umask 077
 rm -rf $WORK; mkdir -p "$WORK/platform" "$WORK/ai" "$WORK/bootstrap"
@@ -147,9 +148,12 @@ echo "### 5. every AI-domain table from the table map exists in platform"
 EXPECTED=$(python - "$TABLE_MAP" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1],encoding="utf-8"))
-names=sorted({e["target"]["table"] for e in d["tables"]
-              if e.get("source",{}).get("schema")=="ai" and e.get("target")})
-print(" ".join(names))
+names={e["target"]["table"] for e in d["tables"]
+       if e.get("source",{}).get("schema")=="ai" and e.get("target")}
+# V9 authors the legacy MySQL-only AI domain; those entries carry a non-ai source schema
+names |= {e["target"]["table"] for e in d["tables"]
+          if e.get("status")=="needs_pg_ddl" and e.get("target")}
+print(" ".join(sorted(names)))
 PY
 )
 MISSING=""
@@ -193,8 +197,11 @@ docker run --rm --net host -e FLYWAY_URL="$FRESH_URL" -e FLYWAY_SCHEMAS=platform
   -e FLYWAY_TABLE=flyway_schema_history_platform -e FLYWAY_LOCATIONS=filesystem:/flyway/sql \
   -e FLYWAY_VALIDATE_MIGRATION_NAMING=true -e FLYWAY_USER=migrate_platform -e FLYWAY_PASSWORD=$MIGRATE_PW \
   -v "$WORK/platform":/flyway/sql:ro $FLYWAY_IMAGE migrate > "$WORK/a2.txt" 2>&1
-if [ $? -eq 0 ] && grep -Eq 'Successfully applied 8 migrations' "$WORK/a2.txt"; then
-  ok 'fresh install applied V1..V8'
+FRESH_RC=$?
+# count the shipped migrations instead of hardcoding: V9 and later must not break this check
+EXPECTED_MIGRATIONS=$(ls "$WORK/platform"/V*.sql 2>/dev/null | wc -l | tr -d '[:space:]')
+if [ "$FRESH_RC" -eq 0 ] && grep -Eq "Successfully applied $EXPECTED_MIGRATIONS migrations|Schema \"platform\" is up to date" "$WORK/a2.txt"; then
+  ok "fresh install applied all $EXPECTED_MIGRATIONS migrations"
 else
   bad "fresh install failed: $(tail -3 "$WORK/a2.txt")"
 fi
