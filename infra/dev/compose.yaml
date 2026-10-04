@@ -1,0 +1,166 @@
+# Unified synthetic dev delivery for the P2/P3 stack (single VM / single host).
+#
+# Boundary contract (R05–R07):
+#   * every secret comes from the environment or a controlled env file - no real
+#     credential is committed here; the values below are placeholders required to
+#     be overridden via DEV_* variables;
+#   * all capability flags default to OFF: with no env overrides the stack boots
+#     with p2/p3 closed (uploads refuse, no run worker, no sandbox);
+#   * private objects live in a dedicated local fs volume (single-host delivery for
+#     this batch); multi-host object storage (S3/MinIO) is a separate, unscheduled
+#     decision and is NOT wired here;
+#   * this is a dev delivery: it does not deploy production and must not be pointed
+#     at any business database;
+#   * the migration chain applies the repository's own SQL (bootstrap identities,
+#     then platform V1..V6 and AI V1..V12 with native Flyway) before the services
+#     start; platform and ai wait for it (service_completed_successfully).
+name: ruoyi-ai-dev
+
+services:
+  postgres:
+    image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    environment:
+      POSTGRES_PASSWORD: ${DEV_PG_PASSWORD:?set DEV_PG_PASSWORD in the env file}
+      POSTGRES_DB: ruoyi_agent
+      POSTGRES_USER: postgres
+    volumes:
+      - dev-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ruoyi_agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # Superuser-only bootstrap objects (roles, schemas, vector extension) - never
+  # migrations; they are applied before Flyway and are idempotent.
+  db-bootstrap:
+    image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${DEV_PG_PASSWORD}
+      PLATFORM_MIGRATE_PASSWORD: ${DEV_PG_PASSWORD}
+      PLATFORM_APP_PASSWORD: ${DEV_PG_PASSWORD}
+      AI_MIGRATE_PASSWORD: ${DEV_PG_PASSWORD}
+      AI_APP_PASSWORD: ${DEV_PG_PASSWORD}
+    volumes:
+      - ../../services/platform/docs/script/sql/postgres/bootstrap:/sql/platform-bootstrap:ro
+      - ../../services/ai/resources/database/postgres/bootstrap:/sql/ai-bootstrap:ro
+    entrypoint: >
+      sh -c '
+      for f in /sql/platform-bootstrap/*.sql /sql/ai-bootstrap/*.sql; do
+        echo "applying $$f";
+        psql -h postgres -U postgres -d ruoyi_agent -v ON_ERROR_STOP=1 -f "$$f" || exit 1;
+      done'
+
+  db-migrate:
+    image: flyway/flyway@sha256:94a81ca7db9a9f24fd8acd7463fa4560cb8f66aae2aa64485c27eb296f5851cf
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      FLYWAY_VALIDATE_MIGRATION_NAMING: "true"
+      MIGRATE_PASSWORD: ${DEV_PG_PASSWORD}
+    volumes:
+      - ../../services/platform/docs/script/sql/postgres:/sql/platform:ro
+      - ../../services/ai/resources/database/postgres/migrations:/sql/ai:ro
+    entrypoint: >
+      sh -c '
+      FLYWAY_URL="jdbc:postgresql://postgres:5432/ruoyi_agent?currentSchema=platform,extensions"
+      FLYWAY_USER=migrate_platform
+      FLYWAY_PASSWORD="$$MIGRATE_PASSWORD"
+      FLYWAY_SCHEMAS=platform FLYWAY_DEFAULT_SCHEMA=platform
+      FLYWAY_TABLE=flyway_schema_history_platform FLYWAY_LOCATIONS=filesystem:/sql/platform
+      export FLYWAY_URL FLYWAY_USER FLYWAY_PASSWORD FLYWAY_SCHEMAS FLYWAY_DEFAULT_SCHEMA FLYWAY_TABLE FLYWAY_LOCATIONS;
+      flyway migrate &&
+      FLYWAY_URL="jdbc:postgresql://postgres:5432/ruoyi_agent?currentSchema=ai,extensions"
+      FLYWAY_USER=migrate_ai
+      FLYWAY_SCHEMAS=ai FLYWAY_DEFAULT_SCHEMA=ai
+      FLYWAY_TABLE=flyway_schema_history_ai FLYWAY_LOCATIONS=filesystem:/sql/ai
+      export FLYWAY_URL FLYWAY_USER FLYWAY_SCHEMAS FLYWAY_DEFAULT_SCHEMA FLYWAY_TABLE FLYWAY_LOCATIONS;
+      flyway migrate'
+
+  redis:
+    image: redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    command: ["redis-server", "--requirepass", "${DEV_REDIS_PASSWORD:?set DEV_REDIS_PASSWORD in the env file}"]
+    volumes:
+      - dev-redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    environment:
+      REDIS_PASSWORD: ${DEV_REDIS_PASSWORD}
+
+  platform:
+    image: ${DEV_PLATFORM_IMAGE:-ghcr.io/wonderchn/ruoyi-ai-agentscope-platform:latest}
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      PLATFORM_DB_HOST: postgres
+      PLATFORM_DB_PORT: "5432"
+      PLATFORM_DB_NAME: ruoyi_agent
+      PLATFORM_DB_USERNAME: platform_app
+      PLATFORM_DB_PASSWORD: ${DEV_PG_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${DEV_REDIS_PASSWORD}
+      AI_INTEGRATION_ENABLED: "true"
+      AI_INTEGRATION_AI_BASE_URL: http://ai:9090/api/ragent
+      AI_INTEGRATION_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL:?set DEV_SERVICE_CREDENTIAL in the env file}
+      AI_INTEGRATION_AUTHORIZATION_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL}
+      # Every externalized PROJECT_SERVICES_* slot must be provided through the
+      # controlled env file (DEV_ENV_FILE); this compose never carries real secrets.
+    env_file:
+      - path: ${DEV_ENV_FILE:-/dev/null}
+        required: false
+
+  ai:
+    image: ${DEV_AI_IMAGE:-ghcr.io/wonderchn/ruoyi-ai-agentscope-ai:latest}
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      AI_DB_URL: jdbc:postgresql://postgres:5432/ruoyi_agent?client_encoding=UTF8&currentSchema=ai,extensions
+      AI_DB_USER: ai_app
+      AI_DB_PASSWORD: ${DEV_PG_PASSWORD}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: ${DEV_REDIS_PASSWORD}
+      # Capability flags default to OFF (zero-config start, closed behaviour).
+      P2_ENABLED: ${P2_ENABLED:-false}
+      P3_ENABLED: ${P3_ENABLED:-false}
+      P2_OBJECT_STORE_TYPE: fs
+      P2_OBJECT_STORE_ROOT: /data/private-objects
+      AI_INTEGRATION_ENABLED: "true"
+      AI_INTEGRATION_PLATFORM_BASE_URL: http://platform:8080
+      AI_INTEGRATION_SECURITY_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL}
+      AI_INTEGRATION_PLATFORM_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL}
+    env_file:
+      - path: ${DEV_ENV_FILE:-/dev/null}
+        required: false
+    volumes:
+      - dev-private-objects:/data/private-objects
+
+  web:
+    build:
+      context: ..
+      dockerfile: infra/docker/ruoyi-web.Dockerfile
+    image: ruoyi-ai-agentscope-web:dev
+    depends_on:
+      - platform
+    ports:
+      - "${DEV_WEB_PORT:-8080}:80"
+
+volumes:
+  dev-pgdata:
+  dev-redisdata:
+  dev-private-objects:

@@ -41,12 +41,18 @@ import java.util.HexFormat;
  * 拒绝绝对路径与 {@code ..}。s3/minio 属部署决定（未实现即失败，不静默回退）。
  */
 @Component
-@ConditionalOnProperty(name = "p2.object-store.type", havingValue = "fs", matchIfMissing = true)
+@ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
 public class FsPrivateObjectStore implements PrivateObjectStore {
 
     private final Path root;
 
     public FsPrivateObjectStore(P2RuntimeProperties properties) {
+        // 私有对象存储只在 p2 运行时存在；默认（p2 关闭）不装配，应用可零配置启动。
+        // 显式选择了未实现的后端时不静默回退：s3/minio 属部署决定，缺实现必须响亮失败。
+        String type = properties.getObjectStore().getType();
+        if (!"fs".equals(type)) {
+            throw new IllegalStateException("p2.object-store.type=" + type + " is not implemented; refusing to fall back to fs");
+        }
         String configured = properties.getObjectStore().getRoot();
         if (configured == null || configured.isBlank()) {
             throw new IllegalStateException("p2.object-store.root is required for fs object store");
