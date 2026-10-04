@@ -2,3 +2,4 @@ org.ruoyi.aiweb.AiWebEmbeddedConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedRagConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedRunConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedDocumentConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedAgentActionConfiguration

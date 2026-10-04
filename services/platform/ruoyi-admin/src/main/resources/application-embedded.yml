@@ -30,3 +30,8 @@ p2:
     # 私有对象存储只认 fs（专属目录）；s3/minio 未实现即启动失败，不静默回退。
     type: fs
     root: ${P2_OBJECT_STORE_ROOT:./data/private-objects}
+
+# P3 受控动作面（动作账本/审批/对账）——与独立 AI 应用同一开关。
+# 沙箱票据客户端指向独立沙箱进程（有界回环端点）；未启用时以 SANDBOX_CLOSED fail-closed。
+p3:
+  enabled: true

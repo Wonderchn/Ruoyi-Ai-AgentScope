@@ -54,6 +54,13 @@
             <version>${revision}</version>
         </dependency>
 
+        <!-- P3 受控动作路由组装配对象（AgentActionController 等） -->
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>ruoyi-ai-agent</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc</artifactId>
