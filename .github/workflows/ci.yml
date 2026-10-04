@@ -86,13 +86,18 @@ jobs:
           persist-credentials: false
       # Pinned runtimes: node 22.23.2 (engines >=22.13.0) and the packageManager-pinned
       # pnpm 11.0.9. The version is installed explicitly, not via mutable "latest".
+      # setup-node's pnpm cache mode needs the pnpm binary to exist first, so the
+      # cache-enabled setup call comes after the install.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+      - name: Install pinned pnpm
+        run: npm install -g pnpm@11.0.9
       - uses: actions/setup-node@v4
         with:
           node-version: '22.23.2'
           cache: pnpm
           cache-dependency-path: services/ruoyi-web/pnpm-lock.yaml
-      - name: Install pinned pnpm
-        run: npm install -g pnpm@11.0.9
       - name: Install locked dependencies
         working-directory: services/ruoyi-web
         run: pnpm install --frozen-lockfile
