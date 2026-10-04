@@ -61,7 +61,7 @@ if ($kbCreate.Body -match '"kbId"\s*:\s*"([^"]+)"') { $kb1 = $Matches[1] }
 elseif ($kbCreate.Body -match '"id"\s*:\s*"([^"]+)"') { $kb1 = $Matches[1] }
 Add-Case 'ENV-kb' ($kbCreate.Status -eq 200 -and $kb1 -ne '') "KB created through the gateway (kbId=$kb1, status=$($kbCreate.Status))"
 if (-not $kb1) { throw 'positive KB control failed; no downstream cases claimed' }
-if ($PhaseBOnly -or $PhaseCOnly -or $RealProvidersOnly) { return }
+if ($PhaseBOnly -or $PhaseCOnly -or $RealProvidersOnly -or $BrowserOnly) { return }
 
 # A01 正常受理
 $key1 = "a01-$($script:Tag)"

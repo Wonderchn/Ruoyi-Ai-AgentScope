@@ -81,13 +81,14 @@ public class RunEventStreamService {
     /** 入口：鉴权 → 保留期检查 → 流式输出。返回 false 表示已写错误响应。 */
     public boolean stream(ExecutionPrincipal principal, String runId, long afterSeq, HttpServletResponse response)
             throws IOException {
-        RunRecord run = dao.findRun(principal.tenantId(), runId).orElse(null);
-        if (run == null) {
-            writeJson(response, 404, errorBody(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN, "run not found"));
+        RunRecord run;
+        try {
+            run=authorizeCurrent(principal,runId);
+        } catch (RunApiException denied) {
+            writeJson(response,denied.errorCode().status().value(),errorBody(denied.errorCode(),denied.errorCode().message()));
             return false;
-        }
-        if (!authorize(principal, runId)) {
-            writeJson(response, 403, errorBody(RunErrorCode.FORBIDDEN, "stream not authorized"));
+        } catch (RuntimeException unavailable) {
+            writeJson(response,503,errorBody(RunErrorCode.AUTHORIZATION_UNAVAILABLE,RunErrorCode.AUTHORIZATION_UNAVAILABLE.message()));
             return false;
         }
         long min = dao.minSeq(principal.tenantId(), runId);
@@ -201,18 +202,23 @@ public class RunEventStreamService {
     }
 
     private boolean authorize(ExecutionPrincipal principal, String runId) {
-        var service = authorization.getIfAvailable();
-        if (service == null) {
-            return false;
-        }
         try {
-            lifecycle.get(principal,runId);
-            return service.check(principal, "run.stream", "run:" + runId)
-                    == com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict.GRANT;
+            authorizeCurrent(principal,runId);
+            return true;
         } catch (RuntimeException e) {
             // 授权源故障：拒绝而不是放行
             return false;
         }
+    }
+
+    private RunRecord authorizeCurrent(ExecutionPrincipal principal,String runId) {
+        var run=lifecycle.get(principal,runId);
+        var service=authorization.getIfAvailable();
+        if(service==null) throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE);
+        var verdict=service.check(principal,"run.stream","run:"+runId);
+        if(verdict==com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict.UNKNOWN) throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE);
+        if(verdict!=com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict.GRANT) throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
+        return run;
     }
 
     private Map<String, Object> parsePayload(String payloadJson, long seq, String type, RunRecord run) {

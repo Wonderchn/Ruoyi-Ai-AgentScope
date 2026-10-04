@@ -184,6 +184,12 @@ public class RunAdmissionService {
         if (request.resourceRefs() != null && request.resourceRefs().size() > 32) {
             throw new RunApiException(RunErrorCode.BAD_REQUEST, "too many resource refs");
         }
+        if(request.retryOf()!=null) {
+            var parent=dao.findRun(principal.tenantId(),request.retryOf()).orElseThrow(()->new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
+            access.visible(principal,parent);
+            if(!parent.action().equals(request.action())) throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
+            if(!parent.isTerminal()) throw new RunApiException(RunErrorCode.RUN_STATE_CONFLICT,"ordinary retry requires a terminal source");
+        }
     }
 
     private String toJson(Object value) {

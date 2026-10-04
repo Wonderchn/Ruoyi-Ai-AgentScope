@@ -7,7 +7,7 @@ param(
     [string]$RunTag = ('p2c' + (Get-Date -Format 'yyyyMMddHHmmss')),
     [int]$AiPort = 0, [int]$Ai2Port = 0, [int]$PlatformPort = 0,
     [int]$DedicatedPgPort = 0,[int]$DedicatedRedisPort = 0,
-    [switch]$SkipBuild, [switch]$SkipSetup, [switch]$KeepEnvironment, [switch]$ReclaimStale, [switch]$SmokeOnly, [switch]$PhaseAOnly, [switch]$PhaseBOnly, [switch]$PhaseCOnly, [switch]$ParserRecoveryOnly, [string]$CaseAttempt = '1', [switch]$RealProvidersOnly, [string]$ProviderSecretFile, [string]$OwnedMetadataFile
+    [switch]$SkipBuild, [switch]$SkipSetup, [switch]$KeepEnvironment, [switch]$ReclaimStale, [switch]$SmokeOnly, [switch]$PhaseAOnly, [switch]$PhaseBOnly, [switch]$PhaseCOnly, [switch]$BrowserOnly, [switch]$ParserRecoveryOnly, [string]$CaseAttempt = '1', [switch]$RealProvidersOnly, [string]$ProviderSecretFile, [string]$OwnedDeliveryRecoveryScript, [string]$OwnedMetadataFile
 )
 # P2 专属合成环境验收 runner。
 #
@@ -80,7 +80,7 @@ function Save-Evidence([string]$Name, [string]$Content) {
 }
 function Redact([string]$Text) {
     if (-not $Text) { return $Text }
-    foreach ($secret in @($script:PgPass, $script:RedisPass, $script:ServiceCredential, $script:FixturePassword, $script:DeepSeekKey, $script:DashScopeKey)) {
+    foreach ($secret in @($script:PgPass, $script:RedisPass, $script:ServiceCredential, $script:FixturePassword, $script:DeepSeekKey, $script:DashScopeKey, $script:SandboxCredential)) {
         if ($secret) { $Text = $Text.Replace($secret, '<redacted>') }
     }
     $Text = [regex]::Replace($Text, 'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', '<redacted-jwt>')
@@ -183,7 +183,7 @@ function AiHttp([string]$Method, [string]$Path, [string]$Tenant, [string]$User, 
 }
 function DbScalar([string]$Query, [string]$LogName = 'db-scalar') {
     $r = Sql $Query $LogName 'p2app'
-    return (($r.Output -split "`n") | Where-Object { $_.Trim() -ne '' } | Select-Object -Last 1)
+    return ([string](($r.Output -split "`n") | Where-Object { $_.Trim() -ne '' } | Select-Object -Last 1)).Trim()
 }
 
 # ---------------------------------------------------------------- setup
@@ -194,7 +194,8 @@ function Stop-OwnedJar([int]$Port,[bool]$Hard=$false) {
         $killCommand=if($Hard){"kill -9"}else{"kill"}
         $r = Remote "if test -r /proc/$($p.pid)/cmdline; then tr '\0' '\n' < /proc/$($p.pid)/cmdline | grep -Fx -- '$expected' >/dev/null && tr '\0' '\n' < /proc/$($p.pid)/cmdline | grep -Fx -- '--server.port=$Port' >/dev/null || exit 2; $killCommand $($p.pid); fi" "stop-owned-$Port"
         if ($r.ExitCode -ne 0) { throw "PID ownership check failed for port $Port" }
-        for($wait=0;$wait -lt 30 -and (Get-PortOwnerPid $Port) -eq $p.pid;$wait++){Start-Sleep -Seconds 1}
+        $stopped=Remote "for wait in `$(seq 1 30); do test ! -e /proc/$($p.pid) && exit 0; sleep 1; done; exit 3" "stop-owned-process-witness-$Port"
+        if($stopped.ExitCode -ne 0){throw "verified owned JVM has not exited for port $Port; jar replacement forbidden"}
         $script:Pids = @($script:Pids | Where-Object { $_.pid -ne $p.pid })
     }
 }
@@ -268,7 +269,8 @@ Add-Case 'ENV-bcrypt' $true 'fixture password hash computed with the platform hu
 if (-not $SkipSetup) {
     Write-Step 'provision owned PG/Redis containers, schemas, migrations, fixtures'
     Remote "mkdir -p $($script:RemoteRoot)/objects $($script:RemoteRoot)/keys /tmp/p2http-$($script:Tag)" 'remote-mkdir' | Out-Null
-    Remote "docker rm -f $($script:PgName) $($script:RedisName) >/dev/null 2>&1; true" 'cleanup-previous' | Out-Null
+    $existingTag=Remote "for name in $($script:PgName) $($script:RedisName); do if docker inspect `$name >/dev/null 2>&1; then echo EXISTING_TAG_RESOURCE; exit 8; fi; done" 'check-new-tag'
+    if($existingTag.ExitCode -ne 0){throw 'existing tag resources retained; use SkipSetup with verified owned metadata'}
     $pg = Remote "docker run -d --name $($script:PgName) --label p2core.owner=$($script:Tag) -e POSTGRES_PASSWORD='$($script:PgPass)' -e POSTGRES_DB=$($script:Db) -p 127.0.0.1:$($script:PgHostPort):5432 pgvector/pgvector:0.8.6-pg17" 'pg-run'
     if ($pg.ExitCode -ne 0) { Add-Case 'ENV-pg' $false 'cannot start owned pg container'; exit 2 }
     $redis = Remote "docker run -d --name $($script:RedisName) --label p2core.owner=$($script:Tag) -p 127.0.0.1:$($script:RedisHostPort):6379 redis:7.4-alpine redis-server --requirepass '$($script:RedisPass)'" 'redis-run'
@@ -383,7 +385,9 @@ echo "$H.$P.$S"
 
 function Start-Jar([string]$Side, [int]$Port, [string[]]$Extra) {
     $jar = if ($Side -eq 'ai') { '/opt/p2core-acceptance/' + $script:Tag + '/ai.jar' } else { '/opt/p2core-acceptance/' + $script:Tag + '/platform.jar' }
-    $log = "/opt/p2core-acceptance/$($script:Tag)/$Side-$Port.log"
+    $bootId=[guid]::NewGuid().ToString('N')
+    $log = "/opt/p2core-acceptance/$($script:Tag)/$Side-$Port-$bootId.log"
+    $latestLog="/opt/p2core-acceptance/$($script:Tag)/$Side-$Port.log"
     # 清场：先结束占用该端口的上一轮 jar（以命令行里的 server.port 精确匹配），否则
     # 残留进程会让 Wait-Ready 误判就绪、把流量打到带旧凭据的僵尸服务上。
     foreach ($owned in @($script:Pids | Where-Object { $_.port -eq $Port })) { Stop-OwnedJar $owned.port }
@@ -398,7 +402,7 @@ function Start-Jar([string]$Side, [int]$Port, [string[]]$Extra) {
         "export PLATFORM_DB_PASSWORD='$($script:PgPass)'; export PLATFORM_DB_USERNAME=p2platform; export REDIS_PASSWORD='$($script:RedisPass)';"
     }
     $argsLine = ($Extra | ForEach-Object { "'" + $_.Replace("'", "'\''") + "'" }) -join ' '
-    $cmd = "cd /opt/p2core-acceptance/$($script:Tag) || exit 1`nsource ./env.sh`nif [ -f ./provider.env ]; then source ./provider.env; fi`n$envLine`nnohup java -Dfile.encoding=UTF-8 -Xmx1024m -jar $jar --server.port=$Port $argsLine > $log 2>&1 < /dev/null &`necho PID=`$!"
+    $cmd = "cd /opt/p2core-acceptance/$($script:Tag) || exit 1`nsource ./env.sh`nif [ -f ./provider.env ]; then source ./provider.env; fi`n$envLine`nln -sfn $log $latestLog`nnohup java -Dfile.encoding=UTF-8 -Xmx1024m -jar $jar --server.port=$Port $argsLine > $log 2>&1 < /dev/null &`necho PID=`$!"
     $r = Remote $cmd "start-$Side-$Port"
     if ($r.Output -match 'PID=(\d+)') { $script:Pids += [pscustomobject]@{ side = $Side; port = $Port; pid = [int]$Matches[1] } }
     return $r
@@ -462,7 +466,7 @@ $platformArgs = @(
     "--spring.datasource.dynamic.datasource.master.url=jdbc:postgresql://127.0.0.1:$($script:PgHostPort)/$($script:Db)?currentSchema=platform,extensions",
     '--PLATFORM_DB_USERNAME=p2platform', '--REDIS_HOST=127.0.0.1', "--REDIS_PORT=$($script:RedisHostPort)",
     '--ai.integration.enabled=true', "--ai.integration.ai-base-url=http://127.0.0.1:$AiPort/api/ragent",
-    '--ai.integration.forward-timeout-millis=2000',
+    '--ai.integration.forward-timeout-millis=10000',
     "--ai.integration.service-credential=$($script:ServiceCredential)",
     "--ai.integration.authorization.service-credential=$($script:ServiceCredential)",
     "--ai.integration.delegation.private-key-path=$($script:RemoteRoot)/keys/private.pem",
@@ -538,6 +542,9 @@ if ($RealProvidersOnly) {
 }
 
 Write-Step 'copy jars to the VM and start services (synthetic executor phase)'
+# Never replace a jar while any verified owned JVM may still load its classes.
+foreach($port in @($AiPort,$Ai2Port,$PlatformPort)){Stop-OwnedJar $port | Out-Null}
+if($script:Pids.Count -ne 0){throw 'owned JVMs must be stopped before jar replacement'}
 Remote "scp -q /dev/null /dev/null 2>/dev/null; true" '' | Out-Null
 & scp -q $aiJar "${RemoteHost}:$($script:RemoteRoot)/ai.jar"
 & scp -q $platformJar "${RemoteHost}:$($script:RemoteRoot)/platform.jar"
@@ -558,6 +565,7 @@ if (-not (Wait-Ready $AiPort "/opt/p2core-acceptance/$($script:Tag)/ai-$AiPort.l
 }
 $script:AiNodes = @($AiPort)
 Add-Case 'ENV-services' $true 'platform + ai node1 started (owned pids recorded)'
+if($OwnedDeliveryRecoveryScript){ & powershell -NoProfile -ExecutionPolicy Bypass -File $OwnedDeliveryRecoveryScript; if($LASTEXITCODE -ne 0){throw 'owned delivery recovery evidence not confirmed'} }
 
 $t1 = Token 'p2t1' 'p2admin' $script:FixturePassword
 $t2 = Token 'p2t2' 'p2admin' $script:FixturePassword
@@ -572,11 +580,13 @@ for($warm=0;$warm -lt 3;$warm++) {
 # ---------------------------------------------------------------- case suites
 . (Join-Path $PSScriptRoot 'cases-phase-a.ps1')
 . (Join-Path $PSScriptRoot 'helpers-product.ps1')
-if ($RealProvidersOnly) { . (Join-Path $PSScriptRoot 'cases-real-providers.ps1') }
+if ($BrowserOnly) { . (Join-Path $PSScriptRoot 'cases-browser.ps1') }
+elseif ($RealProvidersOnly) { . (Join-Path $PSScriptRoot 'cases-real-providers.ps1') }
 elseif ($PhaseCOnly) { . (Join-Path $PSScriptRoot 'cases-phase-c.ps1') }
 elseif (-not $SmokeOnly -and -not $PhaseAOnly) { . (Join-Path $PSScriptRoot 'cases-phase-b.ps1') }
 if (@($script:Results | Where-Object { -not $_.ok }).Count -gt 0) { exit 1 }
 } catch {
+    Save-Evidence 'runner-error.json' (@{type=$_.Exception.GetType().Name;message=(Redact $_.Exception.Message);position=(Redact $_.InvocationInfo.PositionMessage)}|ConvertTo-Json)
     Add-Case 'RUNNER-ERROR' $false $_.Exception.GetType().Name
     exit 1
 } finally {

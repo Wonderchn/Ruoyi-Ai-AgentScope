@@ -74,6 +74,8 @@ public class RagChatExecutor implements RunExecutor {
     private final ObjectMapper objectMapper;
     @org.springframework.beans.factory.annotation.Autowired
     private com.nageoffer.ai.ragent.runtime.RunAccessService access;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ProviderCallBoundary providerBoundary;
 
     public RagChatExecutor(DocumentDao documentDao, EmbeddingGateway embeddingGateway, ChatGateway chatGateway,
                            EgressPolicy egressPolicy, UsageLedgerService usageLedger,
@@ -192,10 +194,12 @@ public class RagChatExecutor implements RunExecutor {
             guard.appendEvent(RunEventAppender.EVENT_STEP_STARTED, Map.of(
                     "stepId", "retrieve", "stepName", "retrieve", "attemptId", "a-" + execution.attempt()));
             access.current(execution.run(),Set.of("kb.read"));
-            if(usageLedger.unresolved(execution.tenantId(),execution.runId(),"retrieve")) return new Outcome("NEEDS_RECONCILIATION",Map.of(),"MODEL_USAGE_UNKNOWN");
-            String callId = guard.commitAtomic(() -> usageLedger.startCall(execution.tenantId(), execution.runId(), execution.attempt(),
+            if(usageLedger.hasCall(execution.tenantId(),execution.runId(),"retrieve")) return new Outcome("NEEDS_RECONCILIATION",Map.of(),"MODEL_USAGE_UNKNOWN");
+            var operation=providerBoundary.enter(execution);
+            String callId;
+            try {callId = guard.commitAtomic(() -> usageLedger.startCall(execution.tenantId(), execution.runId(), execution.attempt(),
                     "retrieve", UsageLedgerService.KIND_EMBEDDING, embeddingGateway.provider(),
-                    embeddingGateway.model(), com.nageoffer.ai.ragent.runtime.CanonicalJson.sha256(question)));
+                    embeddingGateway.model(), com.nageoffer.ai.ragent.runtime.CanonicalJson.sha256(question)));} catch(RuntimeException ex){operation.close();throw ex;}
             EmbeddingGateway.EmbeddingResult embedded;
             try {
                 embedded = embeddingGateway.embedBatchWithUsage(List.of(question));
@@ -203,6 +207,7 @@ public class RagChatExecutor implements RunExecutor {
                 guard.commitAtomic(()->{usageLedger.markUnknown(execution.tenantId(),callId);return null;});
                 throw e;
             }
+            operation.close();
             Map<String,Object> embedUsage=embedded.usageRaw();
             guard.commitAtomic(()->{usageLedger.settle(execution.tenantId(),callId,embedded.providerRequestId(),embedUsage);return null;});
             access.current(execution.run(),Set.of("kb.read"));
@@ -244,12 +249,14 @@ public class RagChatExecutor implements RunExecutor {
             }
             egressPolicy.requireAllowed(chatGateway.provider());
             access.current(execution.run(),Set.of("kb.read"));
-            if(usageLedger.unresolved(execution.tenantId(),execution.runId(),"model")) return new Outcome("NEEDS_RECONCILIATION",Map.of(),"MODEL_USAGE_UNKNOWN");
+            if(usageLedger.hasCall(execution.tenantId(),execution.runId(),"model")) return new Outcome("NEEDS_RECONCILIATION",Map.of(),"MODEL_USAGE_UNKNOWN");
             guard.appendEvent(RunEventAppender.EVENT_STEP_STARTED, Map.of(
                     "stepId", "model", "stepName", "model", "attemptId", "a-" + execution.attempt()));
             fault(P2FaultInjector.CHAT_BEFORE_PROVIDER);
-            String callId = guard.commitAtomic(() -> usageLedger.startCall(execution.tenantId(), execution.runId(), execution.attempt(),
-                    "model", UsageLedgerService.KIND_CHAT, chatGateway.provider(), chatGateway.model(), null));
+            var operation=providerBoundary.enter(execution);
+            String callId;
+            try {callId = guard.commitAtomic(() -> usageLedger.startCall(execution.tenantId(), execution.runId(), execution.attempt(),
+                    "model", UsageLedgerService.KIND_CHAT, chatGateway.provider(), chatGateway.model(), null));} catch(RuntimeException ex){operation.close();throw ex;}
             StringBuilder answer = new StringBuilder();
             StringBuilder pending = new StringBuilder();
             final boolean[] cancelled = {false};
@@ -278,6 +285,7 @@ public class RagChatExecutor implements RunExecutor {
                 if(cancelled[0]) return new Outcome("CANCELLED",Map.of("usage","PENDING_RECONCILIATION"),null);
                 throw e;
             }
+            operation.close();
             fault(P2FaultInjector.CHAT_AFTER_PROVIDER);
             if (pending.length() > 0) {
                 access.current(execution.run(),Set.of("kb.read"));
@@ -285,6 +293,8 @@ public class RagChatExecutor implements RunExecutor {
                         Map.of("text", pending.toString(), "dropped", false));
             }
             guard.commitAtomic(()->{usageLedger.settle(execution.tenantId(),callId,chatResult.providerRequestId(),chatResult.usageRaw());return null;});
+            if(usageLedger.unresolved(execution.tenantId(),execution.runId(),"model")) return new Outcome("NEEDS_RECONCILIATION",Map.of(),"MODEL_USAGE_UNKNOWN");
+            if(!"stop".equals(chatResult.finishReason())) return Outcome.failed("MODEL_RESPONSE_INCOMPLETE");
             principal=access.current(execution.run(),Set.of("kb.read"));
             List<Map<String, Object>> citations = currentCitations(principal, chunks);
             if(citations.size()!=chunks.size()) return Outcome.failed("SOURCE_CHANGED");

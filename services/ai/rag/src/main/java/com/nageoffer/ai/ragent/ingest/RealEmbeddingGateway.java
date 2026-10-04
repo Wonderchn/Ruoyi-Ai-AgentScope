@@ -80,7 +80,9 @@ public class RealEmbeddingGateway implements EmbeddingGateway {
             if(!root.path("data").isArray() || root.path("data").size()!=texts.size()) throw ProviderHttp.unavailable();
             List<List<Float>> vectors=new ArrayList<>(Collections.nCopies(texts.size(),null));
             for(var item:root.path("data")) {
-                int index=item.path("index").asInt(-1);
+                var position=item.path("index");
+                if(!position.isIntegralNumber() || !position.canConvertToInt() || !item.path("embedding").isArray()) throw ProviderHttp.unavailable();
+                int index=position.intValue();
                 if(index<0||index>=texts.size()||vectors.get(index)!=null) throw ProviderHttp.unavailable();
                 List<Float> vector=new ArrayList<>();
                 for(var value:item.path("embedding")){if(!value.isNumber())throw ProviderHttp.unavailable(); vector.add(value.floatValue());}

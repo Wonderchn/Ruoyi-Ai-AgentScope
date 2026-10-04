@@ -45,14 +45,14 @@ Save-Evidence 'phase-c-before-capacity.json' ($script:Results|ConvertTo-Json -De
 # Real job loss: freeze after durable parse-job, prove local Basic processing, SIGKILL owned AI, restart owned parser.
 & scp -q (Join-Path $PSScriptRoot 'create-multipage-pdf.py') "${RemoteHost}:$($script:RemoteRoot)/create-multipage-pdf.py"
 if($LASTEXITCODE -ne 0){throw 'owned multipage fixture upload failed'}
-[void](Remote "python $($script:RemoteRoot)/create-multipage-pdf.py $($script:RemoteRoot)/restart30.pdf 30" 'c28-fixture')
+[void](Remote "python $($script:RemoteRoot)/create-multipage-pdf.py $($script:RemoteRoot)/restart30.pdf 30 c28-$($script:Tag)-$CaseAttempt" 'c28-fixture')
 Restart-ProductAi $basic
 $paused=AiHttp 'POST' '/internal/ai/v1/test/fault' 'p2t1' (FixtureUserId 'p2t1') 'run.get' @{'Content-Type'='application/json'} '{"hook":"mineru.afterJobCreate","times":1,"pauseMillis":30000}' 1 20 'c28-arm-pause'
 $restart=UploadPdf $t1 $kb1 'restart30.pdf' 'c28-upload' "c28-$CaseAttempt-$($script:Tag)" 'restart30.pdf'
 $restartRun=Ingest $restart.Doc $restart.Upload ('c28-ingest-'+$CaseAttempt)
 $jobId='';for($wait=0;$wait -lt 120;$wait++) {
  $jobId=DbScalar "SELECT ref->>'jobId' FROM ai_run_step WHERE tenant_id='p2t1' AND run_id='$($restartRun.Run)' AND step_id='parse-job' AND state='COMPLETED' ORDER BY attempt DESC LIMIT 1;" 'c28-durable-job'
- $jobId=$jobId.Trim();if($jobId -match '^job_'){break};Start-Sleep -Milliseconds 500
+ $jobId=([string]$jobId).Trim();if($jobId -match '^job_'){break};Start-Sleep -Milliseconds 500
 }
 if($jobId -notmatch '^job_'){throw 'no real durable parser job observed'}
 $processing=Remote "token=`$(cat /opt/ragent-ai-lab-20261003/secrets/mineru_token); curl -sS -m 20 http://127.0.0.1:18000/v1/parse/jobs/$jobId -H `"Authorization: Bearer `$token`"" 'c28-processing-control'
@@ -68,8 +68,9 @@ $again=Ingest $restart.Doc $restart.Upload ('c28-explicit-new-run-'+$CaseAttempt
 Add-Case 'A28-real-parser-restart' ($healthy -and [bool]$lost -and $lostFacts.Output -match 'FAILED\|MINERU_JOB_LOST\|[2-9][0-9]*\|1' -and $again.Run -ne $restartRun.Run -and [bool]$againDone -and $processing.Output -match '"status"\s*:\s*"(processing|running|queued)"') 'actual Basic job processing, owned JVM hard exit/parser restart, durable lost-job FAILED and new-run pure parse success'
 [void](ClearFaults 'p2t1')
 # Cancellation is observed while a durable real Basic job is processing.
+[void](Remote "python $($script:RemoteRoot)/create-multipage-pdf.py $($script:RemoteRoot)/cancel30.pdf 30 c29-$($script:Tag)-$CaseAttempt" 'c29-fixture')
 Restart-ProductAi $basic
-$cancelUpload=UploadPdf $t1 $kb1 'cancel30.pdf' 'c29-upload' "c29-$CaseAttempt-$($script:Tag)" 'restart30.pdf'
+$cancelUpload=UploadPdf $t1 $kb1 'cancel30.pdf' 'c29-upload' "c29-$CaseAttempt-$($script:Tag)" 'cancel30.pdf'
 $cancelRun=Ingest $cancelUpload.Doc $cancelUpload.Upload ('c29-ingest-'+$CaseAttempt)
 for($wait=0;$wait -lt 120;$wait++) {$started=DbScalar "SELECT count(*) FROM ai_run_step WHERE tenant_id='p2t1' AND run_id='$($cancelRun.Run)' AND step_id='parse-job';" 'c29-job';if($started.Trim() -eq '1'){break};Start-Sleep -Milliseconds 500}
  $cancelJob=(DbScalar "SELECT ref->>'jobId' FROM ai_run_step WHERE tenant_id='p2t1' AND run_id='$($cancelRun.Run)' AND step_id='parse-job' ORDER BY attempt DESC LIMIT 1;" 'c29-job-id').Trim()

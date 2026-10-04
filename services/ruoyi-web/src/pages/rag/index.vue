@@ -30,6 +30,7 @@ const asking = ref(false);
 const fileInput = ref<HTMLInputElement>();
 const versionTarget = ref('');
 const sourceUrl = ref('');
+const sourcePage = ref(1);
 let sourceController: AbortController | null = null;
 function closeSource() {
   sourceController?.abort();
@@ -37,15 +38,17 @@ function closeSource() {
     URL.revokeObjectURL(sourceUrl.value);
   sourceUrl.value = '';
 }
-async function viewSource(docId: string, versionId: string) {
+async function viewSource(docId: string, versionId: string, pageFrom?: number | null) {
   const epoch = viewEpoch;
   closeSource();
   const controller = new AbortController();
   sourceController = controller;
   try {
     const blob = await downloadSource(docId, versionId, controller.signal);
-    if (current(epoch) && sourceController === controller)
+    if (current(epoch) && sourceController === controller) {
+      sourcePage.value = pageFrom ?? 1;
       sourceUrl.value = URL.createObjectURL(blob);
+    }
   }
   catch (error) {
     if (current(epoch) && sourceController === controller)
@@ -55,6 +58,7 @@ async function viewSource(docId: string, versionId: string) {
 let streamController: AbortController | null = null;
 let uploadController: AbortController | null = null;
 let mounted = true;
+let pendingChat: { body: ReturnType<typeof chatRunBody>; key: string } | null = null;
 const pendingUpload = ref<{ file: File; kbId: string; key: string; docId?: string } | null>(null);
 function current(epoch: number, kbId?: string) {
   return mounted && epoch === viewEpoch && (kbId === undefined || kbId === rag.currentKbId);
@@ -66,6 +70,7 @@ watch(() => rag.epoch, () => {
   streamController?.abort();
   uploadController?.abort();
   pendingUpload.value = null;
+  pendingChat = null;
   asking.value = false;
   ingesting.value = false;
   loadingKbs.value = false;
@@ -78,6 +83,7 @@ watch(() => rag.currentKbId, () => {
   streamController?.abort();
   uploadController?.abort();
   pendingUpload.value = null;
+  pendingChat = null;
   versionTarget.value = '';
   rag.documents = [];
   rag.upload = null;
@@ -284,10 +290,13 @@ async function ask() {
   rag.errorCode = '';
   rag.streamNote = '';
   try {
-    const key = `web-chat-${rag.currentKbId}-${Date.now()}`;
-    const created = await submitRun(chatRunBody([rag.currentKbId], question.value), key);
+    const body = chatRunBody([rag.currentKbId], question.value);
+    if (!pendingChat || JSON.stringify(pendingChat.body) !== JSON.stringify(body))
+      pendingChat = { body, key: `web-chat-${crypto.randomUUID()}` };
+    const created = await submitRun(pendingChat.body, pendingChat.key);
     if (!current(epoch, kbId))
       return;
+    pendingChat = null;
     rag.chatRunId = created.runId;
     rag.chatStatus = created.status;
     streamChat(created.runId);
@@ -533,14 +542,15 @@ onBeforeUnmount(() => {
         <div v-for="(citation, index) in rag.citations" :key="citation.chunkKey" class="rag-citation">
           [{{ index + 1 }}] {{ citation.docName || citation.docId }} · 版本 {{ citation.versionId.slice(0, 10) }} ·
           chunk {{ citation.chunkIndex }}<span v-if="citation.score"> · 相似度 {{ citation.score }}</span>
-          <el-button link type="primary" @click="viewSource(citation.docId, citation.versionId)">
+          <span v-if="citation.pageFrom"> · 第 {{ citation.pageFrom }}<template v-if="citation.pageTo !== citation.pageFrom">–{{ citation.pageTo }}</template> 页</span>
+          <el-button link type="primary" @click="viewSource(citation.docId, citation.versionId, citation.pageFrom)">
             查看当前来源
           </el-button>
         </div>
       </div>
     </el-card>
     <el-dialog :model-value="!!sourceUrl" title="私有 PDF 来源" width="80%" @close="closeSource">
-      <PrivatePdf v-if="sourceUrl" :source-url="sourceUrl" />
+      <PrivatePdf v-if="sourceUrl" :source-url="sourceUrl" :initial-page="sourcePage" />
     </el-dialog>
   </div>
 </template>

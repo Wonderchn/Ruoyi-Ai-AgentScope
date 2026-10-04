@@ -27,17 +27,34 @@ import java.util.List;
  * P2 确定性 Markdown 分块器（策略冻结 {@value #STRATEGY}）。
  *
  * <p>chunk 逻辑键含文档/版本/策略/序号：同版本重跑产生相同键（不重复 chunk）；
- * 内容 hash 用于核对与晚到保护。页号在 P2 的 markdown 产物中不可靠，保留 null
- * 并在收口报告声明（引用定位到 doc/version/chunk）。
+ * 内容 hash 用于核对与晚到保护。旧 Markdown 检查点保留未知页号；新产物按源页独立分块。
  */
 @Component
 public class MarkdownChunker {
 
     public static final String STRATEGY = "p2-md-v1";
+    public static final String PAGE_STRATEGY = "p2-pages-v2";
     public static final int DEFAULT_MAX_CHARS = 900;
 
     public record ChunkDraft(int index, String chunkKey, String content, String contentHash, int charCount,
                              Integer pageFrom, Integer pageTo) {
+    }
+
+    public List<ChunkDraft> chunkPages(String docId, String versionId, List<MinerUPageContent.Page> pages, int maxChars) {
+        List<ChunkDraft> drafts = new ArrayList<>();
+        int previous = 0;
+        for (MinerUPageContent.Page page : pages) {
+            if (page.number() <= previous) throw new IllegalArgumentException("pages must be positive and ordered");
+            previous = page.number();
+            for (ChunkDraft piece : chunk(docId, versionId, page.markdown(), maxChars)) {
+                int index = drafts.size();
+                String key = "c-" + CanonicalJson.sha256(docId + "|" + versionId + "|" + PAGE_STRATEGY
+                        + "|" + page.number() + "|" + piece.index()).substring(0, 32);
+                drafts.add(new ChunkDraft(index, key, piece.content(), piece.contentHash(), piece.charCount(),
+                        page.number(), page.number()));
+            }
+        }
+        return List.copyOf(drafts);
     }
 
     public List<ChunkDraft> chunk(String docId, String versionId, String markdown, int maxChars) {

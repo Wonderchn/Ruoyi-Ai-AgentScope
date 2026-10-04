@@ -4,7 +4,7 @@ import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { onBeforeUnmount, ref, watch } from 'vue';
 
-const props = defineProps<{ sourceUrl: string }>();
+const props = defineProps<{ sourceUrl: string; initialPage?: number }>();
 GlobalWorkerOptions.workerSrc = workerUrl;
 const canvas = ref<HTMLCanvasElement>();
 const page = ref(1);
@@ -12,11 +12,13 @@ const count = ref(0);
 const error = ref('');
 const loading = ref(false);
 let generation = 0;
+let paintVersion = 0;
 let document: PDFDocumentProxy | null = null;
 let task: PDFDocumentLoadingTask | null = null;
 let renderTask: RenderTask | null = null;
 function dispose() {
   generation++;
+  paintVersion++;
   renderTask?.cancel();
   renderTask = null;
   void task?.destroy();
@@ -26,13 +28,23 @@ function dispose() {
 }
 async function draw() {
   const epoch = generation;
+  const paint = ++paintVersion;
   const doc = document;
   const node = canvas.value;
   if (!doc || !node)
     return;
-  renderTask?.cancel();
+  const previous = renderTask;
+  if (previous) {
+    previous.cancel();
+    try {
+      await previous.promise;
+    }
+    catch {
+      // Cancellation completion releases the canvas before the next render.
+    }
+  }
   const pdfPage = await doc.getPage(page.value);
-  if (epoch !== generation || document !== doc)
+  if (epoch !== generation || document !== doc || paint !== paintVersion)
     return;
   const original = pdfPage.getViewport({ scale: 1 });
   const scale = Math.min(1.5, 1000 / original.width, Math.sqrt(4000000 / (original.width * original.height)));
@@ -48,7 +60,7 @@ async function draw() {
     await current.promise;
   }
   catch (cause) {
-    if (epoch === generation && renderTask === current && (cause as Error).name !== 'RenderingCancelledException')
+    if (epoch === generation && paint === paintVersion && renderTask === current && (cause as Error).name !== 'RenderingCancelledException')
       error.value = 'PDF 页面绘制失败';
   }
 }
@@ -69,6 +81,7 @@ watch(() => props.sourceUrl, async (url) => {
     }
     document = loaded;
     count.value = loaded.numPages;
+    page.value = Math.min(count.value, Math.max(1, Number.isInteger(props.initialPage) ? props.initialPage! : 1));
     await draw();
   }
   catch {

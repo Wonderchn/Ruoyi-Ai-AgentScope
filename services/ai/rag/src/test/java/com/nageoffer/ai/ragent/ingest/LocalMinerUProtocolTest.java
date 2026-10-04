@@ -45,16 +45,28 @@ class LocalMinerUProtocolTest {
             });
             server.createContext("/v1/parse/jobs",x->{
                 if("POST".equals(x.getRequestMethod())){
-                    assertTrue(new String(x.getRequestBody().readAllBytes(),StandardCharsets.UTF_8).contains("file_1"));reply(x,200,"{\"job_id\":\"job_1\"}");
-                } else reply(x,200,"{\"status\":\"completed\",\"tier\":\"flash\",\"files\":[{\"status\":\"completed\",\"output_files\":{\"markdown\":{\"file_id\":\"md_1\"}}}]}");
+                    String body=new String(x.getRequestBody().readAllBytes(),StandardCharsets.UTF_8);
+                    assertTrue(body.contains("file_1"));assertTrue(body.contains("structured_content"));reply(x,200,"{\"job_id\":\"job_1\"}");
+                } else reply(x,200,"{\"status\":\"completed\",\"tier\":\"flash\",\"files\":[{\"status\":\"completed\",\"output_files\":{\"markdown\":{\"file_id\":\"md_1\"},\"structured_content\":{\"file_id\":\"pages_1\"}}}]}");
             });
-            server.createContext("/v1/files/md_1/content",x->reply(x,200,"P2 protocol marker"));server.start();
+            server.createContext("/v1/files/md_1/content",x->reply(x,200,"P2 protocol marker"));
+            server.createContext("/v1/files/pages_1/content",x->reply(x,200,"{\"pages\":[{\"page_idx\":0,\"blocks\":[{\"content\":\"P2 protocol marker\"}]}],\"metadata\":{\"document\":{\"page_count\":1}},\"is_full_document\":true}"));server.start();
             try {
                 var result=client(server).parse("%PDF-synthetic".getBytes(),"sample.pdf","hash",30);
                 assertEquals("P2 protocol marker",result.markdown());assertEquals("job_1",result.jobId());
+                assertTrue(result.structuredContent().contains("page_idx"));assertEquals(64,result.structuredSha256().length());
                 assertEquals(cached?0:1,puts.get());assertEquals(cached?0:1,completes.get());
             } finally {server.stop(0);}
         }
+    }
+    @Test void missingStructuredArtifactDoesNotBecomeSuccessfulParse() throws Exception {
+        var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/v1/parse/jobs/job_1",x->reply(x,200,"{\"status\":\"completed\",\"files\":[{\"status\":\"completed\",\"output_files\":{\"markdown\":{\"file_id\":\"md_1\"}}}]}"));
+        server.createContext("/v1/files/md_1/content",x->reply(x,200,"marker without pages"));server.start();
+        try {
+            assertThrows(com.nageoffer.ai.ragent.runtime.RunApiException.class,
+                    ()->client(server).awaitResult(new LocalMinerUClient.ParseJob("job_1","file_1"),30));
+        } finally {server.stop(0);}
     }
     @Test void vanishedJobAndCancellationNeverBecomeCompleted() throws Exception {
         var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);var cancels=new AtomicInteger();

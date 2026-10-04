@@ -63,6 +63,8 @@ public class DocumentIngestExecutor implements RunExecutor {
     private final ObjectMapper objectMapper;
     @org.springframework.beans.factory.annotation.Autowired
     private com.nageoffer.ai.ragent.runtime.RunAccessService access;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ProviderCallBoundary providerBoundary;
 
     public DocumentIngestExecutor(DocumentDao documentDao, PrivateObjectStore objectStore,
                                   ObjectProvider<LocalMinerUClient> mineru, MarkdownChunker chunker,
@@ -158,9 +160,14 @@ public class DocumentIngestExecutor implements RunExecutor {
             if(!guard.stillOwned()) throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.VERSION_CONFLICT);
             String parseKey = "tenants/" + execution.tenantId() + "/docs/" + docId + "/" + versionId + "/parsed-"+result.markdownSha256()+".md";
             objectStore.put(parseKey, result.markdown().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            String structuredKey = "tenants/" + execution.tenantId() + "/docs/" + docId + "/" + versionId
+                    + "/pages-" + result.structuredSha256() + ".json";
+            objectStore.put(structuredKey, result.structuredContent().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             parseRef = new LinkedHashMap<>();
             parseRef.put("objectKey", parseKey);
             parseRef.put("hash", result.markdownSha256());
+            parseRef.put("structuredObjectKey", structuredKey);
+            parseRef.put("structuredHash", result.structuredSha256());
             parseRef.put("jobId", result.jobId());
             parseRef.put("fileId", result.fileId());
             parseRef.put("tier", result.tier());
@@ -188,11 +195,12 @@ public class DocumentIngestExecutor implements RunExecutor {
                     "stepId", "chunk", "stepName", "chunk", "attemptId", "a-" + execution.attempt()));
             String markdown = new String(objectStore.get((String) parseRef.get("objectKey")),
                     java.nio.charset.StandardCharsets.UTF_8);
-            drafts = chunker.chunk(docId, versionId, markdown, MarkdownChunker.DEFAULT_MAX_CHARS);
+            drafts = chunkDrafts(docId, versionId, parseRef, markdown);
             if (drafts.isEmpty()) {
                 return Outcome.failed("CHUNK_EMPTY");
             }
-            Map<String, Object> ref = Map.of("strategy", MarkdownChunker.STRATEGY, "chunks", drafts.size());
+            Map<String, Object> ref = Map.of("strategy", parseRef.containsKey("structuredObjectKey")
+                    ? MarkdownChunker.PAGE_STRATEGY : MarkdownChunker.STRATEGY, "chunks", drafts.size());
             guard.commitStep("chunk", "chunk", toJson(ref), null, toJson(Map.of("calls", 0)));
             guard.appendEvent(RunEventAppender.EVENT_STEP_COMPLETED, Map.of(
                     "stepId", "chunk", "state", "COMPLETED", "ref", ref, "attemptId", "a-" + execution.attempt()));
@@ -203,7 +211,7 @@ public class DocumentIngestExecutor implements RunExecutor {
             // 检查点复用：重新分块以得到本 attempt 的确定性 draft 列表（同键同内容，不重复发布）
             String markdown = new String(objectStore.get((String) parseRef.get("objectKey")),
                     java.nio.charset.StandardCharsets.UTF_8);
-            drafts = chunker.chunk(docId, versionId, markdown, MarkdownChunker.DEFAULT_MAX_CHARS);
+            drafts = chunkDrafts(docId, versionId, parseRef, markdown);
         }
 
         // ---------------- steps: embed batches ----------------
@@ -227,9 +235,11 @@ public class DocumentIngestExecutor implements RunExecutor {
             }
             access.current(execution.run(),java.util.Set.of("kb.read","document.read"));
             if(usageLedger.unresolved(execution.tenantId(),execution.runId(),stepId)) return new Outcome("NEEDS_RECONCILIATION",Map.of(),"MODEL_USAGE_UNKNOWN");
-            String callId = guard.commitAtomic(()->usageLedger.startCall(execution.tenantId(), execution.runId(), execution.attempt(),
+            var operation=providerBoundary.enter(execution);
+            String callId;
+            try {callId = guard.commitAtomic(()->usageLedger.startCall(execution.tenantId(), execution.runId(), execution.attempt(),
                     stepId, UsageLedgerService.KIND_EMBEDDING, embeddingGateway.provider(),
-                    embeddingGateway.model(), null));
+                    embeddingGateway.model(), null));} catch(RuntimeException ex){operation.close();throw ex;}
             EmbeddingGateway.EmbeddingResult embedded;
             try {
                 embedded = embeddingGateway.embedBatchWithUsage(texts);
@@ -237,6 +247,7 @@ public class DocumentIngestExecutor implements RunExecutor {
                 guard.commitAtomic(()->{usageLedger.markUnknown(execution.tenantId(),callId);return null;});
                 throw e;
             }
+            operation.close();
             Map<String, Object> usage = embedded.usageRaw();
             int batchIndex=batch;
             access.current(execution.run(),java.util.Set.of("kb.read","document.read"));
@@ -301,6 +312,21 @@ public class DocumentIngestExecutor implements RunExecutor {
         result.put("dimension", embeddingGateway.dimension());
         result.put("mineruTier", parseRef.get("tier"));
         return Outcome.succeeded(result);
+    }
+
+    private List<MarkdownChunker.ChunkDraft> chunkDrafts(String docId, String versionId,
+                                                       Map<String, Object> parseRef, String markdown) {
+        if (!parseRef.containsKey("structuredObjectKey")) {
+            return chunker.chunk(docId, versionId, markdown, MarkdownChunker.DEFAULT_MAX_CHARS);
+        }
+        String artifact = new String(objectStore.get((String) parseRef.get("structuredObjectKey")),
+                java.nio.charset.StandardCharsets.UTF_8);
+        if (!com.nageoffer.ai.ragent.runtime.CanonicalJson.sha256(artifact).equals(parseRef.get("structuredHash"))) {
+            throw new IllegalStateException("structured parse artifact hash changed");
+        }
+        return chunker.chunkPages(docId, versionId,
+                com.nageoffer.ai.ragent.ingest.MinerUPageContent.decode(artifact, objectMapper),
+                MarkdownChunker.DEFAULT_MAX_CHARS);
     }
 
     private Map<String, Object> completedStepRef(RunExecutionGuard guard, String stepId) {

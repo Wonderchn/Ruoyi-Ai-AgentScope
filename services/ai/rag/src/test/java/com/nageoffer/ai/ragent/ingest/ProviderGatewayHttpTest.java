@@ -30,6 +30,31 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ProviderGatewayHttpTest {
+    @Test void malformedEmbeddingResponsesRejectWholeBatchWithoutRetry() throws Exception {
+        var payload=new java.util.concurrent.atomic.AtomicReference<String>();
+        var count=new AtomicInteger();var json=new ObjectMapper();
+        var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/",x->{count.incrementAndGet();x.getRequestBody().readAllBytes();byte[] body=payload.get().getBytes(StandardCharsets.UTF_8);x.sendResponseHeaders(200,body.length);x.getResponseBody().write(body);x.close();});server.start();
+        try {
+            var gateway=new RealEmbeddingGateway("test-only",allowed(),URI.create("http://127.0.0.1:"+server.getAddress().getPort()+"/"));
+            var valid=Collections.nCopies(1536,0.1);
+            var replies=List.of(
+                json.writeValueAsString(Map.of("data",List.of())),
+                json.writeValueAsString(Map.of("data",List.of(Map.of("index",0,"embedding",Collections.nCopies(1535,0.1))))),
+                json.writeValueAsString(Map.of("data",List.of(Map.of("index",0.5,"embedding",valid)))),
+                json.writeValueAsString(Map.of("data",List.of(Map.of("index",1,"embedding",valid)))),
+                json.writeValueAsString(Map.of("data",List.of(Map.of("index",0,"embedding",Map.of("value",0.1))))),
+                json.writeValueAsString(Map.of("data",List.of(Map.of("index",0,"embedding",Collections.nCopies(1536,"NaN"))))),
+                json.writeValueAsString(Map.of("data",List.of(Map.of("index",0,"embedding",valid)))).replace("0.1","1e999"));
+            for(String reply:replies) {
+                int before=count.get();payload.set(reply);
+                assertThrows(RuntimeException.class,()->gateway.embedBatchWithUsage(List.of("synthetic")));
+                assertEquals(before+1,count.get());
+            }
+            payload.set(json.writeValueAsString(Map.of("data",List.of(Map.of("index",0,"embedding",valid),Map.of("index",0,"embedding",valid)))));
+            int before=count.get();assertThrows(RuntimeException.class,()->gateway.embedBatchWithUsage(List.of("a","b")));assertEquals(before+1,count.get());
+        } finally {server.stop(0);}
+    }
     private EgressPolicy allowed(){var p=new EgressPolicy();p.setEnabled(true);p.setAllowedProviders("deepseek,dashscope");return p;}
     @Test void deniedOrMissingKeyMakesNoRequest() throws Exception {
         var count=new AtomicInteger(); var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);

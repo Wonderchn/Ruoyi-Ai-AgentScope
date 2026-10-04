@@ -136,10 +136,12 @@ public class RunWorker {
             var budget=CanonicalJson.strictMapper().readTree(run.budgetJson()==null?"{}":run.budgetJson());
             if(budget.hasNonNull("maxWallClockSeconds")) wall=Math.min(wall,budget.path("maxWallClockSeconds").asInt(wall));
         } catch(java.io.IOException ignored) {wall=1;}
+        long remaining=com.nageoffer.ai.ragent.runtime.exec.RunDeadline.remainingSeconds(run.startedAt(),java.time.Instant.now(),wall);
         Thread executionThread=Thread.currentThread();
         var expired=new java.util.concurrent.atomic.AtomicBoolean();
-        ScheduledFuture<?> deadline=heartbeats.schedule(()->{expired.set(true);executionThread.interrupt();},wall,TimeUnit.SECONDS);
+        ScheduledFuture<?> deadline=heartbeats.schedule(()->{expired.set(true);executionThread.interrupt();},Math.max(1,remaining),TimeUnit.SECONDS);
         try {
+            if(remaining==0) {safeFail(guard,"BUDGET_EXCEEDED");return;}
             if (faults != null) {
                 faults.checkpoint(P2FaultInjector.WORKER_AFTER_CLAIM);
             }
@@ -174,7 +176,7 @@ public class RunWorker {
                 log.warn("run {} rejected by fence; another worker owns it", run.runId());
                 return;
             }
-            safeFail(guard, e.errorCode().name());
+            safeFail(guard, expired.get()?"BUDGET_EXCEEDED":e.errorCode().name());
         } catch (Exception e) {
             log.warn("run {} failed: {}", run.runId(), e.getClass().getSimpleName());
             safeFail(guard, expired.get()?"BUDGET_EXCEEDED":"EXECUTION_FAILED");

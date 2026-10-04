@@ -96,6 +96,11 @@ public class P2FaultInjector {
         return remaining != null && remaining.get() > 0;
     }
 
+    /** Bounded test rendezvous before an IO boundary; the caller must reauthorize afterward. */
+    public void checkpointPause(String hook) {
+        try { checkpoint(hook); } catch (InjectedFault observed) { /* Pause only, no crash. */ }
+    }
+
     public int hits(String hook) {
         AtomicInteger counter = hits.get(hook);
         return counter == null ? 0 : counter.get();

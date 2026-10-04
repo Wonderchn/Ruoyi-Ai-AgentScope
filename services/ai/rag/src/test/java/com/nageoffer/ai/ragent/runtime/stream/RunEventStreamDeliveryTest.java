@@ -22,8 +22,22 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 class RunEventStreamDeliveryTest {
+    @Test void initialPrivateDenialAndUnavailableSourceWriteNoStreamOrPermit() throws Exception {
+        var lifecycle=mock(com.nageoffer.ai.ragent.runtime.RunLifecycleService.class);
+        var bus=mock(NotificationBus.class);
+        var permits=mock(com.nageoffer.ai.ragent.runtime.web.DeliveryPermits.class);
+        var principal=new com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal("t1","1001","platform:t1:1001",1,1,java.util.Set.of("run.stream"),"j","platform",1,9999999999L);
+        var service=new RunEventStreamService(null,lifecycle,bus,null,new com.fasterxml.jackson.databind.ObjectMapper(),null,permits);
+        when(lifecycle.get(principal,"private")).thenThrow(new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
+        var denied=new MockHttpServletResponse();assertFalse(service.stream(principal,"private",0,denied));assertEquals(404,denied.getStatus());
+        doThrow(new IllegalStateException("source unavailable")).when(lifecycle).get(principal,"private");
+        var unknown=new MockHttpServletResponse();assertFalse(service.stream(principal,"private",0,unknown));assertEquals(503,unknown.getStatus());
+        assertFalse(denied.getContentAsString().contains("id:"));assertFalse(unknown.getContentAsString().contains("id:"));
+        verifyNoInteractions(bus,permits);
+    }
     @Test void terminalDrainsEveryQueuedFrame() throws Exception {
         var response=new MockHttpServletResponse();
         var calls=new AtomicInteger();

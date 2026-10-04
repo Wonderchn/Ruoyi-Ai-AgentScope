@@ -128,6 +128,10 @@ public class UsageLedgerService {
         return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM ai_model_call WHERE tenant_id=? AND run_id=? AND step_id=? "
                 +"AND state IN ('STARTED','PENDING_RECONCILIATION'))",Boolean.class,tenantId,runId,stepId));
     }
+    /** A provider receipt without an application checkpoint must never trigger another automatic call. */
+    public boolean hasCall(String tenantId,String runId,String stepId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM ai_model_call WHERE tenant_id=? AND run_id=? AND step_id=?)",Boolean.class,tenantId,runId,stepId));
+    }
 
     public void markUnknown(String tenantId,String callId) {
         jdbc.update("UPDATE ai_model_call SET state='PENDING_RECONCILIATION',updated_at=now() WHERE tenant_id=? AND call_id=? AND state='STARTED'",tenantId,callId);

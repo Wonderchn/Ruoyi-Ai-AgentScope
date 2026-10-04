@@ -10,7 +10,9 @@ for i in range(pages):
  objects.append(('<< /Length %d >>\nstream\n' % len(text)).encode('ascii')+text+b'\nendstream')
 objects[0]=b'<< /Type /Catalog /Pages 2 0 R >>'
 objects[1]=('<< /Type /Pages /Count %d /Kids [%s] >>' % (pages,' '.join('%d 0 R'%n for n in kids))).encode('ascii')
-chunks=[b'%PDF-1.7\n']; offsets=[0];position=len(chunks[0])
+marker=sys.argv[3] if len(sys.argv)>3 else 'baseline'
+if not all(c.isalnum() or c in '-_' for c in marker): raise ValueError('invalid fixture marker')
+chunks=[('%PDF-1.7\n%'+marker+'\n').encode('ascii')]; offsets=[0];position=len(chunks[0])
 for n,obj in enumerate(objects,1):
  offsets.append(position);chunk=('%d 0 obj\n'%n).encode('ascii')+obj+b'\nendobj\n';chunks.append(chunk);position+=len(chunk)
 xref=('xref\n0 %d\n0000000000 65535 f \n'%(len(objects)+1)).encode('ascii')+b''.join(('%010d 00000 n \n'%n).encode('ascii') for n in offsets[1:])

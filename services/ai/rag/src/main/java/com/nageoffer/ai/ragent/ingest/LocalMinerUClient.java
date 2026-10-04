@@ -88,7 +88,8 @@ public class LocalMinerUClient {
     }
 
     public record ParseResult(String markdown, String markdownSha256, String jobId, String fileId,
-                              String tier, String parserVersion, Long durationMs, String pageRange) {
+                              String tier, String parserVersion, Long durationMs, String pageRange,
+                              String structuredContent, String structuredSha256) {
     }
 
     /** 提交解析并等待完成；超过 deadline 抛 DEPENDENCY_UNAVAILABLE（由上层分类）。 */
@@ -134,12 +135,19 @@ public class LocalMinerUClient {
             throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE, "mineru produced no markdown output");
         }
         byte[] markdown = downloadFile(markdownFileId);
+        String structuredFileId = file.path("output_files").path("structured_content").path("file_id").asText("");
+        if (structuredFileId.isBlank()) {
+            throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE, "mineru produced no structured page output");
+        }
+        byte[] structured = downloadFile(structuredFileId);
+        String structuredContent = new String(structured, StandardCharsets.UTF_8);
+        MinerUPageContent.decode(structuredContent, objectMapper);
         String markdownSha = sha256Hex(markdown);
         return new ParseResult(new String(markdown, StandardCharsets.UTF_8), markdownSha, jobId, fileId,
                 job.path("tier").asText(properties.getTier()),
                 file.path("parse").path("parser_version").asText(null),
                 file.path("parse").path("duration_ms").isNumber() ? file.path("parse").path("duration_ms").asLong() : null,
-                file.path("page_range").asText(""));
+                file.path("page_range").asText(""), structuredContent, sha256Hex(structured));
     }
 
     /** 取消任务（尽力而为；失败不掩盖主流程状态）。 */
@@ -197,7 +205,7 @@ public class LocalMinerUClient {
                 "files", List.of(Map.of("source", Map.of("type", "file_id", "file_id", fileId))),
                 "tier", properties.getTier(),
                 "ocr_mode", properties.getOcrMode(),
-                "output_formats", List.of("markdown"));
+                "output_formats", List.of("markdown", "structured_content"));
         JsonNode response = sendJson("POST", "/v1/parse/jobs", body);
         String jobId = response.path("job_id").asText("");
         if (jobId.isBlank()) {
