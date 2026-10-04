@@ -12,14 +12,17 @@
     <artifactId>ruoyi-ai-runtime</artifactId>
 
     <description>
-        AI 运行时公共底座（E3 单元二第一块）：原 services/ai/framework 的整体搬迁。
-        执行主体上下文、撤权屏障端口、租户守卫、幂等、追踪、取消、缓存键、
+        AI 运行时公共底座（E3 单元二）：原 services/ai/framework 与 services/ai/system 的整体搬迁。
+        第一块（framework）：执行主体上下文、撤权屏障端口、租户守卫、幂等、追踪、取消、缓存键、
         委托验签与（运行期退役中的）MQ/MVC 宿主配置。
+        第二块（system）：AI 域审计（bizlog）、示例题库、公共模板仓库与用户/登录入口 —— 其中
+        SaTokenConfig/UserContextInterceptor/AuthController/UserController 属 C2 冲突类，
+        内嵌装配显式列举时不得注册（身份只来自 AiIdentityPort），仅独立运行 ragent 应用使用。
 
-        归属约定（specs/E3-boundary-and-collisions.md C1/C3/C6/C9）：
+        归属约定（specs/E3-boundary-and-collisions.md C1/C2/C3/C6/C9）：
         config/* 与 integration/* 下的宿主装配类只服务独立运行的 ragent 应用，
         内嵌装配显式列举时不得注册；后续 rag/authorization 的 run/worker/ACL 部分随
-        rag 搬迁并入本模块。类保留原包名 com.nageoffer.ai.ragent.framework 以缩小搬迁差异
+        rag 搬迁并入本模块。类保留原包名 com.nageoffer.ai.ragent.* 以缩小搬迁差异
         （V2 §3），平台装配永远不做根包扫描。
     </description>
 
@@ -28,6 +31,7 @@
         <jjwt.version>0.13.0</jjwt.version>
         <transmittable-thread-local.version>2.14.5</transmittable-thread-local.version>
         <rocketmq-spring-boot-starter.version>2.3.6</rocketmq-spring-boot-starter.version>
+        <bizlog-sdk.version>3.0.6</bizlog-sdk.version>
         <!-- platform 根 POM 不管理这两个版本；取 services/ai 侧解析结果，保持搬迁零偏差 -->
         <guava.version>33.4.8-jre</guava.version>
     </properties>
@@ -150,6 +154,28 @@
             <artifactId>jjwt-jackson</artifactId>
             <version>${jjwt.version}</version>
             <scope>runtime</scope>
+        </dependency>
+
+        <!-- 第二块搬迁（AI system 域：audit/sample/template/user）引入的操作日志 SDK；
+             内嵌装配与独立应用一致：仅显式列举时生效，@EnableLogRecord 属应用装配层 -->
+        <dependency>
+            <groupId>io.github.mouzt</groupId>
+            <artifactId>bizlog-sdk</artifactId>
+            <version>${bizlog-sdk.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-starter</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.hibernate.validator</groupId>
+                    <artifactId>hibernate-validator</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.projectlombok</groupId>
+                    <artifactId>lombok</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
