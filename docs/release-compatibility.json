@@ -1,0 +1,66 @@
+{
+  "document": "release-compatibility",
+  "version": 1,
+  "updated": "2026-10-04",
+  "basis": "Versions below are read from the shipped migration files and the product contracts that tests and the native-runtime matrix verify. Nothing here promises an unverified upgrade or downgrade path.",
+  "schema": {
+    "platform": {
+      "migrations": 6,
+      "frozenVersionList": [1, 2, 3, 4, 5, 6],
+      "verifiedBy": "scripts/ci/verify-platform-migrations.sh; scripts/ci/verify-ai-migrations.sh"
+    },
+    "ai": {
+      "migrations": 12,
+      "frozenVersionList": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+      "vectorDimension": 1536,
+      "verifiedBy": "scripts/ci/verify-ai-migrations.sh"
+    }
+  },
+  "contracts": {
+    "runRequest": {
+      "version": "schemaVersion=1",
+      "scope": "POST /api/ai/v1/runs body contract (rag.chat / document.ingest / agent.run), idempotency-key replay and request-hash conflict semantics",
+      "verifiedBy": "R1 admission cases in scripts/ci/verify-native-runtime.sh; ruoyi-web node protocol tests"
+    },
+    "runEventStream": {
+      "version": "sse-envelope-v1",
+      "scope": "GET /api/ai/v1/runs/{id}/events frames: id:<seq>, event:<type>, data with schemaVersion=1; afterSeq/Last-Event-ID replay cursor; terminal withheld behind sequence holes",
+      "verifiedBy": "N3 cross-instance replay in scripts/ci/verify-native-runtime.sh; RunStreamClient/SseSyntax node tests"
+    },
+    "agentExecution": {
+      "version": "p3-core-v1",
+      "agentVersion": "core-v1",
+      "engineVersion": "agentscope-2.0.2",
+      "toolCatalog": "p3-tools-v1",
+      "scope": "agent.run execution version binding: a checkpoint whose executionVersion differs from p3-core-v1 fails with AGENT_CHECKPOINT_INCOMPATIBLE instead of being reused",
+      "verifiedBy": "AgentRunExecutor checkpoint guard; FencedAgentStateStoreTest; P3 formal R4/R5 evidence"
+    },
+    "gatewayDelegation": {
+      "version": "p04-delegation-v1",
+      "scope": "platform->AI delegated identity (RS256, X-P04-Service-Credential service credential), authorization check contract POST /internal/platform/v1/authorization/check",
+      "verifiedBy": "P04RunAcceptanceTest; AI/platform integration cases in the native matrix"
+    }
+  },
+  "compatibility": {
+    "schemaCompatibility": {
+      "ai": "v12",
+      "platform": "v6"
+    },
+    "contractCompatibility": {
+      "runRequest": "v1",
+      "runEventStream": "sse-envelope-v1",
+      "agentExecution": "p3-core-v1",
+      "gatewayDelegation": "p04-delegation-v1"
+    },
+    "verifiedUpgradePaths": [
+      "fresh install from the shipped migration sets (platform 1..6, AI 1..12)",
+      "repeat migration is a no-op with validate passing",
+      "checksum drift, removed migrations and foreign schema owners are rejected"
+    ],
+    "notVerified": [
+      "database downgrade from a later schema to an earlier one - no claim of lossless rollback is made",
+      "cross-version rolling upgrades of a running cluster"
+    ],
+    "checkpointProtection": "agent checkpoints carrying an executionVersion other than p3-core-v1 are refused, not silently migrated"
+  }
+}

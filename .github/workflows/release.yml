@@ -36,6 +36,9 @@ jobs:
           - image: ruoyi-ai-agentscope-ai
             context: services/ai
             dockerfile: infra/docker/ai.Dockerfile
+          - image: ruoyi-ai-agentscope-web
+            context: .
+            dockerfile: infra/docker/ruoyi-web.Dockerfile
     steps:
       - uses: actions/checkout@v4
         with:
@@ -96,9 +99,10 @@ jobs:
           import os
           from pathlib import Path
 
+          compatibility = json.loads(Path('docs/release-compatibility.json').read_text(encoding='utf-8'))
           files = sorted(Path('image-digests').glob('*.txt'))
-          if len(files) != 2:
-              raise SystemExit(f'Expected two image digests, got {len(files)}')
+          if len(files) != 3:
+              raise SystemExit(f'Expected three image digests, got {len(files)}')
           images = {}
           for file in files:
               reference, source = file.read_text(encoding='utf-8').splitlines()
@@ -111,8 +115,10 @@ jobs:
               'sourceRepository': os.environ['REPOSITORY'],
               'sourceCommit': os.environ['SOURCE_SHA'],
               'images': images,
-              'schemaCompatibility': 'not-yet-versioned',
-              'contractCompatibility': 'not-yet-versioned',
+              'schemaCompatibility': compatibility['compatibility']['schemaCompatibility'],
+              'contractCompatibility': compatibility['compatibility']['contractCompatibility'],
+              'verifiedUpgradePaths': compatibility['compatibility']['verifiedUpgradePaths'],
+              'notVerified': compatibility['compatibility']['notVerified'],
           }
           Path('release-manifest.json').write_text(
               json.dumps(manifest, indent=2) + '\n', encoding='utf-8'
@@ -135,7 +141,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: release-manifest
-      - name: Pull both published digests without registry credentials
+      - name: Pull all three published digests without registry credentials
         env:
           SOURCE_SHA: ${{ github.sha }}
           SOURCE_REPOSITORY: ${{ github.repository }}
@@ -154,9 +160,9 @@ jobs:
               raise SystemExit('Release manifest source commit mismatch')
           if manifest['sourceRepository'] != os.environ['SOURCE_REPOSITORY']:
               raise SystemExit('Release manifest repository mismatch')
-          expected = {'ruoyi-ai-agentscope-ai', 'ruoyi-ai-agentscope-platform'}
+          expected = {'ruoyi-ai-agentscope-ai', 'ruoyi-ai-agentscope-platform', 'ruoyi-ai-agentscope-web'}
           if set(manifest['images']) != expected:
-              raise SystemExit('Release manifest does not contain exactly the two expected images')
+              raise SystemExit('Release manifest does not contain exactly the three expected images')
           for name in sorted(expected):
               reference = manifest['images'][name]
               if not re.fullmatch(rf'ghcr\.io/wonderchn/{name}@sha256:[0-9a-f]{{64}}', reference):
