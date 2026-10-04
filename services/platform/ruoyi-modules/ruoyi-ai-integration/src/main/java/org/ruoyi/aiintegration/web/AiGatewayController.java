@@ -113,7 +113,22 @@ public class AiGatewayController {
             new Route("GET", "/conversations/{id}/export", "conversation.export"),
             new Route("GET", "/memories", "memory.read"),
             new Route("GET", "/runs/{id}", "run.get"),
-            new Route("GET", "/runs/{id}/event-records", "run.events"));
+            new Route("GET", "/runs/{id}/event-records", "run.events"),
+            // P2：正式受理/生命周期/专用流与上传/文档
+            new Route("POST", "/runs", "run.submit"),
+            new Route("POST", "/runs/{id}/cancel", "run.cancel"),
+            new Route("POST", "/runs/{id}/resume", "run.resume"),
+            new Route("GET", "/runs/{id}/actions", "run.get"),
+            new Route("POST", "/runs/{id}/approvals", "run.approve"),
+            new Route("GET", "/runs/{id}/reconciliations/{actionId}", "run.reconcile"),
+            new Route("POST", "/runs/{id}/reconciliations/{actionId}/query", "run.reconcile"),
+            new Route("GET", "/runs/{id}/events", "run.stream"),
+            new Route("POST", "/documents/uploads", "document.upload"),
+            new Route("POST", "/documents/{id}/ingestions", "document.ingest"),
+            new Route("POST", "/documents/{id}/tombstone", "kb.delete"),
+            new Route("GET", "/documents/{id}/meta", "document.read"),
+            new Route("GET", "/documents/{id}/source", "document.download"),
+            new Route("GET", "/knowledge-bases/{id}/documents", "document.list"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;
@@ -235,7 +250,7 @@ public class AiGatewayController {
         headers.put(RequestId.HEADER, RequestId.currentOrEmpty());
 
         if(action.equals("document.download") || action.equals("conversation.export")
-                || servletResponse!=null && (method.equals("GET") || action.equals("kb.retrieve"))){
+                || servletResponse!=null && (method.equals("GET") || action.equals("kb.retrieve") || action.equals("run.approve") || action.equals("run.reconcile"))){
             var transfer=client.forwardBytes(new AiGatewayClient.ForwardRequest(method,uri,Map.copyOf(headers),body));
             if(transfer.status()!=200 && transfer.status()!=206){
                 return ResponseEntity.status(transfer.status()).contentType(MediaType.APPLICATION_JSON)

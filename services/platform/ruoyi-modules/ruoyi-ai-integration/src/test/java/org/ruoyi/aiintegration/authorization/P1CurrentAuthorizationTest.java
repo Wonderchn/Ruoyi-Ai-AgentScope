@@ -200,9 +200,21 @@ class P1CurrentAuthorizationTest {
 
     @Test
     void registryCoversTheFrozenActionTable() {
-        assertEquals(13, AiActionRegistry.knownActions().size());
+        // P1 13 + P2 7 + approved P3 4 fixed actions.
+        assertEquals(24, AiActionRegistry.knownActions().size());
         assertEquals(Optional.of("ai:kb:acl"), AiActionRegistry.permissionOf("kb.acl.manage"));
         assertEquals(Optional.of("ai:run:event:read"), AiActionRegistry.permissionOf("run.events"));
+        assertEquals(Optional.of("ai:run:submit"), AiActionRegistry.permissionOf("run.submit"));
+        assertEquals(Optional.of("ai:run:stream"), AiActionRegistry.permissionOf("run.stream"));
+        assertEquals(Optional.of("ai:document:upload"), AiActionRegistry.permissionOf("document.upload"));
+        assertEquals(Optional.of("ai:document:ingest"), AiActionRegistry.permissionOf("document.ingest"));
+        assertEquals(Optional.of("ai:document:read"), AiActionRegistry.permissionOf("document.list"));
+        assertEquals(Optional.of("ai:agent:execute"), AiActionRegistry.permissionOf("agent.execute"));
+        assertEquals(Optional.of("ai:run:approve"), AiActionRegistry.permissionOf("run.approve"));
+        assertEquals(Optional.of("ai:run:reconcile"), AiActionRegistry.permissionOf("run.reconcile"));
+        assertEquals(Optional.of("ai:tool:sandbox:write"), AiActionRegistry.permissionOf("tool.sandbox.write"));
+        assertTrue(AiActionRegistry.permissionOf("tool.sandbox.admin").isEmpty());
+        assertTrue(AiActionRegistry.permissionOf("mcp.custom.write").isEmpty());
         assertTrue(AiActionRegistry.permissionOf("rag.chat").isEmpty());
         assertTrue(AiActionRegistry.permissionOf(null).isEmpty());
     }

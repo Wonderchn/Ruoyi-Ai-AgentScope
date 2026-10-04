@@ -36,6 +36,21 @@ export const layoutRouter: RouteRecordRaw[] = [
         },
       },
       {
+        path: '/rag',
+        name: 'ragConsole',
+        component: () => import('@/pages/rag/index.vue'),
+        meta: {
+          title: '知识库问答',
+          icon: 'Collection',
+        },
+      },
+      {
+        path: '/agent-run',
+        name: 'agentConsole',
+        component: () => import('@/pages/agent-run/index.vue'),
+        meta: { title: 'Agent 任务', icon: 'Grid' },
+      },
+      {
         path: '/media',
         name: 'mediaWorkbench',
         component: () => import('@/pages/media/index.vue'),

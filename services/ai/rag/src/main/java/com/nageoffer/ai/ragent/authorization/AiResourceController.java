@@ -91,6 +91,9 @@ public class AiResourceController {
     private TenantEventReadRepository events;
     private com.nageoffer.ai.ragent.framework.security.RevocationGuard revocations;
     private org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.rag.core.vector.PgVectorRetrieverService> retrievers;
+    private org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.ingest.EmbeddingGateway> p2Embeddings;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureP2(org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.ingest.EmbeddingGateway> embeddings) {this.p2Embeddings=embeddings;}
 
     @org.springframework.beans.factory.annotation.Autowired
     public void configureExecution(com.nageoffer.ai.ragent.framework.security.RevocationGuard revocations,
@@ -151,6 +154,8 @@ public class AiResourceController {
         authorization.requireFunction(principal,action,"run:"+runId);
         requireGrant(principal,action,"run:"+runId);
         var row=runs.findRun(principal.tenantId(),runId).orElseThrow(()->new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
+        var p2=runSnapshots.getIfAvailable();
+        if(p2!=null && p2.isManagedRun(principal.tenantId(),runId)) {p2.get(principal,runId); return row;}
         if(!authorization.sourcesCurrent(principal,row.resourceRefs(),row.policyVersion(),row.aclVersion())){
             throw new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);}
         return row;
@@ -158,9 +163,26 @@ public class AiResourceController {
 
     @GetMapping("/runs/{runId}")
     public ResponseEntity<ApiEnvelope<Map<String,Object>>> getRun(@PathVariable String runId){
-        var row=visibleRun(PrincipalContext.require(),runId,"run.get");
+        var principal=PrincipalContext.require();
+        var p2=runSnapshots.getIfAvailable();
+        if(p2!=null && p2.isManagedRun(principal.tenantId(),runId)){
+            // P2 正式执行账本：当前授权 + 扩展快照（状态/阶段/版本/允许动作/终态结果）
+            requireGrant(principal,"run.get","run:"+runId);
+            return reply("run.get","run:"+runId,p2.snapshot(principal,runId));
+        }
+        var row=visibleRun(principal,runId,"run.get");
         return reply("run.get","run:"+runId,Map.of("runId",row.runId(),"action",row.action(),"status",row.status(),"createdAt",row.createdAt()));
     }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureP2Snapshots(org.springframework.beans.factory.ObjectProvider<
+            com.nageoffer.ai.ragent.runtime.RunLifecycleService> snapshots) {
+        this.runSnapshots = snapshots;
+    }
+
+    private org.springframework.beans.factory.ObjectProvider<
+            com.nageoffer.ai.ragent.runtime.RunLifecycleService> runSnapshots;
+
 
     @GetMapping("/runs/{runId}/event-records")
     public ResponseEntity<ApiEnvelope<List<TenantEventReadRepository.EventRow>>> getEvents(@PathVariable String runId,
@@ -284,11 +306,18 @@ public class AiResourceController {
     public ResponseEntity<ApiEnvelope<Map<String, Object>>> createKnowledgeBase(
             @RequestBody CreateKnowledgeBaseRequest request) {
         PrincipalContext.require();
+        String model=request==null ? null : request.embeddingModel();
+        String collection=request==null ? null : request.collectionName();
+        var embedding=p2Embeddings==null ? null : p2Embeddings.getIfAvailable();
+        if(embedding!=null) {
+            if(model==null || model.isBlank()) model=embedding.model();
+            if(!embedding.model().equals(model)) throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.BAD_REQUEST,"configured embedding model required");
+            if(collection==null || collection.isBlank()) collection="p2-"+java.util.UUID.randomUUID();
+        }
         String kbId = writeService.createKnowledgeBase(
                 new AiResourceWriteService.KnowledgeBaseDraft(
                         request == null ? null : request.name(),
-                        request == null ? null : request.embeddingModel(),
-                        request == null ? null : request.collectionName()));
+                        model,collection));
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("kbId", kbId);
         return ResponseEntity.ok(ApiEnvelope.ok(data));
@@ -403,6 +432,11 @@ public class AiResourceController {
         P04AiErrorCode code = ex.errorCode();
         return ResponseEntity.status(code.httpStatus())
                 .body(ApiEnvelope.error(code.httpStatus(), ex.getMessage(), code.name()));
+    }
+
+    @ExceptionHandler(com.nageoffer.ai.ragent.runtime.RunApiException.class)
+    public ResponseEntity<?> handleRun(com.nageoffer.ai.ragent.runtime.RunApiException ex) {
+        return com.nageoffer.ai.ragent.runtime.web.RunApiResponses.fail(ex.errorCode(),ex.getMessage(),com.nageoffer.ai.ragent.framework.security.AiRequestIdFilter.currentOrEmpty());
     }
 
     @ExceptionHandler(ClientException.class)

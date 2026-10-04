@@ -64,6 +64,17 @@ public final class AiActionRegistry {
         actions.put("memory.read", "ai:memory:read");
         actions.put("run.get", "ai:run:read");
         actions.put("run.events", "ai:run:event:read");
+        actions.put("run.submit", "ai:run:submit");
+        actions.put("run.cancel", "ai:run:cancel");
+        actions.put("run.resume", "ai:run:resume");
+        actions.put("run.stream", "ai:run:stream");
+        actions.put("document.upload", "ai:document:upload");
+        actions.put("document.ingest", "ai:document:ingest");
+        actions.put("document.list", "ai:document:read");
+        actions.put("agent.execute", "ai:agent:execute");
+        actions.put("run.approve", "ai:run:approve");
+        actions.put("run.reconcile", "ai:run:reconcile");
+        actions.put("tool.sandbox.write", "ai:tool:sandbox:write");
         return Collections.unmodifiableMap(actions);
     }
 

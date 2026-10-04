@@ -21,3 +21,8 @@
 *.pem
 *.p12
 *.pfx
+tools/p3-34a/probe/java-args.txt
+tools/p3-34a/probe/*.class
+tools/p3-34a/probe/*.class
+tools/p3-34a/probe/javac-args.txt
+tools/p3-34a/probe/cp-win.txt

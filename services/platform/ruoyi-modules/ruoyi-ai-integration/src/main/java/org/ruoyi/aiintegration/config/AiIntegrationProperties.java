@@ -49,6 +49,18 @@ public class AiIntegrationProperties {
     /** 转发请求体的最大字节数；超限直接拒绝，不缓冲不转发。 */
     private long maxForwardBodyBytes = 2L * 1024 * 1024;
 
+    /** 专用 SSE 流：建连超时（毫秒）。 */
+    private int sseConnectTimeoutMillis = 5000;
+
+    /** 专用 SSE 流：空闲超时（毫秒），须 ≥ 心跳间隔的 2 倍（心跳 15s）。 */
+    private int sseIdleTimeoutMillis = 120000;
+
+    /** 专用 SSE 流：单连接总时长上限（毫秒）。 */
+    private int sseMaxDurationMillis = 1800000;
+
+    /** 专用上传传输：单请求上限（字节，默认 20MB，与 AI 首期一致）。 */
+    private long uploadMaxBytes = 20L * 1024L * 1024L;
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -87,5 +99,37 @@ public class AiIntegrationProperties {
 
     public void setMaxForwardBodyBytes(long maxForwardBodyBytes) {
         this.maxForwardBodyBytes = maxForwardBodyBytes;
+    }
+
+    public int getSseConnectTimeoutMillis() {
+        return sseConnectTimeoutMillis;
+    }
+
+    public void setSseConnectTimeoutMillis(int sseConnectTimeoutMillis) {
+        this.sseConnectTimeoutMillis = sseConnectTimeoutMillis;
+    }
+
+    public int getSseIdleTimeoutMillis() {
+        return sseIdleTimeoutMillis;
+    }
+
+    public void setSseIdleTimeoutMillis(int sseIdleTimeoutMillis) {
+        this.sseIdleTimeoutMillis = sseIdleTimeoutMillis;
+    }
+
+    public int getSseMaxDurationMillis() {
+        return sseMaxDurationMillis;
+    }
+
+    public void setSseMaxDurationMillis(int sseMaxDurationMillis) {
+        this.sseMaxDurationMillis = sseMaxDurationMillis;
+    }
+
+    public long getUploadMaxBytes() {
+        return uploadMaxBytes;
+    }
+
+    public void setUploadMaxBytes(long uploadMaxBytes) {
+        this.uploadMaxBytes = uploadMaxBytes;
     }
 }

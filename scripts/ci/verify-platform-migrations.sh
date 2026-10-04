@@ -3,14 +3,15 @@
 # PostgreSQL files on a throwaway database, and fail unless every DB2 invariant holds.
 #
 # Why this exists: DB2 was verified once, by hand, against a lab VM. Without this check the
-# four SQL files stay outside CI, so any later edit to a migration is unverified. The
+# SQL files stay outside CI, so any later edit to a migration is unverified. The
 # assertions encode findings that cost a full round each to discover:
 #  * PG rolls a failed migration back whole and records NO failed row, so a broken migration
 #    is judged by exit code plus "nothing landed", never by reading history for failures.
 #  * Flyway exits 0 and claims success when it finds zero migration files, and it prints
 #  "up to date" in that case too, so the first round must match
-#    "Successfully applied 4 migrations" and history must be counted by version, not by
-#    count(*) (Flyway also writes a version=NULL row when it creates the schema).
+#    "Successfully applied 4 migrations" at target v4, then the two P2/P3 permission
+#    migrations at v6. History must be counted by version, not by count(*) (Flyway also
+#    writes a version=NULL row when it creates the schema).
 #  * bootstrap objects (CREATE EXTENSION vector, the implicit varchar->timestamptz cast)
 #    need superuser/type owner, so they are not migrations and must be applied separately.
 #  * the app identity must not be able to reach public: that ACL, not application code, is
@@ -68,7 +69,8 @@ as_user() { local password; case "$1" in migrate) password=$MIGRATE_PW;; app) pa
 run_bootstrap() { PGPASSWORD=$PG_SUPER docker run --rm -i --net host -e PGPASSWORD -e PLATFORM_MIGRATE_PASSWORD -e PLATFORM_APP_PASSWORD "${PSQL_VOLS[@]}" $PG_IMAGE \
         psql "host=$DB_HOST port=$DB_PORT dbname=$DB_NAME user=postgres" -X -q -v ON_ERROR_STOP=1 -f "$1"; }
 flyway() { docker run --rm --net host "${FLYWAY_ENV[@]}" -v $WORK/sql:/flyway/sql:ro $FLYWAY_IMAGE "$@"; }
-guard_first_migrate() { grep -Eq "Successfully applied 4 migrations" "$1"; }
+guard_first_migrate() { grep -Eq 'Successfully applied 4 migrations to schema "platform", now at version v4([[:space:]]|$)' "$1"; }
+guard_core_migrate()  { grep -Eq 'Successfully applied 2 migrations to schema "platform", now at version v6([[:space:]]|$)' "$1"; }
 guard_round_two()     { grep -Eq 'Schema "platform" is up to date' "$1"; }
 history_versions()    { q "select count(*) from platform.flyway_schema_history_platform where version in ('1','2','3','4')"; }
 
@@ -130,11 +132,12 @@ assert_eq 'platform_app CREATE on public' f "$(q "select has_schema_privilege('p
 assert_eq 'migrate_platform CREATE on database' f "$(q "select has_database_privilege('migrate_platform','$DB_NAME','CREATE')")"
 assert_eq 'app role search_path' 'platform, extensions' "$(q "select split_part(setconfig[1],'=',2) from pg_db_role_setting s join pg_roles r on r.oid=s.setrole where r.rolname='platform_app'")"
 
-echo "### 5. Flyway applies the repository baseline and seeds"
-flyway migrate > $WORK/fly1.txt 2>&1; RC=$?
+echo "### 5. Flyway applies the immutable v1..v4 baseline and seeds"
+flyway -target=4 migrate > $WORK/fly1.txt 2>&1; RC=$?
 if [ $RC -eq 0 ] && guard_first_migrate $WORK/fly1.txt; then ok 'migrate exit 0 and applied count = 4'
 else bad "migrate rc=$RC guard=$(guard_first_migrate $WORK/fly1.txt && echo yes || echo no)"; tail -8 $WORK/fly1.txt; fi
 assert_eq 'history rows for v1..v4' 4 "$(history_versions)"
+assert_eq 'baseline version history' '1,2,3,4' "$(q "select string_agg(version, ',' order by installed_rank) from platform.flyway_schema_history_platform where version is not null")"
 assert_eq 'failed rows (PG records none)' 0 "$(q "select count(*) from platform.flyway_schema_history_platform where not success")"
 assert_eq 'domain base tables' 35 "$(q "select count(*) from information_schema.tables where table_schema='platform' and table_type='BASE TABLE' and table_name != 'flyway_schema_history_platform'")"
 assert_eq 'tables with primary key' 35 "$(q "select count(distinct table_name) from information_schema.table_constraints where table_schema='platform' and constraint_type='PRIMARY KEY' and table_name != 'flyway_schema_history_platform'")"
@@ -143,6 +146,24 @@ assert_eq 'user_balance definition' 'numeric|20|2|YES|0.00' "$(q "select data_ty
 assert_eq 'deliberately excluded objects' 0 "$(q "select count(*) from information_schema.tables where table_schema='platform' and table_name in ('gen_table','gen_table_column','test_demo','test_tree','test_leave')")"
 assert_eq 'seed counts via the app identity' 'menu=217 role=5 role_menu=220 dict_data=74 config=19 dept=11 tenant=1 client=3' \
   "$(as_user app platform_app -tAc "select 'menu='||(select count(*) from sys_menu)||' role='||(select count(*) from sys_role)||' role_menu='||(select count(*) from sys_role_menu)||' dict_data='||(select count(*) from sys_dict_data)||' config='||(select count(*) from sys_config)||' dept='||(select count(*) from sys_dept)||' tenant='||(select count(*) from sys_tenant)||' client='||(select count(*) from sys_client)")"
+
+echo "### 5b. P2/P3 append permission declarations without default grants"
+flyway migrate > $WORK/flycore.txt 2>&1; RC=$?
+if [ $RC -eq 0 ] && guard_core_migrate $WORK/flycore.txt; then ok 'core migrate exit 0 and applied count = 2 (v5..v6)'
+else bad "core migrate rc=$RC guard=$(guard_core_migrate $WORK/flycore.txt && echo yes || echo no)"; tail -8 $WORK/flycore.txt; fi
+assert_eq 'complete version history' '1,2,3,4,5,6' "$(q "select string_agg(version, ',' order by installed_rank) from platform.flyway_schema_history_platform where version is not null")"
+assert_eq 'complete failed rows' 0 "$(q "select count(*) from platform.flyway_schema_history_platform where not success")"
+assert_eq 'complete domain base tables' 35 "$(q "select count(*) from information_schema.tables where table_schema='platform' and table_type='BASE TABLE' and table_name != 'flyway_schema_history_platform'")"
+assert_eq 'complete tables with primary key' 35 "$(q "select count(distinct table_name) from information_schema.table_constraints where table_schema='platform' and constraint_type='PRIMARY KEY' and table_name != 'flyway_schema_history_platform'")"
+assert_eq 'complete sys_user columns' 23 "$(q "select count(*) from information_schema.columns where table_schema='platform' and table_name='sys_user'")"
+assert_eq 'complete user_balance definition' 'numeric|20|2|YES|0.00' "$(q "select data_type||'|'||numeric_precision||'|'||numeric_scale||'|'||is_nullable||'|'||column_default from information_schema.columns where table_schema='platform' and table_name='sys_user' and column_name='user_balance'")"
+assert_eq 'complete deliberately excluded objects' 0 "$(q "select count(*) from information_schema.tables where table_schema='platform' and table_name in ('gen_table','gen_table_column','test_demo','test_tree','test_leave')")"
+assert_eq 'complete seed counts via the app identity' 'menu=227 role=5 role_menu=220 dict_data=74 config=19 dept=11 tenant=1 client=3' \
+  "$(as_user app platform_app -tAc "select 'menu='||(select count(*) from sys_menu)||' role='||(select count(*) from sys_role)||' role_menu='||(select count(*) from sys_role_menu)||' dict_data='||(select count(*) from sys_dict_data)||' config='||(select count(*) from sys_config)||' dept='||(select count(*) from sys_dept)||' tenant='||(select count(*) from sys_tenant)||' client='||(select count(*) from sys_client)")"
+assert_eq 'P2/P3 canonical permissions' '7114:ai:run:submit,7115:ai:run:cancel,7116:ai:run:resume,7117:ai:run:stream,7118:ai:document:upload,7119:ai:document:ingest,7120:ai:agent:execute,7121:ai:run:approve,7122:ai:run:reconcile,7123:ai:tool:sandbox:write' \
+  "$(as_user app platform_app -tAc "select string_agg(menu_id::text||':'||perms, ',' order by menu_id) from sys_menu where menu_id between 7114 and 7123")"
+assert_eq 'P2/P3 hidden permission buttons' 10 "$(as_user app platform_app -tAc "select count(*) from sys_menu where menu_id between 7114 and 7123 and parent_id=7100 and menu_type='F' and visible='1' and status='0'")"
+assert_eq 'no default P2/P3 role grants' 0 "$(as_user app platform_app -tAc "select count(*) from sys_role_menu where menu_id between 7114 and 7123")"
 
 echo "### 6. no drift on a second pass; applied baseline is immutable"
 flyway migrate > $WORK/fly2.txt 2>&1; assert_eq 'second migrate exit' 0 $?

@@ -6,6 +6,7 @@ import { useRouter } from 'vue-router';
 import { useChatStore } from './chat';
 import { useLoginFormStore } from './loginForm';
 import { useModelStore } from './model';
+import { useRagStore } from './rag';
 import { useSessionStore } from './session';
 
 export const useUserStore = defineStore(
@@ -19,6 +20,7 @@ export const useUserStore = defineStore(
       useSessionStore().resetSessions();
       useChatStore().resetChats();
       useModelStore().resetModels();
+      useRagStore().resetRag();
     };
     const router = useRouter();
     const loginRedirectPath = ref<string>('');

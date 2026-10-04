@@ -55,8 +55,10 @@ router.beforeEach(
       return next();
 
     // 5、判断是否有 Token，没有重定向到 login 页面。
-    if (!userStore.token)
-      userStore.logout();
+    if (!userStore.token) {
+      userStore.clearUserInfo();
+      return next({ name: 'chat' });
+    }
 
     // 其余逻辑 预留...
 
