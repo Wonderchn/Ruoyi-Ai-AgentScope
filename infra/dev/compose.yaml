@@ -67,17 +67,20 @@ services:
       - ../../services/ai/resources/database/postgres/migrations:/sql/ai:ro
     entrypoint: >
       sh -c '
+      mkdir -p /tmp/mig/platform /tmp/mig/ai;
+      cp /sql/platform/V*.sql /tmp/mig/platform/;
+      cp /sql/ai/V*.sql /tmp/mig/ai/;
       FLYWAY_URL="jdbc:postgresql://postgres:5432/ruoyi_agent?currentSchema=platform,extensions"
       FLYWAY_USER=migrate_platform
       FLYWAY_PASSWORD="$$MIGRATE_PASSWORD"
       FLYWAY_SCHEMAS=platform FLYWAY_DEFAULT_SCHEMA=platform
-      FLYWAY_TABLE=flyway_schema_history_platform FLYWAY_LOCATIONS=filesystem:/sql/platform
+      FLYWAY_TABLE=flyway_schema_history_platform FLYWAY_LOCATIONS=filesystem:/tmp/mig/platform
       export FLYWAY_URL FLYWAY_USER FLYWAY_PASSWORD FLYWAY_SCHEMAS FLYWAY_DEFAULT_SCHEMA FLYWAY_TABLE FLYWAY_LOCATIONS;
       flyway migrate &&
       FLYWAY_URL="jdbc:postgresql://postgres:5432/ruoyi_agent?currentSchema=ai,extensions"
       FLYWAY_USER=migrate_ai
       FLYWAY_SCHEMAS=ai FLYWAY_DEFAULT_SCHEMA=ai
-      FLYWAY_TABLE=flyway_schema_history_ai FLYWAY_LOCATIONS=filesystem:/sql/ai
+      FLYWAY_TABLE=flyway_schema_history_ai FLYWAY_LOCATIONS=filesystem:/tmp/mig/ai
       export FLYWAY_URL FLYWAY_USER FLYWAY_SCHEMAS FLYWAY_DEFAULT_SCHEMA FLYWAY_TABLE FLYWAY_LOCATIONS;
       flyway migrate'
 
