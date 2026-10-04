@@ -188,7 +188,6 @@ services:
       # The run worker and outbox relay are separate opt-ins even when p2 is on.
       P2_WORKER_ENABLED: ${P2_WORKER_ENABLED:-false}
       P2_OUTBOX_RELAY_ENABLED: ${P2_OUTBOX_RELAY_ENABLED:-false}
-      P3_ENABLED: ${P3_ENABLED:-false}
       P2_OBJECT_STORE_TYPE: fs
       P2_OBJECT_STORE_ROOT: /data/private-objects
       # Optional local MinerU parser (host service): set MINERU_LOCAL_ENABLED=true in
