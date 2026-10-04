@@ -79,13 +79,14 @@ public class RunAccessService {
         } catch(RunApiException e){throw e;}catch(Exception e){throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);}
     }
     private void citationsCurrent(ExecutionPrincipal principal,RunRecord run) {
-        if(!"rag.chat".equals(run.action())) return;
+        if(!Set.of("rag.chat","agent.run").contains(run.action())) return;
         var dao=ledger.getIfAvailable();
         if(dao==null) throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE);
-        var step=dao.latestCompletedStep(run.tenantId(),run.runId(),"retrieve");
-        if(step.isEmpty()) return;
+        var steps="rag.chat".equals(run.action())?dao.latestCompletedStep(run.tenantId(),run.runId(),"retrieve").stream().toList():dao.listSteps(run.tenantId(),run.runId()).stream().filter(step->"COMPLETED".equals(step.state()) && step.stepId().startsWith("agent-retrieve-")).toList();
+        if(steps.isEmpty()) return;
         try {
-            var chunks=CanonicalJson.strictMapper().readTree(step.get().refJson()).get("chunks");
+            for(var step:steps) {
+            var chunks=CanonicalJson.strictMapper().readTree(step.refJson()).get("chunks");
             if(chunks==null || !chunks.isArray()) throw new IllegalArgumentException("invalid provenance");
             var docs=documents.getIfAvailable();
             if(docs==null) throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE);
@@ -98,6 +99,7 @@ public class RunAccessService {
                 if(doc.tombstoned() || !versionId.equals(doc.publishedVersionId())
                         || resources().check(scoped(principal,Set.of("document.read")),"document.read","doc:"+docId)!=ResourceAuthorizationService.Verdict.GRANT)
                     throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
+            }
             }
         } catch(RunApiException e){throw e;}
         catch(Exception e){throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);}

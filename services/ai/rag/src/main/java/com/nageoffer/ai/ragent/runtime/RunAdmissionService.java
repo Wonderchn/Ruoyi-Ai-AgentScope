@@ -71,6 +71,11 @@ public class RunAdmissionService {
         this.faultInjector = faultInjector;
     }
 
+    private java.util.List<RuntimeActionContract> contracts=java.util.List.of();
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void configureActions(java.util.List<RuntimeActionContract> contracts) {this.contracts=java.util.List.copyOf(contracts);}
+    private RuntimeActionContract contract(String action) {return contracts.stream().filter(c->c.action().equals(action)).findFirst().orElse(null);}
+
     private void fault(String hook) {
         P2FaultInjector injector = faultInjector.getIfAvailable();
         if (injector != null) {
@@ -125,9 +130,10 @@ public class RunAdmissionService {
         String runId = RunEventAppender.newRunId();
         dao.insertRun(tenantId, runId, principal.membershipId(), principal.userId(), request.action(),
                 idempotencyKey, requestHash, toJson(request.input()), toJson(request.budget()),
-                "p2-v1", principal.policyVersion(), principal.aclVersion(), sources,
+                (contract(request.action())==null?"p2-v1":contract(request.action()).executionVersion()), principal.policyVersion(), principal.aclVersion(), sources,
                 request.retryOf());
         dao.registerRun(tenantId,runId,principal.membershipId(),ownerDept);
+        if(contract(request.action())!=null) contract(request.action()).onAdmitted(principal,runId,request);
         fault(P2FaultInjector.ADMISSION_AFTER_RUN);
         // 3) 受理事件 seq=1 + outbox（引用已持久化 eventId）
         Map<String, Object> accepted = new LinkedHashMap<>();
@@ -168,16 +174,17 @@ public class RunAdmissionService {
         if (request == null || request.schemaVersion() == null || request.schemaVersion() != 1) {
             throw new RunApiException(RunErrorCode.BAD_REQUEST, "schemaVersion 1 is required");
         }
-        if (request.action() == null || !P2_ACTIONS.contains(request.action())) {
+        if (request.action() == null || !P2_ACTIONS.contains(request.action()) && contract(request.action())==null) {
             throw new RunApiException(RunErrorCode.BAD_REQUEST, "action is not enabled in P2 core");
         }
+        if(contract(request.action())!=null) contract(request.action()).validate(principal,request);
         JsonNode budget=request.budget();
         if(budget!=null && !budget.isNull()) {
             if(!budget.isObject()) throw new RunApiException(RunErrorCode.BAD_REQUEST,"budget must be an object");
             budget.fieldNames().forEachRemaining(name->{
-                if(!Set.of("maxTokens","maxWallClockSeconds").contains(name)) throw new RunApiException(RunErrorCode.BAD_REQUEST,"unknown budget field");
+                if(!(Set.of("maxTokens","maxWallClockSeconds").contains(name) || contract(request.action())!=null && Set.of("maxSteps","maxToolCalls").contains(name))) throw new RunApiException(RunErrorCode.BAD_REQUEST,"unknown budget field");
                 JsonNode value=budget.get(name);
-                int limit="maxTokens".equals(name)?8192:600;
+                int limit="maxTokens".equals(name)?8192:"maxWallClockSeconds".equals(name)?600:12;
                 if(!value.isIntegralNumber() || !value.canConvertToInt() || value.intValue()<1 || value.intValue()>limit) throw new RunApiException(RunErrorCode.BAD_REQUEST,"invalid budget limit");
             });
         }
@@ -188,7 +195,8 @@ public class RunAdmissionService {
             var parent=dao.findRun(principal.tenantId(),request.retryOf()).orElseThrow(()->new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
             access.visible(principal,parent);
             if(!parent.action().equals(request.action())) throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
-            if(!parent.isTerminal()) throw new RunApiException(RunErrorCode.RUN_STATE_CONFLICT,"ordinary retry requires a terminal source");
+            boolean inherited=contract(request.action())!=null && request.input()!=null && request.input().hasNonNull("inheritActionId");
+            if(!parent.isTerminal() && !inherited) throw new RunApiException(RunErrorCode.RUN_STATE_CONFLICT,"ordinary retry requires a terminal source; unknown actions require explicit reconciliation/inheritance");
         }
     }
 

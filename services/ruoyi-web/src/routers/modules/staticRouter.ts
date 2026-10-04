@@ -45,6 +45,12 @@ export const layoutRouter: RouteRecordRaw[] = [
         },
       },
       {
+        path: '/agent-run',
+        name: 'agentConsole',
+        component: () => import('@/pages/agent-run/index.vue'),
+        meta: { title: 'Agent 任务', icon: 'Grid' },
+      },
+      {
         path: '/media',
         name: 'mediaWorkbench',
         component: () => import('@/pages/media/index.vue'),

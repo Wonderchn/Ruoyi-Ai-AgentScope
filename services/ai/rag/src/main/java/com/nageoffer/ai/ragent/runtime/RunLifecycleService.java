@@ -114,6 +114,10 @@ public class RunLifecycleService {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("runId", run.runId());
         snapshot.put("action", run.action());
+        if("agent.run".equals(run.action())) {
+            snapshot.put("input",RawJson.of(run.inputJson()));
+            snapshot.put("resourceRefs",RawJson.of(run.resourceRefsJson()));
+        }
         snapshot.put("status", run.status());
         snapshot.put("attempt", run.attempt());
         snapshot.put("fence", run.fence());

@@ -219,7 +219,7 @@ public class DefaultRevocationGuard implements RevocationGuard {
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public void releaseDelivery(String tenantId, String memberId, String permitId, String operationId) {
         Long owned=jdbc.queryForObject("SELECT count(*) FROM ai_execution_permit WHERE tenant_id=? AND member_id=?"
-                + " AND permit_id=? AND operation_id=? AND action IN ('document.download','document.list','conversation.export','kb.list','kb.read','document.read','conversation.read','memory.read','run.get','run.events','run.stream','kb.retrieve')",
+                + " AND permit_id=? AND operation_id=? AND action IN ('document.download','document.list','conversation.export','kb.list','kb.read','document.read','conversation.read','memory.read','run.get','run.events','run.stream','kb.retrieve','run.approve','run.reconcile')",
                 Long.class,tenantId,memberId,permitId,operationId);
         if(owned==null || owned!=1){throw new ClientException("delivery identity mismatch");}
         release(permitId,operationId);

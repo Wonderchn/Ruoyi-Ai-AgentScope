@@ -71,6 +71,10 @@ public final class AiActionRegistry {
         actions.put("document.upload", "ai:document:upload");
         actions.put("document.ingest", "ai:document:ingest");
         actions.put("document.list", "ai:document:read");
+        actions.put("agent.execute", "ai:agent:execute");
+        actions.put("run.approve", "ai:run:approve");
+        actions.put("run.reconcile", "ai:run:reconcile");
+        actions.put("tool.sandbox.write", "ai:tool:sandbox:write");
         return Collections.unmodifiableMap(actions);
     }
 

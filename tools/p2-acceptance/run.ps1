@@ -7,7 +7,7 @@ param(
     [string]$RunTag = ('p2c' + (Get-Date -Format 'yyyyMMddHHmmss')),
     [int]$AiPort = 0, [int]$Ai2Port = 0, [int]$PlatformPort = 0,
     [int]$DedicatedPgPort = 0,[int]$DedicatedRedisPort = 0,
-    [switch]$SkipBuild, [switch]$SkipSetup, [switch]$KeepEnvironment, [switch]$ReclaimStale, [switch]$SmokeOnly, [switch]$PhaseAOnly, [switch]$PhaseBOnly, [switch]$PhaseCOnly, [switch]$BrowserOnly, [switch]$ParserRecoveryOnly, [string]$CaseAttempt = '1', [switch]$RealProvidersOnly, [string]$ProviderSecretFile, [string]$OwnedDeliveryRecoveryScript, [string]$OwnedMetadataFile
+    [switch]$SkipBuild, [switch]$SkipSetup, [switch]$KeepEnvironment, [switch]$ReclaimStale, [switch]$SmokeOnly, [switch]$PhaseAOnly, [switch]$PhaseBOnly, [switch]$PhaseCOnly, [switch]$BrowserOnly, [switch]$AgentCoreOnly, [switch]$AgentRecoveryOnly, [switch]$AgentSecurityOnly, [switch]$AgentReadFaultsOnly, [switch]$ParserRecoveryOnly, [string]$CaseAttempt = '1', [switch]$RealProvidersOnly, [switch]$RealAgentOnly, [string]$RealAgentKb, [string]$ProviderSecretFile, [string]$OwnedDeliveryRecoveryScript, [string]$OwnedMetadataFile
 )
 # P2 专属合成环境验收 runner。
 #
@@ -580,7 +580,8 @@ for($warm=0;$warm -lt 3;$warm++) {
 # ---------------------------------------------------------------- case suites
 . (Join-Path $PSScriptRoot 'cases-phase-a.ps1')
 . (Join-Path $PSScriptRoot 'helpers-product.ps1')
-if ($BrowserOnly) { . (Join-Path $PSScriptRoot 'cases-browser.ps1') }
+if ($AgentCoreOnly -or $AgentRecoveryOnly -or $AgentSecurityOnly -or $AgentReadFaultsOnly) { . (Join-Path $RepoRoot 'tools/p3-acceptance/cases-agent.ps1') }
+elseif ($BrowserOnly) { . (Join-Path $PSScriptRoot 'cases-browser.ps1') }
 elseif ($RealProvidersOnly) { . (Join-Path $PSScriptRoot 'cases-real-providers.ps1') }
 elseif ($PhaseCOnly) { . (Join-Path $PSScriptRoot 'cases-phase-c.ps1') }
 elseif (-not $SmokeOnly -and -not $PhaseAOnly) { . (Join-Path $PSScriptRoot 'cases-phase-b.ps1') }

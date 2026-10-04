@@ -64,6 +64,8 @@ export interface RunSnapshot {
   nextSeq?: number;
   errorCode?: string | null;
   terminalResult?: unknown;
+  input?: { text: string; mode: 'read' | 'sandbox'; ticket?: { title: string; details: string } };
+  resourceRefs?: Array<{ ref: string; version: number }>;
   steps?: Array<{ stepId: string; stepName: string; state: string; at?: string }>;
   allowedActions?: string[];
 }
@@ -82,6 +84,38 @@ export function listDocuments(kbId: string) {
 
 export function getDocument(docId: string) {
   return json<DocumentView>(`/api/ai/v1/documents/${encodeURIComponent(docId)}/meta`);
+}
+
+export interface AgentAction {
+  actionId: string;
+  tool: string;
+  toolVersion: string;
+  args: Record<string, unknown>;
+  argsHash: string;
+  target: string;
+  approvalVersion: number;
+  state: string;
+  externalId?: string;
+  version: number;
+}
+
+export function listAgentActions(runId: string) {
+  return json<AgentAction[]>(`/api/ai/v1/runs/${encodeURIComponent(runId)}/actions`);
+}
+
+export function approveAgentAction(runId: string, action: AgentAction, decision: 'ALLOW' | 'DENY') {
+  return json<AgentAction>(`/api/ai/v1/runs/${encodeURIComponent(runId)}/approvals`, {
+    actionId: action.actionId,
+    argsHash: action.argsHash,
+    toolVersion: action.toolVersion,
+    target: action.target,
+    approvalVersion: action.approvalVersion,
+    decision,
+  });
+}
+
+export function queryAgentAction(runId: string, actionId: string) {
+  return json<{ action: AgentAction; finality: 'FOUND' | 'UNKNOWN' }>(`/api/ai/v1/runs/${encodeURIComponent(runId)}/reconciliations/${encodeURIComponent(actionId)}/query`, {});
 }
 
 export async function downloadSource(docId: string, versionId: string, signal?: AbortSignal): Promise<Blob> {

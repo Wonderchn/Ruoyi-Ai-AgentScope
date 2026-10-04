@@ -16,11 +16,24 @@ export interface Citation {
 
 export interface RunSubmitBody {
   schemaVersion: 1;
-  action: 'rag.chat' | 'document.ingest';
+  action: 'rag.chat' | 'document.ingest' | 'agent.run';
+  agentVersion?: 'core-v1';
   input: Record<string, unknown>;
   resourceRefs: Array<{ type: string; id: string }>;
-  budget?: { maxTokens?: number; maxWallClockSeconds?: number };
+  budget?: { maxTokens?: number; maxWallClockSeconds?: number; maxSteps?: number; maxToolCalls?: number };
   retryOf?: string;
+}
+
+export function agentRunBody(kbId: string, text: string, ticket?: { title: string; details: string }, retryOf?: string, inheritActionId?: string): RunSubmitBody {
+  return {
+    schemaVersion: 1,
+    action: 'agent.run',
+    agentVersion: 'core-v1',
+    input: { text, mode: ticket ? 'sandbox' : 'read', ...(ticket ? { ticket } : {}), ...(inheritActionId ? { inheritActionId } : {}) },
+    resourceRefs: [{ type: 'knowledge_base', id: kbId }],
+    budget: { maxTokens: 4000, maxSteps: 6, maxToolCalls: 6, maxWallClockSeconds: 600 },
+    ...(retryOf ? { retryOf } : {}),
+  };
 }
 
 export function chatRunBody(kbIds: string[], text: string, retryOf?: string): RunSubmitBody {
