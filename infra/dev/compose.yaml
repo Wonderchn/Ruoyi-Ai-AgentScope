@@ -177,6 +177,14 @@ services:
       SPRING_DATA_REDIS_PASSWORD: ${DEV_REDIS_PASSWORD}
       # Capability flags default to OFF (zero-config start, closed behaviour).
       P2_ENABLED: ${P2_ENABLED:-false}
+      # Agent runtime (P3): read mode needs p3.enabled + the synthetic model; the
+      # sandbox write tools additionally need the independent ticket provider below.
+      P3_ENABLED: ${P3_ENABLED:-false}
+      P3_SYNTHETIC_MODEL: ${P3_SYNTHETIC_MODEL:-true}
+      P3_SANDBOX_ENABLED: ${P3_SANDBOX_ENABLED:-false}
+      P3_SANDBOX_NAMESPACE: ${DEV_SANDBOX_NAMESPACE:-devdelivery}
+      P3_SANDBOX_CREDENTIAL: ${DEV_SANDBOX_CREDENTIAL:-}
+      P3_APPROVAL_INITIATOR_ENABLED: ${P3_APPROVAL_INITIATOR_ENABLED:-false}
       # The run worker and outbox relay are separate opt-ins even when p2 is on.
       P2_WORKER_ENABLED: ${P2_WORKER_ENABLED:-false}
       P2_OUTBOX_RELAY_ENABLED: ${P2_OUTBOX_RELAY_ENABLED:-false}
@@ -217,6 +225,31 @@ services:
       - dev-private-objects:/data/private-objects
       - dev-delivery-keys:/keys:ro
 
+  # Independent durable sandbox-ticket provider for P3 agent writes. It must share
+  # the AI container's network namespace: the frozen P3 contract hardcodes the
+  # ticket endpoint at http://127.0.0.1:19520 inside the product runtime.
+  sandbox-ticket:
+    image: python@sha256:54c85f3c47607a77f32adec749d3c81d1348bf25833671f512b26a9b6d778cb3
+    profiles: ["p3"]
+    network_mode: "service:ai"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,size=16m
+    mem_limit: 128m
+    cpus: 0.5
+    depends_on:
+      ai:
+        condition: service_started
+    environment:
+      P3_SANDBOX_DB: /data/sandbox.sqlite
+      P3_SANDBOX_CREDENTIAL: ${DEV_SANDBOX_CREDENTIAL:?set DEV_SANDBOX_CREDENTIAL in the env file}
+      P3_SANDBOX_NAMESPACE: ${DEV_SANDBOX_NAMESPACE:-devdelivery}
+      P3_SANDBOX_FAULTS: "false"
+    volumes:
+      - ../../tools/p3-acceptance/sandbox_ticket.py:/source/sandbox_ticket.py:ro
+      - dev-sandbox-data:/data
+    entrypoint: ["python3", "/source/sandbox_ticket.py"]
+
   # Optional forwarder for a host-local MinerU parser: when MinerU listens only on
   # the host loopback, containers cannot reach it through host-gateway. Start this
   # profile (docker compose --profile mineru-host up -d) and point
@@ -240,6 +273,7 @@ services:
       - "${DEV_WEB_PORT:-8080}:80"
 
 volumes:
+  dev-sandbox-data:
   dev-pgdata:
   dev-redisdata:
   dev-private-objects:
