@@ -47,12 +47,8 @@ services:
     volumes:
       - ../../services/platform/docs/script/sql/postgres/bootstrap:/sql/platform-bootstrap:ro
       - ../../services/ai/resources/database/postgres/bootstrap:/sql/ai-bootstrap:ro
-    entrypoint: >
-      sh -c '
-      for f in /sql/platform-bootstrap/*.sql /sql/ai-bootstrap/*.sql; do
-        echo "applying $$f";
-        psql -h postgres -U postgres -d ruoyi_agent -v ON_ERROR_STOP=1 -f "$$f" || exit 1;
-      done'
+      - ./:/bootstrap:ro
+    entrypoint: ["sh", "/bootstrap/db-bootstrap.sh"]
 
   db-migrate:
     image: flyway/flyway@sha256:94a81ca7db9a9f24fd8acd7463fa4560cb8f66aae2aa64485c27eb296f5851cf
