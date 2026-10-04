@@ -13,6 +13,7 @@
         <module>ruoyi-ai-api</module>
         <module>ruoyi-ai-integration</module>
         <module>ruoyi-ai-infra</module>
+        <module>ruoyi-ai-rag</module>
         <module>ruoyi-ai-runtime</module>
         <module>ruoyi-aiflow</module>
         <module>ruoyi-chat</module>
