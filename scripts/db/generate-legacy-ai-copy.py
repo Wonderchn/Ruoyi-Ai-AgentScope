@@ -45,6 +45,16 @@ ENTITY_ONLY_SCHEMA = "java-entity"
 REPO_ROOT = os.environ.get("REPO_ROOT") or os.path.abspath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
+# Evidence-backed merged-column aliases. A source may feed both its preserved legacy
+# field and the unified field; the driver already supports explicit source/target names.
+# Do not put deployment-dependent collection names, object URLs or member ids here.
+COLUMN_ALIASES = {
+    ("agent_info", "name"): (
+        "agent_name",
+        "Agent 名称：ruoyi-chat/domain/entity/agent/Agent.java (@TableName agent_info, agentName); "
+        "旧 DDL agent_name → V7 ai_agent_profile.name；原 agent_name 列同时保留"),
+}
+
 # Value-level translations. Each entry names the two Java enums that define both sides of
 # the mapping; the generator refuses to emit the map if either enum no longer declares the
 # codes it translates, so the mapping cannot silently drift away from the code.
@@ -640,7 +650,7 @@ def unified_keys(pg_dir, table):
     return pk, ident
 
 
-TYPE_WIDTH = re.compile(r"^(char|varchar|character varying)\s*\(\s*(\d+)\s*\)$", re.I)
+TYPE_WIDTH = re.compile(r"^\s*(char|varchar|character\s+varying)\s*\(\s*(\d+)\s*\)", re.I)
 INTEGER_TYPES = ("bigint", "integer", "smallint")
 
 
@@ -651,7 +661,8 @@ def base_type(definition):
 
 
 def char_width(definition):
-    m = TYPE_WIDTH.match(base_type(definition))
+    # base_type intentionally strips type parameters; widths require the full DDL.
+    m = TYPE_WIDTH.match(definition)
     return int(m.group(2)) if m else None
 
 
@@ -749,7 +760,9 @@ def build_plan(pairs, mysql_raw, shapes, pg_dir):
         pk, ident = unified_keys(pg_dir, unified)
         mapped, unmapped_required, conflicts, narrowing = [], [], [], []
         for col, udef in sorted(target.items()):
-            ldef = legacy_cols.get(col)
+            alias = COLUMN_ALIASES.get((legacy, col))
+            legacy_col = alias[0] if alias else col
+            ldef = legacy_cols.get(legacy_col)
             if ldef is None:
                 if is_required(udef):
                     unmapped_required.append(col)
@@ -758,11 +771,13 @@ def build_plan(pairs, mysql_raw, shapes, pg_dir):
             if conflict:
                 conflicts.append((col, base_type(ldef), base_type(udef), conflict))
                 continue
-            note = entity_note if entity_note else None
+            note = alias[1] if alias else entity_note
             if is_narrowing:
-                note = "宽度收窄（%s → %s）：超长值在复制时以明确报错拒绝，不静默截断" % (
+                width_note = "宽度收窄（%s → %s）：超长值在复制时以明确报错拒绝，不静默截断" % (
                     base_type(ldef), base_type(udef))
-            mapped.append({"column": col, "transform": transform, "narrowing": is_narrowing,
+                note = (note + "；" if note else "") + width_note
+            mapped.append({"column": col, "legacy_column": legacy_col,
+                           "transform": transform, "narrowing": is_narrowing,
                            "legacy_type": base_type(ldef), "unified_type": base_type(udef),
                            "unified_length": char_width(udef), "note": note})
             if is_narrowing:
@@ -857,7 +872,7 @@ def emit_v11(plan, out_path):
         for c in p["columns"]:
             rows.append("    (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)" % (
                 sql_literal(LEGACY_SOURCE), sql_literal(p["legacy"]), sql_literal(p["unified"]),
-                sql_literal(c["column"]), sql_literal(c["column"]), sql_literal(c["transform"]),
+                sql_literal(c.get("legacy_column", c["column"])), sql_literal(c["column"]), sql_literal(c["transform"]),
                 sql_literal(c.get("transform_arg")), sql_literal(c["legacy_type"]),
                 sql_literal(c["unified_type"]),
                 c["unified_length"] if c["unified_length"] is not None else "NULL",
@@ -898,7 +913,8 @@ END $$;
     sql = "".join(body)
     assert_no_orphan_comment_lines(sql, out_path)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    open(out_path, "w", encoding="utf-8", newline="\n").write(sql)
+    with open(out_path, "w", encoding="utf-8", newline="\n") as output:
+        output.write(sql)
 
 
 def emit_staging(mysql_raw, plan, out_path):
@@ -937,7 +953,8 @@ def emit_staging(mysql_raw, plan, out_path):
     sql = "".join(body)
     assert_no_orphan_comment_lines(sql, out_path)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    open(out_path, "w", encoding="utf-8", newline="\n").write(sql)
+    with open(out_path, "w", encoding="utf-8", newline="\n") as output:
+        output.write(sql)
 
 
 def main():

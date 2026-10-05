@@ -88,6 +88,8 @@ INSERT INTO platform.ai_model
 VALUES
     (9999, 'chat', 'platform-owned-row', 'ci-fixture-provider', '平台侧既有行', 1, '0',
      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '000000');
+INSERT INTO legacy_mysql.agent_info (id, tenant_id, agent_name, model_id, create_time, update_time)
+VALUES (8001, 0, 'CI 夹具Agent', 1001, '2026-01-01 00:00:00', '2026-01-01 00:00:00');
 SQL
 
 PG_SUPER=$(openssl rand -hex 16); MIGRATE_PW=$(openssl rand -hex 16); APP_PW=$(openssl rand -hex 16)
@@ -220,9 +222,9 @@ assert_eq 'merged columns are nullable' 'YES' \
 echo "### 4b. V11 moved the legacy MySQL AI-domain rows"
 assert_eq 'V11 registry covers 27 legacy tables' 27 \
   "$(q "select count(*) from platform.ai_legacy_domain_migration_table_map where legacy_source='mysql/ruoyi-ai.sql'")"
-assert_eq 'V11 copied the shape-matching tables' 21 \
+assert_eq 'V11 copied the shape-matching tables and the evidenced agent alias' 22 \
   "$(q "select count(*) from platform.ai_legacy_domain_migration_audit where mode='copied'")"
-assert_eq 'V11 blocked the merged tables with a reason' 6 \
+assert_eq 'V11 blocked the remaining merged tables with a reason' 5 \
   "$(q "select count(*) from platform.ai_legacy_domain_migration_audit where mode='blocked' and blocked_reason is not null")"
 assert_eq 'V11 copied a fixture row with tenant 0 as literal text' 1 \
   "$(q "select count(*) from platform.ai_model where id=1001 and tenant_id='0'")"
@@ -238,6 +240,10 @@ assert_eq 'V11 invented no row for a blocked table' 0 \
   "$(q "select count(*) from platform.ai_knowledge_document where id in ('6001','6002','6003','6004')")"
 assert_eq 'V11 copied the workflow fixture row' 'CI 夹具工作流' \
   "$(q "select title from platform.ai_flow_workflow where id=3001")"
+assert_eq 'V11 preserved the agent alias and original name with tenant 0' 1 \
+  "$(q "select count(*) from platform.ai_agent_profile where id='8001' and name='CI 夹具Agent' and agent_name=name and tenant_id='0'")"
+assert_eq 'V11 generated the real agent name width guard' 1 \
+  "$(q "select count(*) from platform.ai_legacy_domain_migration_map where legacy_table='agent_info' and legacy_column='agent_name' and unified_column='name' and narrowing and unified_length=64")"
 
 
 echo "### 5. every AI-domain table from the table map exists in platform"

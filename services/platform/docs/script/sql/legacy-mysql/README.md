@@ -51,6 +51,7 @@ psql -c "DROP SCHEMA legacy_mysql CASCADE"
 | --- | --- |
 | 显式列映射 | `platform.ai_legacy_domain_migration_map` 逐列登记（`identity` / `cast_text` / `enum` / `coalesce_text` / `constant`）。**绝不按位置映射**；落地区缺列或统一表缺列都直接报错拒绝 |
 | 逐表模式 | `platform.ai_legacy_domain_migration_table_map.mode`：`copy` 或 `blocked`。**统一表存在 NOT NULL 且无默认值、旧表又无同名列**时一律 `blocked`，原因写入审计表 |
+| 已证明的列别名 | `agent_info.agent_name → ai_agent_profile.name`（Agent.java 的 agentName）；原 `agent_name` 仍保留，200→64 的名称先预检超长，NULL/冲突拒绝，无默认名称。当前 22 张 copy、5 张 blocked；其余合并表仍待身份/关联/部署来源证据 |
 | 幂等 | 按统一表主键做 `IS NOT DISTINCT FROM` 反连接 + `ON CONFLICT DO NOTHING`；已存在的行不改写并计入 `rows_skipped_existing` |
 | 丢弃检测 | 复制行数必须等于「读到 − 按键已存在」；被其它唯一约束吞掉的行或落地区重复键都会让迁移失败，而不是静默丢行 |
 | 宽度预检 | 旧列宽于统一列时先做超长预检，超长即报错并给出条数与样本值，**不截断** |
