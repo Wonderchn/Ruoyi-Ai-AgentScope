@@ -314,13 +314,16 @@ async function ask() {
 
 function streamChat(runId: string) {
   const epoch = viewEpoch;
-  const valid = () => current(epoch) && rag.chatRunId === runId;
-  streamController = new AbortController();
+  rag.upload = null;
+  streamController?.abort();
+  const controller = new AbortController();
+  streamController = controller;
+  const valid = () => current(epoch) && rag.chatRunId === runId && streamController === controller;
   const base = (import.meta.env.VITE_API_URL as string | undefined) ?? '';
   const stream = openRunStream(
     { baseURL: `${base}/api/ai/v1`, runId, token: useUserStore().token ?? '', clientId: import.meta.env.VITE_CLIENT_ID, afterSeq: rag.lastSeq },
     {
-      signal: streamController.signal,
+      signal: controller.signal,
       onReconnect: (info) => {
         if (!valid())
           return;

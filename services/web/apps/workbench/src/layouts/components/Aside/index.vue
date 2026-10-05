@@ -245,6 +245,9 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
         <router-link v-if="userStore.token" :to="{ name: 'agentConsole' }" class="workbench-entry">
           <span>Agent 任务</span>
         </router-link>
+        <router-link v-if="userStore.token" :to="{ name: 'conversationHistory' }" class="workbench-entry">
+          <span>会话历史</span>
+        </router-link>
         <router-link :to="{ name: 'mediaWorkbench' }" class="workbench-entry media-entry" :class="{ active: isMediaActive }">
           <el-icon><VideoCamera /></el-icon>
           <span>媒体工作台</span>

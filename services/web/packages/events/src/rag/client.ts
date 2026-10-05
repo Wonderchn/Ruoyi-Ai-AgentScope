@@ -13,7 +13,7 @@
 import type { RequestIdentity } from './transport';
 import type { RunSubmitBody } from './logic';
 import { newRequestId } from './logic';
-import { identityJson } from './transport';
+import { AiApiError, assertIdentity, identityJson } from './transport';
 
 export interface RagApiDeps {
   /** API base URL (VITE_API_URL in the app); empty string means same origin. */
@@ -26,6 +26,8 @@ export interface RagApiDeps {
   onAuthExpired: () => void;
   /** Injectable fetch for tests. */
   fetcher?: typeof fetch;
+  /** Injectable browser upload channel for protocol tests. */
+  xhrFactory?: () => XMLHttpRequest;
 }
 
 export interface KnowledgeBaseView {
@@ -97,6 +99,33 @@ export interface RunAccepted {
   replayed?: boolean;
 }
 
+export interface ConversationView {
+  conversationId: string;
+  title: string;
+  lastTime?: string;
+}
+
+export interface ConversationMessage {
+  id: string;
+  role: string;
+  content: string;
+  messageStatus: string;
+  createTime?: string;
+}
+
+export interface ReconciliationView {
+  action: AgentAction;
+  evidence: Array<{ seq: number; actor_member: string; evidence_hash: string; external_id?: string; finality: string; created_at: string }>;
+}
+
+/** Mirrors P2RuntimeProperties.Upload defaults; the server remains authoritative. */
+export function validatePdfUpload(file: Pick<File, 'size' | 'type'>): void {
+  if (file.size <= 0 || file.size > 50 * 1024 * 1024)
+    throw new Error('PDF 必须非空且不超过 50 MiB');
+  if (file.type.split(';', 1)[0].trim().toLowerCase() !== 'application/pdf')
+    throw new Error('仅支持 PDF 文件');
+}
+
 export function createRagApi(deps: RagApiDeps) {
   const base = deps.baseUrl ?? '';
 
@@ -149,20 +178,40 @@ export function createRagApi(deps: RagApiDeps) {
     return json<{ action: AgentAction; finality: 'FOUND' | 'UNKNOWN' }>(`/api/ai/v1/runs/${encodeURIComponent(runId)}/reconciliations/${encodeURIComponent(actionId)}/query`, {});
   }
 
-  async function downloadSource(docId: string, versionId: string, signal?: AbortSignal): Promise<Blob> {
+  function getReconciliation(runId: string, actionId: string) {
+    return json<ReconciliationView>(`/api/ai/v1/runs/${encodeURIComponent(runId)}/reconciliations/${encodeURIComponent(actionId)}`);
+  }
+
+  function listConversations(offset = 0, limit = 100) {
+    return json<ConversationView[]>(`/api/ai/v1/conversations?offset=${offset}&limit=${limit}`);
+  }
+
+  function listConversationMessages(conversationId: string, offset = 0, limit = 100) {
+    return json<ConversationMessage[]>(`/api/ai/v1/conversations/${encodeURIComponent(conversationId)}/messages?offset=${offset}&limit=${limit}`);
+  }
+
+  function exportConversation(conversationId: string, signal?: AbortSignal) {
+    return binary(`/api/ai/v1/conversations/${encodeURIComponent(conversationId)}/export`, 'application/x-ndjson', signal);
+  }
+
+  async function binary(path: string, mime: string, signal?: AbortSignal): Promise<Blob> {
     const identity = deps.identity();
-    const check = () => {
-      const now = deps.identity();
-      if (now.epoch !== identity.epoch || now.token !== identity.token)
-        throw new DOMException('Request identity changed', 'AbortError');
-    };
-    const response = await (deps.fetcher ?? fetch)(`${base}/api/ai/v1/documents/${encodeURIComponent(docId)}/source?versionId=${encodeURIComponent(versionId)}`, {
+    const check = () => assertIdentity(identity, deps.identity);
+    check();
+    const response = await (deps.fetcher ?? fetch)(`${base}${path}`, {
       headers: { Authorization: `Bearer ${identity.token ?? ''}`, ClientID: deps.clientId ?? '' },
       signal,
     });
     check();
-    if (!response.ok || !response.headers.get('content-type')?.startsWith('application/pdf'))
-      throw new Error(`当前引用不可访问 (${response.status})`);
+    if (!response.ok) {
+      const envelope = await response.json().catch(() => null);
+      check();
+      if (response.status === 401 || envelope?.code === 401)
+        deps.onAuthExpired();
+      throw new AiApiError(response.status, envelope?.data?.errorCode ?? envelope?.msg ?? `当前资源不可访问 (${response.status})`);
+    }
+    if (response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() !== mime)
+      throw new AiApiError(response.status, '资源响应类型不符合协议');
     const blob = await response.blob();
     check();
     if (blob.size > 50 * 1024 * 1024)
@@ -170,16 +219,22 @@ export function createRagApi(deps: RagApiDeps) {
     return blob;
   }
 
+  function downloadSource(docId: string, versionId: string, signal?: AbortSignal): Promise<Blob> {
+    return binary(`/api/ai/v1/documents/${encodeURIComponent(docId)}/source?versionId=${encodeURIComponent(versionId)}`, 'application/pdf', signal);
+  }
+
   /** Dedicated streaming upload (with progress); returns the server-issued docId/uploadId/versionId. */
   function uploadDocument(kbId: string, file: File, onProgress?: (percent: number) => void, uploadKey: string = newRequestId(), signal?: AbortSignal, docId?: string): Promise<UploadResult> {
-    const token = deps.identity().token;
+    const identity = deps.identity();
     return new Promise((resolve, reject) => {
+      validatePdfUpload(file);
+      assertIdentity(identity, deps.identity);
       const form = new FormData();
       form.append('kbId', kbId);
       if (docId)
         form.append('docId', docId);
       form.append('file', file, file.name);
-      const xhr = new XMLHttpRequest();
+      const xhr = deps.xhrFactory?.() ?? new XMLHttpRequest();
       xhr.open('POST', `${base}/api/ai/v1/documents/uploads`);
       xhr.timeout = 120000;
       const abort = () => xhr.abort();
@@ -191,22 +246,35 @@ export function createRagApi(deps: RagApiDeps) {
         reject(new DOMException('Upload cancelled', 'AbortError'));
         return;
       }
-      xhr.setRequestHeader('Authorization', `Bearer ${token ?? ''}`);
+      xhr.setRequestHeader('Authorization', `Bearer ${identity.token ?? ''}`);
       xhr.setRequestHeader('ClientID', deps.clientId ?? '');
       xhr.setRequestHeader('Idempotency-Key', uploadKey);
       xhr.upload.onprogress = (event) => {
+        try {
+          assertIdentity(identity, deps.identity);
+        }
+        catch (error) {
+          reject(error);
+          xhr.abort();
+          return;
+        }
         if (event.lengthComputable && onProgress) {
           onProgress(Math.round((event.loaded / event.total) * 100));
         }
       };
       xhr.onload = () => {
         try {
+          assertIdentity(identity, deps.identity);
           const body = JSON.parse(xhr.responseText || '{}');
+          if (xhr.status === 401 || body?.code === 401) {
+            deps.onAuthExpired();
+            throw new AiApiError(401, '登录状态已失效');
+          }
           if (xhr.status === 201 && body?.code === 200 && body.data?.docId && body.data?.uploadId && body.data?.versionId) {
             resolve(body.data as UploadResult);
           }
           else {
-            reject(new Error(body?.data?.errorCode ?? `upload failed (${xhr.status})`));
+            reject(new AiApiError(xhr.status, body?.data?.errorCode ?? `upload failed (${xhr.status})`));
           }
         }
         catch (error) {
@@ -252,6 +320,10 @@ export function createRagApi(deps: RagApiDeps) {
     listAgentActions,
     approveAgentAction,
     queryAgentAction,
+    getReconciliation,
+    listConversations,
+    listConversationMessages,
+    exportConversation,
     downloadSource,
     uploadDocument,
     submitRun,

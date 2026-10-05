@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import type { AgentAction, Citation, KnowledgeBaseView, RunSnapshot, RunSubmitBody } from '@/api/rag';
+import type { AgentAction, Citation, KnowledgeBaseView, ReconciliationView, RunSnapshot, RunSubmitBody } from '@/api/rag';
 import { ElMessage } from 'element-plus';
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { agentRunBody, approveAgentAction, cancelRun, downloadSource, getRun, listAgentActions, listKnowledgeBases, newRequestId, queryAgentAction, resumeRun, submitRun, terminalSummary } from '@/api/rag';
+import { agentRunBody, approveAgentAction, cancelRun, downloadSource, getReconciliation, getRun, listAgentActions, listKnowledgeBases, newRequestId, queryAgentAction, resumeRun, submitRun, terminalSummary } from '@/api/rag';
 import PrivatePdf from '@/components/rag/PrivatePdf.vue';
 import { useUserStore } from '@/stores';
 import { openRunStream } from '@/utils/sse/RunStreamClient';
@@ -28,6 +28,8 @@ let sourceController: AbortController | null = null;
 const note = ref('');
 const busy = ref(false);
 const seq = ref(0);
+const rawLog = ref<string[]>([]);
+const reconciliation = ref<ReconciliationView | null>(null);
 let epoch = 0;
 let mounted = true;
 let stream: AbortController | null = null;
@@ -72,6 +74,8 @@ function clear() {
   closeSource();
   note.value = '';
   seq.value = 0;
+  rawLog.value = [];
+  reconciliation.value = null;
   busy.value = false;
   pending = null;
 }
@@ -127,13 +131,13 @@ onBeforeUnmount(() => {
   mounted = false;
   clear();
 });
-async function refresh(runId: string, captured = epoch) {
+async function refresh(runId: string, captured = epoch, active = () => valid(captured) && snapshot.value?.runId === runId) {
   const result = await getRun(runId);
-  if (!valid(captured) || snapshot.value?.runId !== runId)
+  if (!active())
     return;
   snapshot.value = result;
   const list = await listAgentActions(runId);
-  if (!valid(captured) || snapshot.value?.runId !== runId)
+  if (!active())
     return;
   actions.value = list;
   const summary = terminalSummary(result.terminalResult);
@@ -148,18 +152,22 @@ function subscribe(runId: string) {
   const captured = epoch;
   const controller = new AbortController();
   stream = controller;
+  const currentStream = () => valid(captured) && snapshot.value?.runId === runId && stream === controller;
   const opened = openRunStream({ baseURL: `${import.meta.env.VITE_API_URL ?? ''}/api/ai/v1`, runId, token: user.token ?? '', clientId: import.meta.env.VITE_CLIENT_ID, afterSeq: seq.value }, { signal: controller.signal });
   void (async () => {
     try {
       for await (const message of opened.messages) {
-        if (!valid(captured) || snapshot.value?.runId !== runId)
+        if (!currentStream())
           return;
         seq.value = Number(message.cursor);
+        rawLog.value = [...rawLog.value.slice(-199), message.data.slice(0, 8192)];
         const payload = message.parsed?.payload as Record<string, unknown> | undefined;
         if (message.parsed?.type === 'run.output_delta')
           answer.value += String(payload?.text ?? '');
         if (['run.status', 'tool.proposed', 'tool.approval', 'tool.completed', 'run.terminal'].includes(message.parsed?.type ?? '')) {
-          await refresh(runId, captured);
+          await refresh(runId, captured, currentStream);
+          if (!currentStream())
+            return;
           if (['WAITING_APPROVAL', 'NEEDS_RECONCILIATION'].includes(snapshot.value?.status ?? '')) {
             controller.abort();
             return;
@@ -168,10 +176,10 @@ function subscribe(runId: string) {
       }
     }
     catch (error) {
-      if (valid(captured) && !controller.signal.aborted) {
+      if (currentStream() && !controller.signal.aborted) {
         note.value = error instanceof Error ? error.message : '连接中断，可刷新状态';
         try {
-          await refresh(runId, captured);
+          await refresh(runId, captured, currentStream);
         }
         catch {
           if (valid(captured))
@@ -182,6 +190,10 @@ function subscribe(runId: string) {
   })();
 }
 async function submit(retryOf?: string, inherited?: AgentAction) {
+  // A new view invalidates all earlier requests/subscriptions, even for a replayed run id.
+  epoch++;
+  stream?.abort();
+  closeSource();
   const captured = epoch;
   busy.value = true;
   const body = agentRunBody(kbId.value, question.value, mode.value === 'sandbox' ? { title: title.value, details: details.value } : undefined, retryOf, inherited?.actionId);
@@ -198,6 +210,8 @@ async function submit(retryOf?: string, inherited?: AgentAction) {
     snapshot.value = { runId: created.runId, status: created.status };
     answer.value = '';
     actions.value = [];
+    rawLog.value = [];
+    reconciliation.value = null;
     note.value = '';
     seq.value = 0;
     await refresh(created.runId, captured);
@@ -236,6 +250,19 @@ async function command(action: () => Promise<unknown>) {
       busy.value = false;
   }
 }
+async function inspectReconciliation(action: AgentAction, query = false) {
+  const captured = epoch;
+  const runId = snapshot.value?.runId;
+  if (!runId)
+    return;
+  await command(async () => {
+    if (query)
+      await queryAgentAction(runId, action.actionId);
+    const result = await getReconciliation(runId, action.actionId);
+    if (valid(captured) && snapshot.value?.runId === runId)
+      reconciliation.value = result;
+  });
+}
 </script>
 
 <template>
@@ -269,6 +296,11 @@ async function command(action: () => Promise<unknown>) {
       <p v-if="snapshot.errorCode">
         {{ snapshot.errorCode }}
       </p>
+      <ol v-if="snapshot.steps?.length">
+        <li v-for="step in snapshot.steps" :key="step.stepId">
+          {{ step.stepName }} · {{ step.state }} · {{ step.at }}
+        </li>
+      </ol>
       <ElButton :disabled="busy" @click="command(() => refresh(snapshot!.runId))">
         刷新状态
       </ElButton>
@@ -295,6 +327,10 @@ async function command(action: () => Promise<unknown>) {
       </p>
       <div v-for="action in actions" :key="action.actionId" class="mt-4 border p-3">
         <p>{{ action.tool }} · {{ action.state }} · {{ action.externalId }}</p>
+        <p>目标 {{ action.target }} · 工具版本 {{ action.toolVersion }} · 审批版本 {{ action.approvalVersion }}</p>
+        <p class="break-all">
+          参数 hash：{{ action.argsHash }}
+        </p>
         <pre class="whitespace-pre-wrap">{{ JSON.stringify(action.args, null, 2) }}</pre>
         <template v-if="action.state === 'PROPOSED' && snapshot.status === 'WAITING_APPROVAL'">
           <ElButton type="primary" :disabled="busy" @click="command(() => approveAgentAction(snapshot!.runId, action, 'ALLOW'))">
@@ -304,13 +340,25 @@ async function command(action: () => Promise<unknown>) {
             拒绝创建
           </ElButton>
         </template>
-        <ElButton v-if="action.tool === 'sandbox_ticket' && ['STARTED', 'UNKNOWN', 'SUCCEEDED'].includes(action.state)" :disabled="busy" @click="command(() => queryAgentAction(snapshot!.runId, action.actionId))">
+        <ElButton v-if="action.tool === 'sandbox_ticket'" :disabled="busy" @click="inspectReconciliation(action)">
+          查看核对证据
+        </ElButton>
+        <ElButton v-if="action.tool === 'sandbox_ticket' && ['STARTED', 'UNKNOWN', 'SUCCEEDED'].includes(action.state)" :disabled="busy" @click="inspectReconciliation(action, true)">
           查询外部结果
         </ElButton>
         <ElButton v-if="action.tool === 'sandbox_ticket' && action.state === 'SUCCEEDED' && ['FAILED', 'CANCELLED', 'SUCCEEDED'].includes(snapshot.status)" :disabled="busy" @click="submit(snapshot!.runId, action)">
           新任务继承此结果
         </ElButton>
       </div>
+      <ElAlert v-if="actions.some(action => action.state === 'UNKNOWN')" title="外部结果未知，请先查询并核对；不要重复创建。" type="warning" :closable="false" class="mt-4" />
+      <ElCard v-if="reconciliation" class="mt-4">
+        <p>核对动作：{{ reconciliation.action.actionId }}</p>
+        <pre class="whitespace-pre-wrap break-all">{{ JSON.stringify(reconciliation.evidence, null, 2) }}</pre>
+      </ElCard>
+      <details class="mt-4">
+        <summary>原始事件日志（最近 200 条）</summary>
+        <pre v-for="(entry, index) in rawLog" :key="index" class="whitespace-pre-wrap break-all">{{ entry }}</pre>
+      </details>
     </ElCard>
     <ElDialog :model-value="!!sourceUrl" title="私有 PDF 来源" width="80%" @close="closeSource">
       <PrivatePdf v-if="sourceUrl" :source-url="sourceUrl" :initial-page="sourcePage" />

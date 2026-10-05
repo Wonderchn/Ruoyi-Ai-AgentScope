@@ -46,9 +46,16 @@ export const layoutRouter: RouteRecordRaw[] = [
       },
       {
         path: '/agent-run',
+        alias: '/agent',
         name: 'agentConsole',
         component: () => import('@/pages/agent-run/index.vue'),
         meta: { title: 'Agent 任务', icon: 'Grid' },
+      },
+      {
+        path: '/history',
+        name: 'conversationHistory',
+        component: () => import('@/pages/history/index.vue'),
+        meta: { title: '会话历史' },
       },
       {
         path: '/media',
