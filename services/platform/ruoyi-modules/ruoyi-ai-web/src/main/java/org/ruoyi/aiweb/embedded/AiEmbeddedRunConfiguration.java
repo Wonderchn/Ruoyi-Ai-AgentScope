@@ -28,6 +28,7 @@ import com.nageoffer.ai.ragent.runtime.RunEventAppender;
 import com.nageoffer.ai.ragent.runtime.RunLifecycleService;
 import com.nageoffer.ai.ragent.runtime.dao.RunLedgerDao;
 import com.nageoffer.ai.ragent.runtime.usage.PlatformFactsClient;
+import com.nageoffer.ai.ragent.runtime.web.DeliveryPermits;
 import com.nageoffer.ai.ragent.runtime.web.RunApiExceptionHandler;
 import com.nageoffer.ai.ragent.runtime.web.RunController;
 import org.springframework.beans.factory.ObjectProvider;
@@ -109,6 +110,40 @@ public class AiEmbeddedRunConfiguration {
             @ConditionalOnMissingBean
             public RunLifecycleService runLifecycleService(RunLedgerDao runLedgerDao, RunEventAppender runEventAppender) {
                 return new RunLifecycleService(runLedgerDao, runEventAppender);
+            }
+
+            @Bean
+            @ConditionalOnMissingBean
+            public DeliveryPermits deliveryPermits(ObjectProvider<
+                    com.nageoffer.ai.ragent.framework.security.RevocationGuard> guard) {
+                // 交付许可（runtime.web 域）：SSE/下载/上传共用，由 run 组提供
+                return new DeliveryPermits(guard);
+            }
+
+            @Bean
+            @ConditionalOnMissingBean
+            public com.nageoffer.ai.ragent.runtime.stream.NotificationBus notificationBus() {
+                return new com.nageoffer.ai.ragent.runtime.stream.NotificationBus();
+            }
+
+            @Bean
+            @ConditionalOnMissingBean
+            public com.nageoffer.ai.ragent.runtime.stream.RunEventStreamService runEventStreamService(
+                    RunLedgerDao runLedgerDao, RunLifecycleService runLifecycleService,
+                    com.nageoffer.ai.ragent.runtime.stream.NotificationBus notificationBus,
+                    P2RuntimeProperties properties, ObjectMapper objectMapper,
+                    ObjectProvider<AiResourceAuthorizationService> authorization,
+                    DeliveryPermits deliveryPermits) {
+                return new com.nageoffer.ai.ragent.runtime.stream.RunEventStreamService(runLedgerDao,
+                        runLifecycleService, notificationBus, properties, objectMapper, authorization,
+                        deliveryPermits);
+            }
+
+            @Bean
+            @ConditionalOnMissingBean
+            public com.nageoffer.ai.ragent.runtime.web.RunStreamController runStreamController(
+                    com.nageoffer.ai.ragent.runtime.stream.RunEventStreamService runEventStreamService) {
+                return new com.nageoffer.ai.ragent.runtime.web.RunStreamController(runEventStreamService);
             }
 
             @Bean

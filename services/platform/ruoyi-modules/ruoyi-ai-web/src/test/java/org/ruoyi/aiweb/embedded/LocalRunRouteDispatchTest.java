@@ -104,7 +104,7 @@ class LocalRunRouteDispatchTest {
 
     /** 每个用例可替换的身份 scope（默认含 run 三动作权限）。 */
     private static final AtomicReference<Set<String>> identityScopes =
-            new AtomicReference<>(Set.of("ai:run:submit", "ai:run:cancel", "ai:run:resume"));
+            new AtomicReference<>(Set.of("ai:run:submit", "ai:run:cancel", "ai:run:resume", "ai:run:stream"));
 
     @BeforeAll
     static void startContainer() throws Exception {
@@ -154,7 +154,7 @@ class LocalRunRouteDispatchTest {
     @BeforeEach
     void baselineStubs() {
         reset(jdbc, namedJdbc, transactions, transactionManager, revocations, platformPermits, admission, lifecycle);
-        identityScopes.set(Set.of("ai:run:submit", "ai:run:cancel", "ai:run:resume"));
+        identityScopes.set(Set.of("ai:run:submit", "ai:run:cancel", "ai:run:resume", "ai:run:stream"));
         when(revocations.enter(any(), any(), any())).thenAnswer(invocation ->
                 new com.nageoffer.ai.ragent.framework.security.RevocationGuard.Operation(
                         revocations, java.util.UUID.randomUUID().toString(),
@@ -238,6 +238,16 @@ class LocalRunRouteDispatchTest {
     }
 
     @Test
+    void runEventsSseRouteIsWiredAndFailsClosedWithoutAclEpoch() throws Exception {
+        // 真实 RunStreamController/RunEventStreamService 已装配：请求到达真实 SSE 服务与授权链；
+        // mock 夹具没有 ai_acl_epoch 行 → 授权判定 UNKNOWN → SSE 服务写 503 信封（不放行，不订阅）
+        HttpResponse<String> response = get("/api/ai/v1/runs/missing-run/events", true);
+
+        assertThat(response.statusCode()).isEqualTo(503);
+        assertThat(response.body()).contains("AUTHORIZATION_UNAVAILABLE");
+    }
+
+    @Test
     void whitelistAndLoginNegativesStay() throws Exception {
         assertThat(get("/api/ai/v1/unknown-route", true).statusCode()).isEqualTo(404);
         assertThat(post("/api/ai/v1/runs", "{}", false).statusCode()).isEqualTo(401);
@@ -253,7 +263,8 @@ class LocalRunRouteDispatchTest {
 
     @Configuration
     @EnableWebMvc
-    @Import({AiGatewayController.class, AiWebEmbeddedConfiguration.class,
+    @Import({AiGatewayController.class, org.ruoyi.aiintegration.web.AiGatewayStreamController.class,
+            org.ruoyi.aiintegration.web.GatewayAuthorizer.class, AiWebEmbeddedConfiguration.class,
             AiEmbeddedRagConfiguration.class, AiEmbeddedRunConfiguration.class})
     static class FixtureConfig {
 

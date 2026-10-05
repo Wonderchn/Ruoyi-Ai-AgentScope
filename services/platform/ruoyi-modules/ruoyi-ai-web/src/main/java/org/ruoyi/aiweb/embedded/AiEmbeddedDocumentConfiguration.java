@@ -100,13 +100,6 @@ public class AiEmbeddedDocumentConfiguration {
 
             @Bean
             @ConditionalOnMissingBean
-            public DeliveryPermits deliveryPermits(ObjectProvider<
-                    com.nageoffer.ai.ragent.framework.security.RevocationGuard> guard) {
-                return new DeliveryPermits(guard);
-            }
-
-            @Bean
-            @ConditionalOnMissingBean
             public UploadService uploadService(DocumentDao documentDao, PrivateObjectStore objectStore,
                                                RunAdmissionService runAdmissionService,
                                                P2RuntimeProperties properties, P2FaultInjector p2FaultInjector,
