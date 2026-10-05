@@ -5,6 +5,11 @@
 没有任何脚本的 `chat_config`，但没有任何迁移搬它们的行。本目录提供落地区（staging）契约，
 `postgres/V11__legacy_ai_domain_data.sql` 提供行数据迁移。
 
+合并表（V7 按 AI 侧形状建表、V9 只追加平台侧独有列）里有平台侧 NOT NULL 列**没有同名的
+MySQL 列**，例如 `ai_conversation.member_id`、`ai_message.conversation_id`。这类取值由本目录的
+`20-legacy-ai-domain-adaptation.sql`（落地区适配，**非 Flyway 迁移**）按显式来源计算并写回
+落地区，V11 再把它当普通列复制——迁移脚本因此不需要臆造取值，V11 驱动器也保持与表无关。
+
 ## 为什么需要落地区
 
 MySQL 行数据必须先以**原始表名、原始列名**落到统一库的一个临时 schema（默认
@@ -16,7 +21,11 @@ MySQL 行数据必须先以**原始表名、原始列名**落到统一库的一�
   显式写 `::text`；
 - `ai_knowledge_document.status` 是**编码差异**（MySQL `smallint` 0/1/2/3 vs 统一
   `VARCHAR(16)` `'pending'/'running'/'success'/'failed'`）。落地区保留 `smallint`，V11 通过
-  `platform.ai_legacy_domain_enum_map` 做值映射，映射不存在即**拒绝复制**。
+  `platform.ai_legacy_domain_enum_map` 做值映射，映射不存在即**拒绝复制**；
+- 派生列（`member_id`、`ai_message.conversation_id`）由落地区适配脚本按登记来源计算；
+  来源缺失、断关联、跨租户/跨成员、父键歧义、空必填值一律**报错拒绝**（带行数与样本），
+  不造默认值。派生列在落地区按来源宽度声明（如 `conversation_id varchar(32)`），因此
+  V11 仍会对超出统一列宽度的值做超长预检并拒绝，不截断。
 
 ## 操作步骤
 
@@ -31,19 +40,26 @@ pgloader mysql://user@host/ruoyi_ai 'postgresql:///unified?schema=legacy_mysql'
 mysql -h host -u user -p ruoyi_ai -e "SELECT * FROM chat_model" --batch --raw > chat_model.tsv
 psql -c "\copy legacy_mysql.chat_model FROM 'chat_model.tsv'"
 
-# 3) 跑统一迁移链（Flyway 应用 V11，行数据在此时搬入 platform）
+# 3) 落地区适配与校验（由落地区 owner/DBA 执行；同一事务，拒绝即整体回滚）
+psql -v ON_ERROR_STOP=1 -f services/platform/docs/script/sql/legacy-mysql/20-legacy-ai-domain-adaptation.sql
+
+# 4) 跑统一迁移链（Flyway 应用 V11，行数据在此时搬入 platform）
 #    见 scripts/ci/verify-unified-migrations.sh 的同一序列
 
-# 4) 对账
+# 5) 对账
 psql -c "SELECT legacy_table, mode, rows_read, rows_inserted, rows_skipped_existing, blocked_reason
            FROM platform.ai_legacy_domain_migration_audit ORDER BY mode, legacy_table"
 
-# 5) 验证通过后删除落地区（临时对象，不留在生产库）
+# 6) 验证通过后删除落地区（临时对象，不留在生产库）
 psql -c "DROP SCHEMA legacy_mysql CASCADE"
 ```
 
 没有 `legacy_mysql` schema 时 V11 是**空操作**：每张表在审计表里记一行 `mode='absent'`。
-全新安装、以及从未跑过 MySQL 平台侧 AI 域的部署都属于这种情况。
+全新安装、以及从未跑过 MySQL 平台侧 AI 域的部署都属于这种情况（此时也不执行第 3 步）。
+
+**权限边界**：落地区与适配脚本由落地区 owner（DBA）创建、装载与执行；迁移身份
+（Flyway 运行账号）对 `legacy_mysql` 只有 `USAGE` + `SELECT`，V11 全程只读落地区。
+派生列在适配脚本里收紧为 `NOT NULL`，所以 V11 拿到的落地区要么完整、要么直接报错。
 
 ## V11 的语义
 
@@ -51,7 +67,9 @@ psql -c "DROP SCHEMA legacy_mysql CASCADE"
 | --- | --- |
 | 显式列映射 | `platform.ai_legacy_domain_migration_map` 逐列登记（`identity` / `cast_text` / `enum` / `coalesce_text` / `constant`）。**绝不按位置映射**；落地区缺列或统一表缺列都直接报错拒绝 |
 | 逐表模式 | `platform.ai_legacy_domain_migration_table_map.mode`：`copy` 或 `blocked`。**统一表存在 NOT NULL 且无默认值、旧表又无同名列**时一律 `blocked`，原因写入审计表 |
-| 已证明的列别名 | `agent_info.agent_name → ai_agent_profile.name`（Agent.java 的 agentName）；原 `agent_name` 仍保留，200→64 的名称先预检超长，NULL/冲突拒绝，无默认名称。当前 22 张 copy、5 张 blocked；其余合并表仍待身份/关联/部署来源证据 |
+| 复制顺序 | `...table_map.copy_order`（生成器按冻结外键图计算，父表在前）：V7 的复合外键立即生效，子表先复制会因外键失败 |
+| 已证明的列别名 | `agent_info.agent_name → ai_agent_profile.name`（Agent.java 的 agentName）；`chat_session.session_title → ai_conversation.title`（ChatSession.java 的 sessionTitle 与统一读路径的 title）。原列都保留，200→64 / 255→128 的名称先预检超长，NULL/空串/冲突拒绝，无默认名称。当前 24 张 copy、3 张 blocked |
+| 派生列（落地区适配） | `chat_session.member_id` / `chat_message.member_id` = canonical `platform:<tenantId>:<userId>`；`chat_message.conversation_id` = 同租户同成员的 `chat_session`（`session_id → id`）的公开 `conversation_id`。规则与来源登记在注册表 `note`，取值由 `20-legacy-ai-domain-adaptation.sql` 计算 |
 | 幂等 | 按统一表主键做 `IS NOT DISTINCT FROM` 反连接 + `ON CONFLICT DO NOTHING`；已存在的行不改写并计入 `rows_skipped_existing` |
 | 丢弃检测 | 复制行数必须等于「读到 − 按键已存在」；被其它唯一约束吞掉的行或落地区重复键都会让迁移失败，而不是静默丢行 |
 | 宽度预检 | 旧列宽于统一列时先做超长预检，超长即报错并给出条数与样本值，**不截断** |
@@ -59,16 +77,14 @@ psql -c "DROP SCHEMA legacy_mysql CASCADE"
 | 行数对账 | 每表一行审计（`rows_read = rows_inserted + rows_skipped_existing`、`unified_rows = unified_rows_before + rows_inserted`），不满足即迁移失败 |
 | 身份序列 | 显式写入 identity 列后同步序列，避免后续应用插入与已迁移行主键冲突 |
 
-### 为什么有 `blocked` 表
+### 为什么还有 `blocked` 表
 
-`chat_session` / `chat_message` / `knowledge_info` / `knowledge_attach` /
-`knowledge_fragment` 五个剩余目标是**合并表**：V7 按 AI 侧形状建表，V9 只追加平台侧独有列
-（E2 §2.4b）。它们的统一表里有 AI 侧 NOT NULL 列，旧 MySQL 行无法提供同名取值：
+`knowledge_info` / `knowledge_attach` / `knowledge_fragment` 三个目标是**合并表**：
+V7 按 AI 侧形状建表，V9 只追加平台侧独有列（E2 §2.4b）。它们的统一表里有 AI 侧 NOT NULL 列，
+旧 MySQL 行无法提供同名取值：
 
 | 目标表 | 需要平台侧决定的列（无同名列） |
 | --- | --- |
-| `ai_conversation` | `member_id`（canonical `platform:<tenantId>:<userId>`）、`title` |
-| `ai_message` | `conversation_id`、`member_id` |
 | `ai_knowledge_base` | `collection_name`、`created_by`、`owner_member_id` |
 | `ai_knowledge_document` | `kb_id`、`doc_name`、`file_type`、`file_url`、`created_by` |
 | `ai_knowledge_chunk` | `kb_id`、`chunk_index`、`created_by` |
@@ -79,13 +95,15 @@ psql -c "DROP SCHEMA legacy_mysql CASCADE"
 （旧 `knowledge_attach.oss_id` → `sys_oss.url`）。这类取值属于平台 Mapper 适配
 （E2 §5.1c / E5），迁移脚本臆造等于伪造数据，因此**如实记为 `blocked`** 而不是猜。
 
-解除方式不需要改迁移：往 `platform.ai_legacy_domain_migration_map` 补列映射（例如
-`member_id` 用 `constant`/表达式、`title` 用 `coalesce_text`），把表模式改为 `copy`，
-再重跑 V11 即可——注册表就是生成物，改的是生成器里的 `ENUM_MAPS`/映射决策或 E5 的适配代码。
+`chat_session` / `chat_message` 已按同一方式解除（WP-024）：来源有源码/DDL 证据的列用别名或
+落地区适配登记，缺来源的列仍保持 blocked——不为了计数放宽判定。
+
+解除方式不改迁移：往生成器补有证据的别名/派生登记（落地区适配脚本与注册表同步生成），
+把表模式改为 `copy`，重新生成并重跑 V11 即可。
 
 ## 生成物与再生成
 
-两个文件都由 `scripts/db/generate-legacy-ai-copy.py` 生成，**不要手改**：
+三个文件都由 `scripts/db/generate-legacy-ai-copy.py` 生成，**不要手改**：
 
 ```bash
 python scripts/db/generate-legacy-ai-copy.py \
@@ -93,7 +111,8 @@ python scripts/db/generate-legacy-ai-copy.py \
   services/platform/docs/script/sql/ruoyi-ai.sql \
   services/platform/docs/script/sql/postgres \
   services/platform/docs/script/sql/postgres/V11__legacy_ai_domain_data.sql \
-  services/platform/docs/script/sql/legacy-mysql/10-legacy-ai-domain-staging.sql
+  services/platform/docs/script/sql/legacy-mysql/10-legacy-ai-domain-staging.sql \
+  services/platform/docs/script/sql/legacy-mysql/20-legacy-ai-domain-adaptation.sql
 ```
 
 生成器从表映射与冻结迁移推导范围（V1..V6 已建的表属于平台基线，不归本迁移；`sj_*` 在统一

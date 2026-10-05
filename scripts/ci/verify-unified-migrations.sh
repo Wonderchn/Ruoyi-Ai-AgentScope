@@ -48,6 +48,7 @@ done
 [ -f "$PLATFORM_SQL/V11__legacy_ai_domain_data.sql" ] || { echo "missing legacy AI domain data migration"; exit 2; }
 STAGING_SQL=${STAGING_SQL:-$REPO_ROOT/services/platform/docs/script/sql/legacy-mysql}
 [ -f "$STAGING_SQL/10-legacy-ai-domain-staging.sql" ] || { echo "missing legacy MySQL staging DDL"; exit 2; }
+[ -f "$STAGING_SQL/20-legacy-ai-domain-adaptation.sql" ] || { echo "missing legacy MySQL landing-zone adaptation"; exit 2; }
 
 umask 077
 rm -rf $WORK; mkdir -p "$WORK/platform" "$WORK/ai" "$WORK/bootstrap"
@@ -56,9 +57,11 @@ cp "$AI_SQL"/V*.sql "$WORK/ai/"
 cp "$PLATFORM_SQL"/bootstrap/00-platform-identity.sql "$WORK/bootstrap/"
 cp "$PLATFORM_SQL"/bootstrap/01-platform-casts.sql "$WORK/bootstrap/"
 cp "$STAGING_SQL"/10-legacy-ai-domain-staging.sql "$WORK/bootstrap/"
+cp "$STAGING_SQL"/20-legacy-ai-domain-adaptation.sql "$WORK/bootstrap/"
 # Synthetic landing-zone rows for V11. No customer data and no real ids: the point is to prove
-# the copy, the tenant normalisation (0 -> '0'), the skip of an already-present key and the
-# refusal to fill a blocked table's unmapped columns.
+# the copy, the tenant normalisation (0 -> '0'), the skip of an already-present key, the
+# landing-zone adaptation (member id + public conversation id) and the refusal to fill a
+# blocked table's unmapped columns.
 cat > "$WORK/bootstrap/legacy-ai-fixture.sql" <<'SQL'
 INSERT INTO legacy_mysql.chat_model
     (id, category, model_name, provider_code, model_describe, model_dimension, model_show,
@@ -74,6 +77,19 @@ INSERT INTO legacy_mysql.t_workflow
 VALUES
     (3001, 'cifixtureworkflowuuid0000000001', 'CI 夹具工作流', 5, 1, 1,
      '2026-01-01 00:00:00', '2026-01-01 00:00:00', 'CI 夹具备注', 0, '000000');
+-- merged conversation/message: the public conversation_id differs from both the session key
+-- and the message's session_id, so an assumption of equality cannot pass; tenant 0 must stay
+-- the literal text '0' in the derived member id
+INSERT INTO legacy_mysql.chat_session
+    (id, user_id, session_title, session_content, create_time, update_time, conversation_id, tenant_id)
+VALUES
+    (9001, 11, 'CI 夹具会话', 'CI 会话内容', '2026-01-01 00:00:00', '2026-01-01 00:00:05',
+     'ci-conv-fixture-aaaa', 0);
+INSERT INTO legacy_mysql.chat_message
+    (id, session_id, user_id, content, role, total_tokens, model_name, create_time, tenant_id)
+VALUES
+    (9501, 9001, 11, 'CI 夹具消息1', 'user', 12, 'ci-fixture-model', '2026-01-01 00:00:01', 0),
+    (9502, 9001, 11, 'CI 夹具消息2', 'assistant', 34, 'ci-fixture-model', '2026-01-01 00:00:02', 0);
 INSERT INTO legacy_mysql.knowledge_attach
     (id, knowledge_id, oss_id, doc_id, file_hash, name, type, create_dept, create_by,
      create_time, update_by, update_time, remark, tenant_id, status)
@@ -149,11 +165,20 @@ run_bootstrap /bootstrap/00-platform-identity.sql > "$WORK/out00.txt" 2>&1
 assert_eq '00 exit code' 0 $?
 q "CREATE SCHEMA IF NOT EXISTS ai AUTHORIZATION migrate_platform" >/dev/null 2>&1
 # E2 §5.1b: the legacy MySQL AI-domain rows land in `legacy_mysql` before the platform chain
-# reaches V11, and the migration identity is granted read access only.
+# reaches V11, the DBA identity runs the landing-zone adaptation (derived member id and public
+# conversation id, one transaction), and only then is the migration identity granted read access.
 psql_super_file /bootstrap/10-legacy-ai-domain-staging.sql > "$WORK/staging.log" 2>&1
 assert_eq 'legacy MySQL staging landing zone created' 0 $?
 psql_super_file /bootstrap/legacy-ai-fixture.sql > "$WORK/staging-fixture.log" 2>&1
 assert_eq 'legacy MySQL staging fixture loaded' 0 $?
+psql_super_file /bootstrap/20-legacy-ai-domain-adaptation.sql > "$WORK/staging-adaptation.log" 2>&1
+assert_eq 'landing-zone adaptation (derived columns) exit' 0 $?
+assert_eq 'adaptation tightened the derived member id' 'NO' \
+  "$(q "select is_nullable from information_schema.columns where table_schema='legacy_mysql' and table_name='chat_session' and column_name='member_id'")"
+assert_eq 'adaptation derived the canonical member id' 'platform:0:11' \
+  "$(q "select member_id from legacy_mysql.chat_message where id=9501")"
+assert_eq 'adaptation resolved the public conversation id' 'ci-conv-fixture-aaaa' \
+  "$(q "select conversation_id from legacy_mysql.chat_message where id=9501")"
 q "GRANT USAGE ON SCHEMA legacy_mysql TO migrate_platform; GRANT SELECT ON ALL TABLES IN SCHEMA legacy_mysql TO migrate_platform" >/dev/null 2>&1
 assert_eq 'migration identity granted read-only staging access' 0 $?
 
@@ -222,9 +247,9 @@ assert_eq 'merged columns are nullable' 'YES' \
 echo "### 4b. V11 moved the legacy MySQL AI-domain rows"
 assert_eq 'V11 registry covers 27 legacy tables' 27 \
   "$(q "select count(*) from platform.ai_legacy_domain_migration_table_map where legacy_source='mysql/ruoyi-ai.sql'")"
-assert_eq 'V11 copied the shape-matching tables and the evidenced agent alias' 22 \
+assert_eq 'V11 copied the shape-matching tables, the evidenced aliases and the derived columns' 24 \
   "$(q "select count(*) from platform.ai_legacy_domain_migration_audit where mode='copied'")"
-assert_eq 'V11 blocked the remaining merged tables with a reason' 5 \
+assert_eq 'V11 blocked the remaining merged tables with a reason' 3 \
   "$(q "select count(*) from platform.ai_legacy_domain_migration_audit where mode='blocked' and blocked_reason is not null")"
 assert_eq 'V11 copied a fixture row with tenant 0 as literal text' 1 \
   "$(q "select count(*) from platform.ai_model where id=1001 and tenant_id='0'")"
@@ -244,6 +269,12 @@ assert_eq 'V11 preserved the agent alias and original name with tenant 0' 1 \
   "$(q "select count(*) from platform.ai_agent_profile where id='8001' and name='CI 夹具Agent' and agent_name=name and tenant_id='0'")"
 assert_eq 'V11 generated the real agent name width guard' 1 \
   "$(q "select count(*) from platform.ai_legacy_domain_migration_map where legacy_table='agent_info' and legacy_column='agent_name' and unified_column='name' and narrowing and unified_length=64")"
+assert_eq 'V11 copied the conversation with its title alias and preserved original' 1 \
+  "$(q "select count(*) from platform.ai_conversation where id='9001' and title='CI 夹具会话' and session_title=title and conversation_id='ci-conv-fixture-aaaa' and member_id='platform:0:11' and tenant_id='0'")"
+assert_eq 'V11 resolved the message conversation id from the session, not the session key' 1 \
+  "$(q "select count(*) from platform.ai_message where id='9501' and conversation_id='ci-conv-fixture-aaaa' and session_id=9001 and member_id='platform:0:11'")"
+assert_eq 'V11 copied the parent before the child (immediate conversation FK holds)' 2 \
+  "$(q "select count(*) from platform.ai_message m join platform.ai_conversation c on c.tenant_id=m.tenant_id and c.conversation_id=m.conversation_id and c.member_id=m.member_id where m.id in ('9501','9502')")"
 
 
 echo "### 5. every AI-domain table from the table map exists in platform"

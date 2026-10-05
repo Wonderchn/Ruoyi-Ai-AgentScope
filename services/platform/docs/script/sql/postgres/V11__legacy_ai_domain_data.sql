@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS platform.ai_legacy_domain_migration_table_map (
     unified_table   varchar(128) NOT NULL,
     mode            varchar(16)  NOT NULL,
     key_columns     text[]       NOT NULL,
+    copy_order      integer      NOT NULL DEFAULT 100,
     blocked_reason  text,
     recorded_at     timestamp    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT pk_ai_legacy_domain_table_map PRIMARY KEY (legacy_source, legacy_table),
@@ -47,6 +48,8 @@ COMMENT ON TABLE platform.ai_legacy_domain_migration_table_map IS
     'E2 旧 MySQL AI 域行迁移：逐表模式（copy=可复制 / blocked=需平台侧适配，原因见 blocked_reason）';
 COMMENT ON COLUMN platform.ai_legacy_domain_migration_table_map.key_columns IS
     '幂等判定的键（统一表主键）：复制时按 IS NOT DISTINCT FROM 反连接，已存在的行不改写';
+COMMENT ON COLUMN platform.ai_legacy_domain_migration_table_map.copy_order IS
+    '复制顺序：父表必须先于子表（V7 的复合外键立即生效）；由生成器按冻结外键图计算';
 
 CREATE TABLE IF NOT EXISTS platform.ai_legacy_domain_migration_map (
     legacy_source    varchar(64)  NOT NULL,
@@ -124,35 +127,36 @@ ON CONFLICT (domain, source_value) DO UPDATE
 DELETE FROM platform.ai_legacy_domain_migration_map WHERE legacy_source = 'mysql/ruoyi-ai.sql';
 DELETE FROM platform.ai_legacy_domain_migration_table_map WHERE legacy_source = 'mysql/ruoyi-ai.sql';
 INSERT INTO platform.ai_legacy_domain_migration_table_map
-    (legacy_source, legacy_table, unified_table, mode, key_columns, blocked_reason)
+    (legacy_source, legacy_table, unified_table, mode, key_columns, copy_order,
+     blocked_reason)
 VALUES
-    ('mysql/ruoyi-ai.sql', 'agent_info', 'ai_agent_profile', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 'chat_config', 'ai_model_config', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 'chat_message', 'ai_message', 'blocked', ARRAY['id']::text[], '统一表 NOT NULL 且无默认值、旧表无同名列：conversation_id, member_id'),
-    ('mysql/ruoyi-ai.sql', 'chat_model', 'ai_model', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 'chat_provider', 'ai_model_provider', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 'chat_session', 'ai_conversation', 'blocked', ARRAY['id']::text[], '统一表 NOT NULL 且无默认值、旧表无同名列：member_id, title'),
-    ('mysql/ruoyi-ai.sql', 'knowledge_attach', 'ai_knowledge_document', 'blocked', ARRAY['id']::text[], '统一表 NOT NULL 且无默认值、旧表无同名列：created_by, doc_name, file_type, file_url, kb_id'),
-    ('mysql/ruoyi-ai.sql', 'knowledge_fragment', 'ai_knowledge_chunk', 'blocked', ARRAY['id']::text[], '统一表 NOT NULL 且无默认值、旧表无同名列：chunk_index, created_by, kb_id'),
-    ('mysql/ruoyi-ai.sql', 'knowledge_info', 'ai_knowledge_base', 'blocked', ARRAY['id']::text[], '统一表 NOT NULL 且无默认值、旧表无同名列：collection_name, created_by, owner_member_id'),
-    ('mysql/ruoyi-ai.sql', 'mcp_market_info', 'ai_mcp_market', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 'mcp_market_tool', 'ai_mcp_market_tool', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 'mcp_tool_info', 'ai_mcp_tool', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 'short_drama_audio', 'ai_short_drama_audio', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 'short_drama_character', 'ai_short_drama_character', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 'short_drama_character_appearance', 'ai_short_drama_character_appearance', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 'short_drama_location', 'ai_short_drama_location', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 'short_drama_project', 'ai_short_drama_project', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 'short_drama_script', 'ai_short_drama_script', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 'short_drama_storyboard', 'ai_short_drama_storyboard', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 't_workflow', 'ai_flow_workflow', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 't_workflow_component', 'ai_flow_component', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 't_workflow_edge', 'ai_flow_edge', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 't_workflow_node', 'ai_flow_node', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 't_workflow_runtime', 'ai_flow_runtime', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 't_workflow_runtime_node', 'ai_flow_runtime_node', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 'trace_node', 'ai_flow_trace_node', 'copy', ARRAY['id']::text[], NULL),
-    ('mysql/ruoyi-ai.sql', 'trace_run', 'ai_flow_trace_run', 'copy', ARRAY['id']::text[], NULL);
+    ('mysql/ruoyi-ai.sql', 'agent_info', 'ai_agent_profile', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'chat_config', 'ai_model_config', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'chat_message', 'ai_message', 'copy', ARRAY['id']::text[], 1, NULL),
+    ('mysql/ruoyi-ai.sql', 'chat_model', 'ai_model', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'chat_provider', 'ai_model_provider', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'chat_session', 'ai_conversation', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'knowledge_attach', 'ai_knowledge_document', 'blocked', ARRAY['id']::text[], 1, '统一表 NOT NULL 且无默认值、旧表无同名列：created_by, doc_name, file_type, file_url, kb_id'),
+    ('mysql/ruoyi-ai.sql', 'knowledge_fragment', 'ai_knowledge_chunk', 'blocked', ARRAY['id']::text[], 2, '统一表 NOT NULL 且无默认值、旧表无同名列：chunk_index, created_by, kb_id'),
+    ('mysql/ruoyi-ai.sql', 'knowledge_info', 'ai_knowledge_base', 'blocked', ARRAY['id']::text[], 0, '统一表 NOT NULL 且无默认值、旧表无同名列：collection_name, created_by, owner_member_id'),
+    ('mysql/ruoyi-ai.sql', 'mcp_market_info', 'ai_mcp_market', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'mcp_market_tool', 'ai_mcp_market_tool', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'mcp_tool_info', 'ai_mcp_tool', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'short_drama_audio', 'ai_short_drama_audio', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'short_drama_character', 'ai_short_drama_character', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'short_drama_character_appearance', 'ai_short_drama_character_appearance', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'short_drama_location', 'ai_short_drama_location', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'short_drama_project', 'ai_short_drama_project', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'short_drama_script', 'ai_short_drama_script', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'short_drama_storyboard', 'ai_short_drama_storyboard', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 't_workflow', 'ai_flow_workflow', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 't_workflow_component', 'ai_flow_component', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 't_workflow_edge', 'ai_flow_edge', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 't_workflow_node', 'ai_flow_node', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 't_workflow_runtime', 'ai_flow_runtime', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 't_workflow_runtime_node', 'ai_flow_runtime_node', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'trace_node', 'ai_flow_trace_node', 'copy', ARRAY['id']::text[], 0, NULL),
+    ('mysql/ruoyi-ai.sql', 'trace_run', 'ai_flow_trace_run', 'copy', ARRAY['id']::text[], 0, NULL);
 INSERT INTO platform.ai_legacy_domain_migration_map
     (legacy_source, legacy_table, unified_table, legacy_column, unified_column,
      transform, transform_arg, legacy_type, unified_type, unified_length,
@@ -193,10 +197,12 @@ VALUES
     ('mysql/ruoyi-ai.sql', 'chat_config', 'ai_model_config', 'update_time', 'update_time', 'identity', NULL, 'timestamp', 'timestamp', NULL, false, '旧表在任何脚本中都没有 DDL（V10 依据 Java 实体 org.ruoyi.system.domain.ChatConfig 补写）：列名沿用目标列名，实际形状以 MySQL 目录为准，不一致时迁移拒绝复制'),
     ('mysql/ruoyi-ai.sql', 'chat_config', 'ai_model_config', 'version', 'version', 'identity', NULL, 'bigint', 'bigint', NULL, false, '旧表在任何脚本中都没有 DDL（V10 依据 Java 实体 org.ruoyi.system.domain.ChatConfig 补写）：列名沿用目标列名，实际形状以 MySQL 目录为准，不一致时迁移拒绝复制'),
     ('mysql/ruoyi-ai.sql', 'chat_message', 'ai_message', 'content', 'content', 'cast_text', NULL, '', 'text', NULL, false, NULL),
+    ('mysql/ruoyi-ai.sql', 'chat_message', 'ai_message', 'conversation_id', 'conversation_id', 'identity', NULL, 'varchar', 'varchar', 20, true, '公开会话标识：按同租户、同成员的 legacy chat_session 行（session_id → id）取 conversation_id；不假设 session_id 与会话主键或 conversation_id 相等。断关联/跨租户/成员不一致/父值缺失/父键歧义均拒绝，不造默认值；宽度收窄（varchar → varchar）：超长值在复制时以明确报错拒绝，不静默截断'),
     ('mysql/ruoyi-ai.sql', 'chat_message', 'ai_message', 'create_by', 'create_by', 'identity', NULL, 'bigint null', 'bigint', NULL, false, NULL),
     ('mysql/ruoyi-ai.sql', 'chat_message', 'ai_message', 'create_dept', 'create_dept', 'identity', NULL, 'bigint null', 'bigint', NULL, false, NULL),
     ('mysql/ruoyi-ai.sql', 'chat_message', 'ai_message', 'create_time', 'create_time', 'identity', NULL, 'datetime null', 'timestamp', NULL, false, NULL),
     ('mysql/ruoyi-ai.sql', 'chat_message', 'ai_message', 'id', 'id', 'cast_text', NULL, 'bigint', 'varchar', 20, false, NULL),
+    ('mysql/ruoyi-ai.sql', 'chat_message', 'ai_message', 'member_id', 'member_id', 'identity', NULL, 'varchar', 'varchar', 160, false, '成员身份：canonical platform:<tenantId>:<userId>，与所属会话的 member_id 必须一致（V7 的 fk_message_conversation 按 tenant_id+conversation_id+member_id 引用 ai_conversation）；tenant_id/user_id 任一缺失即拒绝'),
     ('mysql/ruoyi-ai.sql', 'chat_message', 'ai_message', 'model_name', 'model_name', 'identity', NULL, 'varchar', 'varchar', 255, false, NULL),
     ('mysql/ruoyi-ai.sql', 'chat_message', 'ai_message', 'remark', 'remark', 'identity', NULL, 'varchar', 'varchar', 500, false, NULL),
     ('mysql/ruoyi-ai.sql', 'chat_message', 'ai_message', 'role', 'role', 'identity', NULL, 'varchar', 'varchar', 16, true, '宽度收窄（varchar → varchar）：超长值在复制时以明确报错拒绝，不静默截断'),
@@ -245,10 +251,12 @@ VALUES
     ('mysql/ruoyi-ai.sql', 'chat_session', 'ai_conversation', 'create_dept', 'create_dept', 'identity', NULL, 'varchar', 'varchar', 255, false, NULL),
     ('mysql/ruoyi-ai.sql', 'chat_session', 'ai_conversation', 'create_time', 'create_time', 'identity', NULL, 'datetime null', 'timestamp', NULL, false, NULL),
     ('mysql/ruoyi-ai.sql', 'chat_session', 'ai_conversation', 'id', 'id', 'cast_text', NULL, 'bigint', 'varchar', 20, false, NULL),
+    ('mysql/ruoyi-ai.sql', 'chat_session', 'ai_conversation', 'member_id', 'member_id', 'identity', NULL, 'varchar', 'varchar', 160, false, '成员身份：canonical platform:<tenantId>:<userId>（framework ExecutionPrincipal.membershipId / AiResourceWriteService 的 "platform:" + tenantId + ":" 前缀校验）；tenant_id/user_id 任一缺失即拒绝，不造默认值；数值租户按文本参与，0 → ''platform:0:<userId>''，不并入 ''000000'''),
     ('mysql/ruoyi-ai.sql', 'chat_session', 'ai_conversation', 'remark', 'remark', 'identity', NULL, 'varchar', 'varchar', 500, false, NULL),
     ('mysql/ruoyi-ai.sql', 'chat_session', 'ai_conversation', 'session_content', 'session_content', 'cast_text', NULL, '', 'text', NULL, false, NULL),
     ('mysql/ruoyi-ai.sql', 'chat_session', 'ai_conversation', 'session_title', 'session_title', 'identity', NULL, 'varchar', 'varchar', 255, false, NULL),
     ('mysql/ruoyi-ai.sql', 'chat_session', 'ai_conversation', 'tenant_id', 'tenant_id', 'cast_text', NULL, 'bigint', 'varchar', 64, false, NULL),
+    ('mysql/ruoyi-ai.sql', 'chat_session', 'ai_conversation', 'session_title', 'title', 'identity', NULL, 'varchar', 'varchar', 128, true, '会话标题：ruoyi-chat/domain/entity/chat/ChatSession.java 的 sessionTitle 与旧 DDL session_title（COMMENT ''会话标题''）描述同一字段；V7 ai_conversation.title 是统一读路径（TenantConversationReadRepository 读 title）展示的标题。原 session_title 列同时保留；宽度收窄（varchar → varchar）：超长值在复制时以明确报错拒绝，不静默截断'),
     ('mysql/ruoyi-ai.sql', 'chat_session', 'ai_conversation', 'update_by', 'update_by', 'identity', NULL, 'bigint null', 'bigint', NULL, false, NULL),
     ('mysql/ruoyi-ai.sql', 'chat_session', 'ai_conversation', 'update_time', 'update_time', 'identity', NULL, 'datetime null', 'timestamp', NULL, false, NULL),
     ('mysql/ruoyi-ai.sql', 'chat_session', 'ai_conversation', 'user_id', 'user_id', 'cast_text', NULL, 'bigint null', 'varchar', 20, false, NULL),
@@ -878,6 +886,8 @@ COMMENT ON FUNCTION platform.ai_legacy_domain_copy_table(text, text, text) IS
 
 -- ---------------------------------------------------------------------------
 -- 5. Run. Copy-mode tables are copied; blocked/absent tables are validated and recorded.
+--    copy_order puts parents before children: the unified FKs are immediate, so a child
+--    copied first would fail even though every row is individually correct.
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
@@ -888,7 +898,7 @@ BEGIN
     FOR t IN SELECT legacy_table
                FROM platform.ai_legacy_domain_migration_table_map
               WHERE legacy_source = 'mysql/ruoyi-ai.sql'
-              ORDER BY legacy_table
+              ORDER BY copy_order, legacy_table
     LOOP
         v_result := platform.ai_legacy_domain_copy_table('mysql/ruoyi-ai.sql', t.legacy_table);
         IF v_result <> 'copied' THEN

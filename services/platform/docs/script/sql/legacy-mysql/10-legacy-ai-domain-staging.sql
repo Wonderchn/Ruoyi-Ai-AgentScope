@@ -61,7 +61,13 @@ CREATE TABLE IF NOT EXISTS legacy_mysql.chat_message (
     "update_by" bigint DEFAULT NULL,
     "update_time" timestamp DEFAULT NULL,
     "remark" varchar(500) DEFAULT NULL,
-    "tenant_id" bigint NOT NULL DEFAULT 0
+    "tenant_id" bigint NOT NULL DEFAULT 0,
+    -- 落地区适配列（E5，不是 MySQL 原始列）：由 20-legacy-ai-domain-adaptation.sql
+    -- 按显式来源计算并收紧 NOT NULL；V11 只把它当普通列复制
+    "conversation_id" varchar(32) DEFAULT NULL,
+    -- 落地区适配列（E5，不是 MySQL 原始列）：由 20-legacy-ai-domain-adaptation.sql
+    -- 按显式来源计算并收紧 NOT NULL；V11 只把它当普通列复制
+    "member_id" varchar(160) DEFAULT NULL
 );
 -- ===== chat_model  -- 模型管理 =====
 CREATE TABLE IF NOT EXISTS legacy_mysql.chat_model (
@@ -116,7 +122,10 @@ CREATE TABLE IF NOT EXISTS legacy_mysql.chat_session (
     "update_time" timestamp DEFAULT NULL,
     "remark" varchar(500) DEFAULT NULL,
     "conversation_id" varchar(32) DEFAULT NULL,
-    "tenant_id" bigint NOT NULL DEFAULT 0
+    "tenant_id" bigint NOT NULL DEFAULT 0,
+    -- 落地区适配列（E5，不是 MySQL 原始列）：由 20-legacy-ai-domain-adaptation.sql
+    -- 按显式来源计算并收紧 NOT NULL；V11 只把它当普通列复制
+    "member_id" varchar(160) DEFAULT NULL
 );
 -- ===== knowledge_attach  -- 知识库附件 =====
 CREATE TABLE IF NOT EXISTS legacy_mysql.knowledge_attach (
