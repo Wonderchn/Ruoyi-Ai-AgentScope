@@ -45,6 +45,9 @@ done
 [ -f "$PLATFORM_SQL/V8__unified_ai_data.sql" ] || { echo "missing unified AI data migration"; exit 2; }
 [ -f "$PLATFORM_SQL/V9__legacy_ai_domain_ddl.sql" ] || { echo "missing legacy AI domain DDL migration"; exit 2; }
 [ -f "$PLATFORM_SQL/V10__entity_only_tables.sql" ] || { echo "missing entity-only tables migration"; exit 2; }
+[ -f "$PLATFORM_SQL/V11__legacy_ai_domain_data.sql" ] || { echo "missing legacy AI domain data migration"; exit 2; }
+STAGING_SQL=${STAGING_SQL:-$REPO_ROOT/services/platform/docs/script/sql/legacy-mysql}
+[ -f "$STAGING_SQL/10-legacy-ai-domain-staging.sql" ] || { echo "missing legacy MySQL staging DDL"; exit 2; }
 
 umask 077
 rm -rf $WORK; mkdir -p "$WORK/platform" "$WORK/ai" "$WORK/bootstrap"
@@ -52,6 +55,40 @@ cp "$PLATFORM_SQL"/V*.sql "$WORK/platform/"
 cp "$AI_SQL"/V*.sql "$WORK/ai/"
 cp "$PLATFORM_SQL"/bootstrap/00-platform-identity.sql "$WORK/bootstrap/"
 cp "$PLATFORM_SQL"/bootstrap/01-platform-casts.sql "$WORK/bootstrap/"
+cp "$STAGING_SQL"/10-legacy-ai-domain-staging.sql "$WORK/bootstrap/"
+# Synthetic landing-zone rows for V11. No customer data and no real ids: the point is to prove
+# the copy, the tenant normalisation (0 -> '0'), the skip of an already-present key and the
+# refusal to fill a blocked table's unmapped columns.
+cat > "$WORK/bootstrap/legacy-ai-fixture.sql" <<'SQL'
+INSERT INTO legacy_mysql.chat_model
+    (id, category, model_name, provider_code, model_describe, model_dimension, model_show,
+     api_host, api_key, create_dept, create_by, create_time, update_by, update_time, remark, tenant_id)
+VALUES
+    (1001, 'chat', 'ci-fixture-model', 'ci-fixture-provider', 'CI 夹具模型', 1536, '1',
+     'https://example.invalid/v1', 'not-a-real-key', 100, 200, '2026-01-01 00:00:00', 200,
+     '2026-01-01 00:00:00', 'ci fixture', 0),
+    (9999, 'chat', 'ci-fixture-should-not-win', 'ci-fixture-provider', '不该覆盖', 1, '0',
+     NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0);
+INSERT INTO legacy_mysql.t_workflow
+    (id, uuid, title, user_id, is_public, is_enable, create_time, update_time, remark, is_deleted, tenant_id)
+VALUES
+    (3001, 'cifixtureworkflowuuid0000000001', 'CI 夹具工作流', 5, 1, 1,
+     '2026-01-01 00:00:00', '2026-01-01 00:00:00', 'CI 夹具备注', 0, '000000');
+INSERT INTO legacy_mysql.knowledge_attach
+    (id, knowledge_id, oss_id, doc_id, file_hash, name, type, create_dept, create_by,
+     create_time, update_by, update_time, remark, tenant_id, status)
+VALUES
+    (6001, 1, NULL, 'doc-a', 'hash-a', 'CI 夹具文档A', 'pdf', NULL, '1', '2026-01-01 00:00:00', NULL, NULL, NULL, 0, 0),
+    (6002, 1, NULL, 'doc-b', 'hash-b', 'CI 夹具文档B', 'pdf', NULL, '1', '2026-01-01 00:00:00', NULL, NULL, NULL, 0, 1),
+    (6003, 1, NULL, 'doc-c', 'hash-c', 'CI 夹具文档C', 'pdf', NULL, '1', '2026-01-01 00:00:00', NULL, NULL, NULL, 0, 2),
+    (6004, 1, NULL, 'doc-d', 'hash-d', 'CI 夹具文档D', 'pdf', NULL, '1', '2026-01-01 00:00:00', NULL, NULL, NULL, 0, 3);
+INSERT INTO platform.ai_model
+    (id, category, model_name, provider_code, model_describe, model_dimension, model_show,
+     api_host, api_key, create_dept, create_by, create_time, update_by, update_time, remark, tenant_id)
+VALUES
+    (9999, 'chat', 'platform-owned-row', 'ci-fixture-provider', '平台侧既有行', 1, '0',
+     NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '000000');
+SQL
 
 PG_SUPER=$(openssl rand -hex 16); MIGRATE_PW=$(openssl rand -hex 16); APP_PW=$(openssl rand -hex 16)
 export POSTGRES_PASSWORD=$PG_SUPER POSTGRES_DB=$DB_NAME POSTGRES_USER=postgres
@@ -63,6 +100,10 @@ q() { PGPASSWORD=$PG_SUPER docker run --rm -i --net host -e PGPASSWORD "${PSQL_V
 as_app() { PGPASSWORD=$APP_PW docker run --rm -i --net host -e PGPASSWORD "${PSQL_VOLS[@]}" $PG_IMAGE \
         psql "host=$DB_HOST port=$DB_PORT dbname=$DB_NAME user=platform_app" -X -q -v ON_ERROR_STOP=1 "${@}"; }
 run_bootstrap() { PGPASSWORD=$PG_SUPER docker run --rm -i --net host -e PGPASSWORD -e PLATFORM_MIGRATE_PASSWORD -e PLATFORM_APP_PASSWORD "${PSQL_VOLS[@]}" $PG_IMAGE \
+        psql "host=$DB_HOST port=$DB_PORT dbname=$DB_NAME user=postgres" -X -q -v ON_ERROR_STOP=1 -f "$1"; }
+# superuser file runner: the landing zone and its rows belong to the operator/DBA identity,
+# and the migration identity only gets read access (that split is what V11 is verified against)
+psql_super_file() { PGPASSWORD=$PG_SUPER docker run --rm -i --net host -e PGPASSWORD "${PSQL_VOLS[@]}" $PG_IMAGE \
         psql "host=$DB_HOST port=$DB_PORT dbname=$DB_NAME user=postgres" -X -q -v ON_ERROR_STOP=1 -f "$1"; }
 flyway_platform() { docker run --rm --net host \
         -e FLYWAY_URL="jdbc:postgresql://$DB_HOST:$DB_PORT/$DB_NAME" \
@@ -105,6 +146,14 @@ assert_eq '01 exit code' 0 $?
 run_bootstrap /bootstrap/00-platform-identity.sql > "$WORK/out00.txt" 2>&1
 assert_eq '00 exit code' 0 $?
 q "CREATE SCHEMA IF NOT EXISTS ai AUTHORIZATION migrate_platform" >/dev/null 2>&1
+# E2 §5.1b: the legacy MySQL AI-domain rows land in `legacy_mysql` before the platform chain
+# reaches V11, and the migration identity is granted read access only.
+psql_super_file /bootstrap/10-legacy-ai-domain-staging.sql > "$WORK/staging.log" 2>&1
+assert_eq 'legacy MySQL staging landing zone created' 0 $?
+psql_super_file /bootstrap/legacy-ai-fixture.sql > "$WORK/staging-fixture.log" 2>&1
+assert_eq 'legacy MySQL staging fixture loaded' 0 $?
+q "GRANT USAGE ON SCHEMA legacy_mysql TO migrate_platform; GRANT SELECT ON ALL TABLES IN SCHEMA legacy_mysql TO migrate_platform" >/dev/null 2>&1
+assert_eq 'migration identity granted read-only staging access' 0 $?
 
 echo "### 3. entry point B: legacy two-schema deployment (platform V1..V6 + AI V1..V12)"
 flyway_platform -target=6 migrate > "$WORK/b1.txt" 2>&1
@@ -167,6 +216,28 @@ assert_eq 'conflicting id kept the AI varchar type' 'character varying' \
   "$(q "select data_type from information_schema.columns where table_schema='platform' and table_name='ai_conversation' and column_name='id'")"
 assert_eq 'merged columns are nullable' 'YES' \
   "$(q "select is_nullable from information_schema.columns where table_schema='platform' and table_name='ai_conversation' and column_name='session_title'")"
+
+echo "### 4b. V11 moved the legacy MySQL AI-domain rows"
+assert_eq 'V11 registry covers 27 legacy tables' 27 \
+  "$(q "select count(*) from platform.ai_legacy_domain_migration_table_map where legacy_source='mysql/ruoyi-ai.sql'")"
+assert_eq 'V11 copied the shape-matching tables' 21 \
+  "$(q "select count(*) from platform.ai_legacy_domain_migration_audit where mode='copied'")"
+assert_eq 'V11 blocked the merged tables with a reason' 6 \
+  "$(q "select count(*) from platform.ai_legacy_domain_migration_audit where mode='blocked' and blocked_reason is not null")"
+assert_eq 'V11 copied a fixture row with tenant 0 as literal text' 1 \
+  "$(q "select count(*) from platform.ai_model where id=1001 and tenant_id='0'")"
+assert_eq 'V11 kept the pre-existing unified row' 'platform-owned-row' \
+  "$(q "select model_name from platform.ai_model where id=9999")"
+assert_eq 'V11 counted the pre-existing key as skipped' 1 \
+  "$(q "select rows_skipped_existing from platform.ai_legacy_domain_migration_audit where legacy_table='chat_model'")"
+assert_eq 'V11 row accounting adds up' 0 \
+  "$(q "select count(*) from platform.ai_legacy_domain_migration_audit where mode='copied' and (rows_read <> rows_inserted + rows_skipped_existing or unified_rows <> unified_rows_before + rows_inserted)")"
+assert_eq 'V11 enum map installed for the document status' 4 \
+  "$(q "select count(*) from platform.ai_legacy_domain_enum_map where domain='knowledge_document_status'")"
+assert_eq 'V11 invented no row for a blocked table' 0 \
+  "$(q "select count(*) from platform.ai_knowledge_document where id in ('6001','6002','6003','6004')")"
+assert_eq 'V11 copied the workflow fixture row' 'CI 夹具工作流' \
+  "$(q "select title from platform.ai_flow_workflow where id=3001")"
 
 
 echo "### 5. every AI-domain table from the table map exists in platform"
@@ -242,6 +313,16 @@ assert_eq 'fresh install audit table is empty' 0 \
   "$(PGPASSWORD=$PG_SUPER docker run --rm --net host -e PGPASSWORD $PG_IMAGE \
      psql "host=$DB_HOST port=$DB_PORT dbname=ci_unified_fresh user=postgres" -X -q -tAc \
      'select count(*) from platform.ai_unified_migration_audit' 2>/dev/null)"
+# V11 on a fresh install: no landing zone, so every table must be recorded as absent rather
+# than silently skipped or failed (the $$-quoted literal avoids quoting the shell string)
+assert_eq 'fresh install records all 27 legacy tables as absent' 27 \
+  "$(PGPASSWORD=$PG_SUPER docker run --rm --net host -e PGPASSWORD $PG_IMAGE \
+     psql "host=$DB_HOST port=$DB_PORT dbname=ci_unified_fresh user=postgres" -X -q -tAc \
+     'select count(*) from platform.ai_legacy_domain_migration_audit where mode = $$absent$$' 2>/dev/null)"
+assert_eq 'fresh install copied nothing from the legacy MySQL domain' 0 \
+  "$(PGPASSWORD=$PG_SUPER docker run --rm --net host -e PGPASSWORD $PG_IMAGE \
+     psql "host=$DB_HOST port=$DB_PORT dbname=ci_unified_fresh user=postgres" -X -q -tAc \
+     'select count(*) from platform.ai_legacy_domain_migration_audit where rows_inserted <> 0' 2>/dev/null)"
 
 echo "### 8. run identity still has no DDL"
 assert_eq 'platform_app cannot create a table' 1 \

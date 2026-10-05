@@ -23,29 +23,10 @@ Usage: python mysql-to-postgres.py <mysqlSql> <outFile>
 import re
 import sys
 
+from mysql_ddl import (WARNINGS, clean_index_cols, find_body, map_type, quote,
+                       split_defs, strip_line_comments, warn)
 from sql_lint import assert_no_orphan_comment_lines
 from table_shape import parse_created_tables, parse_created_table_definitions
-
-TYPE_MAP = [
-    (re.compile(r"^bigint(\(\d+\))?$", re.I), "bigint"),
-    (re.compile(r"^int(\(\d+\))?$", re.I), "integer"),
-    (re.compile(r"^tinyint(\(\d+\))?$", re.I), "smallint"),
-    (re.compile(r"^smallint(\(\d+\))?$", re.I), "smallint"),
-    (re.compile(r"^mediumint(\(\d+\))?$", re.I), "integer"),
-    (re.compile(r"^(long|medium)?text$", re.I), "text"),
-    (re.compile(r"^(long|medium|tiny)?blob$", re.I), "bytea"),
-    (re.compile(r"^datetime(\(\d+\))?$", re.I), "timestamp"),
-    (re.compile(r"^timestamp(\(\d+\))?$", re.I), "timestamp"),
-    (re.compile(r"^double(\(\d+(,\d+)?\))?$", re.I), "double precision"),
-    (re.compile(r"^float(\(\d+(,\d+)?\))?$", re.I), "real"),
-    (re.compile(r"^json$", re.I), "jsonb"),
-    (re.compile(r"^bit(\(\d+\))?$", re.I), "smallint"),
-    (re.compile(r"^decimal", re.I), "numeric"),
-    (re.compile(r"^date$", re.I), "date"),
-    (re.compile(r"^time$", re.I), "time"),
-    (re.compile(r"^char\((\d+)\)$", re.I), None),      # keep as char(n)
-    (re.compile(r"^varchar\((\d+)\)$", re.I), None),    # keep as varchar(n)
-]
 
 # table -> unified name, per mydocs/platform-embedded/03-table-map.json
 RENAME = {
@@ -77,83 +58,6 @@ RENAME = {
     "short_drama_location": "ai_short_drama_location",
     "short_drama_audio": "ai_short_drama_audio",
 }
-
-WARNINGS = []
-
-
-def warn(msg):
-    WARNINGS.append(msg)
-
-
-def map_type(mysql_type):
-    t = mysql_type.strip()
-    # enum/set become text with the original option list preserved as a CHECK-able comment
-    m = re.match(r"^(enum|set)\s*\((.*)\)$", t, re.I | re.S)
-    if m:
-        warn("enum/set converted to varchar(64): %s" % t[:80])
-        return "varchar(64)"
-    for pattern, replacement in TYPE_MAP:
-        if pattern.match(t):
-            return replacement if replacement is not None else t.lower()
-    warn("unmapped type kept verbatim: %s" % t)
-    return t
-
-
-def split_defs(body):
-    """Split on top-level commas, ignoring parentheses AND quoted strings.
-
-    MySQL column comments carry commas and JSON braces (COMMENT 'type=chat, category=chat'),
-    so a parenthesis-only splitter tears those definitions apart.
-    """
-    parts, depth, cur, in_quote = [], 0, [], False
-    i = 0
-    while i < len(body):
-        ch = body[i]
-        if in_quote:
-            cur.append(ch)
-            if ch == "'":
-                if i + 1 < len(body) and body[i + 1] == "'":
-                    cur.append("'")
-                    i += 2
-                    continue
-                in_quote = False
-            elif ch == "\\":
-                if i + 1 < len(body):
-                    cur.append(body[i + 1])
-                    i += 2
-                    continue
-        else:
-            if ch == "'":
-                in_quote = True
-                cur.append(ch)
-            elif ch == "(":
-                depth += 1
-                cur.append(ch)
-            elif ch == ")":
-                depth -= 1
-                cur.append(ch)
-            elif ch == "," and depth == 0:
-                parts.append("".join(cur))
-                cur = []
-            else:
-                cur.append(ch)
-        i += 1
-    if cur:
-        parts.append("".join(cur))
-    return [p.strip() for p in parts if p.strip()]
-
-
-def find_body(src, start):
-    depth = 0
-    for i in range(start, len(src)):
-        if src[i] == "(":
-            depth += 1
-        elif src[i] == ")":
-            depth -= 1
-            if depth == 0:
-                return src[start + 1:i]
-    return ""
-
 
 def convert_table(mysql_name, body, table_comment):
     pg_name = RENAME[mysql_name]
@@ -264,30 +168,8 @@ def convert_table(mysql_name, body, table_comment):
     return "\n".join(lines), warnings
 
 
-def clean_index_cols(raw_cols):
-    """Drop MySQL index modifiers (ASC/DESC, prefix lengths, USING BTREE) from column lists.
-
-    Implemented as token filtering rather than regex substitution so the modifier handling
-    does not depend on escape sequences that are easy to corrupt when the file is patched
-    by tooling.
-    """
-    out = []
-    for chunk in raw_cols.split(","):
-        kept = []
-        for token in chunk.split():
-            if token.upper() in ("ASC", "DESC", "USING", "BTREE", "HASH"):
-                continue
-            kept.append(token)
-        name = " ".join(kept).strip().strip("`").strip()
-        if "(" in name and name.endswith(")"):
-            name = name[: name.index("(")]
-        if name:
-            out.append(name)
-    return out
-
-
-def quote(text):
-    return "'%s'" % text.replace("'", "''")
+def clean_index_cols_moved():
+    raise NotImplementedError
 
 
 def convert_overlap_table(mysql_name, generated_sql, ai_columns):
@@ -349,7 +231,7 @@ def main():
     existing = parse_created_table_definitions(v7_path) if v7_path else {}
     raw = open(src_path, encoding="utf-8", errors="replace").read()
     # strip MySQL line comments so they cannot confuse the parser
-    raw = "\n".join(re.sub(r"^\s*--.*$", "", line) for line in raw.splitlines())
+    raw = strip_line_comments(raw)
 
     blocks, found, merged = [], [], []
     for mysql_name in RENAME:
