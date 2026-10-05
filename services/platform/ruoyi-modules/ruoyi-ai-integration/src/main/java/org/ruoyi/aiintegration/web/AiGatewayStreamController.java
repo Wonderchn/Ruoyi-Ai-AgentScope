@@ -68,8 +68,12 @@ public class AiGatewayStreamController {
             }
             URI target = targetUri(request, "/documents/uploads");
             Map<String, String> headers = GatewayHeaders.sanitize(request);
-            headers.put("Authorization", "Bearer " + authorized.delegationToken());
-            headers.put("X-P04-Service-Credential", properties.getServiceCredential());
+            if (authorized.delegationToken() != null) {
+                headers.put("Authorization", "Bearer " + authorized.delegationToken());
+            }
+            if (!properties.isLocalTransport()) {
+                headers.put("X-P04-Service-Credential", properties.getServiceCredential());
+            }
             headers.put(RequestId.HEADER, RequestId.currentOrEmpty());
             client.forwardUploadStream(new AiGatewayClient.ForwardRequest("POST", target, Map.copyOf(headers), null,
                     () -> {
@@ -94,12 +98,12 @@ public class AiGatewayStreamController {
             if(docId==null || !docId.matches("[A-Za-z0-9_-]{1,64}")) throw new P04Exception(P04ErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
             var authorized=authorizer.authorize(request,"document.download");
             var headers=GatewayHeaders.sanitize(request);
-            headers.put("Authorization","Bearer "+authorized.delegationToken());
-            headers.put("X-P04-Service-Credential",properties.getServiceCredential());
+            if(authorized.delegationToken()!=null){headers.put("Authorization","Bearer "+authorized.delegationToken());}
+            if(!properties.isLocalTransport()){headers.put("X-P04-Service-Credential",properties.getServiceCredential());}
             headers.put(RequestId.HEADER,RequestId.currentOrEmpty());
             client.forwardPrivateDocument(new AiGatewayClient.ForwardRequest("GET",targetUri(request,"/documents/"+docId+"/source"),Map.copyOf(headers),null),
                     response,50*1024*1024,120000,new AiGatewayClient.DeliveryAck(
-                            URI.create(properties.getAiBaseUrl()+AI_INTERNAL_PREFIX+"/authorization/deliveries/release"),
+                            URI.create(base()+AI_INTERNAL_PREFIX+"/authorization/deliveries/release"),
                             authorized.member().tenantId(),authorized.member().membershipId(),properties.getServiceCredential()));
         } catch(P04Exception e){writeError(response,e.errorCode());}
         catch(AiGatewayClient.UpstreamUnavailableException e){writeError(response,P04ErrorCode.AUTHORIZATION_UNAVAILABLE);}
@@ -115,14 +119,18 @@ public class AiGatewayStreamController {
             GatewayAuthorizer.Authorized authorized = authorizer.authorize(request, "run.stream");
             URI target = targetUri(request, "/runs/" + runId + "/events");
             Map<String, String> headers = GatewayHeaders.sanitize(request);
-            headers.put("Authorization", "Bearer " + authorized.delegationToken());
-            headers.put("X-P04-Service-Credential", properties.getServiceCredential());
+            if (authorized.delegationToken() != null) {
+                headers.put("Authorization", "Bearer " + authorized.delegationToken());
+            }
+            if (!properties.isLocalTransport()) {
+                headers.put("X-P04-Service-Credential", properties.getServiceCredential());
+            }
             headers.put(RequestId.HEADER, RequestId.currentOrEmpty());
             headers.put("Accept", "text/event-stream");
             client.forwardEventStream(new AiGatewayClient.ForwardRequest("GET", target, Map.copyOf(headers), null),
                     response, properties.getSseConnectTimeoutMillis(), properties.getSseIdleTimeoutMillis(),
                     properties.getSseMaxDurationMillis(),new AiGatewayClient.DeliveryAck(
-                            URI.create(properties.getAiBaseUrl()+AI_INTERNAL_PREFIX+"/authorization/deliveries/release"),
+                            URI.create(base()+AI_INTERNAL_PREFIX+"/authorization/deliveries/release"),
                             authorized.member().tenantId(),authorized.member().membershipId(),properties.getServiceCredential()));
         } catch (P04Exception e) {
             writeError(response, e.errorCode());
@@ -131,9 +139,14 @@ public class AiGatewayStreamController {
         }
     }
 
+    /** 传输基地址：local 形态是本进程（占位主机，仅保持 URI 形状）；http 形态取真实 AI 基地址。 */
+    private String base() {
+        return properties.isLocalTransport() ? "http://local" : properties.getAiBaseUrl();
+    }
+
     private URI targetUri(HttpServletRequest request, String subPath) {
         String query = request.getQueryString();
-        String target = properties.getAiBaseUrl() + AI_INTERNAL_PREFIX + subPath
+        String target = base() + AI_INTERNAL_PREFIX + subPath
                 + (query == null || query.isBlank() ? "" : "?" + query);
         try {
             return new URI(target);

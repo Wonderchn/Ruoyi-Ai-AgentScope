@@ -22,6 +22,7 @@ import org.ruoyi.aiintegration.authorization.AiActionRegistry;
 import org.ruoyi.aiintegration.delegation.ProductionSigningKeySource;
 import org.ruoyi.aiintegration.identity.CurrentPrincipalResolver;
 import org.ruoyi.aiintegration.identity.PlatformIdentitySource;
+import org.ruoyi.aiintegration.config.AiIntegrationProperties;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
@@ -40,14 +41,17 @@ public class GatewayAuthorizer {
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;
-    private final ProductionSigningKeySource signingKeys;
+    private final ObjectProvider<ProductionSigningKeySource> signingKeys;
+    private final AiIntegrationProperties properties;
 
     public GatewayAuthorizer(CurrentPrincipalResolver principalResolver,
                              ObjectProvider<PlatformIdentitySource> identitySource,
-                             ProductionSigningKeySource signingKeys) {
+                             ObjectProvider<ProductionSigningKeySource> signingKeys,
+                             AiIntegrationProperties properties) {
         this.principalResolver = principalResolver;
         this.identitySource = identitySource;
         this.signingKeys = signingKeys;
+        this.properties = properties;
     }
 
     public record Authorized(CurrentPrincipalResolver.CurrentMember member, String action, String delegationToken) {
@@ -73,9 +77,17 @@ public class GatewayAuthorizer {
         if (!identity.scopes().contains(requiredPermission)) {
             throw new P04Exception(P04ErrorCode.FORBIDDEN);
         }
-        ProductionSigningKeySource.Issued issued = signingKeys.issue(
-                member.tenantId(), member.userId(), member.membershipId(),
-                List.of(action), identity.policyVersion(), null);
-        return new Authorized(member, action, issued.token());
+        // transport=local（E3/C3）：同进程转送不铸造委托凭证（身份经 AiIdentityPort 桥接），
+        // 与 AiGatewayController 同一口径；http 形态缺密钥即 503（不降级放行）。
+        String delegationToken = null;
+        if (!properties.isLocalTransport()) {
+            ProductionSigningKeySource keys = signingKeys.getIfAvailable();
+            if (keys == null) {
+                throw new P04Exception(P04ErrorCode.AUTHORIZATION_UNAVAILABLE);
+            }
+            delegationToken = keys.issue(member.tenantId(), member.userId(), member.membershipId(),
+                    List.of(action), identity.policyVersion(), null).token();
+        }
+        return new Authorized(member, action, delegationToken);
     }
 }

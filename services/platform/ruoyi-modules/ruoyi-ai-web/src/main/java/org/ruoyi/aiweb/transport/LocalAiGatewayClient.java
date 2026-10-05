@@ -95,8 +95,10 @@ import org.springframework.web.util.ServletRequestPathUtils;
  *
  * <p>安全规则逐条保留：状态契约（2xx/4xx/503 透传，其余视为异常）、
  * 恶意响应 fail-closed（非空体必须是单 JSON 对象、整数 code 与状态一致）。
- * 流式方法（SSE/上传/私有 PDF）当前 fail-closed 503——专用本地流传输属后续单元，
- * <b>不</b>静默降级回 HTTP。
+ * 流式传输（E3 收尾）：SSE 逐帧处理（剥离 {@code : ai-delivery} 元数据、restricted 帧
+ * 必须带交付行、逐帧本地回执）、私有 PDF（PDF + 交付证明 + maxBytes 复核）、
+ * 上传（multipart 部件直读、声明长度与响应上限）。空闲/总时长/建连超时参数在进程内
+ * 由 AI 侧 BoundedSink 与容器写失败承担（无上游 socket 可关），语义缺口已在台账记录。
  */
 public class LocalAiGatewayClient extends AiGatewayClient {
 
@@ -107,6 +109,12 @@ public class LocalAiGatewayClient extends AiGatewayClient {
     private static final Duration PRINCIPAL_TTL = Duration.ofMinutes(5);
 
     private static final int MAX_BYTE_BODY = 4 * 1024 * 1024;
+
+    /** 上传响应（JSON 信封）上限：与 HTTP 形态的 256KB 读取上限一致。 */
+    private static final int MAX_UPLOAD_RESPONSE = 256 * 1024;
+
+    /** SSE 单帧上限：与 HTTP 形态的 1MB 帧上限一致。 */
+    private static final int MAX_STREAM_FRAME = 1024 * 1024;
 
     private final AiIdentityPort identityPort;
     private final AiDeliveryReleaser deliveryReleaser;
@@ -172,26 +180,115 @@ public class LocalAiGatewayClient extends AiGatewayClient {
     @Override
     public void forwardEventStream(ForwardRequest request, HttpServletResponse response,
                                    int connectTimeoutMillis, int idleTimeoutMillis, int maxDurationMillis) {
-        throw new UpstreamUnavailableException("local stream transport not wired");
+        forwardEventStream(request, response, connectTimeoutMillis, idleTimeoutMillis, maxDurationMillis, null);
     }
 
     @Override
     public void forwardEventStream(ForwardRequest request, HttpServletResponse response,
                                    int connectTimeoutMillis, int idleTimeoutMillis, int maxDurationMillis,
                                    DeliveryAck delivery) {
-        throw new UpstreamUnavailableException("local stream transport not wired");
+        // 空闲/总时长限制在进程内没有上游 socket 可关：由 AI 侧 BoundedSink 的心跳/上限与
+        // 容器写失败（客户端断开）承担同等职责。逐帧形状校验、`: ai-delivery` 元数据剥离与
+        // 逐帧交付回执与 HTTP 形态逐条一致（见 StreamFrameResponse）。
+        StreamFrameResponse streaming = new StreamFrameResponse(response, delivery);
+        dispatchTo(request, streaming, (outer, targetPath) ->
+                new BodyProvidingRequest(outer, request.body(), targetPath, request.uri().getRawQuery()));
+        streaming.finish();
     }
 
     @Override
     public void forwardPrivateDocument(ForwardRequest request, HttpServletResponse response,
                                        int maxBytes, int deadlineMillis, DeliveryAck delivery) {
-        throw new UpstreamUnavailableException("local stream transport not wired");
+        // 内嵌形态下内层控制器已把私有文档读成有界 byte[]（AI 侧 4MB 上限），
+        // 没有需要按截止时间关闭的上游读流；本层仍按 maxBytes 复核并 fail-closed。
+        Captured capture = dispatch(request);
+        int status = capture.status();
+        if (status != 200 && !Set.of(400, 401, 403, 404, 409, 413, 503).contains(status)) {
+            throw new UpstreamUnavailableException("download status invalid");
+        }
+        byte[] bytes = capture.body();
+        String type = orDefault(capture.header("Content-Type"), "");
+        String permit = capture.header("X-AI-Delivery-Permit");
+        String operation = capture.header("X-AI-Delivery-Operation");
+        if (status == 200) {
+            if (!type.toLowerCase(Locale.ROOT).startsWith("application/pdf")
+                    || !isDeliveryId(permit) || !isDeliveryId(operation)) {
+                throw new UpstreamUnavailableException("download proof missing");
+            }
+            if (bytes.length > maxBytes) {
+                throw new UpstreamUnavailableException("download limit exceeded");
+            }
+        }
+        response.setStatus(status);
+        response.setContentType(status == 200 ? "application/pdf" : "application/json;charset=UTF-8");
+        response.setHeader("Cache-Control", "no-store");
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        try {
+            response.getOutputStream().write(bytes);
+            response.getOutputStream().flush();
+        } catch (IOException e) {
+            throw new UpstreamUnavailableException("download delivery failed");
+        } finally {
+            if (isDeliveryId(permit) || isDeliveryId(operation)) {
+                acknowledgeStreamDelivery(delivery, permit, operation);
+            }
+        }
     }
 
     @Override
     public void forwardUploadStream(ForwardRequest request, HttpServletResponse response,
                                     long maxBytes, int timeoutMillis) {
-        throw new UpstreamUnavailableException("local stream transport not wired");
+        // 上传体不缓冲全量：内层处理器直接读容器已解析的 multipart 部件（与 HTTP 形态
+        // 把同一 multipart 体转发给内层由内层解析等价）。超限即拒绝，不静默截断。
+        HttpServletRequest outer = currentRequest();
+        if (outer.getContentLengthLong() > maxBytes) {
+            throw new UpstreamUnavailableException("upload exceeds the gateway limit");
+        }
+        Captured capture = new Captured(response);
+        dispatchTo(request, capture, (servletRequest, targetPath) -> {
+            try {
+                return new MultipartTargetRequest(servletRequest, targetPath);
+            } catch (RuntimeException notMultipart) {
+                throw new UpstreamUnavailableException("upload is not multipart");
+            }
+        });
+        int status = capture.status();
+        if (!((status >= 200 && status < 300) || (status >= 400 && status < 500) || status == 503)) {
+            throw new UpstreamUnavailableException("abnormal upload response");
+        }
+        byte[] bytes = capture.body();
+        if (bytes.length > MAX_UPLOAD_RESPONSE) {
+            throw new UpstreamUnavailableException("upload response limit exceeded");
+        }
+        response.setStatus(status);
+        response.setContentType(orDefault(capture.header("Content-Type"), "application/json"));
+        response.setHeader("Cache-Control", "no-store");
+        try {
+            response.getOutputStream().write(bytes);
+            response.getOutputStream().flush();
+        } catch (IOException e) {
+            throw new UpstreamUnavailableException("upload response failed");
+        }
+    }
+
+    /** 交付标识形状（与 HTTP 形态同一口径）：不透明 id，不含空白/分隔歧义。 */
+    private static boolean isDeliveryId(String value) {
+        return value != null && value.matches("[A-Za-z0-9_-]{1,128}");
+    }
+
+    /** 流式交付回执：内嵌形态收敛为本地方法调用（不构造 HTTP ACK 请求）。 */
+    private void acknowledgeStreamDelivery(DeliveryAck delivery, String permit, String operation) {
+        if (delivery == null || !isDeliveryId(permit) || !isDeliveryId(operation)) {
+            // 保护帧没有回执出口：绝不静默放过（permit 保持 ACTIVE）
+            throw new UpstreamUnavailableException("delivery identity missing");
+        }
+        try {
+            deliveryReleaser.releaseDelivery(delivery.tenantId(), delivery.memberId(), permit, operation);
+        } catch (UpstreamUnavailableException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new UpstreamUnavailableException("delivery acknowledgement unavailable");
+        }
     }
 
     /** 处理交付回执：解析网关构造的 ACK 体，调用本地释放策略，返回 204 形状。 */
@@ -218,12 +315,33 @@ public class LocalAiGatewayClient extends AiGatewayClient {
         if (!(RequestContextHolder.currentRequestAttributes() instanceof ServletRequestAttributes attributes)) {
             throw new UpstreamUnavailableException("dispatch outside request thread");
         }
-        HttpServletRequest servletRequest = attributes.getRequest();
-        HttpServletResponse servletResponse = attributes.getResponse();
-        if (servletResponse == null) {
+        if (attributes.getResponse() == null) {
             throw new UpstreamUnavailableException("delivery output absent");
         }
+        return dispatchTo(request, new Captured(attributes.getResponse()),
+                (outer, targetPath) -> new BodyProvidingRequest(outer, request.body(), targetPath,
+                        request.uri().getRawQuery()));
+    }
 
+    private static HttpServletRequest currentRequest() {
+        if (!(RequestContextHolder.currentRequestAttributes() instanceof ServletRequestAttributes attributes)) {
+            throw new UpstreamUnavailableException("dispatch outside request thread");
+        }
+        return attributes.getRequest();
+    }
+
+    /** 目标请求的构造器（JSON/字节转送与 multipart 上传各自提供形状）。 */
+    private interface TargetRequestBuilder {
+        HttpServletRequest build(HttpServletRequest outer, RequestPath targetPath);
+    }
+
+    /**
+     * 通用直调：身份桥（{@link AiIdentityPort} → {@link ExecutionPrincipal}）→
+     * 内层 handler 直调 → 恢复主体上下文。响应由调用方给定的包装器截留或流式处理。
+     */
+    private <R extends HttpServletResponse> R dispatchTo(ForwardRequest request, R response,
+                                                         TargetRequestBuilder requestBuilder) {
+        HttpServletRequest servletRequest = currentRequest();
         AiExecutionFacts facts = identityPort.currentFacts()
                 .orElseThrow(() -> new UpstreamUnavailableException("execution facts unavailable"));
 
@@ -232,11 +350,11 @@ public class LocalAiGatewayClient extends AiGatewayClient {
         String contextPath = servletRequest.getContextPath() == null ? "" : servletRequest.getContextPath();
         RequestPath targetPath = RequestPath.parse(contextPath + request.uri().getRawPath(), contextPath);
 
+        HttpServletRequest target = requestBuilder.build(servletRequest, targetPath);
         ExecutionPrincipal previous = PrincipalContext.set(toLocalPrincipal(facts));
         try {
-            Captured capture = new Captured(servletResponse);
-            invokeHandler(servletRequest, capture, request, targetPath);
-            return capture;
+            invokeHandler(servletRequest, target, response);
+            return response;
         } catch (UpstreamUnavailableException e) {
             throw e;
         } catch (Exception e) {
@@ -251,16 +369,14 @@ public class LocalAiGatewayClient extends AiGatewayClient {
      * 刻意不用 RequestDispatcher：servlet forward 按规范在返回前提交响应，
      * 会让网关无法再控制响应（交付回执、信封校验全部失效）。
      */
-    private void invokeHandler(HttpServletRequest servletRequest, Captured capture,
-                               ForwardRequest request, RequestPath targetPath) throws Exception {
+    private void invokeHandler(HttpServletRequest servletRequest, HttpServletRequest target,
+                               HttpServletResponse response) throws Exception {
         WebApplicationContext webContext = RequestContextUtils.findWebApplicationContext(servletRequest);
         if (webContext == null) {
             throw new UpstreamUnavailableException("internal dispatch unavailable");
         }
-        BodyProvidingRequest wrapped = new BodyProvidingRequest(servletRequest, request.body(), targetPath,
-                request.uri().getRawQuery());
         RequestMappingHandlerMapping mapping = webContext.getBean(RequestMappingHandlerMapping.class);
-        HandlerExecutionChain chain = mapping.getHandler(wrapped);
+        HandlerExecutionChain chain = mapping.getHandler(target);
         if (chain == null) {
             throw new UpstreamUnavailableException("internal route unmatched");
         }
@@ -277,7 +393,7 @@ public class LocalAiGatewayClient extends AiGatewayClient {
         // 刻意不执行 HandlerInterceptor：内嵌装配的身份/边界语义在传输层与控制器内实现，
         // 不得依赖拦截器（C2：AI 侧旧拦截器不参与装配）
         try {
-            adapter.handle(wrapped, capture, chain.getHandler());
+            adapter.handle(target, response, chain.getHandler());
         } catch (Exception handlerException) {
             // AI 侧异常解析器（@Order 最高优先级）先于 Spring 复合解析器运行，
             // 保证 AI 信封形状不被 platform 全局 @RestControllerAdvice 改写
@@ -285,7 +401,7 @@ public class LocalAiGatewayClient extends AiGatewayClient {
                     webContext.getBeansOfType(HandlerExceptionResolver.class).values());
             org.springframework.core.annotation.AnnotationAwareOrderComparator.sort(resolvers);
             for (HandlerExceptionResolver resolver : resolvers) {
-                if (resolver.resolveException(wrapped, capture, chain.getHandler(), handlerException) != null) {
+                if (resolver.resolveException(target, response, chain.getHandler(), handlerException) != null) {
                     return;
                 }
             }
@@ -458,6 +574,182 @@ public class LocalAiGatewayClient extends AiGatewayClient {
         public Object getAttribute(String name) {
             // FORWARD 分派必须按目标路径重新做 handler 映射：
             // 外层（/api/ai/v1/**）已缓存的 Spring 解析路径不得泄漏到内层
+            if (ServletRequestPathUtils.PATH_ATTRIBUTE.equals(name)) {
+                return parsedPath;
+            }
+            return super.getAttribute(name);
+        }
+
+        @Override
+        public void setAttribute(String name, Object value) {
+            if (ServletRequestPathUtils.PATH_ATTRIBUTE.equals(name) && value instanceof RequestPath path) {
+                parsedPath = path;
+                return;
+            }
+            super.setAttribute(name, value);
+        }
+    }
+
+    /**
+     * SSE 帧处理响应：把内层写出的字节流按 {@code \n\n} 帧边界截获，剥离
+     * {@code : ai-delivery <permit> <operation>} 元数据行，校验保护形状
+     * （restricted 帧必须带交付行；未保护的非 ping 帧一律拒绝），写出公共帧后
+     * <b>逐帧</b>执行交付回执——与 HTTP 形态的逐帧转送语义一致。
+     *
+     * <p>非 200（错误信封）直通写真实响应，不做帧处理（与 HTTP 形态的
+     * "status != 200 时透传 body"一致）。状态/头由内层处理器设置，经
+     * {@link HttpServletResponseWrapper} 默认委派落到真实响应。
+     *
+     * <p>失败处理：协议违规或回执失败抛 {@link UpstreamUnavailableException}；
+     * 内层 SSE 写线程会终止订阅（不再投递后续帧），permit 保持 ACTIVE——
+     * 与"无法确认交付结束"的 fail-closed 口径一致。
+     */
+    private final class StreamFrameResponse extends HttpServletResponseWrapper {
+
+        private final HttpServletResponse real;
+        private final DeliveryAck delivery;
+        private final java.io.ByteArrayOutputStream frame = new java.io.ByteArrayOutputStream();
+        private int previous = -1;
+        private ServletOutputStream stream;
+        private java.io.PrintWriter writer;
+
+        StreamFrameResponse(HttpServletResponse real, DeliveryAck delivery) {
+            super(real);
+            this.real = real;
+            this.delivery = delivery;
+        }
+
+        /** 流结束：刷新内层 writer 与真实响应（客户端可能已断开，写失败即忽略）。 */
+        void finish() {
+            try {
+                if (writer != null) {
+                    writer.flush();
+                }
+                real.getOutputStream().flush();
+            } catch (IOException ignored) {
+                // 客户端断开：不再可写
+            }
+        }
+
+        @Override
+        public ServletOutputStream getOutputStream() {
+            if (stream != null) {
+                return stream;
+            }
+            return stream = new ServletOutputStream() {
+                @Override
+                public boolean isReady() {
+                    return true;
+                }
+
+                @Override
+                public void setWriteListener(WriteListener listener) {
+                    // 同步转送，无写监听
+                }
+
+                @Override
+                public void write(int b) {
+                    write(new byte[] {(byte) b}, 0, 1);
+                }
+
+                @Override
+                public void write(byte[] b, int off, int len) {
+                    if (real.getStatus() != 200) {
+                        rawWrite(b, off, len);
+                        return;
+                    }
+                    for (int i = off; i < off + len; i++) {
+                        int value = b[i] & 255;
+                        if (frame.size() >= MAX_STREAM_FRAME) {
+                            throw new UpstreamUnavailableException("stream frame too large");
+                        }
+                        frame.write(value);
+                        if (previous == '\n' && value == '\n') {
+                            deliverFrame(frame.toByteArray());
+                            frame.reset();
+                        }
+                        previous = value;
+                    }
+                }
+            };
+        }
+
+        @Override
+        public java.io.PrintWriter getWriter() {
+            if (writer == null) {
+                writer = new java.io.PrintWriter(new java.io.OutputStreamWriter(getOutputStream(),
+                        StandardCharsets.UTF_8), false);
+            }
+            return writer;
+        }
+
+        private void rawWrite(byte[] bytes, int off, int len) {
+            try {
+                real.getOutputStream().write(bytes, off, len);
+            } catch (IOException e) {
+                throw new UpstreamUnavailableException("stream delivery failed");
+            }
+        }
+
+        /** 单帧处理：剥离交付元数据 → 形状校验 → 写出公共帧并 flush → 逐帧回执。 */
+        private void deliverFrame(byte[] bytes) {
+            String text = new String(bytes, StandardCharsets.UTF_8);
+            String permit = null;
+            String operation = null;
+            StringBuilder publicFrame = new StringBuilder();
+            boolean restricted = false;
+            for (String line : text.split("\n", -1)) {
+                if (line.startsWith(": ai-delivery ")) {
+                    String[] ids = line.substring(14).trim().split(" ", -1);
+                    if (permit != null || ids.length != 2 || !isDeliveryId(ids[0]) || !isDeliveryId(ids[1])) {
+                        throw new UpstreamUnavailableException("invalid delivery metadata");
+                    }
+                    permit = ids[0];
+                    operation = ids[1];
+                } else {
+                    if (line.startsWith("data:") || line.startsWith("id:") || line.startsWith("event:")) {
+                        restricted = true;
+                    }
+                    publicFrame.append(line).append('\n');
+                }
+            }
+            if (restricted && permit == null) {
+                throw new UpstreamUnavailableException("unprotected stream frame");
+            }
+            if (permit == null && !text.equals(": ping\n\n")) {
+                throw new UpstreamUnavailableException("unexpected unprotected stream frame");
+            }
+            try {
+                ServletOutputStream out = real.getOutputStream();
+                out.write(publicFrame.substring(0, publicFrame.length() - 1).getBytes(StandardCharsets.UTF_8));
+                out.flush();
+            } catch (IOException e) {
+                throw new UpstreamUnavailableException("stream delivery failed");
+            } finally {
+                // 本帧的应用写入已停止（含客户端断开路径）：回执失败绝不自动重试，permit 保持 ACTIVE
+                if (permit != null) {
+                    acknowledgeStreamDelivery(delivery, permit, operation);
+                }
+            }
+        }
+    }
+
+    /**
+     * 目标路径 + 容器已解析的 multipart 部件：供内层 {@code @RequestPart} 处理器使用。
+     * 外层已缓存的 Spring 解析路径必须替换为内层目标（与 {@link BodyProvidingRequest} 同一职责）。
+     */
+    private static final class MultipartTargetRequest extends
+            org.springframework.web.multipart.support.StandardMultipartHttpServletRequest {
+
+        private RequestPath parsedPath;
+
+        MultipartTargetRequest(HttpServletRequest request, RequestPath parsedPath) {
+            super(request);
+            this.parsedPath = parsedPath;
+        }
+
+        @Override
+        public Object getAttribute(String name) {
             if (ServletRequestPathUtils.PATH_ATTRIBUTE.equals(name)) {
                 return parsedPath;
             }
