@@ -6,7 +6,9 @@ settings:
 
 importers:
 
-  .:
+  .: {}
+
+  apps/workbench:
     dependencies:
       '@element-plus/icons-vue':
         specifier: ^2.3.1
@@ -23,6 +25,9 @@ importers:
       '@jsonlee_12138/enum':
         specifier: ^1.0.4
         version: 1.0.4
+      '@ruoyi/events':
+        specifier: workspace:*
+        version: link:../../packages/events
       '@vueuse/core':
         specifier: ^13.5.0
         version: 13.5.0(vue@3.5.17(typescript@5.8.3))
@@ -162,6 +167,15 @@ importers:
       vue-tsc:
         specifier: ^3.0.1
         version: 3.0.1(typescript@5.8.3)
+
+  packages/events:
+    devDependencies:
+      '@types/node':
+        specifier: 24.0.13
+        version: 24.0.13
+      typescript:
+        specifier: ~5.8.3
+        version: 5.8.3
 
 packages:
 

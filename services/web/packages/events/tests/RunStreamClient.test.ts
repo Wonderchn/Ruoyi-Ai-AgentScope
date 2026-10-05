@@ -1,4 +1,4 @@
-import type { RunEventEnvelope, SseMessage } from '../src/utils/sse/RunStreamClient.ts';
+import type { RunEventEnvelope, SseMessage } from '../src/sse/RunStreamClient.ts';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
@@ -11,7 +11,7 @@ import {
   RunEventStreamProtocolError,
   RunStreamHttpError,
   RunStreamStalledError,
-} from '../src/utils/sse/RunStreamClient.ts';
+} from '../src/sse/RunStreamClient.ts';
 
 const TOKEN = 'unit-test-token';
 const BASE = 'https://platform.example.com/api/ai/v1';

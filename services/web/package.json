@@ -1,0 +1,18 @@
+{
+  "name": "ruoyi-web-workspace",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "packageManager": "pnpm@11.0.9",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "description": "Frontend workspace for the embedded-AI platform: workbench app + shared protocol packages",
+  "scripts": {
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "lint": "pnpm -r --if-present lint",
+    "build": "pnpm -r --if-present build",
+    "dev": "pnpm --filter @ruoyi/workbench dev"
+  }
+}

@@ -1,11 +1,11 @@
-import type { Citation } from '../src/api/rag/logic.ts';
+import type { Citation } from '../src/rag/logic.ts';
 /**
  * P2 RAG 前端纯逻辑测试：提交体构造、引用去重、终态摘要。
  * 运行：node --import ./tests/ts-loader.mjs --test ./tests/RagApi.test.ts
  */
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { chatRunBody, dedupeCitations, terminalFailureNote, terminalSummary } from '../src/api/rag/logic.ts';
+import { chatRunBody, dedupeCitations, terminalFailureNote, terminalSummary } from '../src/rag/logic.ts';
 
 test('chatRunBody builds the contract body with knowledge base refs', () => {
   const body = chatRunBody(['kb-1', 'kb-2'], 'question?');

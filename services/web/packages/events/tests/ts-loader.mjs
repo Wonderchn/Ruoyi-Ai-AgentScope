@@ -8,7 +8,7 @@
  * is all this file does. Nothing is type-checked here; run the tests tsconfig for that:
  *
  *   node --import ./tests/ts-loader.mjs --test tests/*.test.ts   # run
- *   npx tsc -p tsconfig.tests.json --noEmit                     # types
+ *   npx tsc -p tsconfig.json --noEmit                     # types
  */
 
 import { readFile } from 'node:fs/promises';

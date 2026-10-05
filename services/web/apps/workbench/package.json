@@ -1,13 +1,12 @@
 {
-  "name": "ruoyi-web",
+  "name": "@ruoyi/workbench",
   "type": "module",
   "version": "0.0.0",
   "private": true,
-  "packageManager": "pnpm@11.0.9",
   "engines": {
     "node": ">=22.13.0"
   },
-  "description": "ruoyi-web open-source PC AI template",
+  "description": "ruoyi-web open-source PC AI template, mounted as the workbench app of the services/web workspace",
   "author": {
     "name": "HeJiaYue520",
     "email": "2834007710@qq.com",
@@ -25,6 +24,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
+    "typecheck": "vue-tsc -b",
     "preview": "vite preview",
     "prepare": "husky",
     "lint": "eslint .",
@@ -37,6 +37,7 @@
     "@floating-ui/dom": "^1.7.2",
     "@floating-ui/vue": "^1.1.7",
     "@jsonlee_12138/enum": "^1.0.4",
+    "@ruoyi/events": "workspace:*",
     "@vueuse/core": "^13.5.0",
     "@vueuse/integrations": "^13.5.0",
     "echarts": "^6.0.0",

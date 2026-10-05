@@ -20,7 +20,7 @@
     "runRequest": {
       "version": "schemaVersion=1",
       "scope": "POST /api/ai/v1/runs body contract (rag.chat / document.ingest / agent.run), idempotency-key replay and request-hash conflict semantics",
-      "verifiedBy": "R1 admission cases in scripts/ci/verify-native-runtime.sh; ruoyi-web node protocol tests"
+      "verifiedBy": "R1 admission cases in scripts/ci/verify-native-runtime.sh; @ruoyi/events node protocol tests (services/web/packages/events)"
     },
     "runEventStream": {
       "version": "sse-envelope-v1",

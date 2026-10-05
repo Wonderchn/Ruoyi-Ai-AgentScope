@@ -1,0 +1,9 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# Build scripts stay off unless a package really needs them (moved here from the app's own
+# workspace file when ruoyi-web became apps/workbench).
+allowBuilds:
+  esbuild: false
+  vue-demi: false

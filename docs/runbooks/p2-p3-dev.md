@@ -75,4 +75,4 @@ docker compose up -d --build
 | 组合迁移（platform 6 + AI 12） | `bash scripts/ci/verify-ai-migrations.sh` |
 | 原生故障矩阵（受理/接管/SSE） | `bash scripts/ci/verify-native-runtime.sh`（需要 docker + 两侧 Boot JAR） |
 | Java 全量回归 | `mvn -B -ntp -f services/ai/pom.xml -Pci clean verify`；platform 用 `-Pdev` |
-| 前端协议测试 | `node --import ./tests/ts-loader.mjs --test ./tests/*.test.ts`（在 `services/ruoyi-web`） |
+| 前端协议测试 | `node --import ./tests/ts-loader.mjs --test ./tests/*.test.ts`（在 `services/web/packages/events`；或在工作区根 `pnpm test`） |

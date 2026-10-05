@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { parseSseText, SseFrameParser } from '../src/utils/sse/SseSyntax.ts';
+import { parseSseText, SseFrameParser } from '../src/sse/SseSyntax.ts';
 
 describe('sseSyntax: frame parsing', () => {
   it('parses a named event with an id and a JSON payload', () => {

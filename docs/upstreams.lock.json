@@ -15,11 +15,11 @@
       "import": "tracked source snapshot, excluding Git metadata and local editor settings; frontend/.env replaced by .env.example; local configuration values sanitized"
     },
     {
-      "path": "services/ruoyi-web",
+      "path": "services/web/apps/workbench",
       "name": "ruoyi-web",
       "repository": "https://github.com/ageerle/ruoyi-web.git",
       "commit": "834fd3dedeb297681e74425040b19821ea332319",
-      "import": "tracked source snapshot, excluding Git metadata; .env.development and .env.production replaced by .env.example with placeholders; three docker-compose-all.yaml passwords replaced by required environment references"
+      "import": "tracked source snapshot, excluding Git metadata; .env.development and .env.production replaced by .env.example with placeholders; three docker-compose-all.yaml passwords replaced by required environment references; mounted as the workbench app of the services/web pnpm workspace"
     }
   ]
 }

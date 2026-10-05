@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { identityJson } from '../src/api/rag/transport.ts';
+import { identityJson } from '../src/rag/transport.ts';
 
 for (const status of [200, 401, 403]) {
   test(`late ${status} cannot affect a new tenant identity`, async () => {

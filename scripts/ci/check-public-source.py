@@ -29,7 +29,8 @@ def main() -> int:
     expected_paths = {
         "ruoyi-ai": "services/platform",
         "ragent": "services/ai",
-        "ruoyi-web": "services/ruoyi-web",
+        # the upstream frontend snapshot now lives inside the services/web workspace
+        "ruoyi-web": "services/web/apps/workbench",
     }
     if (
         not isinstance(sources, list)
