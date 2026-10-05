@@ -61,15 +61,14 @@ psql -c "DROP SCHEMA legacy_mysql CASCADE"
 
 ### 为什么有 `blocked` 表
 
-`chat_session` / `chat_message` / `agent_info` / `knowledge_info` / `knowledge_attach` /
-`knowledge_fragment` 六个目标是**合并表**：V7 按 AI 侧形状建表，V9 只追加平台侧独有列
+`chat_session` / `chat_message` / `knowledge_info` / `knowledge_attach` /
+`knowledge_fragment` 五个剩余目标是**合并表**：V7 按 AI 侧形状建表，V9 只追加平台侧独有列
 （E2 §2.4b）。它们的统一表里有 AI 侧 NOT NULL 列，旧 MySQL 行无法提供同名取值：
 
 | 目标表 | 需要平台侧决定的列（无同名列） |
 | --- | --- |
 | `ai_conversation` | `member_id`（canonical `platform:<tenantId>:<userId>`）、`title` |
 | `ai_message` | `conversation_id`、`member_id` |
-| `ai_agent_profile` | `name` |
 | `ai_knowledge_base` | `collection_name`、`created_by`、`owner_member_id` |
 | `ai_knowledge_document` | `kb_id`、`doc_name`、`file_type`、`file_url`、`created_by` |
 | `ai_knowledge_chunk` | `kb_id`、`chunk_index`、`created_by` |

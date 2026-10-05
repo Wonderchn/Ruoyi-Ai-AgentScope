@@ -115,7 +115,7 @@ public class AiResourceAuthorizationService
             if (projectionJdbc == null) { throw new ServiceException("retrieval projection unavailable"); }
             var parameters = Map.of("tenant",principal.tenantId(),"kbs",kbs.stream().map(ref->ref.substring(3)).toList(),
                     "docs",docs.stream().map(ref->ref.substring(4)).toList());
-            projectionJdbc.query("SELECT v.id,v.collection_name FROM t_knowledge_vector v JOIN t_knowledge_document d"
+            projectionJdbc.query("SELECT v.id,v.collection_name FROM platform.ai_knowledge_vector v JOIN platform.ai_knowledge_document d"
                     +" ON d.tenant_id=v.tenant_id AND d.id=v.document_id JOIN ai_resource r ON r.tenant_id=d.tenant_id"
                     +" AND r.resource_type='DOCUMENT' AND r.resource_id=d.id WHERE v.tenant_id=:tenant"
                     +" AND d.kb_id IN (:kbs) AND d.id IN (:docs) AND v.deleted=0 AND d.deleted=0"

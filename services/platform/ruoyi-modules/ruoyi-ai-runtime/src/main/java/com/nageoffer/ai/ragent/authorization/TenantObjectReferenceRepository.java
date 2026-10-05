@@ -125,7 +125,7 @@ public class TenantObjectReferenceRepository {
      * 文档不存在/跨租户/已删除一律 empty，与"未登记"同外显。
      */
     public java.util.Optional<DocumentStorage> findDocumentStorage(String tenantId, String docId) {
-        String sql = "SELECT file_url, mime_type FROM t_knowledge_document"
+        String sql = "SELECT file_url, mime_type FROM platform.ai_knowledge_document"
                 + " WHERE tenant_id = :tenantId AND id = :docId AND deleted = 0";
         Map<String, Object> params = new HashMap<>();
         params.put("tenantId", tenantId);

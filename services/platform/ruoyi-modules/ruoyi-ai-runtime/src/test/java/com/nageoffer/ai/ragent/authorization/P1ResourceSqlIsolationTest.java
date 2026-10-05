@@ -114,7 +114,7 @@ class P1ResourceSqlIsolationTest {
                 .as("%s：语句必须显式引用 tenant_id（无租户条件的读写不允许存在）", file)
                 .contains("TENANT_ID");
         if (statement.isInsert()) {
-            Matcher columns = Pattern.compile("INSERT\\s+INTO\\s+\\w+\\s*\\(([^)]*)\\)",
+            Matcher columns = Pattern.compile("INSERT\\s+INTO\\s+(?:\\w+\\.)?\\w+\\s*\\(([^)]*)\\)",
                     Pattern.CASE_INSENSITIVE | Pattern.DOTALL).matcher(text);
             assertThat(columns.find()).as("%s：INSERT 必须带列清单以便核对租户列", file).isTrue();
             assertThat(columns.group(1).toUpperCase(Locale.ROOT))
@@ -167,16 +167,25 @@ class P1ResourceSqlIsolationTest {
     }
 
     @Test
-    @DisplayName("写服务：t_knowledge_base / t_knowledge_document 语句逐条带租户条件")
+    @DisplayName("写服务：统一知识表语句逐条带租户条件")
     void writeServiceSqlIsTenantGuarded() throws IOException {
         List<Statement> statements = sqlStatements(ragMainSource("authorization/AiResourceWriteService.java"));
         assertAllGuarded("AiResourceWriteService", statements, 3);
 
         // 主键写/读都必须带租户：代理主键全局唯一可以保留，但访问路径不允许绕开租户
-        assertThat(statements.stream().filter(statement->statement.text().contains("INSERT INTO t_knowledge_base")).findFirst().orElseThrow().text())
+        assertThat(statements.stream().filter(statement->statement.text().contains("INSERT INTO platform.ai_knowledge_base")).findFirst().orElseThrow().text())
                 .as("KB 元数据插入必须显式写 tenant_id / owner_member_id（归属只来自主体）")
-                .contains("INSERT INTO t_knowledge_base")
+                .contains("INSERT INTO platform.ai_knowledge_base")
                 .contains("owner_member_id");
+    }
+
+    @Test
+    @DisplayName("schema限定表名仍严格检查INSERT列清单，列外提及租户不能替代租户列")
+    void qualifiedInsertGuardStillRejectsMissingTenantColumn() {
+        assertTenantGuarded("qualified", new Statement("\"INSERT INTO platform.ai_knowledge_base (id,tenant_id) VALUES (:id,:tenant)\";"));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> assertTenantGuarded("qualified",
+                new Statement("\"INSERT INTO platform.ai_knowledge_base (id) VALUES (:tenant_id)\";")))
+                .isInstanceOf(AssertionError.class);
     }
 
     // ------------------------------------------------------------ 公共模板域
@@ -427,21 +436,22 @@ class P1ResourceSqlIsolationTest {
 
     // ------------------------------------------------------------ 文件定位
 
-    /** rag 模块主源码：services/ai/rag/src/main/java/com/nageoffer/ai/ragent/&lt;subPath&gt;。 */
+    /** platform 的 rag/runtime 主源码，授权类在 D1 后归 runtime。 */
     private static String ragMainSource(String subPath) throws IOException {
-        return Files.readString(resolve(subPath, "rag"), StandardCharsets.UTF_8);
+        return Files.readString(resolve(subPath, subPath.startsWith("authorization/") ? "runtime" : "rag"), StandardCharsets.UTF_8);
     }
 
-    /** system 模块主源码：services/ai/system/src/main/java/com/nageoffer/ai/ragent/&lt;subPath&gt;。 */
+    /** 原 system 公共模板现归 platform runtime。 */
     private static String systemMainSource(String subPath) throws IOException {
-        return Files.readString(resolve(subPath, "system"), StandardCharsets.UTF_8);
+        return Files.readString(resolve(subPath, "runtime"), StandardCharsets.UTF_8);
     }
 
     private static Path resolve(String subPath, String module) {
         String cleaned = subPath.replace('\\', '/');
         Path dir = Path.of("").toAbsolutePath();
         for (int i = 0; i < 8 && dir != null; i++) {
-            Path candidate = dir.resolve("services").resolve("ai").resolve(module)
+            Path candidate = dir.resolve("services").resolve("platform").resolve("ruoyi-modules")
+                    .resolve("ruoyi-ai-" + module)
                     .resolve("src").resolve("main").resolve("java")
                     .resolve("com").resolve("nageoffer").resolve("ai").resolve("ragent")
                     .resolve(cleaned.replace('/', File.separatorChar));

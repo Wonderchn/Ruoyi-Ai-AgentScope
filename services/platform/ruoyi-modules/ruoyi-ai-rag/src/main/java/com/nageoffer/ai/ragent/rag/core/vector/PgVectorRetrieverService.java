@@ -199,7 +199,7 @@ public class PgVectorRetrieverService implements VectorRetrieverService,
             // noinspection SqlDialectInspection,SqlNoDataSourceInspection
             return jdbcTemplate.query(
                     "SELECT v.id, v.content, v.collection_name, 1 - (v.embedding <=> ?::vector) AS score "
-                            + "FROM t_knowledge_vector v JOIN t_knowledge_document d ON d.tenant_id=v.tenant_id AND d.id=v.document_id "
+                            + "FROM platform.ai_knowledge_vector v JOIN platform.ai_knowledge_document d ON d.tenant_id=v.tenant_id AND d.id=v.document_id "
                             + "JOIN ai_resource dr ON dr.tenant_id=d.tenant_id AND dr.resource_type='DOCUMENT' AND dr.resource_id=d.id "
                             + "JOIN ai_resource kr ON kr.tenant_id=d.tenant_id AND kr.resource_type='KB' AND kr.resource_id=d.kb_id "
                             + "WHERE v.tenant_id = ? AND v.deleted = 0 AND d.deleted=0 AND d.enabled=1 AND dr.status='ACTIVE' AND kr.status='ACTIVE' "
@@ -218,7 +218,7 @@ public class PgVectorRetrieverService implements VectorRetrieverService,
             // 结构性缺失（V3 未部署）只把检索能力保持关闭：绝不改跑不带 tenant_id 的旧 SQL，
             // 那条语句在共享物理表上等于跨租户检索，是本次改动要消除的缺陷本身。
             log.error("tenant-scoped vector query rejected by schema tenant={} collections={} reason={}; "
-                            + "t_knowledge_vector lacks the P1 tenant columns, so the retrieval path stays "
+                            + "platform.ai_knowledge_vector lacks the P1 tenant columns, so the retrieval path stays "
                             + "closed instead of falling back to an unscoped query",
                     tenantId, collectionNames.size(), e.getClass().getSimpleName());
             throw new com.nageoffer.ai.ragent.framework.exception.ServiceException("authorized vector schema unavailable");

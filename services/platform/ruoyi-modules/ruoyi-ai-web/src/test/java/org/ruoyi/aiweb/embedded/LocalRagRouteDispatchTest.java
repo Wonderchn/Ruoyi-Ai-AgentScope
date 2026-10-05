@@ -172,7 +172,7 @@ class LocalRagRouteDispatchTest {
                 new AiResourceAclMapper.AclRow("acl-1", TENANT, "KB", "kb-1", "MEMBER", MEMBER,
                         "kb.read", null, MEMBER)));
         when(sourceRefMapper.findChildren(TENANT, "KB", "kb-1")).thenReturn(List.of());
-        when(namedJdbc.query(contains("FROM t_knowledge_base"), anyMap(), any(RowMapper.class)))
+        when(namedJdbc.query(contains("FROM platform.ai_knowledge_base"), anyMap(), any(RowMapper.class)))
                 .thenReturn(List.of(new AiResourceWriteService.KnowledgeBaseView(
                         "kb-1", "kb-one", "text-embedding-3", "p1-col", MEMBER, null)));
         when(revocations.enter(any(), any(), any())).thenAnswer(invocation ->

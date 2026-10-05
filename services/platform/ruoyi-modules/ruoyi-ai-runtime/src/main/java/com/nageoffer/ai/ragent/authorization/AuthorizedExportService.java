@@ -136,7 +136,7 @@ public class AuthorizedExportService {
     }
 
     private List<MessageRow> fetchBatch(ExecutionPrincipal principal, String conversationId, long offset) {
-        String sql = "SELECT id, role, content, create_time FROM t_message"
+        String sql = "SELECT id, role, content, create_time FROM platform.ai_message"
                 + " WHERE tenant_id = ? AND member_id = ? AND conversation_id = ? AND deleted = 0"
                 + " ORDER BY create_time ASC, id ASC LIMIT ? OFFSET ?";
         return jdbc.query(sql, (rs, rowNum) -> new MessageRow(

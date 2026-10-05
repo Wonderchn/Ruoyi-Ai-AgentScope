@@ -53,7 +53,7 @@ public class TenantConversationReadRepository {
             // 用 null 去查不是"找不到"，是调用方 bug：大声拒绝而不是发一条必空的 SQL
             throw new ClientException("conversationId 不能为空");
         }
-        String sql = "SELECT conversation_id, title, last_time FROM t_conversation"
+        String sql = "SELECT conversation_id, title, last_time FROM platform.ai_conversation"
                 + " WHERE tenant_id = ? AND member_id = ? AND conversation_id = ? AND deleted = 0";
         return jdbc.query(sql, (rs, rowNum) -> new ConversationRow(
                         rs.getString("conversation_id"),
@@ -69,7 +69,7 @@ public class TenantConversationReadRepository {
         if (offset < 0 || limit < 1 || limit > 200) {
             throw new ClientException("分页参数非法");
         }
-        String sql = "SELECT id, role, content, message_status, create_time FROM t_message"
+        String sql = "SELECT id, role, content, message_status, create_time FROM platform.ai_message"
                 + " WHERE tenant_id = ? AND member_id = ? AND conversation_id = ? AND deleted = 0"
                 + " ORDER BY create_time ASC, id ASC LIMIT ? OFFSET ?";
         return jdbc.query(sql, (rs, rowNum) -> new MessageRow(
@@ -85,7 +85,7 @@ public class TenantConversationReadRepository {
     public List<ConversationRow> listConversations(String tenantId,String memberId,long offset,int limit) {
         requireScope(tenantId,memberId);
         if(offset<0 || limit<1 || limit>200){throw new ClientException("分页参数非法");}
-        return jdbc.query("SELECT conversation_id,title,last_time FROM t_conversation WHERE tenant_id=? AND member_id=?"
+        return jdbc.query("SELECT conversation_id,title,last_time FROM platform.ai_conversation WHERE tenant_id=? AND member_id=?"
                 +" AND deleted=0 ORDER BY last_time DESC,conversation_id LIMIT ? OFFSET ?",
                 (rs,n)->new ConversationRow(rs.getString(1),rs.getString(2),rs.getTimestamp(3)),tenantId,memberId,limit,offset);
     }
@@ -93,7 +93,7 @@ public class TenantConversationReadRepository {
     public long countConversations(String tenantId, String memberId) {
         requireScope(tenantId, memberId);
         Long count = jdbc.queryForObject(
-                "SELECT count(*) FROM t_conversation WHERE tenant_id = ? AND member_id = ? AND deleted = 0",
+                "SELECT count(*) FROM platform.ai_conversation WHERE tenant_id = ? AND member_id = ? AND deleted = 0",
                 Long.class, tenantId, memberId);
         return count == null ? 0L : count;
     }

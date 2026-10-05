@@ -142,7 +142,7 @@ public class AiResourceController {
             @RequestParam(defaultValue="100") int limit){
         var principal=PrincipalContext.require();authorization.requireFunction(principal,"memory.read","member:memories");
         if(offset<0 || limit<1 || limit>200){throw new P04AiException(P04AiErrorCode.BAD_REQUEST);}
-        List<Map<String,Object>> rows=jdbc.query("SELECT id,content,source_refs,source_policy_version,source_acl_version FROM t_agent_memory"
+        List<Map<String,Object>> rows=jdbc.query("SELECT id,content,source_refs,source_policy_version,source_acl_version FROM platform.ai_agent_memory"
                 +" WHERE tenant_id=? AND member_id=? AND invalid_at IS NULL ORDER BY create_time,id LIMIT ? OFFSET ?",(rs,n)->{
                     if(!authorization.sourcesCurrent(principal,rs.getString("source_refs"),rs.getInt("source_policy_version"),rs.getInt("source_acl_version"))){return null;}
                     return Map.<String,Object>of("id",rs.getString("id"),"content",rs.getString("content"));

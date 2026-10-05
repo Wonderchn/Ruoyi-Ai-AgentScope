@@ -44,7 +44,7 @@ import java.util.Optional;
  * <p>事务边界（05 §4.3）：每一类写都是<b>同一个数据库事务</b>里的多表联动，
  * 任一步失败整体回滚——
  * <ul>
- *   <li>创建：t_knowledge_base（tenant/owner 列来自 {@link PrincipalContext#require()}，
+ *   <li>创建：platform.ai_knowledge_base（tenant/owner 列来自 {@link PrincipalContext#require()}，
  *       <b>不接受 body 提供</b>）+ ai_resource registry 行（type=KB）+ owner ACL 行
  *       + epoch bump；</li>
  *   <li>删除：tombstone（status='TOMBSTONED' + resource_version+1）+ epoch bump，
@@ -193,7 +193,7 @@ public class AiResourceWriteService {
     // ------------------------------------------------------------ 创建
 
     /**
-     * 创建 KB：同一事务写 t_knowledge_base + registry + owner ACL + epoch bump。
+     * 创建 KB：同一事务写 platform.ai_knowledge_base + registry + owner ACL + epoch bump。
      *
      * @return 生成的 kbId
      */
@@ -221,7 +221,7 @@ public class AiResourceWriteService {
             kb.put("tenantId", tenantId);
             kb.put("ownerMemberId", membershipId);
             kb.put("ownerDeptId", ownerDept);
-            jdbc.update("INSERT INTO t_knowledge_base (id, name, embedding_model, collection_name,"
+            jdbc.update("INSERT INTO platform.ai_knowledge_base (id, name, embedding_model, collection_name,"
                             + " created_by, updated_by, tenant_id, owner_member_id, owner_dept_id, deleted)"
                             + " VALUES (:id, :name, :embeddingModel, :collectionName, :createdBy, :updatedBy,"
                             + " :tenantId, :ownerMemberId, :ownerDeptId, 0)",
@@ -404,7 +404,7 @@ public class AiResourceWriteService {
     /** 按租户读 KB 元数据（无租户条件不读；视图不含对象存储 key / 凭据）。 */
     public Optional<KnowledgeBaseView> findKnowledgeBase(String tenantId, String kbId) {
         String sql = "SELECT id, name, embedding_model, collection_name, owner_member_id, owner_dept_id"
-                + " FROM t_knowledge_base"
+                + " FROM platform.ai_knowledge_base"
                 + " WHERE tenant_id = :tenantId AND id = :kbId AND deleted = 0";
         Map<String, Object> params = new HashMap<>();
         params.put("tenantId", tenantId);
@@ -420,7 +420,7 @@ public class AiResourceWriteService {
 
     /** 按租户读文档元数据；file_url（内部对象 key）刻意不进视图。 */
     public Optional<DocumentView> findDocument(String tenantId, String docId) {
-        String sql = "SELECT id, kb_id, doc_name, status, enabled, chunk_count FROM t_knowledge_document"
+        String sql = "SELECT id, kb_id, doc_name, status, enabled, chunk_count FROM platform.ai_knowledge_document"
                 + " WHERE tenant_id = :tenantId AND id = :docId AND deleted = 0";
         Map<String, Object> params = new HashMap<>();
         params.put("tenantId", tenantId);

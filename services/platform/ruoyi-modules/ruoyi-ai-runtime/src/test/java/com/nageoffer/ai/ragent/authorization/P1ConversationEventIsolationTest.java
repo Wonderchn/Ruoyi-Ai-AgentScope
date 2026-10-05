@@ -61,7 +61,8 @@ class P1ConversationEventIsolationTest {
     private static Path locate(String... segments) {
         Path dir = Path.of("").toAbsolutePath();
         for (int i = 0; i < 8 && dir != null; i++) {
-            Path p = dir.resolve("services").resolve("ai").resolve("rag").resolve("src")
+            Path p = dir.resolve("services").resolve("platform").resolve("ruoyi-modules")
+                    .resolve("ruoyi-ai-runtime").resolve("src")
                     .resolve("main").resolve("java").resolve("com").resolve("nageoffer")
                     .resolve("ai").resolve("ragent").resolve("authorization");
             for (String s : segments) {

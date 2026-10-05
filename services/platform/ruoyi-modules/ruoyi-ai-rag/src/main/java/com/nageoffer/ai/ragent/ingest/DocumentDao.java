@@ -53,7 +53,7 @@ public class DocumentDao implements org.ruoyi.ai.api.runtime.DocumentPort {
     public boolean matchesEmbeddingModel(String tenantId, java.util.Collection<String> kbIds, String model) {
         if(kbIds==null || kbIds.isEmpty() || model==null) return false;
         for(String kbId:kbIds) {
-            if(!Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM t_knowledge_base WHERE tenant_id=? AND id=? AND deleted=0 AND embedding_model=?)",Boolean.class,tenantId,kbId,model))) return false;
+            if(!Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM platform.ai_knowledge_base WHERE tenant_id=? AND id=? AND deleted=0 AND embedding_model=?)",Boolean.class,tenantId,kbId,model))) return false;
         }
         return true;
     }
