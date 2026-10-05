@@ -125,14 +125,27 @@ class AgentTraceScenarioTest {
         // 工具体那层的 tracer 取自全局实例，先把全局位置腾出来再放自己的 SDK
         GlobalOpenTelemetry.resetForTest();
         exported = Collections.synchronizedList(new ArrayList<>());
+        clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
         tracerProvider = SdkTracerProvider.builder()
+                // SDK 自动结束的批 span 与工具事实必须使用同一可控时钟。
+                .setClock(new io.opentelemetry.sdk.common.Clock() {
+                    @Override
+                    public long now() {
+                        return TimeUnit.SECONDS.toNanos(clock.instant().getEpochSecond())
+                                + clock.instant().getNano();
+                    }
+
+                    @Override
+                    public long nanoTime() {
+                        return now();
+                    }
+                })
                 .addSpanProcessor(SimpleSpanProcessor.builder(new CollectingSpanExporter(exported)).build())
                 .build();
         GlobalOpenTelemetry.set(OpenTelemetrySdk.builder().setTracerProvider(tracerProvider).build());
         Tracer tracer = tracerProvider.get("test");
         tracing = new RagentOtelTracingMiddleware(tracer);
         batching = new AgentToolBatchMiddleware();
-        clock = new MutableClock(Instant.now());
         captureContent(true);
         newRun("t-9001");
     }

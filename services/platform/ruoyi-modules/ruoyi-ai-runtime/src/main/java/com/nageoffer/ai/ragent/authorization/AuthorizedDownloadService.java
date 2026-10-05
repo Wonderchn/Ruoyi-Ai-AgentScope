@@ -25,7 +25,7 @@ import com.nageoffer.ai.ragent.framework.security.P04AiErrorCode;
 import com.nageoffer.ai.ragent.framework.security.P04AiException;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict;
-import com.nageoffer.ai.ragent.rag.service.FileStorageService;
+import org.ruoyi.ai.api.runtime.DocumentFileReader;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -47,7 +47,7 @@ import java.util.Optional;
  *       {@code document.download}）：DENY→404、STALE→409、UNKNOWN→503，
  *       <b>未判定通过不接触对象存储</b>；</li>
  *   <li>registry 对象绑定必须存在且 ACTIVE（未登记即 404，与不存在同外显）；</li>
- *   <li>最后才经 {@link FileStorageService#openStream} 取流——它的归属前缀校验
+ *   <li>最后才经 {@link DocumentFileReader#openStream} 取流——它的归属前缀校验
  *       是第二道防线，不是第一道。</li>
  * </ol>
  *
@@ -64,7 +64,7 @@ public class AuthorizedDownloadService {
 
     private final ObjectProvider<ResourceAuthorizationService> authorizationService;
     private final TenantObjectReferenceRepository objectReferences;
-    private final ObjectProvider<FileStorageService> fileStorage;
+    private final ObjectProvider<DocumentFileReader> fileStorage;
     private com.nageoffer.ai.ragent.framework.security.RevocationGuard revocations;
     private boolean highRiskEnabled;
 
@@ -80,7 +80,7 @@ public class AuthorizedDownloadService {
 
     public AuthorizedDownloadService(ObjectProvider<ResourceAuthorizationService> authorizationService,
                                      TenantObjectReferenceRepository objectReferences,
-                                     ObjectProvider<FileStorageService> fileStorage) {
+                                     ObjectProvider<DocumentFileReader> fileStorage) {
         this.authorizationService = authorizationService;
         this.objectReferences = objectReferences;
         this.fileStorage = fileStorage;
@@ -143,7 +143,7 @@ public class AuthorizedDownloadService {
             throw new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
         }
 
-        FileStorageService storageService = fileStorage.getIfAvailable();
+        DocumentFileReader storageService = fileStorage.getIfAvailable();
         if (storageService == null) {
             throw new ServiceException("对象存储不可用");
         }

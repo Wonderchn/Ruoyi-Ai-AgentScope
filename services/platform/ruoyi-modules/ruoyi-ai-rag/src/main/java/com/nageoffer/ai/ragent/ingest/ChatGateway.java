@@ -24,7 +24,7 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 /** 问答模型网关：真实提供方与显式合成 test double 互斥（p2.chat.mode）。 */
-public interface ChatGateway {
+public interface ChatGateway extends org.ruoyi.ai.api.runtime.ChatPort<ChatMessage> {
 
     String provider();
 
@@ -35,6 +35,5 @@ public interface ChatGateway {
      */
     ChatResult stream(List<ChatMessage> messages, int maxTokens, Consumer<String> onDelta);
 
-    record ChatResult(String content, String providerRequestId, Map<String, Object> usageRaw, String finishReason) {
-    }
+
 }

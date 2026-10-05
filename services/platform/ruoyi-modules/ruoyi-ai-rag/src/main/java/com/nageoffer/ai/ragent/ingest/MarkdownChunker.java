@@ -30,14 +30,17 @@ import java.util.List;
  * 内容 hash 用于核对与晚到保护。旧 Markdown 检查点保留未知页号；新产物按源页独立分块。
  */
 @Component
-public class MarkdownChunker {
+public class MarkdownChunker implements org.ruoyi.ai.api.runtime.ChunkingPort {
 
     public static final String STRATEGY = "p2-md-v1";
     public static final String PAGE_STRATEGY = "p2-pages-v2";
     public static final int DEFAULT_MAX_CHARS = 900;
 
-    public record ChunkDraft(int index, String chunkKey, String content, String contentHash, int charCount,
-                             Integer pageFrom, Integer pageTo) {
+
+
+    @Override
+    public List<ChunkDraft> chunkArtifact(String docId, String versionId, String artifact, int maxChars) {
+        return chunkPages(docId, versionId, MinerUPageContent.decode(artifact, CanonicalJson.strictMapper()), maxChars);
     }
 
     public List<ChunkDraft> chunkPages(String docId, String versionId, List<MinerUPageContent.Page> pages, int maxChars) {

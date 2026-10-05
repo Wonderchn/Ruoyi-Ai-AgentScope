@@ -182,7 +182,7 @@ public class AiEmbeddedRagConfiguration {
         public AuthorizedDownloadService authorizedDownloadService(
                 ObjectProvider<ResourceAuthorizationService> authorizationService,
                 TenantObjectReferenceRepository objectReferences,
-                ObjectProvider<FileStorageService> fileStorage) {
+                ObjectProvider<org.ruoyi.ai.api.runtime.DocumentFileReader> fileStorage) {
             return new AuthorizedDownloadService(authorizationService, objectReferences, fileStorage);
         }
 

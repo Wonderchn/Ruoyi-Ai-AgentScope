@@ -32,7 +32,7 @@ import java.io.InputStream;
  * 存储引用（{@link StoredFileDTO#getUrl()} / 文档 file_url）只保留裸 key（如 {@code {namespace}/{uuid}.ext}）：
  * 桶是部署级配置常量、不写进数据，读写时按操作语义回退到对应桶（文档→知识库桶，资产→资产桶）
  */
-public interface FileStorageService {
+public interface FileStorageService extends org.ruoyi.ai.api.runtime.DocumentFileReader {
 
     /**
      * 上传知识库文档（流式，低内存）

@@ -148,7 +148,7 @@ class P1IsolationAcceptanceTest {
         when(storage.openStream(anyString())).thenReturn(source);
         ObjectProvider<ResourceAuthorizationService> authProvider = mock(ObjectProvider.class);
         when(authProvider.getIfAvailable()).thenReturn(authorization);
-        ObjectProvider<FileStorageService> storageProvider = mock(ObjectProvider.class);
+        ObjectProvider<org.ruoyi.ai.api.runtime.DocumentFileReader> storageProvider = mock(ObjectProvider.class);
         when(storageProvider.getIfAvailable()).thenReturn(storage);
         when(guard.enter(any(), anyString(), anyString())).thenReturn(new RevocationGuard.Operation(guard, "p", "op"));
         AuthorizedDownloadService service = new AuthorizedDownloadService(authProvider, refs, storageProvider);

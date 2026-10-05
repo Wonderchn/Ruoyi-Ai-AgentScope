@@ -47,7 +47,7 @@ import java.util.Map;
  */
 @Component
 @ConditionalOnProperty(name = "mineru.local.enabled", havingValue = "true")
-public class LocalMinerUClient {
+public class LocalMinerUClient implements org.ruoyi.ai.api.runtime.MinerUPort {
 
     private static final Logger log = LoggerFactory.getLogger(LocalMinerUClient.class);
 
@@ -70,34 +70,19 @@ public class LocalMinerUClient {
     }
 
     /** 服务不可用/协议异常（503，不静默重试到无界）。 */
-    public static class MinerUUnavailableException extends RuntimeException {
-        private static final long serialVersionUID = 1L;
 
-        public MinerUUnavailableException(String message, Throwable cause) {
-            super(message, cause);
-        }
-    }
 
     /** 任务索引丢失（重启后旧 jobId 404）：必须分类处理，不得视为完成。 */
-    public static class JobLostException extends RuntimeException {
-        private static final long serialVersionUID = 1L;
 
-        public JobLostException(String jobId) {
-            super("mineru job not found after service restart: " + jobId);
-        }
-    }
 
-    public record ParseResult(String markdown, String markdownSha256, String jobId, String fileId,
-                              String tier, String parserVersion, Long durationMs, String pageRange,
-                              String structuredContent, String structuredSha256) {
-    }
+
 
     /** 提交解析并等待完成；超过 deadline 抛 DEPENDENCY_UNAVAILABLE（由上层分类）。 */
     public ParseResult parse(byte[] pdfBytes, String filename, String sha256, int deadlineSeconds) {
         return awaitResult(submit(pdfBytes,filename,sha256),deadlineSeconds);
     }
 
-    public record ParseJob(String jobId,String fileId) {}
+
 
     public ParseJob submit(byte[] pdfBytes,String filename,String sha256) {
         if (pdfBytes.length > properties.getMaxBytes()) {
@@ -120,7 +105,7 @@ public class LocalMinerUClient {
     public ParseResult awaitResult(ParseJob submitted,int deadlineSeconds) {
         return awaitResult(submitted,deadlineSeconds,()->false);
     }
-    public static class ParseCancelledException extends RuntimeException { }
+
     public ParseResult awaitResult(ParseJob submitted,int deadlineSeconds,java.util.function.BooleanSupplier cancelled) {
         String jobId=submitted.jobId(),fileId=submitted.fileId();
         JsonNode job = awaitJob(jobId, deadlineSeconds,cancelled);

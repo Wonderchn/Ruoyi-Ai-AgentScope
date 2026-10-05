@@ -126,4 +126,11 @@ public final class CanonicalJson {
     public static ObjectNode emptyObject() {
         return MAPPER.createObjectNode();
     }
+    public static JsonNode inputOf(String inputJson, com.fasterxml.jackson.databind.ObjectMapper mapper) {
+        try {
+            return mapper.readTree(inputJson == null ? "{}" : inputJson);
+        } catch (Exception e) {
+            throw new RunApiException(RunErrorCode.INTERNAL_ERROR, "run input is invalid");
+        }
+    }
 }

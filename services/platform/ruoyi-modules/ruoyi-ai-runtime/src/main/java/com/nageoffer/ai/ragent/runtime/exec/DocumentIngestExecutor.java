@@ -19,12 +19,11 @@ package com.nageoffer.ai.ragent.runtime.exec;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.nageoffer.ai.ragent.ingest.DocumentDao;
+import org.ruoyi.ai.api.runtime.DocumentPort;
 import com.nageoffer.ai.ragent.ingest.EmbeddingGateway;
-import com.nageoffer.ai.ragent.ingest.LocalMinerUClient;
-import com.nageoffer.ai.ragent.ingest.MarkdownChunker;
+import org.ruoyi.ai.api.runtime.MinerUPort;
+import org.ruoyi.ai.api.runtime.ChunkingPort;
 import com.nageoffer.ai.ragent.ingest.PrivateObjectStore;
-import com.nageoffer.ai.ragent.ingest.UploadService;
 import com.nageoffer.ai.ragent.runtime.P2FaultInjector;
 import com.nageoffer.ai.ragent.runtime.RunEventAppender;
 import com.nageoffer.ai.ragent.runtime.RunErrorCode;
@@ -53,10 +52,10 @@ public class DocumentIngestExecutor implements RunExecutor {
     private static final Logger log = LoggerFactory.getLogger(DocumentIngestExecutor.class);
     private static final int EMBED_BATCH = 10;
 
-    private final DocumentDao documentDao;
+    private final DocumentPort documentDao;
     private final PrivateObjectStore objectStore;
-    private final ObjectProvider<LocalMinerUClient> mineru;
-    private final MarkdownChunker chunker;
+    private final ObjectProvider<MinerUPort> mineru;
+    private final ChunkingPort chunker;
     private final EmbeddingGateway embeddingGateway;
     private final UsageLedgerService usageLedger;
     private final ObjectProvider<P2FaultInjector> faultInjector;
@@ -66,8 +65,8 @@ public class DocumentIngestExecutor implements RunExecutor {
     @org.springframework.beans.factory.annotation.Autowired
     private ProviderCallBoundary providerBoundary;
 
-    public DocumentIngestExecutor(DocumentDao documentDao, PrivateObjectStore objectStore,
-                                  ObjectProvider<LocalMinerUClient> mineru, MarkdownChunker chunker,
+    public DocumentIngestExecutor(DocumentPort documentDao, PrivateObjectStore objectStore,
+                                  ObjectProvider<MinerUPort> mineru, ChunkingPort chunker,
                                   EmbeddingGateway embeddingGateway, UsageLedgerService usageLedger,
                                   ObjectProvider<P2FaultInjector> faultInjector, ObjectMapper objectMapper) {
         this.documentDao = documentDao;
@@ -95,7 +94,7 @@ public class DocumentIngestExecutor implements RunExecutor {
     @Override
     public Outcome execute(RunExecution execution) throws Exception {
         RunExecutionGuard guard = execution.guard();
-        JsonNode input = UploadService.inputOf(execution.run().inputJson(), objectMapper);
+        JsonNode input = com.nageoffer.ai.ragent.runtime.CanonicalJson.inputOf(execution.run().inputJson(), objectMapper);
         String docId = input.path("docId").asText("");
         String uploadId = input.path("uploadId").asText("");
         String versionId = input.path("versionId").asText("");
@@ -103,8 +102,8 @@ public class DocumentIngestExecutor implements RunExecutor {
         if (docId.isBlank() || uploadId.isBlank() || versionId.isBlank() || kbId.isBlank()) {
             return Outcome.failed("INGEST_INPUT_INVALID");
         }
-        DocumentDao.DocumentRow document = documentDao.findDocument(execution.tenantId(), docId).orElse(null);
-        DocumentDao.UploadRow upload = documentDao.findUpload(execution.tenantId(), uploadId).orElse(null);
+        DocumentPort.DocumentRow document = documentDao.findDocument(execution.tenantId(), docId).orElse(null);
+        DocumentPort.UploadRow upload = documentDao.findUpload(execution.tenantId(), uploadId).orElse(null);
         var version=documentDao.findVersion(execution.tenantId(),versionId).orElse(null);
         if (document == null || upload == null || version==null || document.tombstoned()
                 || !document.kbId().equals(kbId) || !upload.docId().equals(docId) || !upload.kbId().equals(kbId)
@@ -126,7 +125,7 @@ public class DocumentIngestExecutor implements RunExecutor {
             }
             guard.appendEvent(RunEventAppender.EVENT_STEP_STARTED, Map.of(
                     "stepId", "parse", "stepName", "parse", "attemptId", "a-" + execution.attempt()));
-            LocalMinerUClient client = mineru.getIfAvailable();
+            MinerUPort client = mineru.getIfAvailable();
             if (client == null) {
                 return Outcome.failed("MINERU_NOT_CONFIGURED");
             }
@@ -134,25 +133,25 @@ public class DocumentIngestExecutor implements RunExecutor {
                     execution.fence(), "PARSING", null, null, null, null)) {
                 return Outcome.failed("VERSION_STATE_CONFLICT");
             }
-            LocalMinerUClient.ParseResult result;
+            MinerUPort.ParseResult result;
             try {
                 var saved=completedStepRef(guard,"parse-job");
-                LocalMinerUClient.ParseJob submitted;
+                MinerUPort.ParseJob submitted;
                 if(saved==null) {
                     fault(P2FaultInjector.MINERU_BEFORE_JOB);
                     byte[] bytes=objectStore.get(upload.objectKey());
                     submitted=client.submit(bytes,upload.filename(),upload.sha256());
                     guard.commitStep("parse-job","mineru job",toJson(Map.of("jobId",submitted.jobId(),"fileId",submitted.fileId())),null,null);
                     fault(P2FaultInjector.MINERU_AFTER_JOB_CREATE);
-                } else {submitted=new LocalMinerUClient.ParseJob((String)saved.get("jobId"),(String)saved.get("fileId"));}
+                } else {submitted=new MinerUPort.ParseJob((String)saved.get("jobId"),(String)saved.get("fileId"));}
                 result=client.awaitResult(submitted,600,()->{
                     access.current(execution.run(),java.util.Set.of("kb.read","document.read"));
                     if(!guard.stillOwned()) throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.VERSION_CONFLICT);
                     return guard.isCancelRequested();
                 });
-            } catch(LocalMinerUClient.ParseCancelledException e) {
+            } catch(MinerUPort.ParseCancelledException e) {
                 return new Outcome("CANCELLED",Map.of("at","parse"),null);
-            } catch (LocalMinerUClient.JobLostException e) {
+            } catch (MinerUPort.JobLostException e) {
                 // Durable job vanished. End this run honestly; a new run may repeat pure parsing.
                 return Outcome.failed("MINERU_JOB_LOST");
             }
@@ -184,7 +183,7 @@ public class DocumentIngestExecutor implements RunExecutor {
         }
 
         // ---------------- step: chunk ----------------
-        List<MarkdownChunker.ChunkDraft> drafts = null;
+        List<ChunkingPort.ChunkDraft> drafts = null;
         if (completedStepRef(guard, "chunk") != null) {
             // 复用已完成分块检查点
         } else {
@@ -200,7 +199,7 @@ public class DocumentIngestExecutor implements RunExecutor {
                 return Outcome.failed("CHUNK_EMPTY");
             }
             Map<String, Object> ref = Map.of("strategy", parseRef.containsKey("structuredObjectKey")
-                    ? MarkdownChunker.PAGE_STRATEGY : MarkdownChunker.STRATEGY, "chunks", drafts.size());
+                    ? ChunkingPort.PAGE_STRATEGY : ChunkingPort.STRATEGY, "chunks", drafts.size());
             guard.commitStep("chunk", "chunk", toJson(ref), null, toJson(Map.of("calls", 0)));
             guard.appendEvent(RunEventAppender.EVENT_STEP_COMPLETED, Map.of(
                     "stepId", "chunk", "state", "COMPLETED", "ref", ref, "attemptId", "a-" + execution.attempt()));
@@ -228,9 +227,9 @@ public class DocumentIngestExecutor implements RunExecutor {
                     "stepId", stepId, "stepName", "embedding", "attemptId", "a-" + execution.attempt()));
             int from = batch * EMBED_BATCH;
             int to = Math.min(drafts.size(), from + EMBED_BATCH);
-            List<MarkdownChunker.ChunkDraft> slice = drafts.subList(from, to);
+            List<ChunkingPort.ChunkDraft> slice = drafts.subList(from, to);
             List<String> texts = new ArrayList<>();
-            for (MarkdownChunker.ChunkDraft draft : slice) {
+            for (ChunkingPort.ChunkDraft draft : slice) {
                 texts.add(draft.content());
             }
             access.current(execution.run(),java.util.Set.of("kb.read","document.read"));
@@ -254,7 +253,7 @@ public class DocumentIngestExecutor implements RunExecutor {
             guard.commitAtomic(()->{
             usageLedger.settle(execution.tenantId(),callId,embedded.providerRequestId(),usage);
             for (int i = 0; i < slice.size(); i++) {
-                MarkdownChunker.ChunkDraft draft = slice.get(i);
+                ChunkingPort.ChunkDraft draft = slice.get(i);
                 documentDao.insertStagingChunk(execution.tenantId(), versionId, draft.chunkKey(), draft.index(),
                         docId, kbId, draft.content(), draft.contentHash(), draft.charCount(),
                         draft.pageFrom(), draft.pageTo(), embedded.vectors().get(i), embeddingGateway.model());
@@ -278,7 +277,7 @@ public class DocumentIngestExecutor implements RunExecutor {
             if (guard.isCancelRequested()) {
                 return new Outcome("CANCELLED", Map.of("at", "publish"), null);
             }
-            DocumentDao.DocumentRow current = documentDao.findDocument(execution.tenantId(), docId).orElse(null);
+            DocumentPort.DocumentRow current = documentDao.findDocument(execution.tenantId(), docId).orElse(null);
             if (current == null || current.tombstoned()) {
                 // tombstone 优先：旧任务不能复活
                 return new Outcome("CANCELLED", Map.of("reason", "document tombstoned"), null);
@@ -314,19 +313,18 @@ public class DocumentIngestExecutor implements RunExecutor {
         return Outcome.succeeded(result);
     }
 
-    private List<MarkdownChunker.ChunkDraft> chunkDrafts(String docId, String versionId,
+    private List<ChunkingPort.ChunkDraft> chunkDrafts(String docId, String versionId,
                                                        Map<String, Object> parseRef, String markdown) {
         if (!parseRef.containsKey("structuredObjectKey")) {
-            return chunker.chunk(docId, versionId, markdown, MarkdownChunker.DEFAULT_MAX_CHARS);
+            return chunker.chunk(docId, versionId, markdown, ChunkingPort.DEFAULT_MAX_CHARS);
         }
         String artifact = new String(objectStore.get((String) parseRef.get("structuredObjectKey")),
                 java.nio.charset.StandardCharsets.UTF_8);
         if (!com.nageoffer.ai.ragent.runtime.CanonicalJson.sha256(artifact).equals(parseRef.get("structuredHash"))) {
             throw new IllegalStateException("structured parse artifact hash changed");
         }
-        return chunker.chunkPages(docId, versionId,
-                com.nageoffer.ai.ragent.ingest.MinerUPageContent.decode(artifact, objectMapper),
-                MarkdownChunker.DEFAULT_MAX_CHARS);
+        return chunker.chunkArtifact(docId, versionId, artifact,
+                ChunkingPort.DEFAULT_MAX_CHARS);
     }
 
     private Map<String, Object> completedStepRef(RunExecutionGuard guard, String stepId) {

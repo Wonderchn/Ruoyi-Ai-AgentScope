@@ -25,7 +25,7 @@ import com.nageoffer.ai.ragent.framework.exception.ServiceException;
 import com.nageoffer.ai.ragent.framework.security.P04AiException;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict;
-import com.nageoffer.ai.ragent.rag.service.FileStorageService;
+import org.ruoyi.ai.api.runtime.DocumentFileReader;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -52,7 +52,7 @@ import org.junit.jupiter.api.Tag;
  * <p>两条纪律各钉一组断言：
  * <ul>
  *   <li><b>下载</b>：授权判定在对象存储之前——DENY/UNKNOWN/未登记时
- *       {@code FileStorageService} 与对象存储必须<b>零交互</b>
+ *       {@code DocumentFileReader} 与对象存储必须<b>零交互</b>
  *       （"拒绝"与"查了但没命中"必须可区分）；</li>
  *   <li><b>缓存键</b>：形状固定且字段缺失/含冒号一律拒绝；键含 pv/av，
  *       撤权 bump 后旧键自然失配——但命中不豁免授权是调用方职责，
@@ -97,7 +97,7 @@ class P1ObjectAndCacheIsolationTest {
     void downloadWithoutPrincipalIsRejected() {
         ResourceAuthorizationService authz = mock(ResourceAuthorizationService.class);
         TenantObjectReferenceRepository refs = mock(TenantObjectReferenceRepository.class);
-        FileStorageService storage = mock(FileStorageService.class);
+        DocumentFileReader storage = mock(DocumentFileReader.class);
         AuthorizedDownloadService service = new AuthorizedDownloadService(
                 providerOf(authz), refs, providerOf(storage));
 
@@ -113,7 +113,7 @@ class P1ObjectAndCacheIsolationTest {
         ResourceAuthorizationService authz = mock(ResourceAuthorizationService.class);
         when(authz.check(any(), anyString(), anyString())).thenReturn(Verdict.DENY);
         TenantObjectReferenceRepository refs = mock(TenantObjectReferenceRepository.class);
-        FileStorageService storage = mock(FileStorageService.class);
+        DocumentFileReader storage = mock(DocumentFileReader.class);
         PrincipalContext.set(principal());
 
         assertThatThrownBy(() -> new AuthorizedDownloadService(providerOf(authz), refs, providerOf(storage))
@@ -128,7 +128,7 @@ class P1ObjectAndCacheIsolationTest {
         ResourceAuthorizationService authz = mock(ResourceAuthorizationService.class);
         when(authz.check(any(), anyString(), anyString())).thenReturn(Verdict.UNKNOWN);
         TenantObjectReferenceRepository refs = mock(TenantObjectReferenceRepository.class);
-        FileStorageService storage = mock(FileStorageService.class);
+        DocumentFileReader storage = mock(DocumentFileReader.class);
         PrincipalContext.set(principal());
 
         assertThatThrownBy(() -> new AuthorizedDownloadService(providerOf(authz), refs, providerOf(storage))
@@ -144,7 +144,7 @@ class P1ObjectAndCacheIsolationTest {
         when(authz.check(any(), anyString(), anyString())).thenReturn(Verdict.GRANT);
         TenantObjectReferenceRepository refs = mock(TenantObjectReferenceRepository.class);
         when(refs.findDocumentStorage(TENANT, "doc-1")).thenReturn(Optional.empty());
-        FileStorageService storage = mock(FileStorageService.class);
+        DocumentFileReader storage = mock(DocumentFileReader.class);
         PrincipalContext.set(principal());
 
         assertThatThrownBy(() -> new AuthorizedDownloadService(providerOf(authz), refs, providerOf(storage))
@@ -162,7 +162,7 @@ class P1ObjectAndCacheIsolationTest {
         String boundKey = TENANT + "/kb-1/abc.txt";
         when(refs.findDocumentStorage(TENANT, "doc-1"))
                 .thenReturn(Optional.of(new TenantObjectReferenceRepository.DocumentStorage(boundKey, "text/plain")));
-        FileStorageService storage = mock(FileStorageService.class);
+        DocumentFileReader storage = mock(DocumentFileReader.class);
         when(storage.openStream(boundKey))
                 .thenReturn(new ByteArrayInputStream("payload".getBytes(StandardCharsets.UTF_8)));
         PrincipalContext.set(principal());
@@ -188,7 +188,7 @@ class P1ObjectAndCacheIsolationTest {
         PrincipalContext.set(principal());
 
         assertThatThrownBy(() -> new AuthorizedDownloadService(
-                emptyProvider(), refs, providerOf(mock(FileStorageService.class)))
+                emptyProvider(), refs, providerOf(mock(DocumentFileReader.class)))
                 .openDocumentStream("doc-1"))
                 .isInstanceOf(ServiceException.class);
     }

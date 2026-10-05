@@ -21,8 +21,8 @@
 
         归属约定（specs/E3-boundary-and-collisions.md C1/C2/C3/C6/C9）：
         config/* 与 integration/* 下的宿主装配类只服务独立运行的 ragent 应用，
-        内嵌装配显式列举时不得注册；后续 rag/authorization 的 run/worker/ACL 部分随
-        rag 搬迁并入本模块。类保留原包名 com.nageoffer.ai.ragent.* 以缩小搬迁差异
+        内嵌装配显式列举时不得注册；run/worker/ACL 已按 D1 路径 A 归位本模块，
+        通过 ruoyi-ai-api 的零依赖端口调用 rag 适配器。类保留原包名 com.nageoffer.ai.ragent.* 以缩小搬迁差异
         （V2 §3），平台装配永远不做根包扫描。
     </description>
 
@@ -37,6 +37,15 @@
     </properties>
 
     <dependencies>
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>ruoyi-ai-api</artifactId>
+            <version>${revision}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter</artifactId>

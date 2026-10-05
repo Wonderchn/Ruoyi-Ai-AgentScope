@@ -46,7 +46,8 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 @ConditionalOnProperty(name = "rag.vector.type", havingValue = "pg")
-public class PgVectorRetrieverService implements VectorRetrieverService {
+public class PgVectorRetrieverService implements VectorRetrieverService,
+        org.ruoyi.ai.api.runtime.AuthorizedRetrievalPort<AuthorizedRetrievalScope, RetrievedChunk> {
 
     private final JdbcTemplate jdbcTemplate;
     private final EmbeddingService embeddingService;
@@ -78,6 +79,10 @@ public class PgVectorRetrieverService implements VectorRetrieverService {
     }
 
     @Override
+    public List<RetrievedChunk> retrieve(AuthorizedRetrievalScope scope, String query, int topK) {
+        return retrieve(scope, RetrieveRequest.builder().query(query).topK(topK).build());
+    }
+
     public List<RetrievedChunk> retrieve(AuthorizedRetrievalScope scope, RetrieveRequest request) {
         // 守卫必须全部落在 embedding 之前：空集语义下的请求连模型调用都不该产生
         if (VectorRetrieverService.mustReturnEmpty(scope, "retrieve") || request == null) {

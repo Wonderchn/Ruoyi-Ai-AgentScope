@@ -30,7 +30,7 @@ import java.util.Optional;
 
 /** P2 文档/上传/版本/分块 DAO（V8 表；只读当前 published 版本）。 */
 @Repository
-public class DocumentDao {
+public class DocumentDao implements org.ruoyi.ai.api.runtime.DocumentPort {
 
     private final JdbcTemplate jdbc;
 
@@ -38,26 +38,13 @@ public class DocumentDao {
         this.jdbc = jdbc;
     }
 
-    public record DocumentRow(String docId, String kbId, String name, String memberId,
-                              String publishedVersionId, Instant tombstonedAt, Instant createdAt) {
-        public boolean tombstoned() {
-            return tombstonedAt != null;
-        }
-    }
 
-    public record UploadRow(String uploadId, String docId, String kbId, String memberId, String filename,
-                            String mimeType, long sizeBytes, String sha256, String objectKey, String state,
-                            Instant createdAt) {
-    }
 
-    public record VersionRow(String versionId, String docId, String uploadId, String runId, String state,
-                             String parseRefJson, int chunkCount, String embeddingModel, Integer embeddingDimension,
-                             Instant publishedAt) {
-    }
 
-    public record RetrievedChunk(String docId, String versionId, String chunkKey, int chunkIndex, String content,
-                                 Integer pageFrom, Integer pageTo, double score) {
-    }
+
+
+
+
 
     private static Instant instant(Timestamp ts) {
         return ts == null ? null : ts.toInstant();

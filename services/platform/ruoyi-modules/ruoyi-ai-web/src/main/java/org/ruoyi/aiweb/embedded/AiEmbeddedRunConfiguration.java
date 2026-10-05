@@ -92,7 +92,7 @@ public class AiEmbeddedRunConfiguration {
                     ObjectProvider<AiResourceAuthorizationService> resources,
                     ObjectProvider<PlatformFactsClient> facts,
                     ObjectProvider<RunLedgerDao> ledger,
-                    ObjectProvider<DocumentDao> documents) {
+                    ObjectProvider<org.ruoyi.ai.api.runtime.DocumentPort> documents) {
                 return new RunAccessService(resources, facts, ledger, documents);
             }
 

@@ -90,14 +90,14 @@ public class AiResourceController {
     private TenantRunReadRepository runs;
     private TenantEventReadRepository events;
     private com.nageoffer.ai.ragent.framework.security.RevocationGuard revocations;
-    private org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.rag.core.vector.PgVectorRetrieverService> retrievers;
+    private org.springframework.beans.factory.ObjectProvider<org.ruoyi.ai.api.runtime.AuthorizedRetrievalPort<com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope, com.nageoffer.ai.ragent.framework.convention.RetrievedChunk>> retrievers;
     private org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.ingest.EmbeddingGateway> p2Embeddings;
     @org.springframework.beans.factory.annotation.Autowired
     public void configureP2(org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.ingest.EmbeddingGateway> embeddings) {this.p2Embeddings=embeddings;}
 
     @org.springframework.beans.factory.annotation.Autowired
     public void configureExecution(com.nageoffer.ai.ragent.framework.security.RevocationGuard revocations,
-            org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.rag.core.vector.PgVectorRetrieverService> retrievers){
+            org.springframework.beans.factory.ObjectProvider<org.ruoyi.ai.api.runtime.AuthorizedRetrievalPort<com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope, com.nageoffer.ai.ragent.framework.convention.RetrievedChunk>> retrievers){
         this.revocations=revocations;this.retrievers=retrievers;
     }
 
@@ -205,7 +205,7 @@ public class AiResourceController {
         var retriever=retrievers.getIfAvailable();if(retriever==null){throw new ServiceException("authorized PG retrieval unavailable");}
         var operation=revocations.enter(principal,"kb.retrieve","tenant:retrieval");
         try{
-            var data=retriever.retrieve(scope,com.nageoffer.ai.ragent.rag.core.retrieval.RetrieveRequest.builder().query(request.query()).topK(request.topK()).build());
+            var data=retriever.retrieve(scope,request.query(),request.topK());
             // Transfer ownership of the same active lease to final delivery without an unprotected gap.
             return ResponseEntity.ok().header("Cache-Control","no-store").header("X-AI-Delivery-Permit",operation.permitId())
                     .header("X-AI-Delivery-Operation",operation.operationId()).body(ApiEnvelope.ok(data));

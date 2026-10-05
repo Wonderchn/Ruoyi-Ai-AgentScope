@@ -22,8 +22,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.convention.ChatMessage;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService;
-import com.nageoffer.ai.ragent.ingest.ChatGateway;
-import com.nageoffer.ai.ragent.ingest.DocumentDao;
+import org.ruoyi.ai.api.runtime.ChatPort;
+import org.ruoyi.ai.api.runtime.DocumentPort;
 import com.nageoffer.ai.ragent.ingest.EmbeddingGateway;
 import com.nageoffer.ai.ragent.runtime.P2FaultInjector;
 import com.nageoffer.ai.ragent.runtime.RunApiException;
@@ -62,9 +62,9 @@ public class RagChatExecutor implements RunExecutor {
     private static final double MIN_SCORE = 0.2;
     private static final int DELTA_FLUSH_CHARS = 160;
 
-    private final DocumentDao documentDao;
+    private final DocumentPort documentDao;
     private final EmbeddingGateway embeddingGateway;
-    private final ChatGateway chatGateway;
+    private final ChatPort<ChatMessage> chatGateway;
     private final EgressPolicy egressPolicy;
     private final UsageLedgerService usageLedger;
     private final ObjectProvider<PlatformFactsClient> platformFacts;
@@ -77,7 +77,7 @@ public class RagChatExecutor implements RunExecutor {
     @org.springframework.beans.factory.annotation.Autowired
     private ProviderCallBoundary providerBoundary;
 
-    public RagChatExecutor(DocumentDao documentDao, EmbeddingGateway embeddingGateway, ChatGateway chatGateway,
+    public RagChatExecutor(DocumentPort documentDao, EmbeddingGateway embeddingGateway, ChatPort<ChatMessage> chatGateway,
                            EgressPolicy egressPolicy, UsageLedgerService usageLedger,
                            ObjectProvider<PlatformFactsClient> platformFacts,
                            ObjectProvider<com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService> authorization,
@@ -182,7 +182,7 @@ public class RagChatExecutor implements RunExecutor {
         if(!documentDao.matchesEmbeddingModel(execution.tenantId(),authorizedKbs,embeddingGateway.model())) return Outcome.failed("MODEL_CONFIG_CHANGED");
 
         // ---------------- step: retrieve ----------------
-        List<DocumentDao.RetrievedChunk> chunks;
+        List<DocumentPort.RetrievedChunk> chunks;
         Map<String, Object> retrieveRef = completedStepRef(guard, "retrieve");
         if (retrieveRef != null) {
             if(!embeddingGateway.model().equals(retrieveRef.get("embeddingModel"))) return Outcome.failed("MODEL_CONFIG_CHANGED");
@@ -272,7 +272,7 @@ public class RagChatExecutor implements RunExecutor {
             StringBuilder answer = new StringBuilder();
             StringBuilder pending = new StringBuilder();
             final boolean[] cancelled = {false};
-            ChatGateway.ChatResult chatResult;
+            ChatPort.ChatResult chatResult;
             try {
                 chatResult = chatGateway.stream(chatMessages(question, chunks), maxTokens(execution),
                         delta -> {
@@ -394,7 +394,7 @@ public class RagChatExecutor implements RunExecutor {
         return kbs;
     }
 
-    private List<ChatMessage> chatMessages(String question, List<DocumentDao.RetrievedChunk> chunks) {
+    private List<ChatMessage> chatMessages(String question, List<DocumentPort.RetrievedChunk> chunks) {
         StringBuilder context = new StringBuilder();
         context.append("以下是从授权知识库检索到的证据（引用编号 [n]）：\n");
         for (int i = 0; i < chunks.size(); i++) {
@@ -416,11 +416,11 @@ public class RagChatExecutor implements RunExecutor {
     }
 
     List<Map<String, Object>> currentCitations(ExecutionPrincipal principal,
-                                               List<DocumentDao.RetrievedChunk> chunks) {
+                                               List<DocumentPort.RetrievedChunk> chunks) {
         var resources = authorization.getIfAvailable();
         List<Map<String, Object>> citations = new ArrayList<>();
-        for (DocumentDao.RetrievedChunk chunk : chunks) {
-            DocumentDao.DocumentRow document = documentDao.findDocument(principal.tenantId(), chunk.docId()).orElse(null);
+        for (DocumentPort.RetrievedChunk chunk : chunks) {
+            DocumentPort.DocumentRow document = documentDao.findDocument(principal.tenantId(), chunk.docId()).orElse(null);
             if (document == null || document.tombstoned()) {
                 continue;
             }
@@ -455,9 +455,9 @@ public class RagChatExecutor implements RunExecutor {
         return citations;
     }
 
-    private List<Map<String, Object>> chunkRefs(List<DocumentDao.RetrievedChunk> chunks) {
+    private List<Map<String, Object>> chunkRefs(List<DocumentPort.RetrievedChunk> chunks) {
         List<Map<String, Object>> refs = new ArrayList<>();
-        for (DocumentDao.RetrievedChunk chunk : chunks) {
+        for (DocumentPort.RetrievedChunk chunk : chunks) {
             Map<String, Object> ref = new LinkedHashMap<>();
             ref.put("docId", chunk.docId());
             ref.put("versionId", chunk.versionId());
@@ -469,8 +469,8 @@ public class RagChatExecutor implements RunExecutor {
         return refs;
     }
 
-    private List<DocumentDao.RetrievedChunk> loadChunksFromRef(String tenantId, Map<String, Object> retrieveRef) {
-        List<DocumentDao.RetrievedChunk> chunks = new ArrayList<>();
+    private List<DocumentPort.RetrievedChunk> loadChunksFromRef(String tenantId, Map<String, Object> retrieveRef) {
+        List<DocumentPort.RetrievedChunk> chunks = new ArrayList<>();
         Object refs = retrieveRef.get("chunks");
         if (refs instanceof List<?> list) {
             for (Object item : list) {
@@ -491,7 +491,7 @@ public class RagChatExecutor implements RunExecutor {
                             }, tenantId, versionId, chunkKey);
                     if (!rows.isEmpty()) {
                         Map<String, Object> row = rows.get(0);
-                        chunks.add(new DocumentDao.RetrievedChunk(docId, versionId, chunkKey,
+                        chunks.add(new DocumentPort.RetrievedChunk(docId, versionId, chunkKey,
                                 (Integer) row.get("chunkIndex"), (String) row.get("content"),
                                 (Integer) row.get("pageFrom"), (Integer) row.get("pageTo"), 0.0));
                     }

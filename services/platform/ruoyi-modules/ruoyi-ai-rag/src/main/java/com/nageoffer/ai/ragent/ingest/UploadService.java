@@ -315,10 +315,6 @@ public class UploadService {
 
     /** 供 executor 读取 run.input 中的文档引用。 */
     public static JsonNode inputOf(String inputJson, com.fasterxml.jackson.databind.ObjectMapper mapper) {
-        try {
-            return mapper.readTree(inputJson == null ? "{}" : inputJson);
-        } catch (Exception e) {
-            throw new RunApiException(RunErrorCode.INTERNAL_ERROR, "run input is invalid");
-        }
+        return com.nageoffer.ai.ragent.runtime.CanonicalJson.inputOf(inputJson, mapper);
     }
 }

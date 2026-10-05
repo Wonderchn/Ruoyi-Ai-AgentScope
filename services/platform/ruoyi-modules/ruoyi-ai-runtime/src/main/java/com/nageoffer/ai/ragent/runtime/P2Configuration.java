@@ -17,12 +17,11 @@
 
 package com.nageoffer.ai.ragent.runtime;
 
-import com.nageoffer.ai.ragent.ingest.LocalMinerUProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 
 /** P2 运行面配置绑定（默认全部关闭；见 U00 Spec §4）。 */
 @Configuration
-@EnableConfigurationProperties({P2RuntimeProperties.class, LocalMinerUProperties.class})
+@EnableConfigurationProperties(P2RuntimeProperties.class)
 public class P2Configuration {
 }

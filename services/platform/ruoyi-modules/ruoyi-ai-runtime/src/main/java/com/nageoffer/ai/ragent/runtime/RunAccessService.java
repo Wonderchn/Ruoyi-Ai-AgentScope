@@ -24,7 +24,7 @@ import com.nageoffer.ai.ragent.runtime.dto.AdmissionRequest;
 import com.nageoffer.ai.ragent.runtime.model.RunRecord;
 import com.nageoffer.ai.ragent.runtime.usage.PlatformFactsClient;
 import com.nageoffer.ai.ragent.runtime.dao.RunLedgerDao;
-import com.nageoffer.ai.ragent.ingest.DocumentDao;
+import org.ruoyi.ai.api.runtime.DocumentPort;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import java.util.*;
@@ -35,9 +35,9 @@ public class RunAccessService {
     private final ObjectProvider<AiResourceAuthorizationService> resources;
     private final ObjectProvider<PlatformFactsClient> facts;
     private final ObjectProvider<RunLedgerDao> ledger;
-    private final ObjectProvider<DocumentDao> documents;
+    private final ObjectProvider<DocumentPort> documents;
     public RunAccessService(ObjectProvider<AiResourceAuthorizationService> resources,ObjectProvider<PlatformFactsClient> facts,
-                            ObjectProvider<RunLedgerDao> ledger,ObjectProvider<DocumentDao> documents) {
+                            ObjectProvider<RunLedgerDao> ledger,ObjectProvider<DocumentPort> documents) {
         this.resources=resources;this.facts=facts;this.ledger=ledger;this.documents=documents;
     }
     public AiResourceAuthorizationService resources() {

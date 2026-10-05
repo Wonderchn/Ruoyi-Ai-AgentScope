@@ -20,7 +20,7 @@ package com.nageoffer.ai.ragent.runtime.exec;
 import com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService;
-import com.nageoffer.ai.ragent.ingest.DocumentDao;
+import org.ruoyi.ai.api.runtime.DocumentPort;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 
@@ -55,12 +55,12 @@ class RagChatExecutorCitationRecheckTest {
         return provider;
     }
 
-    private static RagChatExecutor executor(DocumentDao documents,
+    private static RagChatExecutor executor(DocumentPort documents,
                                             com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService resources) {
         // 仅 currentCitations 路径被触达：其余协作者给 null/替身即可（不参与该方法）。
         return new RagChatExecutor(documents,
                 mock(com.nageoffer.ai.ragent.ingest.EmbeddingGateway.class),
-                mock(com.nageoffer.ai.ragent.ingest.ChatGateway.class),
+                mock(org.ruoyi.ai.api.runtime.ChatPort.class),
                 mock(com.nageoffer.ai.ragent.runtime.usage.EgressPolicy.class),
                 mock(com.nageoffer.ai.ragent.runtime.usage.UsageLedgerService.class),
                 provider(null), provider(resources), provider(null),
@@ -73,18 +73,18 @@ class RagChatExecutorCitationRecheckTest {
                 Set.of("kb.read", "document.read"), "j", "platform", 1, 9999999999L);
     }
 
-    private static DocumentDao.RetrievedChunk chunk(String docId, String versionId) {
-        return new DocumentDao.RetrievedChunk(docId, versionId, "c-" + docId, 0, "synthetic", 1, 1, 0.5);
+    private static DocumentPort.RetrievedChunk chunk(String docId, String versionId) {
+        return new DocumentPort.RetrievedChunk(docId, versionId, "c-" + docId, 0, "synthetic", 1, 1, 0.5);
     }
 
-    private static DocumentDao.DocumentRow doc(String docId, String publishedVersionId, Instant tombstonedAt) {
-        return new DocumentDao.DocumentRow(docId, "kb1", "synthetic-doc", "platform:t1:1001",
+    private static DocumentPort.DocumentRow doc(String docId, String publishedVersionId, Instant tombstonedAt) {
+        return new DocumentPort.DocumentRow(docId, "kb1", "synthetic-doc", "platform:t1:1001",
                 publishedVersionId, tombstonedAt, null);
     }
 
     @Test
     void stableSourceWithGrantKeepsEveryCitation() {
-        var documents = mock(DocumentDao.class);
+        var documents = mock(DocumentPort.class);
         var resources = mock(AiResourceAuthorizationService.class);
         when(documents.findDocument(TENANT, "doc1")).thenReturn(Optional.of(doc("doc1", "ver1", null)));
         when(resources.check(any(), eq("document.read"), eq("doc:doc1")))
@@ -96,7 +96,7 @@ class RagChatExecutorCitationRecheckTest {
 
     @Test
     void authorizationServiceMissingFailsClosedAsUnavailable_notSourceChanged() {
-        var documents = mock(DocumentDao.class);
+        var documents = mock(DocumentPort.class);
         when(documents.findDocument(TENANT, "doc1")).thenReturn(Optional.of(doc("doc1", "ver1", null)));
         var executor = executor(documents, null);
         assertThrows(RagChatExecutor.SourceCheckUnavailableException.class,
@@ -105,7 +105,7 @@ class RagChatExecutorCitationRecheckTest {
 
     @Test
     void authorizationCheckFailureFailsClosedAsUnavailable_notSourceChanged() {
-        var documents = mock(DocumentDao.class);
+        var documents = mock(DocumentPort.class);
         var resources = mock(AiResourceAuthorizationService.class);
         when(documents.findDocument(TENANT, "doc1")).thenReturn(Optional.of(doc("doc1", "ver1", null)));
         when(resources.check(any(), eq("document.read"), eq("doc:doc1")))
@@ -119,7 +119,7 @@ class RagChatExecutorCitationRecheckTest {
 
     @Test
     void tombstonedDocumentIsDroppedAsGenuineSourceChange() {
-        var documents = mock(DocumentDao.class);
+        var documents = mock(DocumentPort.class);
         var resources = mock(AiResourceAuthorizationService.class);
         when(documents.findDocument(TENANT, "doc1"))
                 .thenReturn(Optional.of(doc("doc1", "ver1", Instant.parse("2026-10-04T00:00:00Z"))));
@@ -129,7 +129,7 @@ class RagChatExecutorCitationRecheckTest {
 
     @Test
     void supersededPublishedVersionIsDroppedAsGenuineSourceChange() {
-        var documents = mock(DocumentDao.class);
+        var documents = mock(DocumentPort.class);
         var resources = mock(AiResourceAuthorizationService.class);
         when(documents.findDocument(TENANT, "doc1")).thenReturn(Optional.of(doc("doc1", "ver2", null)));
         var citations = executor(documents, resources).currentCitations(principal(), List.of(chunk("doc1", "ver1")));
@@ -138,7 +138,7 @@ class RagChatExecutorCitationRecheckTest {
 
     @Test
     void currentDenialIsDroppedAsGenuineRevocation() {
-        var documents = mock(DocumentDao.class);
+        var documents = mock(DocumentPort.class);
         var resources = mock(AiResourceAuthorizationService.class);
         when(documents.findDocument(TENANT, "doc1")).thenReturn(Optional.of(doc("doc1", "ver1", null)));
         when(resources.check(any(), eq("document.read"), eq("doc:doc1")))
