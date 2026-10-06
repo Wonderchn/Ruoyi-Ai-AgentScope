@@ -97,8 +97,11 @@ class BarrierLeaseSelfHealTest {
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
         verify(jdbc).update(sql.capture(), anyMap());
         String cas = sql.getValue();
-        // 锚点（缺一即恒真）：CAS 必须真的携带全部三个判据
-        assertThat(cas).contains("status='PENDING'")
+        // 锚点（缺一即恒真）：CAS 必须真的携带全部判据。
+        // W3-T0-23 ②：自愈对象从 PENDING 扩到"解除被孤儿 permit 阻断而滞留的 CLOSED"，
+        // 故 status 判据为 IN ('PENDING','CLOSED')（语义进化锚点，变异对照见
+        // BarrierClosedSelfHealTest.m1_selfHealSqlKeepsClosedTarget）。
+        assertThat(cas).contains("status IN ('PENDING','CLOSED')")
                 .contains("lease_expires_at <= now()")
                 .contains("NOT EXISTS(SELECT 1 FROM ai_execution_permit")
                 .contains("p.status='ACTIVE'")
@@ -107,9 +110,11 @@ class BarrierLeaseSelfHealTest {
         // kill 场景关键锚点：自愈对象是租户行 —— SQL 里不得出现 barrier_id 匹配
         assertThat(cas).as("自愈 CAS 不得按 barrier_id 匹配（卡死行的 barrier_id 属于已死进程）")
                 .doesNotContain("barrier_id");
-        // 红线：CAS 只写 OPEN，绝不写 CLOSED
+        // 红线：CAS 只写 OPEN，绝不写 CLOSED（SET 目标单一；WHERE 里的 CLOSED 是选择自愈对象）
+        assertThat(cas).as("自愈 SET 目标必须是 OPEN")
+                .contains("SET status='OPEN'");
         assertThat(cas).as("自愈绝不写 CLOSED（CLOSED 只能由业务写事务写出）")
-                .doesNotContain("CLOSED");
+                .doesNotContain("SET status='CLOSED'");
     }
 
     @Test
@@ -141,16 +146,17 @@ class BarrierLeaseSelfHealTest {
     }
 
     @Test
-    @DisplayName("CAS 0 行 + 行已不是 PENDING ⇒ NOT_PENDING（正常闭合/已收回的不是自愈对象）")
-    void nonPendingRowIsNotASelfHealTarget() {
+    @DisplayName("CAS 0 行 + 行 CLOSED（解除滞留）⇒ STILL_ACTIVE（无租约可判，保守不回收）——W3-T0-23 ② 语义进化")
+    void closedRowAttributionIsStillActive() {
         NamedParameterJdbcTemplate jdbc = mock(NamedParameterJdbcTemplate.class);
         TenantBarrierReconciler reconciler = new TenantBarrierReconciler(jdbc, noOpTransactionManager());
         when(jdbc.update(anyString(), anyMap())).thenReturn(0);
         when(jdbc.query(contains("FROM ai_tenant_barrier"), anyMap(), any(RowMapper.class)))
                 .thenReturn(List.of("CLOSED"));
+        when(jdbc.queryForObject(anyString(), anyMap(), eq(Long.class))).thenReturn(0L);
 
         assertThat(reconciler.selfHealIfLeaseExpired(TENANT))
-                .isEqualTo(TenantBarrierReconciler.LeaseSelfHeal.NOT_PENDING);
+                .isEqualTo(TenantBarrierReconciler.LeaseSelfHeal.STILL_ACTIVE);
     }
 
     @Test
@@ -223,19 +229,17 @@ class BarrierLeaseSelfHealTest {
     }
 
     @Test
-    @DisplayName("门负例：CLOSED / UNKNOWN 仍直接拒绝（不进自愈路径）")
-    void closedAndUnknownAreRefusedWithoutSelfHealAttempt() {
-        for (String state : List.of("CLOSED", "UNKNOWN")) {
-            JdbcTemplate jdbc = jdbcWithBarrierStates(List.of(state), List.of(state));
-            TenantBarrierReconciler reconciler = mock(TenantBarrierReconciler.class);
-            DefaultRevocationGuard guard = new DefaultRevocationGuard(jdbc);
-            guard.configureBarrierReconciler(reconciler);
+    @DisplayName("门负例：UNKNOWN 直接拒绝且不进自愈（无判据基座）；CLOSED 的自愈语义见 BarrierClosedSelfHealTest")
+    void unknownIsRefusedWithoutSelfHealAttempt() {
+        JdbcTemplate jdbc = jdbcWithBarrierStates(List.of("UNKNOWN"), List.of("UNKNOWN"));
+        TenantBarrierReconciler reconciler = mock(TenantBarrierReconciler.class);
+        DefaultRevocationGuard guard = new DefaultRevocationGuard(jdbc);
+        guard.configureBarrierReconciler(reconciler);
 
-            assertThatThrownBy(() -> guard.acquire(request()))
-                    .as("屏障 %s 必须直接拒绝", state).isInstanceOf(ServiceException.class);
-            verify(reconciler, never()).selfHealIfLeaseExpired(anyString());
-            verify(jdbc, never()).update(contains("INSERT INTO ai_execution_permit"), any(Object[].class));
-        }
+        assertThatThrownBy(() -> guard.acquire(request()))
+                .as("屏障 UNKNOWN 必须直接拒绝").isInstanceOf(ServiceException.class);
+        verify(reconciler, never()).selfHealIfLeaseExpired(anyString());
+        verify(jdbc, never()).update(contains("INSERT INTO ai_execution_permit"), any(Object[].class));
     }
 
     // ------------------------------------------------------------------ 3. PENDING 必带租约（两个写入方）

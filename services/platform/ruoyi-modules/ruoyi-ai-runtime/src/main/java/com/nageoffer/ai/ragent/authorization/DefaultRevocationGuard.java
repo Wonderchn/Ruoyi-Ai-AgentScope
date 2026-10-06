@@ -131,7 +131,7 @@ public class DefaultRevocationGuard implements RevocationGuard {
                     + currentVersion + "），拒绝登记");
         }
 
-        // 2) 屏障状态：PENDING/CLOSED/UNKNOWN 一律拒绝新 permit。
+        // 2) 屏障状态：PENDING/CLOSED 先尝试自愈（reconciler 在位且 CAS 成立才放行），UNKNOWN 一律拒绝。
         //    W3-1 自愈唯一入口（L3-T2R-AUTHZ）：PENDING 且 reconciler 在位 ⇒ 先尝试
         //    "租约过期 + 无未过期 ACTIVE permit"的 CAS（reconciler 口径，全判据在 UPDATE 的
         //    WHERE 里）。SELF_HEALED ⇒ 屏障已收回 OPEN，本次 acquire 继续往下走；
@@ -140,21 +140,28 @@ public class DefaultRevocationGuard implements RevocationGuard {
         //    ——旧锚点测试（P1RevocationRaceTest.nonOpenBarrierRefuses）负例语义不消失：
         //    它们的 mock 场景里 CAS 影响 0 行（未配置 reconciler ⇒ 自愈不存在），
         //    拒绝行为保持不变、测试保持绿。
-        //    本方法此刻正持有 ai_acl_epoch 租户行锁（上面第 1 步 FOR UPDATE），CAS 的
-        //    活跃集判据在该锁内是稳定的；CAS 是 UPDATE 一次性裁决，不需要 Java 侧二次判断。
+        //    W3-T0-23 ②（CLOSED 收敛路径，方案=扩展 acquire CAS，理由：G-55c 单一口径——
+        //    "这条屏障能否被收回"只此一条原子 SQL，不再开第二套方法/SQL；CLOSED 行 lease 已清，
+        //    CAS 的 IS NULL 分支天然覆盖）：kill/异常孤儿 permit 让 setBarrierState(OPEN) 的
+        //    解除守卫永远失败 ⇒ 屏障滞留 CLOSED ⇒ acquire 门若继续直接拒绝，全租户 AI 读写
+        //    永久楔死（2026-10-06 kill 演练 run2 A4b 实录）。因此 CLOSED 与 PENDING 同口径：
+        //    CAS 成立 ⇒ 收回 OPEN 并放行；不成立 ⇒ 维持拒绝（fail-closed 不变，UNKNOWN 无
+        //    判据基座仍直接拒）。本方法此刻正持有 ai_acl_epoch 租户行锁（上面第 1 步 FOR
+        //    UPDATE），CAS 的活跃集判据在该锁内是稳定的；CAS 是 UPDATE 一次性裁决，不需要
+        //    Java 侧二次判断。
         BarrierState state = readBarrierState(request.tenantId());
-        if (state == BarrierState.PENDING) {
+        if (state == BarrierState.PENDING || state == BarrierState.CLOSED) {
             if (barrierReconciler == null
                     || barrierReconciler.selfHealIfLeaseExpired(request.tenantId())
                             != TenantBarrierReconciler.LeaseSelfHeal.SELF_HEALED
                     || readBarrierState(request.tenantId()) != BarrierState.OPEN) {
-                log.warn("租户屏障 PENDING 且不可自愈，拒绝新 permit, tenantId={}, operationId={}",
-                        request.tenantId(), request.operationId());
-                throw new ServiceException("租户屏障 PENDING，拒绝新 permit");
+                log.warn("租户屏障 {} 且不可自愈，拒绝新 permit, tenantId={}, operationId={}",
+                        state, request.tenantId(), request.operationId());
+                throw new ServiceException("租户屏障 " + state + "，拒绝新 permit");
             }
             log.warn("屏障租约过期自愈放行, tenantId={}, operationId={}",
                     request.tenantId(), request.operationId());
-        } else if (state == BarrierState.CLOSED || state == BarrierState.UNKNOWN) {
+        } else if (state == BarrierState.UNKNOWN) {
             throw new ServiceException("租户屏障 " + state + "，拒绝新 permit");
         }
 
@@ -245,8 +252,15 @@ public class DefaultRevocationGuard implements RevocationGuard {
 
     @Override
     public long activePermitCount(String tenantId) {
+        // W3-T0-23 ①：口径与 TenantBarrierReconciler.SQL_ACTIVE_PERMITS_OUTSIDE 收敛——
+        // "活跃"必须含 expires_at > CURRENT_TIMESTAMP。此前无该过滤：进程被杀后的孤儿
+        // permit（ACTIVE 且永不 release）把 setBarrierState(OPEN) 的解除守卫永久打失败
+        // ⇒ 屏障滞留 CLOSED ⇒ 全租户 AI 读写楔死（2026-10-06 kill 演练 run2 A4b 实录）。
+        // 该守卫只回答"现在还有没有人在飞"，不回答"历史上有没有泄漏行"——泄漏行由
+        // 过期口径自然失活，屏障解除随之放行。
         Long count = jdbc.queryForObject("SELECT count(*) FROM ai_execution_permit"
-                + " WHERE tenant_id = ? AND status = 'ACTIVE'", Long.class, tenantId);
+                + " WHERE tenant_id = ? AND status = 'ACTIVE'"
+                + " AND expires_at > CURRENT_TIMESTAMP", Long.class, tenantId);
         if (count == null || count < 0) { throw new ServiceException("活跃 permit 数未知"); }
         return count;
     }
