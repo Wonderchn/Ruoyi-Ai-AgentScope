@@ -58,12 +58,23 @@ class ProviderGatewayHttpTest {
         } finally {server.stop(0);}
     }
     private EgressPolicy allowed(){var p=new EgressPolicy();p.setEnabled(true);p.setAllowedProviders("deepseek,dashscope");return p;}
+
+    /**
+     * 绑定事实（D02）：provider/model **只能**来自这里。
+     * 断言请求体里的 `model` 等于**这个**值（而不是某个写死的默认模型），
+     * 才真正证明"模型权威来自 run 绑定"。
+     */
+    static final String BOUND_MODEL="bound-chat-model-v1";
+    static com.nageoffer.ai.ragent.runtime.config.RunConfigBinding binding(String providerId){
+        return new com.nageoffer.ai.ragent.runtime.config.RunConfigBinding("t1","run-1","rag.chat",
+                "rev-1",1L,providerId,BOUND_MODEL,"cat-v1","params-hash","cred-ref","op-1",java.time.Instant.EPOCH);
+    }
     @Test void deniedOrMissingKeyMakesNoRequest() throws Exception {
         var count=new AtomicInteger(); var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         server.createContext("/",x->{count.incrementAndGet();x.sendResponseHeaders(500,-1);x.close();});server.start();
         try {
             var uri=URI.create("http://127.0.0.1:"+server.getAddress().getPort()+"/");
-            assertThrows(RunApiException.class,()->new RealChatGateway("test-only",new EgressPolicy(),uri).stream(List.of(ChatMessage.user("test")),10,s->{}));
+            assertThrows(RunApiException.class,()->new RealChatGateway("test-only",new EgressPolicy(),uri).stream(binding("deepseek"),List.of(ChatMessage.user("test")),10,s->{}));
             assertThrows(RunApiException.class,()->new RealEmbeddingGateway("",allowed(),uri).embed("test"));
             assertEquals(0,count.get());
         } finally {server.stop(0);}
@@ -78,9 +89,9 @@ class ProviderGatewayHttpTest {
             x.sendResponseHeaders(200,reply.length);x.getResponseBody().write(reply);x.close();});server.start();
         try {
             StringBuilder delta=new StringBuilder();
-            var result=new RealChatGateway("test-only",allowed(),URI.create("http://127.0.0.1:"+server.getAddress().getPort()+"/")).stream(List.of(ChatMessage.user("synthetic")),32,delta::append);
+            var result=new RealChatGateway("test-only",allowed(),URI.create("http://127.0.0.1:"+server.getAddress().getPort()+"/")).stream(binding("deepseek"),List.of(ChatMessage.user("synthetic")),32,delta::append);
             assertEquals("测试",delta.toString());assertEquals("req-1",result.providerRequestId());assertEquals(14,result.usageRaw().get("total_tokens"));
-            assertEquals("deepseek-flash",new ObjectMapper().readTree(request.get()).path("model").asText());
+            assertEquals(BOUND_MODEL,new ObjectMapper().readTree(request.get()).path("model").asText());
         } finally {server.stop(0);}
     }
     @Test void interruptedResponseIsUnknownAndNeverAutomaticallyRetried() throws Exception {
@@ -88,7 +99,7 @@ class ProviderGatewayHttpTest {
         server.createContext("/",x->{count.incrementAndGet();byte[] reply="data: {\"id\":\"req-1\",\"choices\":[]}\n".getBytes(StandardCharsets.UTF_8);x.sendResponseHeaders(200,reply.length);x.getResponseBody().write(reply);x.close();});server.start();
         try {
             var gateway=new RealChatGateway("test-only",allowed(),URI.create("http://127.0.0.1:"+server.getAddress().getPort()+"/"));
-            assertThrows(RunApiException.class,()->gateway.stream(List.of(ChatMessage.user("synthetic")),32,s->{}));assertEquals(1,count.get());
+            assertThrows(RunApiException.class,()->gateway.stream(binding("deepseek"),List.of(ChatMessage.user("synthetic")),32,s->{}));assertEquals(1,count.get());
         } finally {server.stop(0);}
     }
     @Test void embeddingOrderDimensionsAndUsageAreValidated() throws Exception {

@@ -60,7 +60,8 @@ class RagChatExecutorCitationRecheckTest {
         // 仅 currentCitations 路径被触达：其余协作者给 null/替身即可（不参与该方法）。
         return new RagChatExecutor(documents,
                 mock(com.nageoffer.ai.ragent.ingest.EmbeddingGateway.class),
-                mock(org.ruoyi.ai.api.runtime.ChatPort.class),
+                // D02：模型出口是 run 作用域端口（provider/model 只能来自 run 绑定的发布版本）
+                mock(com.nageoffer.ai.ragent.runtime.config.RunScopedChatPort.class),
                 mock(com.nageoffer.ai.ragent.runtime.usage.EgressPolicy.class),
                 mock(com.nageoffer.ai.ragent.runtime.usage.UsageLedgerService.class),
                 provider(null), provider(resources), provider(null),

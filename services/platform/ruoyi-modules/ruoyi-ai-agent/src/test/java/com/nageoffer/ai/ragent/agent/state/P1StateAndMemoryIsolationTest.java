@@ -67,7 +67,7 @@ import org.junit.jupiter.api.Tag;
 /**
  * U09 / P1.3d（03 C09a）：state 与长期记忆的隔离护栏。
  *
- * <p><b>为什么盯住复合键本身。</b>t_agent_state 这类表的主键是
+ * <p><b>为什么盯住复合键本身。</b>ai_agent_state 这类表的主键是
  * {@code (tenant_id, member_id, session_id, state_key)}——租户与成员不是
  * 表上"多出来的一列"，而是键的本体：两个租户的同名用户、同 session、同 key
  * 在物理上就是两行，读、写、删都不可能越过键碰到对方。因此本测试断言的是
@@ -129,12 +129,12 @@ class P1StateAndMemoryIsolationTest {
                 .as("AgentStateMapper 的语句数：upsert/selectPayload/exists/deleteBySession/deleteByKey/selectSessionIds")
                 .hasSize(7);
 
-        String upsert = statementContaining(statements, "INSERT INTO t_agent_state");
+        String upsert = statementContaining(statements, "INSERT INTO ai_agent_state");
         // 冲突目标必须是完整复合键：键里少任何一维，两个租户的同名数据就会互相覆盖
         assertThat(upsert)
                 .contains("ON CONFLICT (tenant_id, member_id, session_id, state_key)")
                 .doesNotContain("ON CONFLICT (session_id, state_key)")
-                .contains("INSERT INTO t_agent_state (tenant_id, member_id, user_id, session_id, state_key, payload");
+                .contains("INSERT INTO ai_agent_state (tenant_id, member_id, user_id, session_id, state_key, payload");
         // user_id 只出现在展示列清单与 VALUES 里，不进冲突目标、不进 DO UPDATE
         String conflictClause = upsert.substring(upsert.indexOf("ON CONFLICT"));
         assertThat(conflictClause).doesNotContain("user_id");
@@ -153,7 +153,7 @@ class P1StateAndMemoryIsolationTest {
         // 读写删三类语句各就各位：sess-shared/k1 在 T1/T2 各一行，靠的就是这些谓词
         assertThat(statementContaining(statements, "SELECT payload"))
                 .contains("session_id = #{sessionId} AND state_key = #{stateKey}");
-        assertThat(statements.stream().filter(s -> s.contains("DELETE FROM t_agent_state")).count())
+        assertThat(statements.stream().filter(s -> s.contains("DELETE FROM ai_agent_state")).count())
                 .as("删除语句两条：按会话删、按键删")
                 .isEqualTo(2);
         assertThat(statementContaining(statements, "SELECT DISTINCT session_id"))
@@ -229,7 +229,7 @@ class P1StateAndMemoryIsolationTest {
         for (String statement : statements) {
             assertThat(statement)
                     .contains(TENANT_MEMBER_EQ)
-                    .contains("UPDATE t_agent_memory")
+                    .contains("UPDATE ai_agent_memory")
                     .contains("invalid_at IS NULL");
         }
         // supersede/retract 按条目 id 定位，retractAll 面向全量：三条各自的角色保持不变
@@ -244,9 +244,9 @@ class P1StateAndMemoryIsolationTest {
         assertThat(statements).hasSize(4);
 
         // 懒创建的冲突目标就是 (tenant, member) 控制行主键：同 userId 跨租户是两把锁、两个版本号
-        String ensure = statementContaining(statements, "INSERT INTO t_agent_memory_control");
+        String ensure = statementContaining(statements, "INSERT INTO ai_agent_memory_control");
         assertThat(ensure).contains("ON CONFLICT (tenant_id, member_id) DO NOTHING")
-                .contains("INSERT INTO t_agent_memory_control (tenant_id, member_id, user_id, revision");
+                .contains("INSERT INTO ai_agent_memory_control (tenant_id, member_id, user_id, revision");
 
         // 行锁与版本号是提交期的串行点，定位谓词必须钉死在租户/成员上；控制行查询不含 user_id 条件
         assertThat(statementContaining(statements, "FOR UPDATE"))
@@ -369,13 +369,22 @@ class P1StateAndMemoryIsolationTest {
                 .orElseThrow(() -> new AssertionError("找不到包含 " + marker + " 的语句"));
     }
 
-    /** agent 模块主源码：services/ai/agent/src/main/java/com/nageoffer/ai/ragent/&lt;subPath&gt;。 */
+    /**
+     * 读<b>实际运行</b>的 agent 模块主源码：{@code services/platform/ruoyi-modules/ruoyi-ai-agent}
+     * 下的同名路径。
+     *
+     * <p>WP-025 之前这里读的是 {@code services/ai/agent/...}（冻结独立应用）。那是陈旧来源陷阱：
+     * 代码在归位到 platform 之后，本测试仍在断言另一份副本的 SQL，"语句文本护栏"保护的是不再
+     * 运行的文件——WP-025 改了 platform 副本的表名后本测试立刻失败，正是这个错位暴露了出来。
+     * 现在只认 platform 副本；找不到就大声失败，<b>不</b>回落读 {@code services/ai}
+     * （回落会让同一陷阱以静默方式复现）。
+     */
     private static String agentMainSource(String subPath) throws IOException {
         String cleaned = subPath.replace('\\', '/');
         Path dir = Path.of("").toAbsolutePath();
         for (int i = 0; i < 8 && dir != null; i++) {
-            Path candidate = dir.resolve("services").resolve("ai").resolve("agent")
-                    .resolve("src").resolve("main").resolve("java")
+            Path candidate = dir.resolve("services").resolve("platform").resolve("ruoyi-modules")
+                    .resolve("ruoyi-ai-agent").resolve("src").resolve("main").resolve("java")
                     .resolve("com").resolve("nageoffer").resolve("ai").resolve("ragent")
                     .resolve("agent")
                     .resolve(cleaned.replace('/', File.separatorChar));
@@ -384,6 +393,6 @@ class P1StateAndMemoryIsolationTest {
             }
             dir = dir.getParent();
         }
-        throw new IllegalStateException("cannot locate agent main source: " + subPath);
+        throw new IllegalStateException("cannot locate platform agent main source: " + subPath);
     }
 }

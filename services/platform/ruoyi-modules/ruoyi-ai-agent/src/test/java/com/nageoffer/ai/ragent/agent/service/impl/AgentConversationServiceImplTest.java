@@ -30,6 +30,7 @@ import com.nageoffer.ai.ragent.agent.dto.AgentConfirmSettlement;
 import com.nageoffer.ai.ragent.agent.enums.AgentMessageStatus;
 import com.nageoffer.ai.ragent.agent.service.handler.AgentRunGate;
 import com.nageoffer.ai.ragent.agent.state.PgAgentStateStore;
+import com.nageoffer.ai.ragent.authorization.AiResourceWriteService;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
@@ -82,6 +83,8 @@ class AgentConversationServiceImplTest {
     private PgAgentStateStore agentStateStore;
     private AgentRunGate runGate;
     private ReActAgentProvider agentProvider;
+    /** G-52：会话创建委托的运行时写服务（替身；本模块不依赖它的实现，只依赖它的契约）。 */
+    private AiResourceWriteService resourceWriteService;
     private AgentConversationServiceImpl service;
 
     @BeforeEach
@@ -94,10 +97,15 @@ class AgentConversationServiceImplTest {
         agentProvider = mock(ReActAgentProvider.class);
         ObjectProvider<ReActAgentProvider> agentProviderRef = mock(ObjectProvider.class);
         when(agentProviderRef.getIfAvailable()).thenReturn(agentProvider);
+        // G-52：运行时写服务同样按 ObjectProvider 取（缺 bean 时调用点拒绝，而不是启动失败）
+        resourceWriteService = mock(AiResourceWriteService.class);
+        ObjectProvider<AiResourceWriteService> resourceWriteServiceRef = mock(ObjectProvider.class);
+        when(resourceWriteServiceRef.getIfAvailable()).thenReturn(resourceWriteService);
         when(conversationMapper.delete(any())).thenReturn(1);
         when(messageMapper.delete(any())).thenReturn(1);
         service = new AgentConversationServiceImpl(
-                conversationMapper, messageMapper, agentStateStore, runGate, agentProviderRef);
+                conversationMapper, messageMapper, agentStateStore, runGate, agentProviderRef,
+                resourceWriteServiceRef);
         // P1.3d：每个入口都要从执行主体解析 (tenant, member)，这里统一给出
         PrincipalContext.set(principalOf(TENANT_ID));
     }
@@ -127,6 +135,50 @@ class AgentConversationServiceImplTest {
         verify(agentProvider).evictStateCache(USER_ID, CONVERSATION_ID);
     }
 
+    /**
+     * G-52 第 4 处：创建**只做标题规范化 + 委托运行时写服务**。
+     *
+     * <p>判据钉的是"唯一写路径"：本方法不得自己碰 mapper/state —— 一旦有人在这里补一句
+     * {@code conversationMapper.insert(...)}，{@code verifyNoInteractions} 与"只委托一次"会立刻变红。
+     */
+    @Test
+    void shouldDelegateCreateToRuntimeWriteServiceWithNormalisedTitle() {
+        when(resourceWriteService.createConversation(any())).thenReturn("c-9001");
+
+        String created = service.create("  新会话标题  ");
+
+        assertThat(created).isEqualTo("c-9001");
+        ArgumentCaptor<AiResourceWriteService.ConversationDraft> draft =
+                ArgumentCaptor.forClass(AiResourceWriteService.ConversationDraft.class);
+        verify(resourceWriteService).createConversation(draft.capture());
+        // 规范化在服务侧完成（trim），运行时写服务收到的是干净标题
+        assertThat(draft.getValue().title()).isEqualTo("新会话标题");
+        verifyNoInteractions(conversationMapper, messageMapper, agentStateStore, runGate);
+    }
+
+    @Test
+    void shouldRejectBlankTitleOnCreateWithoutTouchingAnyWriter() {
+        assertThatThrownBy(() -> service.create("   "))
+                .isInstanceOf(ClientException.class)
+                .hasMessageContaining("会话标题不能为空");
+
+        // 空白标题在**进写服务之前**就被拒绝：不得产生半条写入，也不得碰任何 mapper
+        verifyNoInteractions(resourceWriteService, conversationMapper, messageMapper, agentStateStore);
+    }
+
+    @Test
+    void shouldTruncateOverlongTitleOnCreateToRenameLimit() {
+        when(resourceWriteService.createConversation(any())).thenReturn("c-9002");
+
+        service.create("x".repeat(200));
+
+        ArgumentCaptor<AiResourceWriteService.ConversationDraft> draft =
+                ArgumentCaptor.forClass(AiResourceWriteService.ConversationDraft.class);
+        verify(resourceWriteService).createConversation(draft.capture());
+        // 与 rename 同一上限（128）：创建与改名不得各有一套长度规则
+        assertThat(draft.getValue().title()).hasSize(128);
+    }
+
     @Test
     void shouldDeleteOnlyWithinTenantScope() {
         service.delete(CONVERSATION_ID, USER_ID);
@@ -146,11 +198,21 @@ class AgentConversationServiceImplTest {
 
     @Test
     void shouldEvictEachConversationWhenBatchDeleted() {
-        service.deleteBatch(List.of(CONVERSATION_ID, "c-3003", CONVERSATION_ID), USER_ID);
+        // C4/D05：空集合与**重复 ID 都是显式拒绝**（见下面的负例），所以本判据必须用互不相同的 id。
+        // 旧版本这里传的是 `List.of(ID, "c-3003", ID)` 并断言"重复 ID 去重后每个会话各驱逐一次" ——
+        // 那是 `distinct()` 静默去重时代的写法，已被 C4 取代：静默去重会让"实际动作集合 ≠ 请求集合"。
+        service.deleteBatch(List.of(CONVERSATION_ID, "c-3003"), USER_ID);
 
-        // 重复 ID 去重后每个会话各驱逐一次
         verify(agentProvider, times(1)).evictStateCache(USER_ID, CONVERSATION_ID);
         verify(agentProvider, times(1)).evictStateCache(USER_ID, "c-3003");
+    }
+
+    @Test
+    void shouldRejectDuplicateIdsInBatchDelete() {
+        // C4/D05 负例：重复 ID 必须被**拒绝**，不得 distinct() 静默去重。
+        assertThatThrownBy(() -> service.deleteBatch(List.of(CONVERSATION_ID, "c-3003", CONVERSATION_ID), USER_ID))
+                .isInstanceOf(ClientException.class)
+                .hasMessageContaining("重复");
     }
 
     @Test

@@ -48,7 +48,7 @@ import org.junit.jupiter.api.Tag;
  *       {@code tenant_id = :param}，INSERT 的列清单必须含 tenant_id；epoch 表
  *       <b>不存在任何 INSERT</b>（无 epoch 行必须显式拒绝，不允许默认初始化）；</li>
  *   <li>资源源引用的子链查询必须同时带 tenant + parent 双条件；</li>
- *   <li>写服务的 t_knowledge_base / t_knowledge_document 语句同样逐条核对；</li>
+ *   <li>写服务的 ai_knowledge_base / ai_knowledge_document 语句同样逐条核对；</li>
  *   <li>公共模板域仓库：每条查询显式携带 {@code tenant_id = '__public_template__'}
  *       （保留租户列值，不属于 tenantless 白名单语义）；</li>
  *   <li>knowledge 包三个 service impl 的既有查询路径：租户守卫计数必须覆盖全部

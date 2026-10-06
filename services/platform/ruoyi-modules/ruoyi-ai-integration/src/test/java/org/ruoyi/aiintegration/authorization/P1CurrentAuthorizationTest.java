@@ -200,8 +200,11 @@ class P1CurrentAuthorizationTest {
 
     @Test
     void registryCoversTheFrozenActionTable() {
-        // P1 13 + P2 7 + approved P3 4 fixed actions.
-        assertEquals(24, AiActionRegistry.knownActions().size());
+        // P1 13 + P2 7 + approved P3 4 fixed actions = 24; WP-034A added the two F03
+        // conversation-write actions (rename/delete), so the frozen table is now 26.
+        assertEquals(26, AiActionRegistry.knownActions().size());
+        assertEquals(Optional.of("ai:conversation:write"), AiActionRegistry.permissionOf("conversation.rename"));
+        assertEquals(Optional.of("ai:conversation:delete"), AiActionRegistry.permissionOf("conversation.delete"));
         assertEquals(Optional.of("ai:kb:acl"), AiActionRegistry.permissionOf("kb.acl.manage"));
         assertEquals(Optional.of("ai:run:event:read"), AiActionRegistry.permissionOf("run.events"));
         assertEquals(Optional.of("ai:run:submit"), AiActionRegistry.permissionOf("run.submit"));

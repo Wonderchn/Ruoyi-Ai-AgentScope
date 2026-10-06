@@ -327,7 +327,7 @@ class P1PersistentAclTest {
     }
 
     @Test
-    @DisplayName("创建 KB：t_knowledge_base + registry + owner ACL + epoch bump 在同一事务内按序落盘")
+    @DisplayName("创建 KB：ai_knowledge_base + registry + owner ACL + epoch bump 在同一事务内按序落盘")
     void createKnowledgeBaseWritesEverythingInsideOneTransaction() {
         PrincipalContext.set(principal());
         List<String> events = new ArrayList<>();

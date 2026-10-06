@@ -46,15 +46,15 @@ class AgentDashboardReaderTest {
             connection.setAutoCommit(false);
             try {
                 JdbcTemplate jdbc = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
-                jdbc.execute("CREATE TEMP TABLE t_user (id text, create_time timestamp, deleted smallint)");
-                jdbc.execute("CREATE TEMP TABLE t_agent_conversation (id text, user_id text, conversation_id text, create_time timestamp, deleted smallint)");
-                jdbc.execute("CREATE TEMP TABLE t_agent_message (id text, user_id text, conversation_id text, role text, message_status text, blocks jsonb, create_time timestamp, deleted smallint)");
-                jdbc.execute("CREATE TEMP TABLE t_agent_context_compaction (create_time timestamp, context_chars_before int, context_chars_after int)");
-                jdbc.execute("CREATE TEMP TABLE t_agent_memory (create_time timestamp, invalid_at timestamp)");
-                jdbc.update("INSERT INTO t_user VALUES ('u1', '2026-09-01', 0), ('u2', '2026-09-04', 0), ('deleted', '2026-09-04', 1)");
-                jdbc.update("INSERT INTO t_agent_conversation VALUES ('1', 'u1', 'c1', '2026-09-04', 0), ('2', 'u2', 'old', '2026-09-01', 0), ('3', 'u1', 'gone', '2026-09-04', 1)");
+                jdbc.execute("CREATE TEMP TABLE ai_legacy_user (id text, create_time timestamp, deleted smallint)");
+                jdbc.execute("CREATE TEMP TABLE ai_agent_conversation (id text, user_id text, conversation_id text, create_time timestamp, deleted smallint)");
+                jdbc.execute("CREATE TEMP TABLE ai_agent_message (id text, user_id text, conversation_id text, role text, message_status text, blocks jsonb, create_time timestamp, deleted smallint)");
+                jdbc.execute("CREATE TEMP TABLE ai_agent_context_compaction (create_time timestamp, context_chars_before int, context_chars_after int)");
+                jdbc.execute("CREATE TEMP TABLE ai_agent_memory (create_time timestamp, invalid_at timestamp)");
+                jdbc.update("INSERT INTO ai_legacy_user VALUES ('u1', '2026-09-01', 0), ('u2', '2026-09-04', 0), ('deleted', '2026-09-04', 1)");
+                jdbc.update("INSERT INTO ai_agent_conversation VALUES ('1', 'u1', 'c1', '2026-09-04', 0), ('2', 'u2', 'old', '2026-09-01', 0), ('3', 'u1', 'gone', '2026-09-04', 1)");
                 jdbc.update("""
-                        INSERT INTO t_agent_message VALUES
+                        INSERT INTO ai_agent_message VALUES
                           ('1','u1','c1','user','NORMAL',NULL,'2026-09-03 12:00',0),
                           ('2','u1','c1','assistant','NORMAL','[{"kind":"tool","name":"search_knowledge","status":"done"},{"kind":"tool","name":"write","displayName":"写操作","status":"failed"},{"kind":"confirm","status":"approved","calls":[{"name":"submit_leave","displayName":"提交请假"}]}]','2026-09-04 09:00',0),
                           ('3','u2','old','assistant','INTERRUPTED','[{"kind":"tool","name":"search_knowledge","status":"interrupted"},{"kind":"confirm","status":"denied","calls":[{"name":"submit_leave","displayName":"提交请假"},{"name":"write","displayName":"写操作"}]},{"kind":"confirm","status":"expired"}]','2026-09-04 09:30',0),
@@ -66,8 +66,8 @@ class AgentDashboardReaderTest {
                           ('9','u1','c1','assistant','NORMAL','[{"kind":"tool","name":"deleted_tool","status":"done"}]','2026-09-04 09:00',1),
                           ('10','u1','c1','assistant','NORMAL',NULL,'2026-09-04 12:00',0)
                         """);
-                jdbc.update("INSERT INTO t_agent_context_compaction VALUES ('2026-09-04', 1000, 300), ('2026-09-04', 3000, 1500), ('2026-09-04', 0, 0), ('2026-09-01', 100, 10)");
-                jdbc.update("INSERT INTO t_agent_memory VALUES ('2026-09-01', NULL), ('2026-09-04', NULL), ('2026-09-01', '2026-09-04'), ('2026-09-01', '2026-09-02')");
+                jdbc.update("INSERT INTO ai_agent_context_compaction VALUES ('2026-09-04', 1000, 300), ('2026-09-04', 3000, 1500), ('2026-09-04', 0, 0), ('2026-09-01', 100, 10)");
+                jdbc.update("INSERT INTO ai_agent_memory VALUES ('2026-09-01', NULL), ('2026-09-04', NULL), ('2026-09-01', '2026-09-04'), ('2026-09-01', '2026-09-02')");
 
                 var reader = new AgentDashboardReader(new NamedParameterJdbcTemplate(jdbc));
                 var clock = Clock.fixed(Instant.parse("2026-09-04T04:00:00Z"), ZoneId.of("Asia/Shanghai"));

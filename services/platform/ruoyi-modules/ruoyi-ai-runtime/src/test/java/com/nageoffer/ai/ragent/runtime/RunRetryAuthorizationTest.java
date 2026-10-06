@@ -50,6 +50,10 @@ class RunRetryAuthorizationTest {
     @SuppressWarnings("unchecked") @BeforeEach void setup() throws Exception {
         admission=new RunAdmissionService(dao,mock(RunEventAppender.class),new P2RuntimeProperties(),transactions,mock(ObjectProvider.class));
         ReflectionTestUtils.setField(admission,"access",access);
+        // D02/C1.2：受理必须在写入前取到发布权威（否则拒绝新受理）。这里给固定事实，
+        // 使本类继续只测"重试授权"这一件事，不把权威读库混进判据。
+        admission.configureModelAuthority(action -> new com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority.PublishedModel(
+                "t1","rev-1",1L,"deepseek","bound-model-v1","cat-v1","params-hash","cred-ref","op-1",Instant.EPOCH));
         request=new AdmissionRequest(1,"rag.chat",null,null,new ObjectMapper().readTree("{\"text\":\"synthetic\"}"),
                 List.of(new AdmissionRequest.ResourceRef("knowledge_base","kb1")),null,null,"source");
     }

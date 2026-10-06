@@ -36,7 +36,7 @@ class IngestionPipelineNodeMapperTest {
 
         Delete delete = method.getAnnotation(Delete.class);
         assertNotNull(delete);
-        assertEquals("DELETE FROM t_ingestion_pipeline_node WHERE pipeline_id = #{pipelineId}", delete.value()[0]);
+        assertEquals("DELETE FROM ai_ingestion_pipeline_node WHERE pipeline_id = #{pipelineId}", delete.value()[0]);
         assertEquals(int.class, method.getReturnType());
 
         Param param = method.getParameters()[0].getAnnotation(Param.class);
