@@ -41,7 +41,7 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName(value = "t_agent_message", autoResultMap = true)
+@TableName(value = "ai_agent_message", autoResultMap = true)
 public class AgentMessageDO {
 
     @TableId(type = IdType.ASSIGN_ID)

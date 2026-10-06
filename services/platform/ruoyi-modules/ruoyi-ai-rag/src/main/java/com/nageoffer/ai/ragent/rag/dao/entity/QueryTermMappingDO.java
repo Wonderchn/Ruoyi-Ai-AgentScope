@@ -25,7 +25,7 @@ import lombok.Data;
 import java.util.Date;
 
 @Data
-@TableName("t_query_term_mapping")
+@TableName("ai_query_term_mapping")
 public class QueryTermMappingDO {
 
     @TableId(type = IdType.ASSIGN_ID)

@@ -27,7 +27,7 @@ import java.util.List;
 /**
  * AgentScope 状态持久化 Mapper
  *
- * <p><b>P1.3d：主键含租户与成员。</b>t_agent_state 的主键是
+ * <p><b>P1.3d：主键含租户与成员。</b>ai_agent_state 的主键是
  * {@code (tenant_id, member_id, session_id, state_key)}（V5 建立）——
  * 键在租户内可重复的表，跨租户的隔离只能靠键本身保证：两个租户的
  * 同名 user、同 session 必须落在不同的行上，删除也只命中本租户的行。
@@ -38,7 +38,7 @@ import java.util.List;
 public interface AgentStateMapper {
 
     @Insert("""
-            INSERT INTO t_agent_state (tenant_id, member_id, user_id, session_id, state_key, payload, create_time, update_time)
+            INSERT INTO ai_agent_state (tenant_id, member_id, user_id, session_id, state_key, payload, create_time, update_time)
             VALUES (#{tenantId}, #{memberId}, #{userId}, #{sessionId}, #{stateKey}, #{payload}::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT (tenant_id, member_id, session_id, state_key)
             DO UPDATE SET payload = EXCLUDED.payload, source_refs=NULL, source_policy_version=NULL,
@@ -53,7 +53,7 @@ public interface AgentStateMapper {
 
     @Select("""
             SELECT payload
-            FROM t_agent_state
+            FROM ai_agent_state
             WHERE tenant_id = #{tenantId} AND member_id = #{memberId}
               AND session_id = #{sessionId} AND state_key = #{stateKey}
             """)
@@ -66,7 +66,7 @@ public interface AgentStateMapper {
 
     @Select("""
             SELECT source_refs::text AS source_refs, source_policy_version AS policy_version, source_acl_version AS acl_version, payload::text AS payload
-            FROM t_agent_state WHERE tenant_id = #{tenantId} AND member_id = #{memberId}
+            FROM ai_agent_state WHERE tenant_id = #{tenantId} AND member_id = #{memberId}
               AND session_id = #{sessionId} AND state_key = #{stateKey}
             """)
     Provenance selectProvenance(@Param("tenantId") String tenantId,@Param("memberId") String memberId,
@@ -75,7 +75,7 @@ public interface AgentStateMapper {
     @Select("""
             SELECT EXISTS (
                 SELECT 1
-                FROM t_agent_state
+                FROM ai_agent_state
                 WHERE tenant_id = #{tenantId} AND member_id = #{memberId}
                   AND session_id = #{sessionId}
             )
@@ -85,7 +85,7 @@ public interface AgentStateMapper {
                    @Param("sessionId") String sessionId);
 
     @Delete("""
-            DELETE FROM t_agent_state
+            DELETE FROM ai_agent_state
             WHERE tenant_id = #{tenantId} AND member_id = #{memberId}
               AND session_id = #{sessionId}
             """)
@@ -94,7 +94,7 @@ public interface AgentStateMapper {
                          @Param("sessionId") String sessionId);
 
     @Delete("""
-            DELETE FROM t_agent_state
+            DELETE FROM ai_agent_state
             WHERE tenant_id = #{tenantId} AND member_id = #{memberId}
               AND session_id = #{sessionId} AND state_key = #{stateKey}
             """)
@@ -105,7 +105,7 @@ public interface AgentStateMapper {
 
     @Select("""
             SELECT DISTINCT session_id
-            FROM t_agent_state
+            FROM ai_agent_state
             WHERE tenant_id = #{tenantId} AND member_id = #{memberId}
             ORDER BY session_id
             """)

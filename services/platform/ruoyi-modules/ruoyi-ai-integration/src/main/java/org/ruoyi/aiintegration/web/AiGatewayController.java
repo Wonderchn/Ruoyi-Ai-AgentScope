@@ -31,6 +31,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
@@ -69,6 +72,8 @@ import java.util.Set;
 @RequestMapping("/api/ai/v1")
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
 public class AiGatewayController {
+
+    private static final Logger log = LoggerFactory.getLogger(AiGatewayController.class);
 
     /** 登录证据头：与 platform {@code sa-token.token-name: Authorization} 一致。 */
     static final String LOGIN_EVIDENCE_HEADER = "Authorization";
@@ -111,6 +116,52 @@ public class AiGatewayController {
             new Route("GET", "/conversations/{id}", "conversation.read"),
             new Route("GET", "/conversations/{id}/messages", "conversation.read"),
             new Route("GET", "/conversations/{id}/export", "conversation.export"),
+            // WP-034B：F03 会话写入。服务端由**已装配**的 AiResourceController
+            // （/internal/ai/v1/conversations/{id}）承接：先功能级 requireFunction 再资源级 requireGrant，
+            // 写服务内部再取一次 PrincipalContext 并做 tenant+member 限定，0 行按"不存在"拒绝。
+            // G-52：F03「新建会话」原本**没有任何可达端点** —— 会话行只能在聊天时由 touchConversation
+            // 副作用创建，而聊天需引擎（门控关）⇒ 一条会话行都造不出来；旧路径 POST /system/session
+            // 在未打包的 ruoyi-chat（G-22）⇒ 404。此处放行显式创建。
+            // **动作复用 `conversation.rename`（→ 已播种的 `ai:conversation:write`）**，不新增动作/权限行，
+            // 与 C13.4 处置引擎四条同形：不新增权限行、不动「26 个规范动作」护栏、零迁移。
+            // 创建会话本质就是"会话写"，与改名同属对该聚合的写。
+            new Route("POST", "/conversations", "conversation.rename"),
+            new Route("PUT", "/conversations/{id}", "conversation.rename"),
+            new Route("DELETE", "/conversations/{id}", "conversation.delete"),
+            // WP-034：F10 Agent 会话面。此前 `/agent/v1/**` 完全没有白名单路由，
+            // 所以客户端**无法**经 `/api/ai/v1` 到达 WP-033B 交付的会话面——
+            // 那是"服务端可装配"与"客户端可访问"之间的缺口。
+            //
+            // 逐条登记（**不用通配 `/agent/v1/**`**，也不做根 Controller 扫描）：
+            // 通配会把同一前缀下任何将来新增的控制器一起放行，等于取消白名单。
+            //
+            // 动作复用会话读/写，不新增权限行：Agent 会话与普通会话是同一
+            // "用户自己的会话"语义（`ai:conversation:read/write/delete`），
+            // 且 AgentConversationServiceImpl 自身按 tenant+user 限定作用域。
+            // 有意**不**放行 `POST /agent/v1/conversations/batch-delete`：
+            // 批量多资源授权是计划 §13 的待决定项。
+            new Route("GET", "/agent/v1/conversations", "conversation.read"),
+            new Route("GET", "/agent/v1/conversations/{id}/messages", "conversation.read"),
+            new Route("PUT", "/agent/v1/conversations/{id}/title", "conversation.rename"),
+            new Route("DELETE", "/agent/v1/conversations/{id}", "conversation.delete"),
+            // WP-033 / C13.4（T0 登记，2026-10-06）：Agent **引擎**面。经源码核实四条真实端点
+            // 早已存在（AgentChatController:94/112/129、AgentMetaController:85），但此前
+            // 一条都不在白名单里 —— 与本文件上一段记录的会话面缺口同类：
+            // "服务端可装配"不等于"客户端可访问"。C13 已把它们接到内层可达前缀之下
+            // （类级 @RequestMapping("/internal/ai/v1")，与 RunController/AiResourceController/
+            // UploadController/AgentActionController 同形），故内层 handler 现在真实存在。
+            //
+            // 只有**两条 JSON** 在此登记：
+            new Route("POST", "/agent/v1/stop", "run.cancel"),
+            new Route("GET", "/agent/v1/meta", "agent.execute"),
+            // 另两条是 text/event-stream（GET /agent/v1/chat、POST /agent/v1/chat/confirm），
+            // **刻意不在此登记**：本通用转发有 2s/2MiB 上限且不做 SSE，登记了只会超时或缓冲失败。
+            // 它们由 AiGatewayStreamController 逐条精确映射（专用流式受限传输，先于 catch-all 生效）。
+            //
+            // 动作与权限全部**复用既有已播种行**，不新增 canonical 动作、不新增迁移：
+            //   run.cancel    -> ai:run:cancel     (V5)
+            //   agent.execute -> ai:agent:execute  (V6)
+            // `P1CurrentAuthorizationTest` 断言 knownActions().size()==26，故不得新增动作。
             new Route("GET", "/memories", "memory.read"),
             new Route("GET", "/runs/{id}", "run.get"),
             new Route("GET", "/runs/{id}/event-records", "run.events"),
@@ -164,7 +215,13 @@ public class AiGatewayController {
             return fail(ex.errorCode());
         } catch (AiGatewayClient.UpstreamUnavailableException ex) {
             if(response!=null && response.isCommitted()){return null;}
-            // 上游不可用/恶意响应：不放行也不泄露原因
+            // 上游不可用/恶意响应：不放行也不泄露原因。
+            // 但**服务端必须留下原因** —— 客户端只拿泛化文案，诊断信息只进日志。
+            // 没有这一行时，三种截然不同的内部失败（执行事实不可用 / 内层路由未命中 /
+            // 内层派发抛异常）在外部完全同形（都是 503 + "授权服务不可用"），
+            // 导致对同一现象做出三次互相矛盾的归因（G-34）。
+            log.warn("ai-gateway upstream-unavailable: method={} path={} reason={}",
+                    request.getMethod(), request.getRequestURI(), ex.getMessage(), ex);
             return fail(P04ErrorCode.AUTHORIZATION_UNAVAILABLE);
         }
     }

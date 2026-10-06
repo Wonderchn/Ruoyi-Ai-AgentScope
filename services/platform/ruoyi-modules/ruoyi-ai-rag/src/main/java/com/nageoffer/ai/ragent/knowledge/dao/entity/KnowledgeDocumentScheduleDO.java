@@ -36,7 +36,7 @@ import java.util.Date;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName("t_knowledge_document_schedule")
+@TableName("ai_knowledge_document_schedule")
 public class KnowledgeDocumentScheduleDO {
 
     @TableId(type = IdType.ASSIGN_ID)

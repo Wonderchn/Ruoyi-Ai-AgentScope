@@ -35,7 +35,7 @@ public interface AgentMemoryExtractionMapper extends BaseMapper<AgentMemoryExtra
      */
     @Select("""
             SELECT max(to_message_id)
-            FROM t_agent_memory_extraction
+            FROM ai_agent_memory_extraction
             WHERE user_id = #{userId}
               AND tenant_id = #{tenantId} AND member_id = #{memberId}
               AND status IN ('WRITTEN', 'NOOP', 'DROPPED')
@@ -50,7 +50,7 @@ public interface AgentMemoryExtractionMapper extends BaseMapper<AgentMemoryExtra
      */
     @Select("""
             SELECT status
-            FROM t_agent_memory_extraction
+            FROM ai_agent_memory_extraction
             WHERE user_id = #{userId}
               AND tenant_id = #{tenantId} AND member_id = #{memberId}
               AND status IN ('WRITTEN', 'NOOP', 'DROPPED')
@@ -68,7 +68,7 @@ public interface AgentMemoryExtractionMapper extends BaseMapper<AgentMemoryExtra
      * attemptCount 一并回写，快照失配靠把它退回上一档来实现「不计入尝试次数」
      */
     @Update("""
-            UPDATE t_agent_memory_extraction
+            UPDATE ai_agent_memory_extraction
             SET status = #{status}, decision_count = #{decisionCount},
                 attempt_count = #{attemptCount}, settle_time = CURRENT_TIMESTAMP
             WHERE id = #{id} AND status = 'PROCESSING'
@@ -83,7 +83,7 @@ public interface AgentMemoryExtractionMapper extends BaseMapper<AgentMemoryExtra
      * 这一路留着尝试次数不退档：能把进程带走的抽取不该无限重来
      */
     @Update("""
-            UPDATE t_agent_memory_extraction
+            UPDATE ai_agent_memory_extraction
             SET status = 'CONFLICT', settle_time = CURRENT_TIMESTAMP
             WHERE user_id = #{userId}
               AND tenant_id = #{tenantId} AND member_id = #{memberId}
@@ -100,7 +100,7 @@ public interface AgentMemoryExtractionMapper extends BaseMapper<AgentMemoryExtra
      */
     @Select("""
             SELECT coalesce(max(attempt_count), 0)
-            FROM t_agent_memory_extraction
+            FROM ai_agent_memory_extraction
             WHERE user_id = #{userId}
               AND tenant_id = #{tenantId} AND member_id = #{memberId}
               AND to_message_id = #{toMessageId}

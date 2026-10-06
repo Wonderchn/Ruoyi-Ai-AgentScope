@@ -23,6 +23,7 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.nageoffer.ai.ragent.framework.convention.MergedTableRow;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -30,17 +31,32 @@ import lombok.NoArgsConstructor;
 
 import java.util.Date;
 
+/**
+ * 会话行（统一库 {@code platform.ai_conversation}）。
+ *
+ * <p>{@code id} 是统一表主键，{@code conversationId} 是<b>公开会话标识</b>——两者不等价，
+ * 消息按 {@code conversation_id + tenant_id + member_id} 关联到本行（V7
+ * {@code fk_message_conversation}）。{@code tenantId}/{@code memberId} 是平台侧身份列，
+ * 没有数据库默认值来源，只能由 {@code AiDomainWriteIdentity} 从执行主体写入。
+ */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName("t_conversation")
-public class ConversationDO {
+@TableName("ai_conversation")
+public class ConversationDO implements MergedTableRow {
 
     @TableId(type = IdType.ASSIGN_ID)
     private String id;
 
+    /** 公开会话标识（varchar(20)）：不是主键，消息与摘要按它关联。 */
     private String conversationId;
+
+    /** 平台租户列（varchar(64)，NOT NULL）：由执行主体写入，不接受请求体取值。 */
+    private String tenantId;
+
+    /** canonical 成员列（varchar(160)，NOT NULL）：{@code platform:<tenantId>:<userId>}。 */
+    private String memberId;
 
     private String userId;
 

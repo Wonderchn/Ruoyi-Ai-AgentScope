@@ -22,6 +22,7 @@ import cn.hutool.core.lang.Assert;
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
+import com.nageoffer.ai.ragent.authorization.AiDomainWriteIdentity;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.framework.mq.producer.MessageQueueProducer;
 import com.nageoffer.ai.ragent.rag.controller.request.MessageFeedbackRequest;
@@ -100,7 +101,7 @@ public class MessageFeedbackServiceImpl implements MessageFeedbackService {
         Assert.isTrue(vote == 1 || vote == -1, () -> new ClientException("反馈值必须为 1 或 -1"));
 
         ConversationMessageDO message = loadAssistantMessage(messageId, userId);
-        doUpsertFeedback(messageId, userId, message.getConversationId(),
+        doUpsertFeedback(message, userId,
                 vote, request.getReason(), request.getComment(), System.currentTimeMillis());
     }
 
@@ -138,8 +139,37 @@ public class MessageFeedbackServiceImpl implements MessageFeedbackService {
         return message;
     }
 
-    private void doUpsertFeedback(String messageId, String userId, String conversationId,
+    /**
+     * 反馈行的身份取自被反馈的<b>已持久化</b>消息行（受理事实），不取自事件载荷。
+     *
+     * <p>异步消费者没有 {@code PrincipalContext}；即使有，也必须与消息行一致——否则就是拿别的
+     * 成员的消息写自己的反馈。消息行缺身份（走过未适配的写路径）时拒绝，不造默认值。
+     *
+     * <p>审计列必须显式给值：统一链的 {@code ai_message_feedback.create_time/update_time} 是
+     * {@code NOT NULL} 且<b>没有</b>列默认值，而 {@code @TableField(fill = INSERT)} 只对
+     * MyBatis-Plus 自己注入的语句生效，不会作用在注解 {@code @Insert} 上——靠它等于靠空值。
+     */
+    private static MessageFeedbackDO feedbackOf(ConversationMessageDO message, String userId,
+                                                Integer vote, String reason, String comment,
+                                                long submitTime) {
+        Date stamp = new Date(submitTime);
+        MessageFeedbackDO feedback = MessageFeedbackDO.builder()
+                .messageId(message.getId())
+                .conversationId(message.getConversationId())
+                .userId(userId)
+                .vote(vote)
+                .reason(reason)
+                .comment(comment)
+                .createTime(stamp)
+                .updateTime(stamp)
+                .build();
+        AiDomainWriteIdentity.applyFromPersistedFact(feedback, message.getTenantId(), message.getMemberId());
+        return feedback;
+    }
+
+    private void doUpsertFeedback(ConversationMessageDO message, String userId,
                                   Integer vote, String reason, String comment, long submitTime) {
+        String messageId = message.getId();
         MessageFeedbackDO existing = feedbackMapper.selectOne(
                 Wrappers.lambdaQuery(MessageFeedbackDO.class)
                         .eq(MessageFeedbackDO::getMessageId, messageId)
@@ -148,15 +178,8 @@ public class MessageFeedbackServiceImpl implements MessageFeedbackService {
         );
 
         if (existing == null) {
-            MessageFeedbackDO feedback = MessageFeedbackDO.builder()
-                    .messageId(messageId)
-                    .conversationId(conversationId)
-                    .userId(userId)
-                    .vote(vote)
-                    .reason(reason)
-                    .comment(comment)
-                    .build();
-            feedbackMapper.upsertActiveFeedback(feedback);
+            feedbackMapper.upsertActiveFeedback(
+                    feedbackOf(message, userId, vote, reason, comment, submitTime));
         } else {
             // 仅当本次提交时间晚于记录最后更新时间时才覆盖，避免多节点并行消费乱序
             feedbackMapper.update(
@@ -178,23 +201,17 @@ public class MessageFeedbackServiceImpl implements MessageFeedbackService {
         String userId = event.getUserId();
         Assert.notBlank(messageId, () -> new ClientException("消息ID不能为空"));
         Assert.notBlank(userId, () -> new ClientException("用户ID不能为空"));
+        ConversationMessageDO message = loadAssistantMessage(messageId, userId);
         if (event.isCancelled()) {
-            ConversationMessageDO message = loadAssistantMessage(messageId, userId);
-            MessageFeedbackDO feedback = MessageFeedbackDO.builder()
-                    .messageId(messageId)
-                    .conversationId(message.getConversationId())
-                    .userId(userId)
-                    .build();
-            feedbackMapper.upsertCancelledFeedback(feedback);
+            feedbackMapper.upsertCancelledFeedback(
+                    feedbackOf(message, userId, null, null, null, event.getSubmitTime()));
             return;
         }
 
         Assert.notNull(event.getVote(), () -> new ClientException("反馈值不能为空"));
-        ConversationMessageDO message = loadAssistantMessage(messageId, userId);
         doUpsertFeedback(
-                messageId,
+                message,
                 userId,
-                message.getConversationId(),
                 event.getVote(),
                 event.getReason(),
                 event.getComment(),

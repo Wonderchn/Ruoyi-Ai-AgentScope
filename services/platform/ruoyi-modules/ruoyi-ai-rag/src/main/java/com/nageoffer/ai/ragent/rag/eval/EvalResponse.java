@@ -30,7 +30,7 @@ import java.util.List;
 public class EvalResponse {
 
     /**
-     * 召回的业务文档 ID 列表（已去重；从 t_knowledge_document.doc_name 剥文件后缀得到，对齐评测集 reference_doc_ids）
+     * 召回的业务文档 ID 列表（已去重；从 ai_knowledge_document.doc_name 剥文件后缀得到，对齐评测集 reference_doc_ids）
      */
     private List<String> retrievedDocIds;
 

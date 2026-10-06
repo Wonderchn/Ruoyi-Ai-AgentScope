@@ -55,7 +55,7 @@ import java.util.Map;
 public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
 
     /**
-     * 与 t_agent_profile.avatar 列宽一致
+     * 与 ai_agent_profile.avatar 列宽一致
      */
     private static final int AVATAR_MAX_LENGTH = 32;
 

@@ -83,6 +83,24 @@ public class AiGatewayClient {
         public UpstreamUnavailableException(String reason) {
             super(reason);
         }
+
+        /**
+         * 带原因的构造（诊断用）。
+         *
+         * <p><b>为什么需要它。</b>内层派发失败时，`LocalAiGatewayClient.dispatchTo` 原实现
+         * 只抛 `new UpstreamUnavailableException("internal dispatch failed")` ——
+         * **既不带 message 也不带 cause**，于是没有 `Caused by`、没有内层异常类型，
+         * 任何人都无法从日志判断内层为什么失败。后果是同一个 503 现象被归因了三次
+         * （引擎门控 / acl_epoch / 内层不是 bean），每次都只解释了一部分（T8 实测）。
+         *
+         * <p><b>对外不泄露。</b>本异常由调用方（网关）一律映射为固定的 503 包络，
+         * message 与 cause **只进服务端日志**。因此这里保留完整原因不会扩大对外暴露面。
+         *
+         * <p>⚠️ 这是**加性**变更：单参构造保留，既有调用点行为不变。
+         */
+        public UpstreamUnavailableException(String reason, Throwable cause) {
+            super(reason, cause);
+        }
     }
 
     /**
@@ -212,9 +230,24 @@ public class AiGatewayClient {
                 .connectTimeout(Duration.ofMillis(connectTimeoutMillis))
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
+        // 方法必须按 ForwardRequest 选（C13.3-3）：本方法此前硬写 .GET()，于是
+        // `POST /agent/v1/chat/confirm`（审批确认，POST + JSON body + text/event-stream 响应）
+        // 在 http 传输形态下永远只能以 GET 发出上游，上游按方法不匹配拒绝或空跑。
+        // 内嵌 local 形态不走本方法（LocalAiGatewayClient 覆写了两个重载，且内层直调的
+        // 请求方法继承外层原始请求），所以此前只有 http 形态受影响 —— 但契约上必须一致。
         HttpRequest.Builder builder = HttpRequest.newBuilder(request.uri())
-                .timeout(Duration.ofMillis(connectTimeoutMillis)).GET();
+                .timeout(Duration.ofMillis(connectTimeoutMillis));
         request.headers().forEach(builder::header);
+        if ("POST".equals(request.method())) {
+            builder.POST(request.body() == null
+                    ? HttpRequest.BodyPublishers.noBody()
+                    : HttpRequest.BodyPublishers.ofByteArray(request.body()));
+        } else if ("GET".equals(request.method())) {
+            builder.GET();
+        } else {
+            // 其余方法不在本专用通道的登记范围内：显式拒绝，不做静默降级为 GET
+            throw new UpstreamUnavailableException("unsupported event-stream method");
+        }
         HttpResponse<java.io.InputStream> upstream;
         try {
             upstream = streamClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());

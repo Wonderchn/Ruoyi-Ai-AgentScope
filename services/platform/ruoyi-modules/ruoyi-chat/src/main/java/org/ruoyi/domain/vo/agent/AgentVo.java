@@ -28,7 +28,7 @@ public class AgentVo implements Serializable {
      * 智能体ID
      */
     @ExcelProperty(value = "智能体ID")
-    private Long id;
+    private String id;
 
     /**
      * 智能体名称

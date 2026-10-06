@@ -66,5 +66,27 @@ public class AgentContract implements RuntimeActionContract {
     public static void fields(JsonNode node,Set<String> allowed){if(node==null || !node.isObject()) bad();node.fieldNames().forEachRemaining(field->{if(!allowed.contains(field)) bad();});}
     private static void text(JsonNode node,int max){if(node==null || !node.isTextual() || node.asText().isBlank() || node.asText().length()>max) bad();}
     private static void bad(){throw new RunApiException(RunErrorCode.BAD_REQUEST,"invalid frozen Agent input");}
-    public void onAdmitted(ExecutionPrincipal principal,String runId,AdmissionRequest request){ledger.admitted(runs.findRun(principal.tenantId(),runId).orElseThrow(),request,model.model());}
+    /**
+     * 受理时刻的模型名来自**发布权威**（C1.2 第 1 行：新受理的 run 绑新版本）。
+     *
+     * <p>不能用 {@code ChatGateway.model()}：那是 run 作用域面，而受理时刻**还没有** run 绑定；
+     * 用无身份面会（正确地）抛异常，等于把受理打断。也不读 YAML —— 那正是 D02 要取消的第二权威。
+     * 读不到权威即拒绝受理（fail-closed）。
+     *
+     * <p>{@code model}（ChatGateway）字段保留 ctor 形参形态：不改宿主的 wiring 签名；
+     * 本类自受理时刻起不再用它取模型名。
+     */
+    private com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority modelAuthority;
+
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void configureModelAuthority(com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority authority) {
+        this.modelAuthority=authority;
+    }
+
+    public void onAdmitted(ExecutionPrincipal principal,String runId,AdmissionRequest request){
+        var run=runs.findRun(principal.tenantId(),runId).orElseThrow();
+        var authority=modelAuthority;
+        if(authority==null) throw new com.nageoffer.ai.ragent.runtime.config.ConfigAuthorityUnavailable("engine model authority is not wired; refusing to record an admitted model");
+        ledger.admitted(run,request,authority.requirePublished(action()).modelId());
+    }
 }

@@ -39,7 +39,7 @@ import java.util.Date;
 @AllArgsConstructor
 @Builder
 @Accessors(chain = true)
-@TableName("t_conversation_summary")
+@TableName("ai_conversation_summary")
 public class ConversationSummaryDO {
     private String tenantId;
     private String memberId;

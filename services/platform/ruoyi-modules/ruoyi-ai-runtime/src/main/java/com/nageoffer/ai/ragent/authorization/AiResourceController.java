@@ -90,6 +90,17 @@ public class AiResourceController {
     private TenantRunReadRepository runs;
     private TenantEventReadRepository events;
     private com.nageoffer.ai.ragent.framework.security.RevocationGuard revocations;
+    /**
+     * (3) 交付 permit 泄漏修复：成功路径的 permit 交给请求级持有者，由
+     * {@link AiDeliveryPermitConfiguration.DeliveryPermitInterceptor} 在 afterCompletion 单点释放。
+     * 用 {@code @Autowired(required=false)} setter 注入：不改公共构造签名，切片里没有 holder 也不炸。
+     */
+    private AiDeliveryPermitConfiguration.DeliveryPermitHolder deliveryPermits;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void configureDeliveryPermits(AiDeliveryPermitConfiguration.DeliveryPermitHolder deliveryPermits){
+        this.deliveryPermits=deliveryPermits;
+    }
     private org.springframework.beans.factory.ObjectProvider<org.ruoyi.ai.api.runtime.AuthorizedRetrievalPort<com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope, com.nageoffer.ai.ragent.framework.convention.RetrievedChunk>> retrievers;
     private org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.ingest.EmbeddingGateway> p2Embeddings;
     @org.springframework.beans.factory.annotation.Autowired
@@ -104,6 +115,9 @@ public class AiResourceController {
     private <T> ResponseEntity<ApiEnvelope<T>> reply(String action,String ref,T data) {
         if(revocations==null){throw new ServiceException("delivery permit unavailable");}
         var operation=revocations.enter(PrincipalContext.require(),action,ref);
+        // (3) 交付 permit 泄漏修复：登记给请求级持有者，成功路径不再需要人工释放；
+        // 失败路径仍走下面的 operation.close()（两侧都幂等，见 AiDeliveryPermitConfiguration 注释）。
+        if(deliveryPermits!=null){deliveryPermits.register(operation,operation.permitId(),operation.operationId());}
         try {
             return ResponseEntity.ok().header("Cache-Control","no-store")
                     .header("X-AI-Delivery-Permit",operation.permitId()).header("X-AI-Delivery-Operation",operation.operationId())
@@ -118,6 +132,49 @@ public class AiResourceController {
         var rows=conversations.listConversations(principal.tenantId(),principal.membershipId(),offset,limit).stream()
                 .filter(row->authorization.check(principal,"conversation.read","conv:"+row.conversationId())==Verdict.GRANT).toList();
         return reply("conversation.read","tenant:conversations",rows);
+    }
+
+    /**
+     * 新建会话请求体（G-52）。
+     *
+     * <p>刻意只有标题一个字段：归属（{@code tenant_id}/{@code member_id}/{@code user_id}）
+     * **只来自执行主体**，请求体不提供、也无法覆盖。缺标题由写服务的
+     * {@code requireText} 拒绝为 {@code BAD_REQUEST}，不在这里另造一套校验。
+     */
+    public record CreateConversationRequest(String title) { }
+
+    /**
+     * 新建会话（F03 / G-52）。
+     *
+     * <p><b>授权顺序与读取、改名路径一致，但 ref 层级**有意**不同。</b>
+     * 创建时**还没有 conversationId**，所以外层只能问"能不能在这个租户下建会话"：
+     * {@code requireFunction(principal, "conversation.rename", "tenant:conversations")} ——
+     * 与 {@code GET /conversations} 同一个 tenant 级 ref，动作换成写动作
+     * {@code conversation.rename}。**内层**由写服务在拿到新 id 之后问"这个新资源归谁"：
+     * {@code "conv:" + newId}（见 {@code AiResourceWriteService#createConversation}）。
+     * **两层 ref 不同是刻意的**，不要为了"看起来一致"把它们改成同一个。
+     *
+     * <p><b>为什么这里没有 {@code requireGrant}。</b>资源级判定要求"资源已存在且已授予主体"，
+     * 而创建时资源尚不存在；新资源的 owner ACL 由写服务在同一事务里落盘。写服务走
+     * {@code write(...)} —— G-40 {@code ai.integration.high-risk.enabled} 守卫的**唯一**经过点，
+     * 因此**未开启 high-risk 的实例上本接口 fail-closed 返回 503 是正确行为**，不是缺陷。
+     */
+    @PostMapping("/conversations")
+    public ResponseEntity<ApiEnvelope<Map<String,Object>>> createConversation(
+            @RequestBody(required=false) CreateConversationRequest request){
+        var principal=PrincipalContext.require();
+        authorization.requireFunction(principal,"conversation.rename","tenant:conversations");
+        String conversationId = writeService.createConversation(
+                new AiResourceWriteService.ConversationDraft(request==null?null:request.title()));
+        // 与 createKnowledgeBase（:402）同形：**不调 reply(...)**。
+        //
+        // 理由（G-52d 实测，行级证据见报告 §7.4）：reply(...) 会在控制器层再登记一次交付 permit
+        // （:106 的 revocations.enter），而创建在写服务内**已经 bump 过 ai_acl_epoch**（业务行 + registry
+        // + owner ACL 已提交）⇒ 第二次登记拿同一主体的**旧 aclVersion** 去比较 ⇒ 409
+        // 「aclVersion 已变化（N -> N+1），拒绝登记」⇒ **提交成功、响应失败**，客户端重试即造出重复会话。
+        // 网关对 POST/PUT 走 JSON 转发路径、**不要求 X-AI-Delivery-* 回执头**（对照组：createKnowledgeBase
+        // 同样不登记，实测 200）⇒ 创建不需要那次登记；**读路径的 reply(...) 一字未动**。
+        return ResponseEntity.ok(ApiEnvelope.ok(Map.of("conversationId",conversationId,"created",true)));
     }
 
     @GetMapping("/conversations/{conversationId}")
@@ -135,6 +192,49 @@ public class AiResourceController {
         if(conversations.findConversation(principal.tenantId(),principal.membershipId(),conversationId).isEmpty()){
             throw new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);}
         return reply("conversation.read","conv:"+conversationId,conversations.listMessages(principal.tenantId(),principal.membershipId(),conversationId,offset,limit));
+    }
+
+    /**
+     * F03 重命名请求体（D10）。
+     *
+     * <p>只接受标题与期望版本两个字段，避免把 DTO 变成可越权改归属的入口。
+     *
+     * <p>{@code expectedVersion} 是 {@code Long} 而非 {@code long}：**必须能表达 null**，
+     * 因为"缺失/null = 显式兼容模式"是 C9.2 明文规定的语义。用基本类型会把缺失静默变成 0，
+     * 从而把每一次不带该字段的旧客户端改名判成 409——那是静默的行为破坏，不是兼容。
+     */
+    public record RenameConversationRequest(String title, Long expectedVersion) { }
+
+    /**
+     * 重命名会话（F03）＋ D10 乐观锁。
+     *
+     * <p>授权顺序与读取路径完全一致：先 {@code requireFunction}（功能级）再 {@code requireGrant}
+     * （资源级）——两者都通过才进写服务；写服务内部还会再取一次 {@code PrincipalContext.require()}，
+     * 所以主体不可能被调用方替换。0 行受影响且未携带 {@code expectedVersion} 时按"不存在"拒绝
+     * （不泄露存在性），携带 {@code expectedVersion} 时由写服务区分 409/404。
+     *
+     * <p>响应携带**新的** {@code version}，使客户端可自证并用于下一次改名（C9.2/C9.5）。
+     */
+    @PutMapping("/conversations/{conversationId}")
+    public ResponseEntity<ApiEnvelope<Map<String,Object>>> renameConversation(@PathVariable String conversationId,
+            @RequestBody RenameConversationRequest request){
+        var principal=PrincipalContext.require();
+        authorization.requireFunction(principal,"conversation.rename","conv:"+conversationId);
+        requireGrant(principal,"conversation.rename","conv:"+conversationId);
+        Long expectedVersion = request==null?null:request.expectedVersion();
+        long version = writeService.renameConversation(conversationId, request==null?null:request.title(), expectedVersion);
+        return reply("conversation.rename","conv:"+conversationId,
+                Map.of("conversationId",conversationId,"renamed",true,"version",version));
+    }
+
+    /** 删除会话（F03）：软删；授权顺序同上。 */
+    @DeleteMapping("/conversations/{conversationId}")
+    public ResponseEntity<ApiEnvelope<Map<String,Object>>> deleteConversation(@PathVariable String conversationId){
+        var principal=PrincipalContext.require();
+        authorization.requireFunction(principal,"conversation.delete","conv:"+conversationId);
+        requireGrant(principal,"conversation.delete","conv:"+conversationId);
+        writeService.deleteConversation(conversationId);
+        return reply("conversation.delete","conv:"+conversationId,Map.of("conversationId",conversationId,"deleted",true));
     }
 
     @GetMapping("/memories")

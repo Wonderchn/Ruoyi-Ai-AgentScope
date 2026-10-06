@@ -34,7 +34,7 @@ import java.util.Date;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName("t_agent_prompt")
+@TableName("ai_agent_prompt")
 public class AgentPromptDO {
 
     @TableId(type = IdType.ASSIGN_ID)

@@ -58,7 +58,7 @@ public class AgentSkillAdminServiceImpl implements AgentSkillAdminService {
     private static final Pattern SKILL_CODE_PATTERN = Pattern.compile("^[a-z][a-z0-9_]{1,63}$");
 
     /**
-     * 与 t_agent_skill 的列宽一致
+     * 与 ai_agent_skill 的列宽一致
      */
     private static final int NAME_MAX_LENGTH = 64;
     private static final int DESCRIPTION_MAX_LENGTH = 512;

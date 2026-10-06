@@ -63,7 +63,7 @@ public class AgentConversationSummarizer {
     private static final int TIMESTAMP_MINUTE_LENGTH = 16;
 
     /**
-     * 只认分节结构，不匹配具体小节名（标题在 t_agent_prompt 里可改）
+     * 只认分节结构，不匹配具体小节名（标题在 ai_agent_prompt 里可改）
      */
     private static final String SECTION_PREFIX = "## ";
 

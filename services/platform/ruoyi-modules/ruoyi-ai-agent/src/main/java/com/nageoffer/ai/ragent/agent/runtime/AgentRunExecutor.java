@@ -43,14 +43,27 @@ public class AgentRunExecutor implements RunExecutor {
     private final P3Properties properties;
     private final JdbcTemplate jdbc;
     private final AgentProviderBoundary boundary;
+    /** run 级配置绑定端口（D02/C1.2）：由已注入的 JdbcTemplate 组装，避免为改构造签名而改宿主 wiring。 */
+    private final com.nageoffer.ai.ragent.runtime.config.RunConfigBindingPort bindingPort;
     @org.springframework.beans.factory.annotation.Autowired
     private org.springframework.beans.factory.ObjectProvider<P2FaultInjector> faults;
-    public AgentRunExecutor(AgentLedger ledger,RunAccessService access,AgentToolService tools,ChatGateway gateway,UsageLedgerService usage,P3Properties properties,JdbcTemplate jdbc,AgentProviderBoundary boundary){this.ledger=ledger;this.access=access;this.tools=tools;this.gateway=gateway;this.usage=usage;this.properties=properties;this.jdbc=jdbc;this.boundary=boundary;}
+    public AgentRunExecutor(AgentLedger ledger,RunAccessService access,AgentToolService tools,ChatGateway gateway,UsageLedgerService usage,P3Properties properties,JdbcTemplate jdbc,AgentProviderBoundary boundary){this.ledger=ledger;this.access=access;this.tools=tools;this.gateway=gateway;this.usage=usage;this.properties=properties;this.jdbc=jdbc;this.boundary=boundary;this.bindingPort=new com.nageoffer.ai.ragent.runtime.config.JdbcRunConfigBindingPort(jdbc);}
+
+    /**
+     * 该 run **受理时固定**的发布版本（D02/C1.2）。
+     *
+     * <p>synthetic 模式用**标明的合成绑定**（合成的 run 不绑 V15 发布版本，走端口只会拒绝自己人；
+     * 与 D11 {@code LocalKnowledge} 同口径，不是第二权威）。真实模式走端口、失败即拒。
+     */
+    private com.nageoffer.ai.ragent.runtime.config.RunConfigBinding bound(RunExecution execution) {
+        if(properties.isSyntheticModel()) return com.nageoffer.ai.ragent.ingest.SyntheticChatGateway.syntheticBinding(execution.tenantId(),execution.runId());
+        return bindingPort.requireBoundRevision(execution.tenantId(),execution.runId());
+    }
     public String action(){return "agent.run";}
     public Outcome execute(RunExecution execution) {
         var run=execution.run();var guard=execution.guard();
         if(!"p3-core-v1".equals(run.executionVersion())) return Outcome.failed("AGENT_CHECKPOINT_INCOMPATIBLE");
-        ledger.compatible(run,gateway.model());
+        ledger.compatible(run,gateway.model(bound(execution)));
         // Wall budget is measured from first start, including approval wait and subsequent attempts.
         var budget=AgentModelAdapter.parse(run.budgetJson()==null?"{}":run.budgetJson());
         if(run.startedAt()!=null && java.time.Instant.now().isAfter(run.startedAt().plusSeconds(budget.path("maxWallClockSeconds").asInt(600)))) return Outcome.failed("BUDGET_EXCEEDED");
@@ -68,11 +81,11 @@ public class AgentRunExecutor implements RunExecutor {
             });}
         });
         ReActAgent agent=ReActAgent.builder().name("CoreAgent").sysPrompt("Use only the frozen tools and report retrieved evidence and resolved test-ticket results.")
-            .model(new AgentModelAdapter(execution,ledger,access,gateway,usage,properties.isSyntheticModel(),stop,boundary,faults.getIfAvailable()))
+            .model(new AgentModelAdapter(execution,ledger,access,gateway,usage,properties.isSyntheticModel(),stop,boundary,faults.getIfAvailable(),bindingPort))
             // The SDK reserves its final iteration for summarization. Application model-step
             // budgets are enforced by AgentModelAdapter; do not suppress an already admitted tool.
             .toolkit(toolkit).maxIters(12).maxRetries(1)
-            .stateStore(new FencedAgentStateStore(jdbc,ledger,run,guard,gateway.model())).build();
+            .stateStore(new FencedAgentStateStore(jdbc,ledger,run,guard,gateway.model(bound(execution)))).build();
         try {
             var context=RuntimeContext.builder().userId(run.subject()).sessionId(run.runId()).build();
             var reply=agent.call(AgentModelAdapter.parse(run.inputJson()).path("text").asText(),context).block();

@@ -32,7 +32,7 @@ public interface AgentMemoryMapper extends BaseMapper<AgentMemoryDO> {
      * 取代旧条目：一道闸同时挡幻觉ID、已失效ID、他人ID，调用方只认返回 1
      */
     @Update("""
-            UPDATE t_agent_memory
+            UPDATE ai_agent_memory
             SET invalid_at = CURRENT_TIMESTAMP, superseded_by = #{newId}
             WHERE id = #{oldId} AND user_id = #{userId}
               AND tenant_id = #{tenantId} AND member_id = #{memberId} AND invalid_at IS NULL
@@ -47,7 +47,7 @@ public interface AgentMemoryMapper extends BaseMapper<AgentMemoryDO> {
      * 置 invalid_at 不留后继；用户撤回与容量淘汰共用这一条，库上不区分，谁干的只看日志
      */
     @Update("""
-            UPDATE t_agent_memory
+            UPDATE ai_agent_memory
             SET invalid_at = CURRENT_TIMESTAMP
             WHERE id = #{oldId} AND user_id = #{userId}
               AND tenant_id = #{tenantId} AND member_id = #{memberId} AND invalid_at IS NULL
@@ -61,7 +61,7 @@ public interface AgentMemoryMapper extends BaseMapper<AgentMemoryDO> {
      * 清空：该用户全部生效条目一次失效，不留后继；同事务内 CURRENT_TIMESTAMP 相同，失效时刻即这批台账的结算时刻
      */
     @Update("""
-            UPDATE t_agent_memory
+            UPDATE ai_agent_memory
             SET invalid_at = CURRENT_TIMESTAMP
             WHERE user_id = #{userId}
               AND tenant_id = #{tenantId} AND member_id = #{memberId} AND invalid_at IS NULL

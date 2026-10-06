@@ -23,6 +23,7 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.nageoffer.ai.ragent.framework.convention.MergedTableRow;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -32,20 +33,30 @@ import java.util.Date;
 
 /**
  * 会话消息反馈实体类
- * 用于存储用户对助手消息的点赞/踩反馈
+ * 用于存储用户对助手消息的点赞/踩反馈（统一库 {@code platform.ai_message_feedback}）。
+ *
+ * <p>{@code tenantId}/{@code memberId} 是 V7 的 NOT NULL 平台侧列，没有默认值来源：
+ * 写路径必须先用 {@code AiDomainWriteIdentity} 从执行主体填充本对象，否则插入会被数据库
+ * 拒绝——反馈不允许落到无身份的桶里。
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName("t_message_feedback")
-public class MessageFeedbackDO {
+@TableName("ai_message_feedback")
+public class MessageFeedbackDO implements MergedTableRow {
 
     /**
      * 主键 ID，采用雪花算法生成
      */
     @TableId(type = IdType.ASSIGN_ID)
     private String id;
+
+    /** 平台租户列（varchar(64)，NOT NULL）：由执行主体写入，不接受请求体取值。 */
+    private String tenantId;
+
+    /** canonical 成员列（varchar(160)，NOT NULL）：{@code platform:<tenantId>:<userId>}。 */
+    private String memberId;
 
     /**
      * 消息 ID，关联到会话消息

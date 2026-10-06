@@ -35,7 +35,7 @@ import java.util.function.Supplier;
 /**
  * PG 向量写侧实现（P1.3b 租户贯通）。
  *
- * <p>{@code t_knowledge_vector} 是所有租户共用的物理表，因此每一条写语句都必须带 {@code tenant_id}：
+ * <p>{@code ai_knowledge_vector} 是所有租户共用的物理表，因此每一条写语句都必须带 {@code tenant_id}：
  * 删除按 {@code (tenant_id, id)} 收窄，upsert 的冲突目标必须是 {@code (tenant_id, id)} 复合键。
  * 冲突目标只剩 {@code (id)} 时，后写的租户会直接覆盖先写租户的同一行。
  *
@@ -51,7 +51,7 @@ public class PgVectorStoreService implements VectorStoreService {
 
     /** 批量写入：列顺序即绑定顺序，{@code tenant_id} 是第 2 个参数。 */
     private static final String INSERT_SQL =
-            "INSERT INTO t_knowledge_vector (id, tenant_id, collection_name, content, metadata, embedding) "
+            "INSERT INTO ai_knowledge_vector (id, tenant_id, collection_name, content, metadata, embedding) "
                     + "VALUES (?, ?, ?, ?, ?::jsonb, ?::vector)";
 
     /**
@@ -61,7 +61,7 @@ public class PgVectorStoreService implements VectorStoreService {
      * 同 id 的另一个租户行会被这次 upsert 直接覆盖，等于跨租户改写别人的向量。
      */
     private static final String UPSERT_SQL =
-            "INSERT INTO t_knowledge_vector (id, tenant_id, collection_name, content, metadata, embedding) "
+            "INSERT INTO ai_knowledge_vector (id, tenant_id, collection_name, content, metadata, embedding) "
                     + "VALUES (?, ?, ?, ?, ?::jsonb, ?::vector) "
                     + "ON CONFLICT (tenant_id, id) DO UPDATE SET "
                     + "collection_name = EXCLUDED.collection_name, content = EXCLUDED.content, "
@@ -69,15 +69,15 @@ public class PgVectorStoreService implements VectorStoreService {
 
     /** 文档级删除：租户 + 逻辑库 + 元数据里的 doc_id，三个条件缺一不可。 */
     private static final String DELETE_DOCUMENT_SQL =
-            "DELETE FROM t_knowledge_vector WHERE tenant_id = ? AND collection_name = ? AND metadata->>'doc_id' = ?";
+            "DELETE FROM ai_knowledge_vector WHERE tenant_id = ? AND collection_name = ? AND metadata->>'doc_id' = ?";
 
     /** 单 chunk 删除：id 全局唯一只说明"能定位到行"，不说明"有权删这行"。 */
     private static final String DELETE_CHUNK_SQL =
-            "DELETE FROM t_knowledge_vector WHERE tenant_id = ? AND id = ?";
+            "DELETE FROM ai_knowledge_vector WHERE tenant_id = ? AND id = ?";
 
     /** 批量删除前缀：{@code tenant_id} 是第 1 个绑定参数，chunkId 占位符紧随其后。 */
     private static final String DELETE_CHUNKS_SQL_PREFIX =
-            "DELETE FROM t_knowledge_vector WHERE tenant_id = ? AND id IN (";
+            "DELETE FROM ai_knowledge_vector WHERE tenant_id = ? AND id IN (";
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
@@ -177,11 +177,11 @@ public class PgVectorStoreService implements VectorStoreService {
             SQLException sqlException = e.getSQLException();
             String sqlState = sqlException == null || sqlException.getSQLState() == null
                     ? "-" : sqlException.getSQLState();
-            log.error("向量写操作被拒绝：t_knowledge_vector 缺少 C6 门控的 V3 租户列与 (tenant_id, id) 唯一键，"
+            log.error("向量写操作被拒绝：ai_knowledge_vector 缺少 C6 门控的 V3 租户列与 (tenant_id, id) 唯一键，"
                             + "operation={}, exception={}, sqlState={}；本实现不回落到不带租户条件的旧语句",
                     operation, e.getClass().getSimpleName(), sqlState);
             throw new IllegalStateException("向量写操作失败（" + operation
-                    + "）：t_knowledge_vector 缺少 C6 门控的 V3 租户列 tenant_id 与 (tenant_id, id) 唯一键，"
+                    + "）：ai_knowledge_vector 缺少 C6 门控的 V3 租户列 tenant_id 与 (tenant_id, id) 唯一键，"
                     + "请先执行 V3 迁移；本实现不会回落到不带租户条件的旧语句", e);
         }
     }

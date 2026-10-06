@@ -36,7 +36,7 @@ import java.util.Date;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName("t_agent_memory")
+@TableName("ai_agent_memory")
 public class AgentMemoryDO {
 
     @TableId(type = IdType.ASSIGN_ID)

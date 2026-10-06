@@ -182,9 +182,19 @@ tenant:
     - sys_client
     - sys_oss_config
     - flow_spel
-    # 链路追踪监控表：运维需跨租户全局查看，且 trace_node 在异步线程写入、租户上下文不传播，故排除租户过滤
-    - trace_run
-    - trace_node
+    # 链路追踪监控表：运维需跨租户全局查看，且 ai_flow_trace_node 在异步线程写入、租户上下文不传播，故排除租户过滤
+    - ai_flow_trace_run
+    - ai_flow_trace_node
+    # WP-031B：AI 侧 Mapper 注册进 platform 后，租户行拦截器会给这些表注入 tenant_id。
+    # 下面 3 张统一表<b>没有</b> tenant_id 列（冻结迁移 V7..V11 的事实），必须排除，
+    # 否则一旦有租户上下文，查询/写入会注入不存在的列而直接报错。
+    #   ai_legacy_user       ← UserMapper（冻结 AI 用户表，身份域，按主键查）
+    #   ai_provider_envelope / ai_provider_spend ← ProviderSpendEnvelope 的额度账本（按 execution_id/call_id 定位）
+    # 不变量由 AiEmbeddedTenantExclusionTest 钉住：凡被 AI 侧 @TableName 映射且冻结形状无
+    # tenant_id 的表，必须出现在本清单里。
+    - ai_legacy_user
+    - ai_provider_envelope
+    - ai_provider_spend
 
 # MyBatisPlus配置
 # https://baomidou.com/config/

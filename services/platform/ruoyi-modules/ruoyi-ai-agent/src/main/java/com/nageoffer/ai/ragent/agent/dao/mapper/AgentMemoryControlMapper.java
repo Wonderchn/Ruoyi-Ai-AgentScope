@@ -35,7 +35,7 @@ public interface AgentMemoryControlMapper {
      * 懒创建，并发下靠 ON CONFLICT 收敛；now 必须来自应用时钟，与消息 create_time 同源避免钟差
      */
     @Insert("""
-            INSERT INTO t_agent_memory_control (tenant_id, member_id, user_id, revision, create_time, update_time)
+            INSERT INTO ai_agent_memory_control (tenant_id, member_id, user_id, revision, create_time, update_time)
             VALUES (#{tenantId}, #{memberId}, #{userId}, 0, #{now}, #{now})
             ON CONFLICT (tenant_id, member_id) DO NOTHING
             """)
@@ -46,7 +46,7 @@ public interface AgentMemoryControlMapper {
 
     @Select("""
             SELECT user_id, tenant_id, member_id, revision, create_time, update_time
-            FROM t_agent_memory_control
+            FROM ai_agent_memory_control
             WHERE tenant_id = #{tenantId} AND member_id = #{memberId}
             """)
     AgentMemoryControlDO selectByUserId(@Param("tenantId") String tenantId,
@@ -57,7 +57,7 @@ public interface AgentMemoryControlMapper {
      */
     @Select("""
             SELECT user_id, tenant_id, member_id, revision, create_time, update_time
-            FROM t_agent_memory_control
+            FROM ai_agent_memory_control
             WHERE tenant_id = #{tenantId} AND member_id = #{memberId}
             FOR UPDATE
             """)
@@ -68,7 +68,7 @@ public interface AgentMemoryControlMapper {
      * 记忆集变更后推版本号；NOOP 不走这里，所以单靠版本号挡不住重复写入
      */
     @Update("""
-            UPDATE t_agent_memory_control
+            UPDATE ai_agent_memory_control
             SET revision = revision + 1, update_time = CURRENT_TIMESTAMP
             WHERE tenant_id = #{tenantId} AND member_id = #{memberId}
             """)

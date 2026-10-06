@@ -115,7 +115,7 @@ public class EvalController {
 
     /**
      * 与 chunks 一一对应的业务 docId 列表（长度相同、保留 null、不去重）
-     * 链路：chunkId → t_knowledge_chunk.docId（雪花）→ t_knowledge_document.doc_name → 剥文件后缀
+     * 链路：chunkId → ai_knowledge_chunk.docId（雪花）→ ai_knowledge_document.doc_name → 剥文件后缀
      * 评测集的 reference_doc_ids 用业务码（如 `FAQ_VAC_001`），与此处对齐
      */
     private List<String> resolveContextDocIds(List<RetrievedChunk> chunks) {

@@ -24,6 +24,7 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.nageoffer.ai.ragent.framework.convention.GroundingChunk;
+import com.nageoffer.ai.ragent.framework.convention.MergedTableRow;
 import com.nageoffer.ai.ragent.framework.convention.SourceRef;
 import com.nageoffer.ai.ragent.knowledge.dao.handler.GroundingChunkListTypeHandler;
 import com.nageoffer.ai.ragent.knowledge.dao.handler.SourceRefListTypeHandler;
@@ -38,14 +39,19 @@ import java.util.List;
 
 /**
  * 会话消息实体类
- * 用于存储对话过程中的消息记录
+ * 用于存储对话过程中的消息记录（统一库 {@code platform.ai_message}）。
+ *
+ * <p>{@code tenantId}/{@code memberId} 是平台侧身份列（NOT NULL，无默认值来源），
+ * 只能由 {@code AiDomainWriteIdentity} 从执行主体写入；{@code conversationId} 必须是
+ * 所属会话的公开标识，V7 {@code fk_message_conversation} 要求
+ * {@code (tenant_id, conversation_id, member_id)} 命中会话行。
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName(value = "t_message", autoResultMap = true)
-public class ConversationMessageDO {
+@TableName(value = "ai_message", autoResultMap = true)
+public class ConversationMessageDO implements MergedTableRow {
 
     /**
      * 主键 ID，采用雪花算法生成
@@ -57,6 +63,16 @@ public class ConversationMessageDO {
      * 会话 ID，关联到具体的对话会话
      */
     private String conversationId;
+
+    /**
+     * 平台租户列（varchar(64)，NOT NULL）：由执行主体写入，不接受请求体取值
+     */
+    private String tenantId;
+
+    /**
+     * canonical 成员列（varchar(160)，NOT NULL）：{@code platform:<tenantId>:<userId>}
+     */
+    private String memberId;
 
     /**
      * 用户 ID，标识消息发送者

@@ -29,7 +29,7 @@ public class AgentBo extends BaseEntity {
     /**
      * 智能体ID
      */
-    private Long id;
+    private String id;
 
     /**
      * 智能体名称

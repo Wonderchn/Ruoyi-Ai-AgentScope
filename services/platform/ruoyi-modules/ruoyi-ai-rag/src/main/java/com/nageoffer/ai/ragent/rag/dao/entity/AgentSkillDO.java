@@ -40,7 +40,7 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName(value = "t_agent_skill", autoResultMap = true)
+@TableName(value = "ai_agent_skill", autoResultMap = true)
 public class AgentSkillDO {
 
     @TableId(type = IdType.ASSIGN_ID)

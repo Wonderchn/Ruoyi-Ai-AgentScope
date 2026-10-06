@@ -41,9 +41,9 @@ public class KnowledgeGraphInstanceVo implements Serializable {
     private String graphUuid;
 
     /**
-     * 关联knowledge_info.kid
+     * 关联知识库 ID（统一库 {@code ai_knowledge_base.id}）
      */
-    @ExcelProperty(value = "关联knowledge_info.kid")
+    @ExcelProperty(value = "关联知识库ID")
     private String knowledgeId;
 
     /**

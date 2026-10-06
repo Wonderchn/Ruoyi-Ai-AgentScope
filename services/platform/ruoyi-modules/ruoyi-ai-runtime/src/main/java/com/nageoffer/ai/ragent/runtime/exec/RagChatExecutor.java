@@ -22,6 +22,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.convention.ChatMessage;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService;
+import com.nageoffer.ai.ragent.runtime.config.ConfigAuthorityUnavailable;
+import com.nageoffer.ai.ragent.runtime.config.RunConfigBinding;
+import com.nageoffer.ai.ragent.runtime.config.RunConfigBindingPort;
+import com.nageoffer.ai.ragent.runtime.config.RunScopedChatPort;
 import org.ruoyi.ai.api.runtime.ChatPort;
 import org.ruoyi.ai.api.runtime.DocumentPort;
 import com.nageoffer.ai.ragent.ingest.EmbeddingGateway;
@@ -64,7 +68,7 @@ public class RagChatExecutor implements RunExecutor {
 
     private final DocumentPort documentDao;
     private final EmbeddingGateway embeddingGateway;
-    private final ChatPort<ChatMessage> chatGateway;
+    private final RunScopedChatPort chatGateway;
     private final EgressPolicy egressPolicy;
     private final UsageLedgerService usageLedger;
     private final ObjectProvider<PlatformFactsClient> platformFacts;
@@ -77,7 +81,26 @@ public class RagChatExecutor implements RunExecutor {
     @org.springframework.beans.factory.annotation.Autowired
     private ProviderCallBoundary providerBoundary;
 
-    public RagChatExecutor(DocumentPort documentDao, EmbeddingGateway embeddingGateway, ChatPort<ChatMessage> chatGateway,
+    /**
+     * run 级配置绑定端口（D02/C1.2）。
+     *
+     * <p>{@code required=false} + **使用点 fail-closed**：端口缺席时模型步判失败
+     * （{@code MODEL_CONFIG_UNAVAILABLE}），而**不是**用某个默认模型继续跑。这样"没接线"
+     * 是一个可见的运行期失败，且读、检索等不依赖模型权威的步骤仍可用。
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private RunConfigBindingPort runConfigBindingPort;
+
+    /** 解析该 run **受理时固定**的发布版本；读不到即拒绝（不得取当前版本顶替，C1.2 第 3 行）。 */
+    private RunConfigBinding boundRevision(RunExecution execution) {
+        RunConfigBindingPort port = runConfigBindingPort;
+        if (port == null) {
+            throw new ConfigAuthorityUnavailable("run config binding port is not wired");
+        }
+        return port.requireBoundRevision(execution.tenantId(), execution.runId());
+    }
+
+    public RagChatExecutor(DocumentPort documentDao, EmbeddingGateway embeddingGateway, RunScopedChatPort chatGateway,
                            EgressPolicy egressPolicy, UsageLedgerService usageLedger,
                            ObjectProvider<PlatformFactsClient> platformFacts,
                            ObjectProvider<com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService> authorization,
@@ -259,7 +282,17 @@ public class RagChatExecutor implements RunExecutor {
             if (guard.isCancelRequested()) {
                 return new Outcome("CANCELLED", Map.of("at", "model"), null);
             }
-            egressPolicy.requireAllowed(chatGateway.provider());
+            RunConfigBinding binding;
+            try {
+                binding = boundRevision(execution);
+            } catch (ConfigAuthorityUnavailable unavailable) {
+                // C1.1/C1.2：该 run 的绑定版本读不到 ⇒ **拒绝**（不回退 YAML、不取当前版本顶替）。
+                // 归因所需的原因进服务端日志（§6.1 第 11 条）。
+                log.warn("model step refused: config binding unavailable runId={} cause={}",
+                        execution.runId(), unavailable.getMessage());
+                return Outcome.failed("MODEL_CONFIG_UNAVAILABLE");
+            }
+            egressPolicy.requireAllowed(binding.providerId());
             access.current(execution.run(),Set.of("kb.read"));
             if(usageLedger.hasCall(execution.tenantId(),execution.runId(),"model")) return new Outcome("NEEDS_RECONCILIATION",Map.of(),"MODEL_USAGE_UNKNOWN");
             guard.appendEvent(RunEventAppender.EVENT_STEP_STARTED, Map.of(
@@ -268,13 +301,13 @@ public class RagChatExecutor implements RunExecutor {
             var operation=providerBoundary.enter(execution);
             String callId;
             try {callId = guard.commitAtomic(() -> usageLedger.startCall(execution.tenantId(), execution.runId(), execution.attempt(),
-                    "model", UsageLedgerService.KIND_CHAT, chatGateway.provider(), chatGateway.model(), null));} catch(RuntimeException ex){operation.close();throw ex;}
+                    "model", UsageLedgerService.KIND_CHAT, binding.providerId(), binding.modelId(), null));} catch(RuntimeException ex){operation.close();throw ex;}
             StringBuilder answer = new StringBuilder();
             StringBuilder pending = new StringBuilder();
             final boolean[] cancelled = {false};
             ChatPort.ChatResult chatResult;
             try {
-                chatResult = chatGateway.stream(chatMessages(question, chunks), maxTokens(execution),
+                chatResult = chatGateway.stream(binding, chatMessages(question, chunks), maxTokens(execution),
                         delta -> {
                             if (cancelled[0]) {
                                 throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.RUN_STATE_CONFLICT);
@@ -322,8 +355,8 @@ public class RagChatExecutor implements RunExecutor {
             ref.put("chars", answer.length());
             ref.put("citations", citations);
             ref.put("answer",answer.toString());
-            ref.put("provider", chatGateway.provider());
-            ref.put("model", chatGateway.model());
+            ref.put("provider", binding.providerId());
+            ref.put("model", binding.modelId());
             guard.commitAtomic(()->{
                 persistMessage(execution,answer.toString(),citations,1);
                 return guard.commitStep("model", "model", toJson(ref), null, toJson(Map.of("calls", 1)));
@@ -339,8 +372,8 @@ public class RagChatExecutor implements RunExecutor {
             result.put("answer", answer.toString());
             result.put("citations", citations);
             result.put("evidenceInsufficient", false);
-            result.put("provider", chatGateway.provider());
-            result.put("model", chatGateway.model());
+            result.put("provider", binding.providerId());
+            result.put("model", binding.modelId());
             return Outcome.succeeded(result);
         }
 

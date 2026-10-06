@@ -84,12 +84,40 @@ public interface AgentConversationService {
     void rename(String conversationId, String userId, String title);
 
     /**
+     * 新建会话（F03 / G-52），返回新的 {@code conversationId}。
+     *
+     * <p><b>为什么入参只有标题。</b>归属（tenant / member / user）只能来自可信执行主体：
+     * 运行时写服务 {@code AiResourceWriteService#createConversation} 在 {@code PrincipalContext}
+     * 上解析归属，并在同一条 {@code write(...)} 路径里写业务行 + registry + owner ACL + epoch bump。
+     * 本方法**不接受**任何归属字段，也**不自己拼授权事实** —— 多一个 {@code userId} 入参只会让人
+     * 以为"换个 userId 就能建到别人名下"，而归属根本不看它。
+     *
+     * <p>空白标题由实现按 {@link #rename} 的同一口径拒绝。
+     */
+    String create(String title);
+
+    /**
      * 删除会话、消息及对应的 Agent 状态
      */
     void delete(String conversationId, String userId);
 
     /**
-     * 批量删除，逐条走 delete 保证状态清理不漏
+     * 该会话对当前主体**可见**（同租户 + 同成员 + 同用户）？
+     *
+     * <p><b>为什么批量删除需要这个显式读。</b>{@link #delete} 走的是"按谓词 DELETE"，
+     * 会话不存在时 SQL 影响 0 行、**不抛异常**。单资源删除下这是合理的（幂等），
+     * 但批量删除必须先回答"整批是否都可访问"——否则一次请求里混进一个别人的 ID，
+     * 结果会是"其余都删掉了、那个静默跳过"，即 C4 明文禁止的**部分成功**。
+     * 因此批量路径先逐个做可见性判定，再进入事务。
+     */
+    boolean existsForUser(String conversationId, String userId);
+
+    /**
+     * 批量删除，逐条走 delete 保证状态清理不漏。
+     *
+     * <p><b>调用前置条件（由 {@code ConversationBatchDeleteService} 保证，这里做防御性复核）。</b>
+     * 集合非空、已去重、并且**全部资源都已通过可见性判定**。空集合在这里是<b>拒绝</b>而不是
+     * 静默返回：静默返回会让客户端把"没删任何东西"当成成功。
      */
     void deleteBatch(List<String> conversationIds, String userId);
 }

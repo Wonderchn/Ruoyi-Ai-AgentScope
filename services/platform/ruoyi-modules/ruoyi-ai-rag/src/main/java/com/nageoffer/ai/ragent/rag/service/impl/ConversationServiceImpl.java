@@ -28,6 +28,8 @@ import com.nageoffer.ai.ragent.rag.dao.entity.ConversationSummaryDO;
 import com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMessageMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.ConversationSummaryMapper;
+import com.nageoffer.ai.ragent.authorization.AiDomainWriteIdentity;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.rag.service.ConversationService;
@@ -88,6 +90,10 @@ public class ConversationServiceImpl implements ConversationService {
         if (StrUtil.isBlank(userId)) {
             throw new ClientException("用户信息缺失");
         }
+        // 身份只来自执行主体（E5/WP-025）：请求体里的 userId 只允许与主体一致，
+        // 不允许代替主体。统一库 ai_conversation.tenant_id/member_id 是 NOT NULL，
+        // 取值由 AiDomainWriteIdentity 从主体写入，不靠列默认值。
+        requireRequestUserMatchesPrincipal(userId);
 
         ConversationDO existing = conversationMapper.selectOne(
                 Wrappers.lambdaQuery(ConversationDO.class)
@@ -104,12 +110,21 @@ public class ConversationServiceImpl implements ConversationService {
                     .title(title)
                     .lastTime(request.getLastTime())
                     .build();
+            AiDomainWriteIdentity.apply(record);
             conversationMapper.insert(record);
             return;
         }
 
         existing.setLastTime(request.getLastTime());
         conversationMapper.updateById(existing);
+    }
+
+    /** 请求体 userId 必须与执行主体一致，否则拒绝（不静默改写归属）。 */
+    private static void requireRequestUserMatchesPrincipal(String userId) {
+        String principalUserId = PrincipalContext.require().userId();
+        if (!principalUserId.equals(userId)) {
+            throw new ClientException("会话归属与执行主体不一致");
+        }
     }
 
     @Override

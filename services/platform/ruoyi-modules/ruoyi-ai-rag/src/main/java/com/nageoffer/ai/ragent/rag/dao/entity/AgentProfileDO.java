@@ -34,7 +34,7 @@ import java.util.Date;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName("t_agent_profile")
+@TableName("ai_agent_profile")
 public class AgentProfileDO {
 
     @TableId(type = IdType.ASSIGN_ID)

@@ -37,7 +37,7 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName(value = "t_intent_node", autoResultMap = true)
+@TableName(value = "ai_intent_node", autoResultMap = true)
 public class IntentNodeDO {
 
     @TableId(type = IdType.ASSIGN_ID)

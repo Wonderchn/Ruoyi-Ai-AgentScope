@@ -32,7 +32,19 @@ public class OutboxDao {
         this.jdbc = jdbc;
     }
 
-    public record OutboxRow(String tenantId, String eventId, String runId, String eventType, Long seq, int attemptCount) {
+    /**
+     * 一条被认领的待投递行。
+     *
+     * <p><b>为什么带上 {@code payload} 与 {@code operationKey}。</b>C12.2 要求交给传输实现的
+     * {@code OutboxMessage} 携带 {@code payload}（JSON 文本）与可空的 {@code operationKey}。
+     * 这两个字段在 {@code outbox_event} 里的形态不同：{@code payload} 是既有的
+     * {@code JSONB} 列（V7），而 {@code operationKey} <b>没有独立列</b> —— 它按约定放在
+     * 载荷里。所以这里不新加列、不加迁移，直接
+     * {@code payload ->> 'operationKey'} 读出来：既满足契约，也不虚构存储。
+     * {@code payload::text} 取文本形态，避免传输层再碰 JSONB 的驱动细节。
+     */
+    public record OutboxRow(String tenantId, String eventId, String runId, String eventType, Long seq,
+                            int attemptCount, String payload, String operationKey) {
     }
 
     /** 认领待投递行；locked_until 过期后可被再次认领（at-least-once）。 */
@@ -44,10 +56,12 @@ public class OutboxDao {
                         + "  SELECT tenant_id, event_id FROM outbox_event "
                         + "  WHERE state='PENDING' AND next_attempt_at <= now() "
                         + "  ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT ?) "
-                        + "RETURNING o.tenant_id, o.event_id, o.run_id, o.event_type, o.seq, o.attempt_count",
+                        + "RETURNING o.tenant_id, o.event_id, o.run_id, o.event_type, o.seq, o.attempt_count, "
+                        + "o.payload::text AS payload_text, o.payload ->> 'operationKey' AS operation_key",
                 (rs, rowNum) -> new OutboxRow(rs.getString("tenant_id"), rs.getString("event_id"),
                         rs.getString("run_id"), rs.getString("event_type"),
-                        rs.getObject("seq") == null ? null : rs.getLong("seq"), rs.getInt("attempt_count")),
+                        rs.getObject("seq") == null ? null : rs.getLong("seq"), rs.getInt("attempt_count"),
+                        rs.getString("payload_text"), rs.getString("operation_key")),
                 workerId, lockSeconds, batch);
     }
 

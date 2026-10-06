@@ -42,12 +42,12 @@ public class AgentDashboardReader {
             WITH users AS (
                 SELECT count(*) AS total_users,
                        count(*) FILTER (WHERE create_time >= :start) AS new_users
-                FROM t_user WHERE deleted = 0 AND create_time < :end
+                FROM ai_legacy_user WHERE deleted = 0 AND create_time < :end
             ), sessions AS (
                 SELECT count(*) AS total_sessions,
                        count(*) FILTER (WHERE create_time >= :start) AS sessions,
                        count(*) FILTER (WHERE create_time >= :previousStart AND create_time < :start) AS previous_sessions
-                FROM t_agent_conversation WHERE deleted = 0 AND create_time < :end
+                FROM ai_agent_conversation WHERE deleted = 0 AND create_time < :end
             ), messages AS (
                 SELECT count(*) AS total_messages,
                        count(*) FILTER (WHERE create_time >= :start) AS messages,
@@ -56,7 +56,7 @@ public class AgentDashboardReader {
                        count(DISTINCT user_id) FILTER (WHERE create_time >= :previousStart AND create_time < :start) AS previous_active_users,
                        count(DISTINCT (conversation_id, user_id)) FILTER (WHERE create_time >= :start) AS active_sessions,
                        count(DISTINCT (conversation_id, user_id)) FILTER (WHERE create_time >= :previousStart AND create_time < :start) AS previous_active_sessions
-                FROM t_agent_message WHERE deleted = 0 AND create_time < :end
+                FROM ai_agent_message WHERE deleted = 0 AND create_time < :end
             )
             SELECT * FROM users CROSS JOIN sessions CROSS JOIN messages
             """;
@@ -77,7 +77,7 @@ public class AgentDashboardReader {
                    count(*) FILTER (WHERE block_count > 0 AND tool_calls = 0) AS direct_replies,
                    count(*) FILTER (WHERE tool_calls = 1) AS single_tool_replies,
                    count(*) FILTER (WHERE tool_calls > 1) AS multi_tool_replies,
-                   (SELECT count(*) FROM t_agent_message
+                   (SELECT count(*) FROM ai_agent_message
                      WHERE deleted = 0 AND role = 'assistant'
                        AND create_time >= :previousStart AND create_time < :start) AS previous_total
             FROM (
@@ -86,7 +86,7 @@ public class AgentDashboardReader {
                        CASE WHEN jsonb_typeof(blocks) = 'array'
                             THEN (SELECT count(*) FROM jsonb_array_elements(blocks) b WHERE b ->> 'kind' = 'tool')
                             ELSE 0 END AS tool_calls
-                FROM t_agent_message
+                FROM ai_agent_message
                 WHERE deleted = 0 AND role = 'assistant' AND create_time >= :start AND create_time < :end
             ) reply
             """;
@@ -105,7 +105,7 @@ public class AgentDashboardReader {
                        CASE WHEN b ->> 'status' IN ('done', 'failed', 'interrupted', 'approved', 'denied', 'pending', 'expired')
                             THEN b ->> 'status' ELSE 'other' END AS status,
                        b -> 'calls' AS calls
-                FROM t_agent_message m
+                FROM ai_agent_message m
                 CROSS JOIN LATERAL jsonb_array_elements(
                     CASE WHEN jsonb_typeof(m.blocks) = 'array' THEN m.blocks ELSE '[]'::jsonb END) b
                 WHERE m.deleted = 0 AND m.role = 'assistant'
@@ -155,20 +155,20 @@ public class AgentDashboardReader {
      */
     static final String MEMORY_SQL = """
             SELECT
-                (SELECT count(*) FROM t_agent_context_compaction WHERE create_time >= :start AND create_time < :end) AS compactions,
-                (SELECT count(*) FROM t_agent_context_compaction
+                (SELECT count(*) FROM ai_agent_context_compaction WHERE create_time >= :start AND create_time < :end) AS compactions,
+                (SELECT count(*) FROM ai_agent_context_compaction
                    WHERE create_time >= :start AND create_time < :end AND context_chars_before > 0) AS compactions_with_chars,
                 (SELECT 100.0 * (1 - sum(context_chars_after)::numeric / NULLIF(sum(context_chars_before), 0))
-                   FROM t_agent_context_compaction
+                   FROM ai_agent_context_compaction
                    WHERE create_time >= :start AND create_time < :end AND context_chars_before > 0) AS context_reduction_pct,
-                (SELECT COALESCE(sum(context_chars_before), 0) FROM t_agent_context_compaction
+                (SELECT COALESCE(sum(context_chars_before), 0) FROM ai_agent_context_compaction
                    WHERE create_time >= :start AND create_time < :end AND context_chars_before > 0) AS context_chars_before,
-                (SELECT COALESCE(sum(context_chars_after), 0) FROM t_agent_context_compaction
+                (SELECT COALESCE(sum(context_chars_after), 0) FROM ai_agent_context_compaction
                    WHERE create_time >= :start AND create_time < :end AND context_chars_before > 0) AS context_chars_after,
                 count(*) FILTER (WHERE invalid_at IS NULL OR invalid_at >= :end) AS active_memories,
                 count(*) FILTER (WHERE create_time >= :start) AS added_memories,
                 count(*) FILTER (WHERE invalid_at >= :start AND invalid_at < :end) AS invalidated_memories
-            FROM t_agent_memory WHERE create_time < :end
+            FROM ai_agent_memory WHERE create_time < :end
             """;
 
     /*
@@ -178,27 +178,27 @@ public class AgentDashboardReader {
      */
     static final String TRENDS_SQL = """
             SELECT date_trunc(:granularity, create_time) AS bucket, 'messages' AS metric, count(*) AS value
-            FROM t_agent_message WHERE deleted = 0 AND create_time >= :start AND create_time < :end GROUP BY bucket
+            FROM ai_agent_message WHERE deleted = 0 AND create_time >= :start AND create_time < :end GROUP BY bucket
             UNION ALL
             SELECT date_trunc(:granularity, create_time), 'activeusers', count(DISTINCT user_id)
-            FROM t_agent_message WHERE deleted = 0 AND create_time >= :start AND create_time < :end GROUP BY 1
+            FROM ai_agent_message WHERE deleted = 0 AND create_time >= :start AND create_time < :end GROUP BY 1
             UNION ALL
             SELECT date_trunc(:granularity, create_time), 'sessions', count(*)
-            FROM t_agent_conversation WHERE deleted = 0 AND create_time >= :start AND create_time < :end GROUP BY 1
+            FROM ai_agent_conversation WHERE deleted = 0 AND create_time >= :start AND create_time < :end GROUP BY 1
             UNION ALL
             SELECT date_trunc(:granularity, create_time), 'messages_prev', count(*)
-            FROM t_agent_message WHERE deleted = 0 AND create_time >= :previousStart AND create_time < :start GROUP BY 1
+            FROM ai_agent_message WHERE deleted = 0 AND create_time >= :previousStart AND create_time < :start GROUP BY 1
             UNION ALL
             SELECT date_trunc(:granularity, create_time), 'activeusers_prev', count(DISTINCT user_id)
-            FROM t_agent_message WHERE deleted = 0 AND create_time >= :previousStart AND create_time < :start GROUP BY 1
+            FROM ai_agent_message WHERE deleted = 0 AND create_time >= :previousStart AND create_time < :start GROUP BY 1
             UNION ALL
             SELECT date_trunc(:granularity, create_time), 'sessions_prev', count(*)
-            FROM t_agent_conversation WHERE deleted = 0 AND create_time >= :previousStart AND create_time < :start GROUP BY 1
+            FROM ai_agent_conversation WHERE deleted = 0 AND create_time >= :previousStart AND create_time < :start GROUP BY 1
             UNION ALL
             SELECT date_trunc(:granularity, create_time),
                    CASE message_status WHEN 'NORMAL' THEN 'normal' WHEN 'INTERRUPTED' THEN 'interrupted'
                        WHEN 'AWAITING_CONFIRM' THEN 'awaitingConfirm' ELSE 'unknown' END, count(*)
-            FROM t_agent_message WHERE deleted = 0 AND role = 'assistant'
+            FROM ai_agent_message WHERE deleted = 0 AND role = 'assistant'
                 AND create_time >= :start AND create_time < :end GROUP BY 1, 2
             """;
 

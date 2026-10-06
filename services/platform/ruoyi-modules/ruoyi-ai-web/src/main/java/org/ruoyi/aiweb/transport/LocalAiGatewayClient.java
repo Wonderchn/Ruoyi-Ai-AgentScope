@@ -358,7 +358,13 @@ public class LocalAiGatewayClient extends AiGatewayClient {
         } catch (UpstreamUnavailableException e) {
             throw e;
         } catch (Exception e) {
-            throw new UpstreamUnavailableException("internal dispatch failed");
+            // 诊断修复（T0，2026-10-06）：此前这里 `new UpstreamUnavailableException("internal dispatch failed")`
+            // **既不带 e 也不带 message** ⇒ 没有 Caused by、没有内层异常类型，
+            // 任何人都无法从日志判断内层为什么失败。后果是同一个 503 现象被归因了三次
+            // （引擎门控 / acl_epoch / 内层不是 bean），每次都只对一部分 —— 观测面在这行被掐断。
+            // 现在保留原因与内层目标路径；**对外文案不变**（网关仍回泛化文案，只有服务端日志能看到）。
+            throw new UpstreamUnavailableException(
+                    "internal dispatch failed: target=" + targetPath.pathWithinApplication() + " cause=" + e, e);
         } finally {
             PrincipalContext.restore(previous);
         }
@@ -375,7 +381,19 @@ public class LocalAiGatewayClient extends AiGatewayClient {
         if (webContext == null) {
             throw new UpstreamUnavailableException("internal dispatch unavailable");
         }
-        RequestMappingHandlerMapping mapping = webContext.getBean(RequestMappingHandlerMapping.class);
+        // **按名字取，不能按类型取**（T0，2026-10-06，根因定案）：
+        // 此前是 `webContext.getBean(RequestMappingHandlerMapping.class)` 按类型取，
+        // 而本形态下该类型有**两个**候选：
+        //   requestMappingHandlerMapping（正常 MVC）
+        //   controllerEndpointHandlerMapping（Spring Boot Actuator 的控制器端点映射；
+        //     因 `management.endpoints.web.exposure.include: '*'` 被创建）
+        // ⇒ 抛 NoUniqueBeanDefinitionException ⇒ 被 dispatchTo 的 catch-all 泛化成 503
+        // ⇒ **在任何路由匹配之前就失败**，表现为"所有已登记 AI 路由 38/38 全 503"。
+        // 单测覆盖不到它：测试上下文里通常只有一个该类型的 bean，Actuator 那个
+        // 只在真实 Web 上下文 + actuator web exposure 打开时出现。
+        // 这是 F-3 同族的第三次（Executor 多 @Primary / OkHttpClient 静默错配 / 本次按类型取歧义）。
+        RequestMappingHandlerMapping mapping =
+                webContext.getBean("requestMappingHandlerMapping", RequestMappingHandlerMapping.class);
         HandlerExecutionChain chain = mapping.getHandler(target);
         if (chain == null) {
             throw new UpstreamUnavailableException("internal route unmatched");

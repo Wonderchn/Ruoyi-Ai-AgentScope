@@ -45,7 +45,7 @@ public class PgVectorStoreAdmin implements VectorStoreAdmin {
               JOIN pg_opclass opc ON opc.oid = i.indclass[0]
               JOIN pg_namespace opns ON opns.oid = opc.opcnamespace
               JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = i.indkey[0]
-              WHERE t.oid = to_regclass('t_knowledge_vector') AND ns.nspname = 'ai'
+              WHERE t.oid = to_regclass('ai_knowledge_vector') AND ns.nspname = 'ai'
                 AND am.amname = 'hnsw' AND opc.opcname = 'vector_cosine_ops'
                 AND opns.nspname = 'extensions' AND a.attname = 'embedding'
                 AND a.atttypmod = ? AND i.indnkeyatts = 1
@@ -93,14 +93,14 @@ public class PgVectorStoreAdmin implements VectorStoreAdmin {
         // tenant_id 列由 C6 门控的 V3 迁移补齐；缺列时**明确失败**，
         // 绝不回落到只按 collection_name 删除的旧语句——那正是本方法要消除的越权面。
         // noinspection SqlDialectInspection,SqlNoDataSourceInspection
-        String sql = "DELETE FROM t_knowledge_vector WHERE tenant_id = ? AND collection_name = ?";
+        String sql = "DELETE FROM ai_knowledge_vector WHERE tenant_id = ? AND collection_name = ?";
         int deleted;
         try {
             deleted = jdbcTemplate.update(sql, tenantId, collectionName);
         } catch (BadSqlGrammarException e) {
             log.error("dropVectorSpace 失败：向量表缺少 tenant_id 列（需 V3 迁移），拒绝执行无租户条件的删除, "
                     + "tenant={}, collection={}, sqlState={}", tenantId, collectionName, e.getSQLException().getSQLState());
-            throw new IllegalStateException("dropVectorSpace 需要 V3 迁移补齐 t_knowledge_vector.tenant_id；"
+            throw new IllegalStateException("dropVectorSpace 需要 V3 迁移补齐 ai_knowledge_vector.tenant_id；"
                     + "在补齐之前不执行任何无租户条件的删除", e);
         }
         log.info("已删除 tenant={} collection={} 的残留向量行，count={}", tenantId, collectionName, deleted);

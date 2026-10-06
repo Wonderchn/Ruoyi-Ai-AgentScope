@@ -74,7 +74,7 @@ public class AgentController extends BaseController {
      */
     @SaCheckPermission("agent:agent:query")
     @GetMapping("/{id}")
-    public R<AgentVo> getInfo(@PathVariable Long id) {
+    public R<AgentVo> getInfo(@PathVariable String id) {
         return R.ok(agentService.queryById(id));
     }
 
@@ -106,7 +106,7 @@ public class AgentController extends BaseController {
     @SaCheckPermission("agent:agent:remove")
     @Log(title = "智能体管理", businessType = BusinessType.DELETE)
     @DeleteMapping("/{ids}")
-    public R<Void> remove(@PathVariable Long[] ids) {
+    public R<Void> remove(@PathVariable String[] ids) {
         return toAjax(agentService.deleteByIds(List.of(ids)));
     }
 

@@ -35,8 +35,10 @@ import com.nageoffer.ai.ragent.agent.dto.AgentBlock;
 import com.nageoffer.ai.ragent.agent.dto.AgentConfirmSettlement;
 import com.nageoffer.ai.ragent.agent.enums.AgentMessageStatus;
 import com.nageoffer.ai.ragent.agent.service.AgentConversationService;
+import com.nageoffer.ai.ragent.agent.service.ConversationBatchDeleteService;
 import com.nageoffer.ai.ragent.agent.service.handler.AgentRunGate;
 import com.nageoffer.ai.ragent.agent.state.PgAgentStateStore;
+import com.nageoffer.ai.ragent.authorization.AiResourceWriteService;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
@@ -57,7 +59,7 @@ import java.util.stream.Collectors;
 /**
  * Agent 会话管理实现
  *
- * <p>P1.3d：会话/消息路径租户贯通。t_agent_conversation / t_agent_message 在 V3 加了
+ * <p>P1.3d：会话/消息路径租户贯通。ai_agent_conversation / ai_agent_message 在 V3 加了
  * tenant_id / member_id、V4 起 NOT NULL，所有读写恒带 (tenant_id, member_id) 条件：
  * <ul>
  *   <li>每个公开入口先 {@link #scope()} 从可信执行主体解析归属，没有主体即
@@ -92,6 +94,13 @@ public class AgentConversationServiceImpl implements AgentConversationService {
      * 延迟获取，避免与 ReActAgentProvider 循环依赖
      */
     private final ObjectProvider<ReActAgentProvider> agentProviderRef;
+    /**
+     * 运行时写服务（G-52 会话创建的唯一写路径）。
+     *
+     * <p>同样是延迟获取：独立部署形态下可能没有这个 bean，硬注入会把"缺一个可选协作方"
+     * 变成启动失败；缺 bean 时在 {@link #create(String)} 的调用点明确拒绝。
+     */
+    private final ObjectProvider<AiResourceWriteService> resourceWriteServiceRef;
 
     @Override
     public String touchConversation(String conversationId, String userId, String question) {
@@ -333,6 +342,38 @@ public class AgentConversationServiceImpl implements AgentConversationService {
         updateConversationScoped(conversation);
     }
 
+    /**
+     * 新建会话（F03 / G-52）：只做标题规范化，然后**委托运行时**写服务。
+     *
+     * <p><b>为什么不在这里写库。</b>会话创建要同时落业务行、registry（{@code ai_resource}）、
+     * owner ACL 与 epoch bump，并且必须经过 G-40 {@code ai.integration.high-risk.enabled} 守卫。
+     * 这条路径已经存在于 {@code AiResourceWriteService#createConversation}，且是守卫的**唯一**经过点。
+     * 在这里另写一份 INSERT 等于制造第二条写路径：其中一条迟早漏掉 registry/ACL/epoch，
+     * 而"漏掉 registry"的表现恰好就是判据③的"创建后在列表里看不见"。
+     *
+     * <p><b>为什么用 {@link ObjectProvider} 而不是构造器硬注入。</b>本模块（Agent 引擎面）在
+     * 独立部署形态下可能没有运行时写服务这个 bean；硬注入会把"缺一个可选协作方"变成**启动失败**。
+     * 本文件对可选协作方（{@code ReActAgentProvider}）用的就是同一手法，这里保持一致：
+     * 缺 bean 时在**调用点**给出明确拒绝，而不是让整个应用起不来。
+     *
+     * <p><b>归属只来自主体。</b>本方法不接收、不转发任何归属字段；{@code createConversation}
+     * 自己从 {@code PrincipalContext} 解析 tenant / member / user。也不做任何授权判定 ——
+     * 功能级判定在入口（控制器/surface），资源级与新资源 owner ACL 在运行时那条 {@code write(...)} 里。
+     */
+    @Override
+    public String create(String title) {
+        String trimmed = StrUtil.trimToEmpty(title);
+        if (trimmed.isEmpty()) {
+            throw new ClientException("会话标题不能为空");
+        }
+        AiResourceWriteService writer = resourceWriteServiceRef.getIfAvailable();
+        if (writer == null) {
+            throw new ClientException("会话创建在当前装配下不可用：缺少运行时写服务");
+        }
+        return writer.createConversation(
+                new AiResourceWriteService.ConversationDraft(StrUtil.sub(trimmed, 0, RENAME_MAX_LENGTH)));
+    }
+
     @Override
     public List<AgentMessageVO> listMessages(String conversationId, String userId) {
         return messageMapper.selectList(messageScope(scope(), userId)
@@ -371,13 +412,34 @@ public class AgentConversationServiceImpl implements AgentConversationService {
     }
 
     @Override
+    public boolean existsForUser(String conversationId, String userId) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return false;
+        }
+        Scope scope = scope();
+        Long count = conversationMapper.selectCount(conversationScope(scope, userId)
+                .eq(AgentConversationDO::getConversationId, conversationId));
+        return count != null && count > 0;
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteBatch(List<String> conversationIds, String userId) {
+        // 防御性复核（契约由 ConversationBatchDeleteService 保证，这里不允许绕过）：
+        // 空集合**拒绝**而不是静默返回——静默返回会让客户端把"没删任何东西"当成成功。
         if (conversationIds == null || conversationIds.isEmpty()) {
-            return;
+            throw new ClientException("批量删除的会话集合不能为空");
+        }
+        // 重复 ID **拒绝**而不是 distinct() 静默去重：静默去重会把"实际动作集合 ≠ 请求集合"
+        // 藏起来，而调用方通常正是据此算 permit 数量与复核数的。
+        if (new java.util.HashSet<>(conversationIds).size() != conversationIds.size()) {
+            throw new ClientException("批量删除的会话集合不能包含重复 ID");
+        }
+        if (conversationIds.size() > ConversationBatchDeleteService.MAX_BATCH) {
+            throw new ClientException("批量删除的会话数不能超过 " + ConversationBatchDeleteService.MAX_BATCH);
         }
         // 自调用不经代理，各会话的删除逻辑并入当前事务
-        conversationIds.stream().distinct().forEach(id -> delete(id, userId));
+        conversationIds.forEach(id -> delete(id, userId));
     }
 
     private void evictStateCache(String userId, String conversationId) {

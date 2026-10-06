@@ -37,7 +37,7 @@ import java.util.Date;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName("t_sample_question")
+@TableName("ai_sample_question")
 public class SampleQuestionDO {
 
     @TableId(type = IdType.ASSIGN_ID)

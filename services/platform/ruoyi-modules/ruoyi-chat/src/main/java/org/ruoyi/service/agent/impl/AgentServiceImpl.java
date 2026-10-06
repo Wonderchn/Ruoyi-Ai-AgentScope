@@ -72,7 +72,7 @@ public class AgentServiceImpl implements IAgentService {
     }
 
     @Override
-    public AgentVo queryById(Long id) {
+    public AgentVo queryById(String id) {
         Agent entity = baseMapper.selectById(id);
         return entity == null ? null : toVo(entity);
     }
@@ -105,7 +105,7 @@ public class AgentServiceImpl implements IAgentService {
 
     @Override
     @Transactional
-    public Boolean deleteByIds(Collection<Long> ids) {
+    public Boolean deleteByIds(Collection<String> ids) {
         return baseMapper.deleteByIds(ids) > 0;
     }
 

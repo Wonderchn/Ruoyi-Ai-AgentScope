@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.ingest;
 
 import com.nageoffer.ai.ragent.framework.convention.ChatMessage;
+import com.nageoffer.ai.ragent.runtime.config.RunConfigBinding;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -44,18 +45,59 @@ public class SyntheticChatGateway implements ChatGateway {
         this.deltaDelayMs = deltaDelayMs;
     }
 
+    /** 合成提供方身份：**标明的合成样本**（D11 同口径），只在 {@code p2.chat.mode=synthetic} 下装配。 */
+    public static final String SYNTHETIC_PROVIDER = "synthetic";
+
+    /** 合成模型身份：同上，不是"默认模型"，而是这个 test double 的固定身份。 */
+    public static final String SYNTHETIC_MODEL = "synthetic-echo";
+
+    /**
+     * 构造**标明的合成绑定**：供 synthetic 模式下"没有 V15 绑定 revision"的 run 使用。
+     *
+     * <p>刻意**不**让合成路径去查 {@code RunConfigBindingPort}：合成的 run 本来就不绑发布版本，
+     * 走端口只会"拒绝自己人"。这是与 D11 {@code LocalKnowledge} 同口径的**标明的合成样本**，
+     * 不是第二权威；**真实模式一律走端口、失败即拒**，不得因合成路径存在而放宽（有负例固定）。
+     */
+    public static RunConfigBinding syntheticBinding(String tenantId, String runId) {
+        return new RunConfigBinding(tenantId, runId, "synthetic", null, 0L,
+                SYNTHETIC_PROVIDER, SYNTHETIC_MODEL, null, null, null, null, null);
+    }
+
+    // ------------------------------------------------------------ run 作用域面（D02）
+
+    @Override
+    public String provider(RunConfigBinding binding) {
+        return SYNTHETIC_PROVIDER;
+    }
+
+    @Override
+    public String model(RunConfigBinding binding) {
+        return SYNTHETIC_MODEL;
+    }
+
+    @Override
+    public ChatResult stream(RunConfigBinding binding, List<ChatMessage> messages, int maxTokens, Consumer<String> onDelta) {
+        return echo(messages, onDelta);
+    }
+
+    // ------------------------------------------------------------ 无身份面（合成 double 允许）
+
     @Override
     public String provider() {
-        return "synthetic";
+        return SYNTHETIC_PROVIDER;
     }
 
     @Override
     public String model() {
-        return "synthetic-echo";
+        return SYNTHETIC_MODEL;
     }
 
     @Override
     public ChatResult stream(List<ChatMessage> messages, int maxTokens, Consumer<String> onDelta) {
+        return echo(messages, onDelta);
+    }
+
+    private ChatResult echo(List<ChatMessage> messages, Consumer<String> onDelta) {
         String userText = "";
         StringBuilder context = new StringBuilder();
         for (ChatMessage message : messages) {

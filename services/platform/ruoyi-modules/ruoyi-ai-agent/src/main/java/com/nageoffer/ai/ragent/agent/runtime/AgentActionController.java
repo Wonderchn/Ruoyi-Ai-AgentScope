@@ -72,10 +72,52 @@ public class AgentActionController {
         }
     }
     private Map<String,Object> view(AgentLedger.Action a) {
+        return toolActionView(a);
+    }
+
+    /**
+     * 工具动作的对外视图（WP-037A）。
+     *
+     * <p><b>为什么从私有方法提出来。</b>原来它是私有实例方法，只能通过完整 Spring 容器 +
+     * 真实数据库间接验证；提成包级静态方法之后，字段契约可以直接单测，
+     * 并由一条"记录组件必须逐项登记"的护栏钉住（见 {@code AgentActionViewTest}）。
+     *
+     * <p><b>补上了什么。</b>此前只暴露 10 个字段，把 {@link AgentLedger.Action#result()}
+     * 与 {@link AgentLedger.Action#operationKey()} 丢了。{@code result} 是工具**实际做了什么**的
+     * 结果载荷——没有它，`GET /runs/{id}/actions` 返回一条 {@code SUCCEEDED} 的动作也看不出结果，
+     * F15 的"工具过程"与 UNKNOWN 核对流程都缺一半；{@code operationKey} 是这条副作用动作的
+     * 幂等标识，正是 UNKNOWN/核对语义所依赖的身份。
+     *
+     * <p><b>为什么不担心体积。</b>该端点按 run 取动作，条数受 {@code max_tool_calls} 约束；
+     * 且端点本身已在授权（{@code run.get} + 资源级 grant + sources-current）与交付许可之内。
+     *
+     * <p><b>刻意不暴露</b>的四个记录组件（{@code tenant}/{@code id}/{@code member}/{@code runId}）：
+     * 它们是调用方已经知道的上下文——{@code id} 与 {@code actionId} 同值，{@code runId} 就是路径变量，
+     * {@code member} 就是调用者本人，{@code tenant} 是内部标识。登记在护栏里，新增字段必须显式决定。
+     */
+    static Map<String,Object> toolActionView(AgentLedger.Action a) {
         var data=new LinkedHashMap<String,Object>();
-        data.put("actionId",a.id());data.put("tool",a.tool());data.put("toolVersion",a.toolVersion());data.put("args",CanonicalJson.strictMapper().convertValue(AgentModelAdapter.parse(a.args()),Object.class));
-        data.put("argsHash",a.argsHash());data.put("target",a.target());data.put("approvalVersion",a.approvalVersion());data.put("state",a.state());
-        data.put("externalId",a.externalId());data.put("version",a.version());return data;
+        data.put("actionId",a.id());data.put("tool",a.tool());data.put("toolVersion",a.toolVersion());
+        data.put("args",parseJsonOrNull(a.args()));
+        data.put("argsHash",a.argsHash());data.put("target",a.target());
+        data.put("operationKey",a.operationKey());
+        data.put("approvalVersion",a.approvalVersion());data.put("state",a.state());
+        data.put("result",parseJsonOrNull(a.result()));
+        data.put("externalId",a.externalId());data.put("version",a.version());
+        return data;
+    }
+
+    /**
+     * jsonb 文本 → 结构化 JSON；NULL/空串返回 {@code null}。
+     *
+     * <p>{@code result} 在动作尚未结束时就是 NULL——不能因为"结果还没出来"就抛异常，
+     * 也不能把 NULL 变成空对象（那会让"没结果"和"结果为空对象"混在一起）。
+     */
+    private static Object parseJsonOrNull(String json) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        return CanonicalJson.strictMapper().convertValue(AgentModelAdapter.parse(json), Object.class);
     }
     @GetMapping("/{id}/actions") public ResponseEntity<?> actions(@PathVariable String id){
         // Gateway recognizes the delivery headers; the result shape stays the ordinary data list.

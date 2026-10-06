@@ -31,13 +31,13 @@ import lombok.NoArgsConstructor;
 import java.util.Date;
 
 /**
- * Agent 会话表，与 rag 的 t_conversation 系列两套分立
+ * Agent 会话表，与 rag 的 ai_conversation 系列两套分立
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName("t_agent_conversation")
+@TableName("ai_agent_conversation")
 public class AgentConversationDO {
 
     @TableId(type = IdType.ASSIGN_ID)

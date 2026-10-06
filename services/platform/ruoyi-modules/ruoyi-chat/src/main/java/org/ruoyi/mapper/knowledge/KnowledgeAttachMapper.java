@@ -21,11 +21,11 @@ public interface KnowledgeAttachMapper extends BaseMapperPlus<KnowledgeAttach, K
     /**
      * 统计指定知识库下的文档数量
      */
-    @Select("SELECT COUNT(*) FROM knowledge_attach WHERE knowledge_id = #{knowledgeId}")
+    @Select("SELECT COUNT(*) FROM ai_knowledge_document WHERE knowledge_id = #{knowledgeId}")
     int countByKnowledgeId(@Param("knowledgeId") Long knowledgeId);
 
     @Select("<script>SELECT knowledge_id AS knowledgeId, COUNT(*) AS documentCount " +
-            "FROM knowledge_attach WHERE knowledge_id IN " +
+            "FROM ai_knowledge_document WHERE knowledge_id IN " +
             "<foreach collection='knowledgeIds' item='id' open='(' separator=',' close=')'>#{id}</foreach> " +
             "GROUP BY knowledge_id</script>")
     List<Map<String, Object>> countByKnowledgeIds(@Param("knowledgeIds") List<Long> knowledgeIds);

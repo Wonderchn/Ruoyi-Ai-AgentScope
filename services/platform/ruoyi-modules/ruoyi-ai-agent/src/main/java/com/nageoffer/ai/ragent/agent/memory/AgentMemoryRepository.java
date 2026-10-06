@@ -64,7 +64,7 @@ import java.util.Set;
 public class AgentMemoryRepository {
 
     /**
-     * t_agent_message.role 存的是小写，与 AgentConversationServiceImpl 同一份口径
+     * ai_agent_message.role 存的是小写，与 AgentConversationServiceImpl 同一份口径
      */
     private static final String ROLE_USER = "user";
 
@@ -84,7 +84,7 @@ public class AgentMemoryRepository {
     private static final int MAX_PENDING_PER_EXTRACTION = 40;
 
     /**
-     * 与 t_agent_memory.content 列宽同值；AGENT_MEMORY_EXTRACTION 与 AGENT_MEMORY_CONSOLIDATION
+     * 与 ai_agent_memory.content 列宽同值；AGENT_MEMORY_EXTRACTION 与 AGENT_MEMORY_CONSOLIDATION
      * 两段提示词里手抄了这个数，改任何一处要几处一起改
      * 普通批超长在这里丢条，避免 INSERT 抛出导致整批回滚；清空批反过来整批拒收，见 commitClear
      */

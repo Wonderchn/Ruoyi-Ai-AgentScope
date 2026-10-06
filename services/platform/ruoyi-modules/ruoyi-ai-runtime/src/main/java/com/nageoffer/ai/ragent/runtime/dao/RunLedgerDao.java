@@ -122,12 +122,42 @@ public class RunLedgerDao {
                           String idempotencyKey, String requestHash, String inputJson, String budgetJson,
                           String executionVersion, int policyVersion, int aclVersion, String resourceRefsJson,
                           String retryOf) {
+        insertRun(tenantId, runId, memberId, subject, action, idempotencyKey, requestHash, inputJson, budgetJson,
+                executionVersion, policyVersion, aclVersion, resourceRefsJson, retryOf, null);
+    }
+
+    /**
+     * 受理时**同时绑定该 run 受理那一刻的发布版本**（C1.2 第 1 行 / C1.3）。
+     *
+     * <p><b>为什么必须在这里写。</b>执行期用 {@code RunConfigBindingPort} 解析的是
+     * {@code ai_run.config_revision_id}；这一列在此之前**全仓没有任何写入点** ——
+     * 于是"新受理的 run 绑新版本"这条契约从受理侧就是空的，任何执行期解析都会以
+     * "run has no bound config revision" 拒绝。受理时刻是唯一能固定版本的时刻：
+     * 之后再发布新版本不得改动已受理 run 的解释（C1.2 第 2 行）。
+     *
+     * @param binding 受理时解析出的**新**发布版本事实；{@code null} 表示不绑定 ——
+     *                刻意保留给"权威建立之前的历史写路径/测试"。**运行期受理路径
+     *                必须传事实**（{@code RunAdmissionService} 在缺权威时拒绝受理，而不是写 null）。
+     */
+    public void insertRun(String tenantId, String runId, String memberId, String subject, String action,
+                          String idempotencyKey, String requestHash, String inputJson, String budgetJson,
+                          String executionVersion, int policyVersion, int aclVersion, String resourceRefsJson,
+                          String retryOf, com.nageoffer.ai.ragent.runtime.config.RunConfigBinding binding) {
         jdbc.update("INSERT INTO ai_run (tenant_id, run_id, member_id, subject, action, status, idempotency_key, "
                         + "request_hash, input, budget, execution_version, policy_version, acl_version, resource_refs, "
-                        + "version, next_seq, attempt, fence, retry_of) "
-                        + "VALUES (?,?,?,?,?,'QUEUED',?,?,?::jsonb,?::jsonb,?,?,?,?::jsonb,0,1,0,0,?)",
+                        + "version, next_seq, attempt, fence, retry_of, "
+                        + "config_revision_id, catalog_version, params_hash, provider_id, model_id, config_operator, config_published_at) "
+                        + "VALUES (?,?,?,?,?,'QUEUED',?,?,?::jsonb,?::jsonb,?,?,?,?::jsonb,0,1,0,0,?, ?,?,?,?,?,?,?)",
                 tenantId, runId, memberId, subject, action, idempotencyKey, requestHash, inputJson, budgetJson,
-                executionVersion, policyVersion, aclVersion, resourceRefsJson, retryOf);
+                executionVersion, policyVersion, aclVersion, resourceRefsJson, retryOf,
+                binding == null ? null : binding.revisionId(),
+                binding == null ? null : binding.catalogVersion(),
+                binding == null ? null : binding.paramsHash(),
+                binding == null ? null : binding.providerId(),
+                binding == null ? null : binding.modelId(),
+                binding == null ? null : binding.operatorId(),
+                binding == null || binding.publishedAt() == null ? null
+                        : java.sql.Timestamp.from(binding.publishedAt()));
     }
 
     // ---------------------------------------------------------------- events

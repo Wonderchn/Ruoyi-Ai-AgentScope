@@ -38,7 +38,7 @@ import java.util.Date;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName("t_ingestion_pipeline_node")
+@TableName("ai_ingestion_pipeline_node")
 public class IngestionPipelineNodeDO {
 
     /**

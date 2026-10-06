@@ -33,9 +33,9 @@ public class KnowledgeGraphInstanceBo extends BaseEntity {
     private String graphUuid;
 
     /**
-     * 关联knowledge_info.kid
+     * 关联知识库 ID（统一库 {@code ai_knowledge_base.id}；旧 MySQL 里同一个主键叫 kid）
      */
-    @NotBlank(message = "关联knowledge_info.kid不能为空", groups = { AddGroup.class, EditGroup.class })
+    @NotBlank(message = "关联知识库ID不能为空", groups = { AddGroup.class, EditGroup.class })
     private String knowledgeId;
 
     /**

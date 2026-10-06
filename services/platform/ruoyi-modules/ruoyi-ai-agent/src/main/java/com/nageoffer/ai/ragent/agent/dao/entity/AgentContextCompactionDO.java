@@ -22,6 +22,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.nageoffer.ai.ragent.framework.convention.MergedTableRow;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -30,17 +31,26 @@ import lombok.NoArgsConstructor;
 import java.util.Date;
 
 /**
- * 上下文压缩事件（追加日志），用于事后回溯第几代摘要开始丢信息
+ * 上下文压缩事件（追加日志），用于事后回溯第几代摘要开始丢信息。
+ *
+ * <p>{@code tenant_id}/{@code member_id} 是 V7 的 NOT NULL 平台侧列：写入前由
+ * {@code AiDomainWriteIdentity} 从执行主体填充，不靠列默认值。
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName("t_agent_context_compaction")
-public class AgentContextCompactionDO {
+@TableName("ai_agent_context_compaction")
+public class AgentContextCompactionDO implements MergedTableRow {
 
     @TableId(type = IdType.ASSIGN_ID)
     private String id;
+
+    /** 平台租户列（varchar(64)，NOT NULL）：由执行主体写入。 */
+    private String tenantId;
+
+    /** canonical 成员列（varchar(160)，NOT NULL）：{@code platform:<tenantId>:<userId>}。 */
+    private String memberId;
 
     private String userId;
 

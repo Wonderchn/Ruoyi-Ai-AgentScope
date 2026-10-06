@@ -38,7 +38,7 @@ import java.util.Date;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName("t_knowledge_document")
+@TableName("ai_knowledge_document")
 public class KnowledgeDocumentDO {
 
     @TableId(type = IdType.ASSIGN_ID)

@@ -32,6 +32,9 @@ import com.nageoffer.ai.ragent.rag.service.MessageFeedbackService;
 import com.nageoffer.ai.ragent.rag.service.ConversationMessageService;
 import com.nageoffer.ai.ragent.rag.service.bo.ConversationMessageBO;
 import com.nageoffer.ai.ragent.rag.service.bo.ConversationSummaryBO;
+import com.nageoffer.ai.ragent.authorization.AiDomainWriteIdentity;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
+import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -52,6 +55,15 @@ public class ConversationMessageServiceImpl implements ConversationMessageServic
     @Override
     public String addMessage(ConversationMessageBO conversationMessage) {
         ConversationMessageDO messageDO = BeanUtil.toBean(conversationMessage, ConversationMessageDO.class);
+        // 统一库 ai_message 的 tenant_id/member_id 是 NOT NULL（无默认值来源）：身份由主体写入。
+        // 消息的 userId 只允许与主体一致——AI 侧会话记忆与平台会话必须落在同一个成员下，
+        // 否则消息会与 V7 的 fk_message_conversation（tenant+conversation+member）对不上。
+        String principalUser = PrincipalContext.require().userId();
+        if (conversationMessage.getUserId() != null
+                && !principalUser.equals(conversationMessage.getUserId())) {
+            throw new ClientException("消息归属与执行主体不一致");
+        }
+        AiDomainWriteIdentity.apply(messageDO);
         conversationMessageMapper.insert(messageDO);
         return messageDO.getId();
     }

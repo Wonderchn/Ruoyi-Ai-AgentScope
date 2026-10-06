@@ -74,7 +74,7 @@ public class PublicTemplateRepository {
     }
 
     public List<TemplateProfile> findProfiles() {
-        String sql = "SELECT id, name, description, avatar, builtin, active FROM t_agent_profile"
+        String sql = "SELECT id, name, description, avatar, builtin, active FROM ai_agent_profile"
                 + " WHERE tenant_id = '" + TEMPLATE_TENANT + "' AND deleted = 0 ORDER BY id";
         return jdbcTemplate.query(sql, (rs, rowNum) -> new TemplateProfile(
                 rs.getString("id"), rs.getString("name"), rs.getString("description"),
@@ -82,7 +82,7 @@ public class PublicTemplateRepository {
     }
 
     public List<TemplatePrompt> findPrompts(String agentId) {
-        String sql = "SELECT id, agent_id, slot_key, content FROM t_agent_prompt"
+        String sql = "SELECT id, agent_id, slot_key, content FROM ai_agent_prompt"
                 + " WHERE tenant_id = '" + TEMPLATE_TENANT + "' AND deleted = 0 AND agent_id = ?"
                 + " ORDER BY slot_key";
         return jdbcTemplate.query(sql, (rs, rowNum) -> new TemplatePrompt(
@@ -92,7 +92,7 @@ public class PublicTemplateRepository {
 
     public List<TemplateIntentNode> findIntentNodes() {
         String sql = "SELECT id, kb_id, intent_code, name, level, parent_code, collection_name,"
-                + " top_k, enabled FROM t_intent_node"
+                + " top_k, enabled FROM ai_intent_node"
                 + " WHERE tenant_id = '" + TEMPLATE_TENANT + "' AND deleted = 0 ORDER BY sort_order, id";
         return jdbcTemplate.query(sql, (rs, rowNum) -> new TemplateIntentNode(
                 rs.getString("id"), rs.getString("kb_id"), rs.getString("intent_code"),
@@ -102,7 +102,7 @@ public class PublicTemplateRepository {
 
     public List<TemplateQueryTerm> findQueryTermMappings() {
         String sql = "SELECT id, domain, source_term, target_term, match_type, priority, enabled"
-                + " FROM t_query_term_mapping"
+                + " FROM ai_query_term_mapping"
                 + " WHERE tenant_id = '" + TEMPLATE_TENANT + "' AND deleted = 0"
                 + " ORDER BY priority DESC, id";
         return jdbcTemplate.query(sql, (rs, rowNum) -> new TemplateQueryTerm(
@@ -112,7 +112,7 @@ public class PublicTemplateRepository {
     }
 
     public List<TemplateSampleQuestion> findSampleQuestions() {
-        String sql = "SELECT id, title, description, question FROM t_sample_question"
+        String sql = "SELECT id, title, description, question FROM ai_sample_question"
                 + " WHERE tenant_id = '" + TEMPLATE_TENANT + "' AND deleted = 0 ORDER BY id";
         return jdbcTemplate.query(sql, (rs, rowNum) -> new TemplateSampleQuestion(
                 rs.getString("id"), rs.getString("title"), rs.getString("description"),
@@ -121,7 +121,7 @@ public class PublicTemplateRepository {
 
     public List<TemplateSkill> findSkills() {
         String sql = "SELECT id, skill_code, name, description, content, sort_order, enabled"
-                + " FROM t_agent_skill"
+                + " FROM ai_agent_skill"
                 + " WHERE tenant_id = '" + TEMPLATE_TENANT + "' AND deleted = 0"
                 + " ORDER BY sort_order, id";
         return jdbcTemplate.query(sql, (rs, rowNum) -> new TemplateSkill(

@@ -56,6 +56,37 @@ public enum P04ErrorCode {
     /** 客户端策略版本落后。 */
     POLICY_VERSION_STALE(409, "策略版本过期"),
 
+    /**
+     * 资源版本冲突（D10）：请求携带的 {@code expectedVersion} 与当前持久化版本不一致。
+     *
+     * <p>与 {@link #POLICY_VERSION_STALE} <b>刻意分开</b>：后者是授权/许可 epoch 语义，
+     * 若复用会把"改名并发冲突"误判成"授权版本过期"。本码只表达**资源自身的乐观锁冲突**。
+     * 与 AI 侧 {@code P04AiErrorCode.RESOURCE_VERSION_CONFLICT} 逐项镜像，两侧不得单方面漂移。
+     */
+    RESOURCE_VERSION_CONFLICT(409, "资源版本冲突"),
+
+    /**
+     * 资源 ID 冲突（T3 缺口登记 → T0 裁决 (a)）：**跨租户**出现同一个客户端自带资源 ID。
+     *
+     * <p>语义边界（三分支，缺一不可）：
+     * <ol>
+     *   <li><b>同租户同 ID</b> → 视为**幂等命中**，返回既有资源，<b>不</b>走本码；</li>
+     *   <li><b>跨租户同 ID</b> → 本码（409）；</li>
+     *   <li><b>未冲突</b> → 正常创建。</li>
+     * </ol>
+     *
+     * <p>为什么不能被单列主键的驱动异常替代：`ai_knowledge_vector.id` 是单列 PK
+     * （V7:654，另有 {@code uk(tenant_id,id)} V7:2076），跨租户撞 ID 时驱动会抛
+     * {@code duplicate key}。**不得把驱动异常原样冒给客户端** —— 服务端应先做一次
+     * <b>租户限定</b>的存在性查询（{@code WHERE tenant_id=? AND id=?}）命中即拒；
+     * 未被该查询拦下的那一支，须把驱动异常**翻译**成本码。
+     *
+     * <p>与 {@link #RESOURCE_VERSION_CONFLICT} <b>刻意分开</b>：后者是"同一资源的乐观锁版本不符"，
+     * 前者是"ID 已被**另一个租户**占用"。混用会让客户端无法区分"重试即可"与"换 ID 即可"。
+     * 与 AI 侧 {@code P04AiErrorCode.RESOURCE_ID_CONFLICT} 逐项镜像，两侧不得单方面漂移。
+     */
+    RESOURCE_ID_CONFLICT(409, "资源 ID 冲突"),
+
     /** 授权复核依赖不可用（超时/503/坏响应）；不放行。 */
     AUTHORIZATION_UNAVAILABLE(503, "授权服务不可用"),
 

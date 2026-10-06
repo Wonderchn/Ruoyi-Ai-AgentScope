@@ -74,6 +74,51 @@ public class RunAdmissionService {
     private java.util.List<RuntimeActionContract> contracts=java.util.List.of();
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     public void configureActions(java.util.List<RuntimeActionContract> contracts) {this.contracts=java.util.List.copyOf(contracts);}
+
+    /**
+     * 发布权威（D02/C1.2）。用 {@code required=false} + 使用点 fail-closed：
+     * 让"权威没装配"表现为**拒绝新受理**，而不是启动期把整个应用拦下（受理面之外的功能
+     * —— 读、会话、审计 —— 在权威缺席时仍应可用）。判据见 {@link #requirePublishedModel}。
+     */
+    private com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority modelAuthority;
+
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void configureModelAuthority(com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority authority) {
+        this.modelAuthority = authority;
+    }
+
+    /**
+     * 受理时刻解析**当前 PUBLISHED 版本**（C1.2 第 1 行：新受理的 run 绑**新**版本）。
+     *
+     * <p><b>读不到即拒绝受理</b>（C1.1：数据库读取失败 → 拒绝新受理，禁止静默回退 YAML）。
+     * 没有这一步，run 上的 {@code config_revision_id} 永远为 NULL，执行期的
+     * {@code RunConfigBindingPort} 会对**每一个** run 拒绝 —— 契约从受理侧就是空的。
+     */
+    private com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority.PublishedModel
+    requirePublishedModel(String action) {
+        var authority = modelAuthority;
+        if (authority == null) {
+            throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE,
+                    "config authority unavailable: refusing admission (no published config authority)");
+        }
+        try {
+            return authority.requirePublished(action);
+        } catch (com.nageoffer.ai.ragent.runtime.config.ConfigAuthorityUnavailable unavailable) {
+            throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE,
+                    "config authority unavailable: refusing admission (" + unavailable.getMessage() + ")");
+        }
+    }
+
+    /** 把受理时刻的发布事实装成 run 的绑定（C1.3 必须可追溯的字段）。 */
+    private static com.nageoffer.ai.ragent.runtime.config.RunConfigBinding bindingOf(
+            String tenantId, String runId, String action,
+            com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority.PublishedModel published) {
+        return new com.nageoffer.ai.ragent.runtime.config.RunConfigBinding(
+                tenantId, runId, action, published.revisionId(), published.revisionNo(),
+                published.providerId(), published.modelId(), published.catalogVersion(),
+                published.paramsHash(), published.credentialRef(), published.operatorId(),
+                published.publishedAt());
+    }
     private RuntimeActionContract contract(String action) {return contracts.stream().filter(c->c.action().equals(action)).findFirst().orElse(null);}
 
     private void fault(String hook) {
@@ -120,6 +165,9 @@ public class RunAdmissionService {
     private AdmissionResult doAdmit(ExecutionPrincipal principal, String idempotencyKey,
                                     AdmissionRequest request, String requestHash,String sources,String ownerDept) {
         String tenantId = principal.tenantId();
+        // 0) 配置权威：受理是**唯一**能固定版本的时刻（C1.2 第 1 行）。读不到权威即拒绝受理，
+        //    不写 NULL 让执行期去猜，也不回退 YAML/默认模型（C1.1）。放在任何写入之前。
+        var published = requirePublishedModel(request.action());
         // 1) 预算：锁租户行 → 叠加预占不超上限（并发失败方 BUDGET_EXCEEDED）
         long limit = dao.lockTenantBudget(tenantId, properties.getBudget().getDefaultTenantUnits());
         long units = unitsOf(request.budget());
@@ -131,7 +179,7 @@ public class RunAdmissionService {
         dao.insertRun(tenantId, runId, principal.membershipId(), principal.userId(), request.action(),
                 idempotencyKey, requestHash, toJson(request.input()), toJson(request.budget()),
                 (contract(request.action())==null?"p2-v1":contract(request.action()).executionVersion()), principal.policyVersion(), principal.aclVersion(), sources,
-                request.retryOf());
+                request.retryOf(), bindingOf(tenantId, runId, request.action(), published));
         dao.registerRun(tenantId,runId,principal.membershipId(),ownerDept);
         if(contract(request.action())!=null) contract(request.action()).onAdmitted(principal,runId,request);
         fault(P2FaultInjector.ADMISSION_AFTER_RUN);

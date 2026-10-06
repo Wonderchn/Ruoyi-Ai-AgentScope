@@ -36,9 +36,9 @@ import java.util.stream.Collectors;
 /**
  * 节点输出提取器：从 {@code IngestionContext} 里取各节点的输出摘要
  * <p>
- * 只产摘要不产实体：输出落在 {@code t_ingestion_task_node.output_json}，一个 1MB 截断、纯诊断用途的
+ * 只产摘要不产实体：输出落在 {@code ai_ingestion_task_node.output_json}，一个 1MB 截断、纯诊断用途的
  * TEXT 列，塞实体（源文件字节 / 全量 Block / 带向量的块）必然顶穿阈值，截断后剩一段解析不了的残缺
- * JSON；实体各有正本，源文件在对象存储、块在 {@code t_knowledge_chunk} 与向量库
+ * JSON；实体各有正本，源文件在对象存储、块在 {@code ai_knowledge_chunk} 与向量库
  */
 @Component
 public class NodeOutputExtractor {

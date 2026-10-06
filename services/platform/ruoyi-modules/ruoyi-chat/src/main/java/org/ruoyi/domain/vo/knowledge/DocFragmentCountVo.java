@@ -9,7 +9,7 @@ import lombok.Data;
 public class DocFragmentCountVo {
 
     /**
-     * 文档ID（关联 knowledge_attach.doc_id）
+     * 文档ID（关联 ai_knowledge_document.doc_id）
      */
     private String docId;
 

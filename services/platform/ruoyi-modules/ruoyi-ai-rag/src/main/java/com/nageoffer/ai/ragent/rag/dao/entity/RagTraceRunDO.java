@@ -23,6 +23,7 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.nageoffer.ai.ragent.framework.convention.MergedTableRow;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -31,17 +32,27 @@ import lombok.NoArgsConstructor;
 import java.util.Date;
 
 /**
- * RAG Trace 运行记录
+ * RAG Trace 运行记录（统一库 {@code platform.ai_rag_trace_run}）。
+ *
+ * <p>{@code tenant_id}/{@code member_id} 是 V7 的 NOT NULL 平台侧列：写入前由
+ * {@code AiDomainWriteIdentity} 从执行主体填充；运营/Trace 读路径按这两列限域，
+ * 因此缺身份的行对任何人都不可见——不能靠默认值糊过去。
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName("t_rag_trace_run")
-public class RagTraceRunDO {
+@TableName("ai_rag_trace_run")
+public class RagTraceRunDO implements MergedTableRow {
 
     @TableId(type = IdType.ASSIGN_ID)
     private String id;
+
+    /** 平台租户列（varchar(64)，NOT NULL）：由执行主体写入。 */
+    private String tenantId;
+
+    /** canonical 成员列（varchar(160)，NOT NULL）：{@code platform:<tenantId>:<userId>}。 */
+    private String memberId;
 
     /**
      * 全局链路ID

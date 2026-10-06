@@ -8,21 +8,23 @@ import org.ruoyi.common.mybatis.core.domain.BaseEntity;
 import java.io.Serial;
 
 /**
- * 知识库对象 knowledge_info
+ * 知识库对象（统一库 {@code platform.ai_knowledge_base}，由旧 MySQL 知识库表迁移合并而来）。
  *
- * @author ageerle
- * @date 2025-12-17
+ * <p><b>写路径尚未适配（E5/WP-027 依赖）</b>：统一表主键是 {@code VARCHAR(20)}，而本实体仍是
+ * {@code Long}；{@code owner_member_id} 是 {@code NOT NULL}；{@code collection_name} 需要部署
+ * 向量后端前缀。这些都要等 WP-027 的输入与映射契约确定后一并处理，现在改一半会让知识域处于
+ * "看起来适配了"的状态。本类只做了表名归位（读路径按统一表）。
  */
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("knowledge_info")
+@TableName("ai_knowledge_base")
 public class KnowledgeInfo extends BaseEntity {
 
     @Serial
     private static final long serialVersionUID = 1L;
 
     /**
-     * 主键
+     * 主键（统一表是 varchar(20)；写路径适配见类注释，属 WP-027）
      */
     @TableId(value = "id")
     private Long id;

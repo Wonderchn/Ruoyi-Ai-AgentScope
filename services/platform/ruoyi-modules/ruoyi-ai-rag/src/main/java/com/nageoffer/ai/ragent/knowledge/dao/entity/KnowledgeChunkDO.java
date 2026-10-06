@@ -37,7 +37,7 @@ import java.util.Date;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@TableName("t_knowledge_chunk")
+@TableName("ai_knowledge_chunk")
 public class KnowledgeChunkDO {
 
     /**

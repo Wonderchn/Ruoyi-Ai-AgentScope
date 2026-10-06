@@ -96,6 +96,19 @@ public class AuthorizedExportService {
 
     public record LeasedExport(byte[] bytes,com.nageoffer.ai.ragent.framework.security.RevocationGuard.Operation operation) { }
 
+    /**
+     * 把 {@code export} 拒绝的**两种成因**编码成可 grep 的稳定 token 串。
+     *
+     * <p>理由同 {@code AuthorizedDownloadService.permitRefusalReason()}：客户端文案不变，
+     * 成因只进服务端日志（BRIEF §6.1 第 11 条）。仅在该守卫成立时调用。
+     */
+    private String permitRefusalReason() {
+        if (!highRiskEnabled && revocations == null) {
+            return "high_risk_disabled,revocation_guard_missing";
+        }
+        return !highRiskEnabled ? "high_risk_disabled" : "revocation_guard_missing";
+    }
+
     public LeasedExport exportLeased(String conversationId) {
         if (conversationId == null || conversationId.isBlank()) {
             throw new P04AiException(P04AiErrorCode.BAD_REQUEST);
@@ -113,6 +126,10 @@ public class AuthorizedExportService {
 
         // 分批读取 + 每批复核：撤权后的批次立即失败，不静默返回"剩余为空"
         if (!highRiskEnabled || revocations == null) {
+            // 与 AiResourceWriteService.write() 同一形态的可诊断性缺口：**两种成因共用一句客户端文案**。
+            // 客户端文案一字不改；服务端把成因 token 与两个判定位落日志（§6.1 第 11 条）。
+            log.warn("export refused reason={} highRiskEnabled={} revocationGuardBound={} tenant={} conversationId={}",
+                    permitRefusalReason(), highRiskEnabled, revocations != null, principal.tenantId(), conversationId);
             throw new ServiceException("导出 permit 服务不可用");
         }
         var operation=revocations.enter(principal,ACTION_CONVERSATION_EXPORT,ref);

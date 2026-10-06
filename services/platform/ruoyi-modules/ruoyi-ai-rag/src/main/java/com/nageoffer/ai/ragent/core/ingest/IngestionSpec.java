@@ -21,7 +21,7 @@ import com.nageoffer.ai.ragent.core.chunk.model.ChunkBudget;
 import com.nageoffer.ai.ragent.core.parser.registry.ParseProfile;
 
 /**
- * 文档级摄取配置（L3）：这一篇怎么解析、怎么切，对应 {@code t_knowledge_document.ingestion_spec} 一个 JSONB 列
+ * 文档级摄取配置（L3）：这一篇怎么解析、怎么切，对应 {@code ai_knowledge_document.ingestion_spec} 一个 JSONB 列
  * <p>
  * 不含 embeddingModel：嵌入模型是知识库级（L2）约束性配置，文档级无权覆盖，只能由 {@link VectorTarget} 提供
  *

@@ -34,10 +34,10 @@ import java.util.Set;
 
 /**
  * AgentStateStore 的 PostgreSQL 实现
- * 官方 2.0.2 仅有 in-memory / JSON 文件 / Redis / MySQL，本项目主存储为 PG，故自实现挂 t_agent_state
+ * 官方 2.0.2 仅有 in-memory / JSON 文件 / Redis / MySQL，本项目主存储为 PG，故自实现挂 ai_agent_state
  * payload 是 AgentScope 自有编解码的不透明 JSON，不与业务表建立结构约定
  *
- * <p><b>P1.3d：租户/成员进键，匿名回退移除。</b>t_agent_state 的主键是
+ * <p><b>P1.3d：租户/成员进键，匿名回退移除。</b>ai_agent_state 的主键是
  * {@code (tenant_id, member_id, session_id, state_key)}，而 {@link AgentStateStore}
  * 接口的方法签名（外部库）固定为 userId 形态，因此租户与成员只能在本实现内部、
  * <b>每次访问 DAO 之前</b>从可信执行主体解析：没有主体即拒绝（fail-closed），

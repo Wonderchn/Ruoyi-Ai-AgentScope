@@ -15,7 +15,7 @@ import org.ruoyi.common.tenant.core.TenantEntity;
  */
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("mcp_tool_info")
+@TableName("ai_mcp_tool")
 public class McpTool extends TenantEntity {
 
     /**

@@ -37,7 +37,7 @@ import java.util.Date;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName("t_rag_trace_node")
+@TableName("ai_rag_trace_node")
 public class RagTraceNodeDO {
 
     @TableId(type = IdType.ASSIGN_ID)

@@ -34,7 +34,7 @@ import java.util.Date;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName("t_user")
+@TableName("ai_legacy_user")
 public class UserDO {
 
     @TableId(type = IdType.ASSIGN_ID)

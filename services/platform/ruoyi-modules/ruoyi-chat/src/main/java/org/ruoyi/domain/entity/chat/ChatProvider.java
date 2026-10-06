@@ -8,14 +8,14 @@ import lombok.EqualsAndHashCode;
 import java.io.Serial;
 
 /**
- * 厂商管理对象 chat_provider
+ * 厂商管理对象 ai_model_provider
  *
  * @author ageerle
  * @date 2025-12-14
  */
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("chat_provider")
+@TableName("ai_model_provider")
 public class ChatProvider extends TenantEntity {
 
     @Serial

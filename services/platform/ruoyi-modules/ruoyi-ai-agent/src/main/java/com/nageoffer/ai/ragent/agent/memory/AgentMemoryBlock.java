@@ -32,7 +32,7 @@ import java.util.Map;
 final class AgentMemoryBlock {
 
     /**
-     * 上行副本里认块靠它；这块只活在上行副本，落进 t_agent_state 即是注入位置写错了
+     * 上行副本里认块靠它；这块只活在上行副本，落进 ai_agent_state 即是注入位置写错了
      */
     static final String NAME = "__user_memory__";
 

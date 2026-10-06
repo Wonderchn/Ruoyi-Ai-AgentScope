@@ -27,7 +27,7 @@ public interface KnowledgeFragmentMapper extends BaseMapperPlus<KnowledgeFragmen
      */
     @Select("<script>" +
             "SELECT doc_id AS docId, COUNT(*) AS fragmentCount " +
-            "FROM knowledge_fragment " +
+            "FROM ai_knowledge_chunk " +
             "WHERE doc_id IN " +
             "<foreach collection='docIds' item='id' open='(' separator=',' close=')'>#{id}</foreach> " +
             "GROUP BY doc_id" +
@@ -35,7 +35,7 @@ public interface KnowledgeFragmentMapper extends BaseMapperPlus<KnowledgeFragmen
     List<DocFragmentCountVo> selectFragmentCountByDocIds(@Param("docIds") List<String> docIds);
     @Select("<script>" +
             "SELECT id, fid, doc_id AS docId, content, idx, knowledge_id AS knowledgeId " +
-            "FROM knowledge_fragment " +
+            "FROM ai_knowledge_chunk " +
             "WHERE knowledge_id = #{knowledgeId} " +
             "AND MATCH (content) AGAINST (#{query} IN NATURAL LANGUAGE MODE) " +
             "ORDER BY MATCH (content) AGAINST (#{query} IN NATURAL LANGUAGE MODE) DESC " +

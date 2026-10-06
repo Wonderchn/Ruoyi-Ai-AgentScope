@@ -111,10 +111,9 @@ public class MpChatWebSocketHandler extends AbstractWebSocketHandler {
             // 1. 解析智能体（若传了 agentId），取其绑定模型与 systemPrompt、知识库
             AgentVo agentVo = null;
             if (StringUtils.isNotBlank(agentIdRaw)) {
-                Long agentId = parseLong(agentIdRaw);
-                if (agentId != null) {
-                    agentVo = agentService.queryById(agentId);
-                }
+                // 智能体主键是 VARCHAR(20)（统一库 ai_agent_profile.id），按原样字符串查询，
+                // 不再先转 Long——转 Long 会把非数值 id 直接吞成 null，静默退回默认模型。
+                agentVo = agentService.queryById(agentIdRaw.trim());
             }
 
             // 2. 解析模型：智能体绑定 > 前端传入 > 默认配置 > 表内首个 chat 模型

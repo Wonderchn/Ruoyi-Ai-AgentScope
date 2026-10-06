@@ -91,6 +91,19 @@ public class AuthorizedDownloadService {
      *
      * @throws P04AiException 404=无权/不存在、409=版本过期、503=授权事实源不可用
      */
+    /**
+     * 把 {@code download} 拒绝的**两种成因**编码成可 grep 的稳定 token 串。
+     *
+     * <p>刻意不放进客户端文案：文案里带上装配状态本身就是信息泄露面；服务端日志才是归属地
+     * （BRIEF §6.1 第 11 条）。仅在该守卫成立时调用，因此最后一个分支即"开关开着但守卫缺"。
+     */
+    private String permitRefusalReason() {
+        if (!highRiskEnabled && revocations == null) {
+            return "high_risk_disabled,revocation_guard_missing";
+        }
+        return !highRiskEnabled ? "high_risk_disabled" : "revocation_guard_missing";
+    }
+
     public InputStream openDocumentStream(String documentId) {
         LeasedDocument document=openLeasedDocument(documentId);
         return new java.io.FilterInputStream(document.source()) {
@@ -149,6 +162,10 @@ public class AuthorizedDownloadService {
         }
         // openStream 内部再做一次租户前缀归属校验（防御纵深）；key 不出本方法
         if (!highRiskEnabled || revocations == null) {
+            // 与 AiResourceWriteService.write() 同一形态的可诊断性缺口：**两种成因共用一句客户端文案**。
+            // 客户端文案一字不改（不泄露装配状态）；服务端把成因 token 与两个判定位落日志（§6.1 第 11 条）。
+            log.warn("download refused reason={} highRiskEnabled={} revocationGuardBound={} tenant={}",
+                    permitRefusalReason(), highRiskEnabled, revocations != null, principal.tenantId());
             throw new ServiceException("下载 permit 服务不可用");
         }
         var operation = revocations.enter(principal, ACTION_DOCUMENT_DOWNLOAD, ref);

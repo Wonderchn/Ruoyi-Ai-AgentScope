@@ -37,7 +37,7 @@ import java.util.Date;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@TableName("t_ingestion_task_node")
+@TableName("ai_ingestion_task_node")
 public class IngestionTaskNodeDO {
 
     /**

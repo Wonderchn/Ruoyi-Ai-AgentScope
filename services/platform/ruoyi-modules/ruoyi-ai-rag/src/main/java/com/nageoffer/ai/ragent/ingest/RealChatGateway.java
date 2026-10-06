@@ -19,9 +19,12 @@ package com.nageoffer.ai.ragent.ingest;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.framework.convention.ChatMessage;
+import com.nageoffer.ai.ragent.runtime.config.ConfigAuthorityUnavailable;
+import com.nageoffer.ai.ragent.runtime.config.ProviderConnectionPort;
+import com.nageoffer.ai.ragent.runtime.config.RunConfigBinding;
 import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import java.io.*;
@@ -30,45 +33,88 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.function.Consumer;
 
-/** Human-selected DeepSeek model; provider uncertainty never triggers fallback or retry. */
+/**
+ * 真实提供方网关（D02）。
+ *
+ * <p><b>三处硬编码已归零</b>：原 provider 字面量、原 model 字面量、原提供方端点 URL
+ * 都**不再出现在本文件里**（判据 `RealChatGatewayAuthorityTest` 直接扫本文件，
+ * 并带"确实读到了这个文件"的锚点）。
+ * 现在的来源分两层，**都不接受默认值**：
+ * <ul>
+ *   <li><b>用哪份配置</b> —— {@link RunConfigBinding}，由调用方按 {@code (tenantId, runId)}
+ *       经 {@code RunConfigBindingPort} 解析后**显式传入**（C1.2：新受理的 run 绑新版本，
+ *       已受理/恢复的 run 固定原版本）。本类不查库、不持有端口，因此也不存在
+ *       "自己偷偷取当前最新版本"的窗口。</li>
+ *   <li><b>那个提供方在哪里、用什么凭据</b> —— {@link ProviderConnectionPort}（**连接引导**，
+ *       C1.1 用途② / D16）。端点必须来自引导项，**没有任何默认端点**；查不到即拒绝。</li>
+ * </ul>
+ *
+ * <p><b>无 run 身份面一律抛异常</b>（D02 约束 2）：{@link #provider()}、{@link #model()}、
+ * {@link #stream(List,int,Consumer)} 都抛 {@link ConfigAuthorityUnavailable}。
+ * 这保证"调用方忘了带 run 身份"是一个**响亮的失败**，而不是悄悄用一个写死的模型跑起来。
+ *
+ * <p><b>凭据来源。</b>引导项里的 {@code api-key} 存在时优先；否则用装配注入的
+ * {@code key}（现有 {@code @Value} 引导值，单提供方部署形态）。二者都是**部署侧注入**，
+ * 都不落库；{@code RunConfigBinding.credentialRef} 是库里的**引用/掩码**，两侧都声明引用时
+ * 由 {@code ProviderConnections} 校验一致性（不一致即拒绝，不挑一个信）。
+ */
 @Component
 @ConditionalOnProperty(name="p2.chat.mode",havingValue="real",matchIfMissing=true)
 public class RealChatGateway implements ChatGateway {
-    private final String key;
-    private final URI endpoint;
+    private final String bootstrapKey;
     private final EgressPolicy egress;
+    /** 测试专用的显式 loopback 端点；**不是**生产端点来源（生产走连接引导）。 */
+    private final URI explicitEndpoint;
+    private final boolean providerEndpoint;
+    private ProviderConnectionPort connections;
     private com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope spend;
-    private boolean providerEndpoint;
+    private final ObjectMapper json=new ObjectMapper();
+
     @Autowired
     public void configureSpend(com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope spend) {this.spend=spend;}
-    private final ObjectMapper json=new ObjectMapper();
+
+    /**
+     * 连接引导端口。required 注入 ⇒ 引导缺失时**启动期**失败，而不是运行期静默没有端点
+     * （与 F-3/G-39 同族的教训：装配期问题不要留到运行期）。
+     */
+    @Autowired
+    public void configureConnections(ProviderConnectionPort connections) {this.connections=connections;}
+
     @Autowired
     public RealChatGateway(@Value("${p2.providers.deepseek.api-key:${DEEPSEEK_API_KEY:}}") String key,EgressPolicy egress) {
-        this(key,egress,URI.create("https://api.deepseek.com/chat/completions"),true);
+        this(key,egress,null,true);
     }
+
+    /** 测试专用构造：显式 loopback 端点（保留以继续覆盖 HTTP/SSE 解析，不构成生产端点来源）。 */
     RealChatGateway(String key,EgressPolicy egress,URI endpoint) {
         this(key,egress,endpoint,false);
         if(!"http".equals(endpoint.getScheme()) || !"127.0.0.1".equals(endpoint.getHost())) throw new IllegalArgumentException("test endpoint must be loopback");
     }
-    private RealChatGateway(String key,EgressPolicy egress,URI endpoint,boolean providerEndpoint) {this.key=key;this.egress=egress;this.endpoint=endpoint;this.providerEndpoint=providerEndpoint;}
-    private String reserve(String body,int maxTokens) {
-        if(key==null || key.isBlank()) throw ProviderHttp.unavailable();
-        if(!providerEndpoint) return null;
-        if(spend==null) throw ProviderHttp.unavailable();
-        return spend.reserve(provider(),model(),body.getBytes(StandardCharsets.UTF_8).length,maxTokens);
+    private RealChatGateway(String key,EgressPolicy egress,URI endpoint,boolean providerEndpoint) {
+        this.bootstrapKey=key;this.egress=egress;this.explicitEndpoint=endpoint;this.providerEndpoint=providerEndpoint;
     }
-    public String provider() {return "deepseek";}
-    public String model() {return "deepseek-flash";}
-    public ChatResult stream(List<ChatMessage> messages,int maxTokens,Consumer<String> onDelta) {
-        egress.requireAllowed(provider());
+
+    // ------------------------------------------------------------ run 作用域面（唯一可用面）
+
+    @Override
+    public String provider(RunConfigBinding binding) {return requireBinding(binding).providerId();}
+
+    @Override
+    public String model(RunConfigBinding binding) {return requireBinding(binding).modelId();}
+
+    @Override
+    public ChatResult stream(RunConfigBinding binding,List<ChatMessage> messages,int maxTokens,Consumer<String> onDelta) {
+        RunConfigBinding bound=requireBinding(binding);
+        ProviderConnectionPort.ProviderConnection connection=connection(bound);
+        egress.requireAllowed(bound.providerId());
         var serialized=messages.stream().map(m->Map.of("role",m.getRole().name().toLowerCase(Locale.ROOT),"content",m.getContent())).toList();
         if(maxTokens<1 || maxTokens>8192 || serialized.stream().mapToInt(m->m.get("content").length()).sum()>65536) throw ProviderHttp.unavailable();
-        HttpURLConnection connection=null;
+        HttpURLConnection http=null;
         try {
-            String body=json.writeValueAsString(Map.of("model",model(),"messages",serialized,"max_tokens",maxTokens,"thinking",Map.of("type","disabled"),"stream",true,"stream_options",Map.of("include_usage",true)));
-            String spendId=reserve(body,maxTokens);
-            connection=ProviderHttp.open(endpoint,key,body);
-            int status=connection.getResponseCode();
+            String body=json.writeValueAsString(Map.of("model",bound.modelId(),"messages",serialized,"max_tokens",maxTokens,"thinking",Map.of("type","disabled"),"stream",true,"stream_options",Map.of("include_usage",true)));
+            String spendId=reserve(bound,connection,body,maxTokens);
+            http=ProviderHttp.open(connection.endpoint(),credential(connection),body);
+            int status=http.getResponseCode();
             if(status!=200) {
                 if(spendId!=null) spend.received(spendId,null,Map.of("httpStatus",status));
                 throw ProviderHttp.unavailable();
@@ -77,7 +123,7 @@ public class RealChatGateway implements ChatGateway {
             StringBuilder content=new StringBuilder(); boolean done=false;
             long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(120);
             int consumed=0;
-            try(var reader=new BufferedReader(new InputStreamReader(connection.getInputStream(),StandardCharsets.UTF_8))) {
+            try(var reader=new BufferedReader(new InputStreamReader(http.getInputStream(),StandardCharsets.UTF_8))) {
                 for(String line;(line=ProviderHttp.line(reader,65536))!=null;) {
                     if((consumed+=line.length())>2097152 || System.nanoTime()>deadline || Thread.currentThread().isInterrupted()) throw ProviderHttp.unavailable();
                     if(!line.startsWith("data:")) continue;
@@ -97,6 +143,60 @@ public class RealChatGateway implements ChatGateway {
             if(spendId!=null) spend.received(spendId,id,usage);
             return new ChatResult(content.toString(),id,usage,finish);
         } catch(IOException e) {throw ProviderHttp.unavailable();}
-        finally {if(connection!=null) connection.disconnect();}
+        finally {if(http!=null) http.disconnect();}
+    }
+
+    // ------------------------------------------------------------ 无 run 身份面：显式拒绝（D02 约束 2）
+
+    /** 无 run 身份 ⇒ 拒绝。**不得**回退任何默认模型。 */
+    @Override
+    public String provider() {
+        throw new ConfigAuthorityUnavailable("run identity required: use provider(RunConfigBinding)");
+    }
+
+    /** 无 run 身份 ⇒ 拒绝。**不得**回退任何默认模型。 */
+    @Override
+    public String model() {
+        throw new ConfigAuthorityUnavailable("run identity required: use model(RunConfigBinding)");
+    }
+
+    /** 无 run 身份 ⇒ 拒绝。**不得**回退任何默认模型。 */
+    @Override
+    public ChatResult stream(List<ChatMessage> messages,int maxTokens,Consumer<String> onDelta) {
+        throw new ConfigAuthorityUnavailable("run identity required: use stream(RunConfigBinding, messages, maxTokens, onDelta)");
+    }
+
+    // ------------------------------------------------------------ 内部
+
+    /** provider 与 model 必须同时来自 run 的绑定事实；缺失即拒绝（无默认值）。 */
+    private static RunConfigBinding requireBinding(RunConfigBinding binding) {
+        if(binding==null || binding.providerId()==null || binding.providerId().isBlank()
+                || binding.modelId()==null || binding.modelId().isBlank()) {
+            throw new ConfigAuthorityUnavailable("provider and model must come from the run's bound published revision");
+        }
+        return binding;
+    }
+
+    /** 端点解析：生产只走连接引导（无默认端点）；测试走显式 loopback 端点。 */
+    private ProviderConnectionPort.ProviderConnection connection(RunConfigBinding bound) {
+        if(explicitEndpoint!=null) {
+            return new ProviderConnectionPort.ProviderConnection(bound.providerId(),explicitEndpoint,bound.credentialRef(),bootstrapKey);
+        }
+        ProviderConnectionPort port=connections;
+        if(port==null) throw new ConfigAuthorityUnavailable("provider connection bootstrap is not wired");
+        return port.requireConnection(bound.providerId(),bound.credentialRef());
+    }
+
+    /** 引导项声明的密钥优先；否则用装配注入的引导值。两者都是部署侧注入，都不落库。 */
+    private String credential(ProviderConnectionPort.ProviderConnection connection) {
+        String declared=connection.apiKey();
+        return declared==null || declared.isBlank() ? bootstrapKey : declared;
+    }
+
+    private String reserve(RunConfigBinding bound,ProviderConnectionPort.ProviderConnection connection,String body,int maxTokens) {
+        if(credential(connection)==null || credential(connection).isBlank()) throw ProviderHttp.unavailable();
+        if(!providerEndpoint) return null;
+        if(spend==null) throw ProviderHttp.unavailable();
+        return spend.reserve(bound.providerId(),bound.modelId(),body.getBytes(StandardCharsets.UTF_8).length,maxTokens);
     }
 }

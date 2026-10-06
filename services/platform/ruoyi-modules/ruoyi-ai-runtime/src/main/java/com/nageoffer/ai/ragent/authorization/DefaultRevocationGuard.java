@@ -146,10 +146,10 @@ public class DefaultRevocationGuard implements RevocationGuard {
         }
         int inserted = jdbc.update("INSERT INTO ai_execution_permit (permit_id, tenant_id, member_id, action,"
                         + " policy_version, acl_version, resource_refs_hash, operation_id, status,"
-                        + " acquired_at, expires_at) VALUES (?,?,?,?,?,?,?,?, 'ACTIVE', now(), ?)",
+                        + " acquired_at, expires_at) VALUES (?,?,?,?,?,?,?,?, 'ACTIVE', now(), now() + (? * interval '1 second'))",
                 permitId, request.tenantId(), request.memberId(), request.action(),
                 request.policyVersion(), request.aclVersion(), request.resourceRefsHash(),
-                request.operationId(), Timestamp.from(Instant.now().plusSeconds(LEASE_SECONDS)));
+                request.operationId(), LEASE_SECONDS);
         if (inserted != 1) { throw new ServiceException("permit 登记未确认"); }
         log.info("permit 登记, tenantId={}, operationId={}, aclVersion={}",
                 request.tenantId(), request.operationId(), currentVersion);
