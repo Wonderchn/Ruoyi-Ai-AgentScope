@@ -95,6 +95,67 @@ public class RuntimeAuthorityConfiguration {
     }
 
     /**
+     * **发布/撤权权威的写侧**（WP-040：管理面与运行面同一权威）。
+     *
+     * <p><b>为什么读侧落地一整波之后才有写侧。</b>V15 表此前只有读端口
+     * （{@link #runConfigBindingPort} / {@link #engineModelAuthority}），
+     * 全仓没有任何 INSERT/UPDATE 点 —— "发布一个版本"只能手写 SQL。一张没人能写的表
+     * 构不成权威（A1 的"改一处"落空）。本 bean 补齐唯一写入口：写的正是运行期读的
+     * 那张表，因此构不成第二权威。
+     */
+    @Bean
+    @ConditionalOnMissingBean(ConfigRevisionPublisher.class)
+    public ConfigRevisionPublisher configRevisionPublisher(JdbcTemplate jdbc,
+                                                           PlatformTransactionManager transactionManager) {
+        return new JdbcConfigRevisionPublisher(jdbc, transactionManager);
+    }
+
+    /**
+     * 模型网关的**窄门**（WP-030/G-41 执行期收口）。
+     *
+     * <p>执行链（{@code RagChatExecutor}）只依赖本窄门 —— 它只有 run 作用域形态。
+     * 委托源用**本模块**的 {@link RunScopedChatPort}（真实实现是 rag 侧 {@code ChatGateway}，
+     * 它 implements 本端口；runtime 不 import rag 类型，依赖方向不变 —— 见 G-41 收口
+     * 第一次落盘的教训：注册点引用跨模块类型会让 runtime 单模块无法编译）。
+     * 宽门方法仍存在于实现类上（真实方法已显式拒绝，供负例测试），但执行链只见到窄门。
+     */
+    @Bean
+    @ConditionalOnMissingBean(RuntimeModelGatewayPort.class)
+    public RuntimeModelGatewayPort runtimeModelGatewayPort(
+            org.springframework.beans.factory.ObjectProvider<RunScopedChatPort> scopedChatPort) {
+        // 刻意用 ObjectProvider 而不是直接参数：装配顺序不确定性下（两个 auto-configuration）
+        // 直接参数会让"委托源定义在后"变成启动失败；ObjectProvider 把解析推迟到实例化期，
+        // 而委托源缺席（切片/最小形态）推迟到使用期 fail-closed —— 两种缺席都是响亮失败，
+        // 不是静默默认模型（D02）。
+        return new RuntimeModelGatewayPort() {
+            private RunScopedChatPort delegate() {
+                RunScopedChatPort port = scopedChatPort.getIfAvailable();
+                if (port == null) {
+                    throw new ConfigAuthorityUnavailable("run scoped chat gateway is not wired");
+                }
+                return port;
+            }
+
+            @Override
+            public String provider(RunConfigBinding binding) {
+                return delegate().provider(binding);
+            }
+
+            @Override
+            public String model(RunConfigBinding binding) {
+                return delegate().model(binding);
+            }
+
+            @Override
+            public org.ruoyi.ai.api.runtime.ChatPort.ChatResult stream(RunConfigBinding binding,
+                    java.util.List<com.nageoffer.ai.ragent.framework.convention.ChatMessage> messages,
+                    int maxTokens, java.util.function.Consumer<String> onDelta) {
+                return delegate().stream(binding, messages, maxTokens, onDelta);
+            }
+        };
+    }
+
+    /**
      * 租户屏障的**唯一**对账口径（G-55c）。
      *
      * <p>放在本配置里注册（而不是让 {@code TenantBarrierReconciler} 自带 {@code @Component}）：

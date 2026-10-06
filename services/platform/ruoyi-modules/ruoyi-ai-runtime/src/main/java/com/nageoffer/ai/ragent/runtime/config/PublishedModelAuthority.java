@@ -49,7 +49,7 @@ import java.util.Map;
  * 常见成因。多一次按主键/索引的点查是这个契约的合理代价；需要吞吐时应当加**带失效广播**的
  * 缓存，而不是在这里加一个没有失效通道的 map。
  */
-public class PublishedModelAuthority implements EngineModelAuthority {
+public class PublishedModelAuthority implements EngineModelAuthority, PublishedModelFactsPort {
 
     /**
      * 取当前权威版本：租户内 revision_no 最大的 PUBLISHED 行。
@@ -60,6 +60,18 @@ public class PublishedModelAuthority implements EngineModelAuthority {
     private static final String CURRENT_PUBLISHED_SQL =
             "SELECT revision_id, revision_no, provider_id, model_id, catalog_version, params_hash, "
                     + "credential_ref, operator_id, published_at "
+                    + "FROM platform.ai_runtime_config_revision "
+                    + "WHERE tenant_id = ? AND state = 'PUBLISHED' "
+                    + "ORDER BY revision_no DESC LIMIT 1";
+
+    /**
+     * WP-040 A2 维度门的读端：同源同表同行，只多取 {@code dimension} 列
+     * （V24 补的管理面事实列）。刻意**不**改 {@link #CURRENT_PUBLISHED_SQL}：
+     * 受理主路径的列清单是 V15 冻结契约的镜像，多取一列就多一处漂移点。
+     */
+    private static final String CURRENT_PUBLISHED_FACTS_SQL =
+            "SELECT revision_id, revision_no, provider_id, model_id, catalog_version, params_hash, "
+                    + "credential_ref, operator_id, published_at, dimension "
                     + "FROM platform.ai_runtime_config_revision "
                     + "WHERE tenant_id = ? AND state = 'PUBLISHED' "
                     + "ORDER BY revision_no DESC LIMIT 1";
@@ -101,6 +113,42 @@ public class PublishedModelAuthority implements EngineModelAuthority {
                 asString(row.get("credential_ref")),
                 asString(row.get("operator_id")),
                 asInstant(row.get("published_at")));
+    }
+
+    /**
+     * WP-040 A2 的读端。**刻意不抛拒绝异常**而返回 {@code null}：维度门的拒绝归
+     * 受理侧（它先经 {@link #requirePublished} 做过拒绝判定，本端口的 null 只是
+     * "门自动跳过/防御"分支），两个端口的失败语义不能互相吞并。
+     */
+    @Override
+    public ConfigRevisionFacts currentPublishedFacts() {
+        ExecutionPrincipal principal = PrincipalContext.get();
+        if (principal == null) {
+            return null;
+        }
+        String tenantId = principal.tenantId();
+        List<Map<String, Object>> rows;
+        try {
+            rows = jdbc.queryForList(CURRENT_PUBLISHED_FACTS_SQL, tenantId);
+        } catch (DataAccessException failure) {
+            return null;
+        }
+        if (rows.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> row = rows.get(0);
+        return new ConfigRevisionFacts(
+                tenantId,
+                asString(row.get("revision_id")),
+                asLong(row.get("revision_no")),
+                asString(row.get("provider_id")),
+                asString(row.get("model_id")),
+                asString(row.get("catalog_version")),
+                asString(row.get("params_hash")),
+                asString(row.get("credential_ref")),
+                asString(row.get("operator_id")),
+                asInstant(row.get("published_at")),
+                row.get("dimension") instanceof Number number ? number.intValue() : 0);
     }
 
     private static String asString(Object value) {

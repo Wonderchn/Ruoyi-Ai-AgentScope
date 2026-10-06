@@ -25,7 +25,7 @@ import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService;
 import com.nageoffer.ai.ragent.runtime.config.ConfigAuthorityUnavailable;
 import com.nageoffer.ai.ragent.runtime.config.RunConfigBinding;
 import com.nageoffer.ai.ragent.runtime.config.RunConfigBindingPort;
-import com.nageoffer.ai.ragent.runtime.config.RunScopedChatPort;
+import com.nageoffer.ai.ragent.runtime.config.RuntimeModelGatewayPort;
 import org.ruoyi.ai.api.runtime.ChatPort;
 import org.ruoyi.ai.api.runtime.DocumentPort;
 import com.nageoffer.ai.ragent.ingest.EmbeddingGateway;
@@ -68,7 +68,7 @@ public class RagChatExecutor implements RunExecutor {
 
     private final DocumentPort documentDao;
     private final EmbeddingGateway embeddingGateway;
-    private final RunScopedChatPort chatGateway;
+    private final RuntimeModelGatewayPort chatGateway;
     private final EgressPolicy egressPolicy;
     private final UsageLedgerService usageLedger;
     private final ObjectProvider<PlatformFactsClient> platformFacts;
@@ -100,7 +100,7 @@ public class RagChatExecutor implements RunExecutor {
         return port.requireBoundRevision(execution.tenantId(), execution.runId());
     }
 
-    public RagChatExecutor(DocumentPort documentDao, EmbeddingGateway embeddingGateway, RunScopedChatPort chatGateway,
+    public RagChatExecutor(DocumentPort documentDao, EmbeddingGateway embeddingGateway, RuntimeModelGatewayPort chatGateway,
                            EgressPolicy egressPolicy, UsageLedgerService usageLedger,
                            ObjectProvider<PlatformFactsClient> platformFacts,
                            ObjectProvider<com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService> authorization,

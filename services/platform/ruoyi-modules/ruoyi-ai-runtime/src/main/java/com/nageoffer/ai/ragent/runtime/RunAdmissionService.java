@@ -88,6 +88,22 @@ public class RunAdmissionService {
     }
 
     /**
+     * 新端口读端（WP-040 A2，同族 fail-closed 语义）。与 {@link #modelAuthority} 并存：
+     * 两者读**同一张** {@code ai_runtime_config_revision} 表的同一行，唯一差别是
+     * 新端口额外带回 {@code dimension}（维度门需要它，V15 冻结契约的
+     * {@link com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority.PublishedModel} 不含该字段）。
+     * 端口缺席（旧装配）时维度门自动跳过 —— 维度不是 V15 受理契约的一部分，
+     * 允许权威存在而维度门缺席，不允许反过来。
+     */
+    private com.nageoffer.ai.ragent.runtime.config.PublishedModelFactsPort publishedModelFactsPort;
+
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void configurePublishedModelFacts(
+            com.nageoffer.ai.ragent.runtime.config.PublishedModelFactsPort port) {
+        this.publishedModelFactsPort = port;
+    }
+
+    /**
      * 受理时刻解析**当前 PUBLISHED 版本**（C1.2 第 1 行：新受理的 run 绑**新**版本）。
      *
      * <p><b>读不到即拒绝受理</b>（C1.1：数据库读取失败 → 拒绝新受理，禁止静默回退 YAML）。
@@ -118,6 +134,32 @@ public class RunAdmissionService {
                 published.providerId(), published.modelId(), published.catalogVersion(),
                 published.paramsHash(), published.credentialRef(), published.operatorId(),
                 published.publishedAt());
+    }
+
+    /**
+     * WP-040 A2 维度门：受理侧确认当前 PUBLISHED 版本声明的 embedding 维度必须等于
+     * 统一向量列物理维度（1536）。失败 ⇒ **响亮拒绝受理**，本轮受理对 DB 的写入为零
+     * （判据用"前后行数增量"采集，不用绝对计数 —— §6.1-10）。
+     *
+     * <p>权威端口缺席（旧装配/纯单测形态）时跳过：维度不是 V15 冻结受理契约的一部分；
+     * 权威存在而新端口缺席的形态下拒绝反而会打断可受理路径。
+     */
+    private void requireSupportedDimension(String action) {
+        var port = publishedModelFactsPort;
+        if (port == null) {
+            return;
+        }
+        var facts = port.currentPublishedFacts();
+        if (facts == null) {
+            throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE,
+                    "config authority unavailable: refusing admission (published facts unreadable)");
+        }
+        if (facts.dimension() != com.nageoffer.ai.ragent.runtime.config.PublishedModelFactsPort.REQUIRED_DIMENSION) {
+            throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE,
+                    "embedding dimension " + facts.dimension() + " != required "
+                            + com.nageoffer.ai.ragent.runtime.config.PublishedModelFactsPort.REQUIRED_DIMENSION
+                            + "; refusing admission for action=" + action);
+        }
     }
     private RuntimeActionContract contract(String action) {return contracts.stream().filter(c->c.action().equals(action)).findFirst().orElse(null);}
 
@@ -168,6 +210,9 @@ public class RunAdmissionService {
         // 0) 配置权威：受理是**唯一**能固定版本的时刻（C1.2 第 1 行）。读不到权威即拒绝受理，
         //    不写 NULL 让执行期去猜，也不回退 YAML/默认模型（C1.1）。放在任何写入之前。
         var published = requirePublishedModel(request.action());
+        // 0b) 维度门（WP-040 A2）：当前 PUBLISHED 版本的 embedding 维度必须等于
+        //     统一向量列物理维度（1536）；失败 ⇒ 响亮拒绝，本轮受理对 DB 零写入。
+        requireSupportedDimension(request.action());
         // 1) 预算：锁租户行 → 叠加预占不超上限（并发失败方 BUDGET_EXCEEDED）
         long limit = dao.lockTenantBudget(tenantId, properties.getBudget().getDefaultTenantUnits());
         long units = unitsOf(request.budget());
