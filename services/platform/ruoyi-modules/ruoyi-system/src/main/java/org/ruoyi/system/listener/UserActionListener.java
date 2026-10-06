@@ -41,13 +41,21 @@ public class UserActionListener implements SaTokenListener {
      */
     @Override
     public void doLogin(String loginType, Object loginId, String tokenValue, SaLoginParameter loginParameter) {
-        UserAgent userAgent = UserAgentUtil.parse(ServletUtils.getRequest().getHeader("User-Agent"));
+        // WP-039（T4）F-8 修复：HTTP 不要求客户端发 User-Agent（脚本/服务端集成常不发），
+        // 原实现直接 UserAgentUtil.parse(header) 再 userAgent.getBrowser().getName()，
+        // 缺 UA 时会 NPE 并把**登录打成 500**（T8 实测：HttpClient 默认不发 UA → 500，补 UA 立刻 200）。
+        // 这里对"头部缺失"和"解析不出浏览器/OS"两种情况都降级为 Unknown，登录本身不受影响。
+        String userAgentHeader = ServletUtils.getRequest().getHeader("User-Agent");
+        UserAgent userAgent = (userAgentHeader == null || userAgentHeader.isBlank())
+            ? null : UserAgentUtil.parse(userAgentHeader);
         String ip = ServletUtils.getClientIP();
         UserOnlineDTO dto = new UserOnlineDTO();
         dto.setIpaddr(ip);
         dto.setLoginLocation(AddressUtils.getRealAddressByIP(ip));
-        dto.setBrowser(userAgent.getBrowser().getName());
-        dto.setOs(userAgent.getOs().getName());
+        dto.setBrowser(userAgent == null || userAgent.getBrowser() == null
+            ? "Unknown" : userAgent.getBrowser().getName());
+        dto.setOs(userAgent == null || userAgent.getOs() == null
+            ? "Unknown" : userAgent.getOs().getName());
         dto.setLoginTime(System.currentTimeMillis());
         dto.setTokenId(tokenValue);
         String username = (String) loginParameter.getExtra(LoginHelper.USER_NAME_KEY);

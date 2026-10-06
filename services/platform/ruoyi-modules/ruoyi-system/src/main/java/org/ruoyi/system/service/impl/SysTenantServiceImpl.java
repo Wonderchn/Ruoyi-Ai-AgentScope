@@ -12,6 +12,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import org.ruoyi.common.core.constant.CacheNames;
 import org.ruoyi.common.core.constant.Constants;
+import org.ruoyi.common.core.constant.HttpStatus;
 import org.ruoyi.common.core.constant.SystemConstants;
 import org.ruoyi.common.core.constant.TenantConstants;
 import org.ruoyi.common.core.exception.ServiceException;
@@ -331,7 +332,7 @@ public class SysTenantServiceImpl implements ISysTenantService {
     @Override
     public void checkTenantAllowed(String tenantId) {
         if (ObjectUtil.isNotNull(tenantId) && TenantConstants.DEFAULT_TENANT_ID.equals(tenantId)) {
-            throw new ServiceException("不允许操作管理租户");
+            throw new ServiceException("不允许操作管理租户", HttpStatus.FORBIDDEN);
         }
     }
 

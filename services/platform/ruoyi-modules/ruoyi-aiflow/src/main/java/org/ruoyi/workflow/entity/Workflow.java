@@ -11,7 +11,7 @@ import java.io.Serial;
 
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("t_workflow")
+@TableName("ai_flow_workflow")
 @Schema(title = "工作流定义 | workflow definition")
 public class Workflow extends BaseEntity {
 

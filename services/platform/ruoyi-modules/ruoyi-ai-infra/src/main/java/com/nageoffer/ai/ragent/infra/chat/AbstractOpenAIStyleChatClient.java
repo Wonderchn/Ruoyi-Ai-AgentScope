@@ -42,6 +42,7 @@ import okhttp3.Response;
 import okhttp3.ResponseBody;
 import okio.BufferedSource;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 
 import java.io.IOException;
 import java.util.List;
@@ -53,15 +54,47 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * OpenAI 兼容协议 ChatClient 抽象基类
+ *
+ * <p><b>为什么四个协作者全部按名字注入（F-3）。</b>
+ * 这些字段原先都是裸 {@code @Autowired}（按类型）。在<b>独立 AI 应用</b>里这没问题：
+ * 那边 {@code Executor} / {@code OkHttpClient} 各自只有一个候选。但<b>内嵌形态</b>
+ * （platform 单上下文同时装平台侧与 AI 侧）里类型级注入立刻不成立：
+ * <ul>
+ *   <li>{@code Executor}：候选有 {@code platform} 的
+ *       {@code ThreadPoolConfig}（{@code @Primary scheduledExecutorService}、
+ *       {@code @Primary mainExecutor}、{@code knowledgeParseExecutor}）、Spring Boot 的
+ *       {@code applicationTaskExecutor}、以及本链的 {@code modelStreamExecutor} ——
+ *       <b>两个 {@code @Primary} 直接让容器以 "more than one 'primary' bean found"
+ *       拒绝创建 {@code deepSeekChatClient}，整个应用 20 秒内退出</b>
+ *       （T8 在真环境 WP-038 阶段 2 实测）。</li>
+ *   <li>{@code OkHttpClient}：候选有 {@code syncHttpClient} 与
+ *       {@code @Primary streamingHttpClient}。这一条<b>不报错、更危险</b>：
+ *       {@code @Primary} 让"按类型"静默解析到<b>无读超时/无调用超时</b>的流式客户端，
+ *       于是同步调用会拿着一个永不超时的客户端 —— 是一处沉默的错配，而不是启动失败。</li>
+ * </ul>
+ *
+ * <p><b>为什么在注入点加限定符，而不是摘掉 platform 那两个 {@code @Primary}。</b>
+ * 那两个 bean 有 platform 自己的注入方（{@code AsyncTaskExecutor}/{@code ScheduledExecutorService}
+ * 类型的注入点靠 {@code @Primary} 解析），摘掉会波及平台侧；注入点加限定符语义最明确、
+ * 改动面最小，也与本仓既有做法一致（{@code RoutingVlmService:63} 与
+ * {@code AiEmbeddedModelConfiguration:291-360} 都用 {@code @Qualifier("syncHttpClient")}）。
+ *
+ * <p>{@link RagStreamTraceSupport} <b>刻意不加</b>限定符：内嵌上下文里它只有一个候选
+ * （{@code AiEmbeddedModelConfiguration:206}），而独立 AI 应用里是实现类
+ * {@code RagStreamTraceSupportImpl}（bean 名与这里不同）；按名字注入会在独立应用里
+ * 找不到 bean。没有歧义就不加约束。
  */
 @Slf4j
 public abstract class AbstractOpenAIStyleChatClient implements ChatClient {
 
     @Autowired
+    @Qualifier("syncHttpClient")
     private OkHttpClient syncHttpClient;
     @Autowired
+    @Qualifier("streamingHttpClient")
     private OkHttpClient streamingHttpClient;
     @Autowired
+    @Qualifier("modelStreamExecutor")
     private Executor modelStreamExecutor;
     @Autowired
     private RagStreamTraceSupport streamTraceSupport;

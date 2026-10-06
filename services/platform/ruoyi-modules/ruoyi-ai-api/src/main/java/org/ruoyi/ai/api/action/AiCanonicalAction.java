@@ -38,6 +38,11 @@ public final class AiCanonicalAction {
         actions.put("document.ingest", "ai:document:ingest");
         actions.put("conversation.read", "ai:conversation:read");
         actions.put("conversation.export", "ai:conversation:export");
+        // WP-034A：F03 会话写入。此前只有读与导出，重命名/删除没有规范动作——
+        // 也就是说这两个操作没有任何可授予的权限，公开面只能靠"不提供端点"来回避。
+        // 权限行由 V12__conversation_write_permissions.sql 注册（id 7124/7125）。
+        actions.put("conversation.rename", "ai:conversation:write");
+        actions.put("conversation.delete", "ai:conversation:delete");
         actions.put("memory.read", "ai:memory:read");
         actions.put("run.get", "ai:run:read");
         actions.put("run.events", "ai:run:event:read");

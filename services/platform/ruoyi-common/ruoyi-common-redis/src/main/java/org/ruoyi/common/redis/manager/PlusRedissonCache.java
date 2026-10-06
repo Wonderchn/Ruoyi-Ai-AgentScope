@@ -74,9 +74,23 @@ public class PlusRedissonCache implements Cache {
         return map;
     }
 
+    /**
+     * 读取缓存。
+     *
+     * <p>WP-039（T4）F-6 修复：原实现写成 {@code toStoreValue(key, false)} —— 把**缓存键**当成了
+     * 缓存值返回，于是任何 {@code @Cacheable} 查询都变成"永远命中"，命中的值就是 key 本身：
+     * <ul>
+     *   <li>key 类型 ≠ 方法返回类型时，CGLIB 代理在返回处插入的 checkcast 直接抛
+     *       {@code ClassCastException}（登录即此形态：key 是 clientId 的 {@code String}，
+     *       方法声明返回 {@code SysClientVo}）；</li>
+     *   <li>key 类型 = 返回类型时更隐蔽：直接返回 key 冒充数据，且因被判定为命中而**从不写入**
+     *       真实值（Redis 里也就永远没有该条目）。</li>
+     * </ul>
+     * 正确语义是"从 map 读"，见下方 {@code map.get(key)}。</p>
+     */
     @Override
     public ValueWrapper get(Object key) {
-        Object value = toStoreValue(key, false);
+        Object value = map.get(key);
         if (value == null) {
             return null;
         }

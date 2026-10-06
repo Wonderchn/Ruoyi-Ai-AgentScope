@@ -214,6 +214,16 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- 真库判据用的 PostgreSQL 驱动（WP-038A）。
+             本模块此前的测试只跑单元级断言，没有需要真库的判据；
+             ConversationTitleColumnTest 要验证"两个标题列"的实际行为，
+             必须在真实 PostgreSQL 上执行 SQL。test scope：不进运行时依赖。 -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Test dependencies -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

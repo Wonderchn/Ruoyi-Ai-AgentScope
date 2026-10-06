@@ -12,6 +12,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import org.ruoyi.common.core.constant.CacheNames;
+import org.ruoyi.common.core.constant.HttpStatus;
 import org.ruoyi.common.core.constant.SystemConstants;
 import org.ruoyi.common.core.constant.TenantConstants;
 import org.ruoyi.common.core.domain.model.LoginUser;
@@ -241,13 +242,13 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
     @Override
     public void checkRoleAllowed(SysRoleBo role) {
         if (ObjectUtil.isNotNull(role.getRoleId()) && LoginHelper.isSuperAdmin(role.getRoleId())) {
-            throw new ServiceException("不允许操作超级管理员角色");
+            throw new ServiceException("不允许操作超级管理员角色", HttpStatus.FORBIDDEN);
         }
         String[] keys = new String[]{TenantConstants.SUPER_ADMIN_ROLE_KEY, TenantConstants.TENANT_ADMIN_ROLE_KEY};
         // 新增不允许使用 管理员标识符
         if (ObjectUtil.isNull(role.getRoleId())
             && StringUtils.equalsAny(role.getRoleKey(), keys)) {
-            throw new ServiceException("不允许使用系统内置管理员角色标识符!");
+            throw new ServiceException("不允许使用系统内置管理员角色标识符!", HttpStatus.FORBIDDEN);
         }
         // 修改不允许修改 管理员标识符
         if (ObjectUtil.isNotNull(role.getRoleId())) {
@@ -255,9 +256,9 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
             // 如果标识符不相等 判断为修改了管理员标识符
             if (!StringUtils.equals(sysRole.getRoleKey(), role.getRoleKey())) {
                 if (StringUtils.equalsAny(sysRole.getRoleKey(), keys)) {
-                    throw new ServiceException("不允许修改系统内置管理员角色标识符!");
+                    throw new ServiceException("不允许修改系统内置管理员角色标识符!", HttpStatus.FORBIDDEN);
                 } else if (StringUtils.equalsAny(role.getRoleKey(), keys)) {
-                    throw new ServiceException("不允许使用系统内置管理员角色标识符!");
+                    throw new ServiceException("不允许使用系统内置管理员角色标识符!", HttpStatus.FORBIDDEN);
                 }
             }
         }
@@ -288,7 +289,7 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
         }
         long count = baseMapper.selectRoleCount(roleIds);
         if (count != roleIds.size()) {
-            throw new ServiceException("没有权限访问部分角色数据！");
+            throw new ServiceException("没有权限访问部分角色数据！", HttpStatus.FORBIDDEN);
         }
     }
 
@@ -511,7 +512,7 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
     @Transactional(rollbackFor = Exception.class)
     public int deleteAuthUser(SysUserRole userRole) {
         if (LoginHelper.getUserId().equals(userRole.getUserId())) {
-            throw new ServiceException("不允许修改当前用户角色!");
+            throw new ServiceException("不允许修改当前用户角色!", HttpStatus.FORBIDDEN);
         }
         int rows = userRoleMapper.delete(new LambdaQueryWrapper<SysUserRole>()
             .eq(SysUserRole::getRoleId, userRole.getRoleId())
@@ -536,7 +537,7 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
     public int deleteAuthUsers(Long roleId, Long[] userIds) {
         List<Long> ids = List.of(userIds);
         if (ids.contains(LoginHelper.getUserId())) {
-            throw new ServiceException("不允许修改当前用户角色!");
+            throw new ServiceException("不允许修改当前用户角色!", HttpStatus.FORBIDDEN);
         }
         int rows = userRoleMapper.delete(new LambdaQueryWrapper<SysUserRole>()
             .eq(SysUserRole::getRoleId, roleId)
@@ -563,7 +564,7 @@ public class SysRoleServiceImpl implements ISysRoleService, RoleService {
         int rows = 1;
         List<Long> ids = List.of(userIds);
         if (ids.contains(LoginHelper.getUserId())) {
-            throw new ServiceException("不允许修改当前用户角色!");
+            throw new ServiceException("不允许修改当前用户角色!", HttpStatus.FORBIDDEN);
         }
         List<SysUserRole> list = StreamUtils.toList(ids, userId -> {
             SysUserRole ur = new SysUserRole();

@@ -11,14 +11,14 @@ import org.ruoyi.common.tenant.core.TenantEntity;
 import java.io.Serial;
 
 /**
- * 配置信息对象 chat_config
+ * 配置信息对象（统一库 {@code platform.ai_model_config}，由旧 MySQL 配置表迁移合并而来）
  *
  * @author ageerle
  * @date 2025-12-14
  */
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("chat_config")
+@TableName("ai_model_config")
 public class ChatConfig extends TenantEntity {
 
     @Serial

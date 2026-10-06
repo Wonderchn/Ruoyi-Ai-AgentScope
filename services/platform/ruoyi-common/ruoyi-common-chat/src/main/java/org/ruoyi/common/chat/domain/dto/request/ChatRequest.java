@@ -29,8 +29,7 @@ public class ChatRequest {
     /**
      * 智能体ID。传入时后端按智能体配置解析模型/工具/技能/知识库/提示词/是否深度思考。
      */
-    @JsonSerialize(using = ToStringSerializer.class)
-    private Long agentId;
+    private String agentId;
 
     /**
      * 对话消息

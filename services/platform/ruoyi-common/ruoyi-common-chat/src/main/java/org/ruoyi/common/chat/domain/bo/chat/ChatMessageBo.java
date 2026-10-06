@@ -11,7 +11,7 @@ import org.ruoyi.common.mybatis.core.domain.BaseEntity;
 
 
 /**
- * 聊天消息业务对象 chat_message
+ * 聊天消息业务对象 ai_message
  *
  * @author ageerle
  * @date 2025-12-14
@@ -25,7 +25,7 @@ public class ChatMessageBo extends BaseEntity {
      * 主键
      */
     @NotNull(message = "主键不能为空", groups = { EditGroup.class })
-    private Long id;
+    private String id;
 
     /**
      * 会话id
@@ -36,7 +36,7 @@ public class ChatMessageBo extends BaseEntity {
      * 用户id
      */
     @NotNull(message = "用户id不能为空", groups = { AddGroup.class, EditGroup.class })
-    private Long userId;
+    private String userId;
 
     /**
      * 消息内容

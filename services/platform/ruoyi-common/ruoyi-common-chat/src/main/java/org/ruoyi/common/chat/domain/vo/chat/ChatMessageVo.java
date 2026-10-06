@@ -11,7 +11,7 @@ import java.io.Serializable;
 
 
 /**
- * 聊天消息视图对象 chat_message
+ * 聊天消息视图对象 ai_message
  *
  * @author ageerle
  * @date 2025-12-14
@@ -28,7 +28,7 @@ public class ChatMessageVo implements Serializable {
      * 主键
      */
     @ExcelProperty(value = "主键")
-    private Long id;
+    private String id;
 
     /**
      * 会话id
@@ -40,7 +40,7 @@ public class ChatMessageVo implements Serializable {
      * 用户id
      */
     @ExcelProperty(value = "用户id")
-    private Long userId;
+    private String userId;
 
     /**
      * 消息内容
