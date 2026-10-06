@@ -185,7 +185,22 @@ public class AiGatewayController {
             new Route("POST", "/documents/{id}/tombstone", "kb.delete"),
             new Route("GET", "/documents/{id}/meta", "document.read"),
             new Route("GET", "/documents/{id}/source", "document.download"),
-            new Route("GET", "/knowledge-bases/{id}/documents", "document.list"));
+            new Route("GET", "/knowledge-bases/{id}/documents", "document.list"),
+            // W4-9：F09 Agent 目录（8 handler）。内层 handler 落在
+            // /internal/ai/v1/agent-catalog/**（由 AiEmbeddedAgentCatalogConfiguration 装配）。
+            // 逐条登记、不用通配，与本文件上文"不登记 /agent/v1/**"的纪律一致；全部为 JSON。
+            // 每个 action 的权限串见 AiCanonicalAction，权限行由 V27__agent_catalog_permissions.sql 播种。
+            // F11（Skills）本批**未装**：其闭包经 IntentNodeRegistry → DefaultIntentClassifier →
+            // LLMService/PromptTemplateLoader/IntentTreeCacheManager 均未装配（task-13 / W4-T0-46），
+            // 故此处不登记 /agent-catalog/agent-skills 的任何路径。
+            new Route("GET", "/agent-catalog/agents", "agent.list"),
+            new Route("POST", "/agent-catalog/agents", "agent.write"),
+            new Route("PUT", "/agent-catalog/agents/{id}", "agent.write"),
+            new Route("DELETE", "/agent-catalog/agents/{id}", "agent.delete"),
+            new Route("POST", "/agent-catalog/agents/{id}/activate", "agent.activate"),
+            new Route("GET", "/agent-catalog/agents/{id}/prompts", "agent.read"),
+            new Route("PUT", "/agent-catalog/agents/{id}/prompts/{slotKey}", "agent.write"),
+            new Route("GET", "/agent-catalog/agents/prompt-slots/{slotKey}/default", "agent.read"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;

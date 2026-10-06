@@ -53,6 +53,15 @@ public final class AiCanonicalAction {
         actions.put("run.approve", "ai:run:approve");
         actions.put("run.reconcile", "ai:run:reconcile");
         actions.put("agent.execute", "ai:agent:execute");
+        // W4-9（收窄为 F09 only）：Agent 目录 8 个 handler 的规范动作。
+        // 权限行由 V27__agent_catalog_permissions.sql 播种（7132-7136）；
+        // 公开路由见 AiGatewayController.ROUTES 的 /agent-catalog/agents/**。
+        // F11（Skills）未装，故此处不登记 skill.*（task-13 / W4-T0-46）。
+        actions.put("agent.list", "ai:agent:list");
+        actions.put("agent.read", "ai:agent:read");
+        actions.put("agent.write", "ai:agent:write");
+        actions.put("agent.delete", "ai:agent:delete");
+        actions.put("agent.activate", "ai:agent:activate");
         actions.put("tool.sandbox.write", "ai:tool:sandbox:write");
         return Collections.unmodifiableMap(actions);
     }

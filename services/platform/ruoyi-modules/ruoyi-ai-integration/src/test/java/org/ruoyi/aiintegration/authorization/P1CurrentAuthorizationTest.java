@@ -201,8 +201,11 @@ class P1CurrentAuthorizationTest {
     @Test
     void registryCoversTheFrozenActionTable() {
         // P1 13 + P2 7 + approved P3 4 fixed actions = 24; WP-034A added the two F03
-        // conversation-write actions (rename/delete), so the frozen table is now 26.
-        assertEquals(26, AiActionRegistry.knownActions().size());
+        // conversation-write actions (rename/delete), so the frozen table became 26.
+        // W4-9 added the five F09 agent-catalog actions (agent.list/read/write/delete/activate),
+        // so the frozen table is now 31. F11 (skill.*) is deliberately not landed in this batch
+        // (its runtime closure is not assembled yet — task-13 / W4-T0-46).
+        assertEquals(31, AiActionRegistry.knownActions().size());
         assertEquals(Optional.of("ai:conversation:write"), AiActionRegistry.permissionOf("conversation.rename"));
         assertEquals(Optional.of("ai:conversation:delete"), AiActionRegistry.permissionOf("conversation.delete"));
         assertEquals(Optional.of("ai:kb:acl"), AiActionRegistry.permissionOf("kb.acl.manage"));

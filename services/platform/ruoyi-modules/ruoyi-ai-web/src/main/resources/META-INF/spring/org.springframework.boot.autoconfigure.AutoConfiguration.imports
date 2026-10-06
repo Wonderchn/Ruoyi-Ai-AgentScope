@@ -13,3 +13,4 @@ com.nageoffer.ai.ragent.framework.mq.transport.RocketMQOutboxTransportAutoConfig
 com.nageoffer.ai.ragent.authorization.AiDeliveryPermitConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedFeedbackConfiguration
 com.nageoffer.ai.ragent.mcp.config.McpEmbeddedServerConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedAgentCatalogConfiguration
