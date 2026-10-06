@@ -1,6 +1,7 @@
 package com.nageoffer.ai.ragent.authorization;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,7 +21,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  * WebMvcConfigurer，否则 hasSingleBean(WebMvcConfigurer.class) 会红）。
  *
  * <p>锚点断言：holder 必须存在且拦截器**真的**注册进 registry（"能被装配"与"被注册"是两件事）。
+ *
+ * <p><b>本类此前缺 {@code @Tag("dev")} ⇒ 在 {@code -Pdev} 下一行都没跑</b>（父 pom 把 surefire 配成
+ * {@code <groups>${profiles.active}</groups>}，交付构建日志里这个类出现 0 次）。加上之后这 5 条才真正进入验收。
  */
+@Tag("dev")
 @SpringJUnitConfig(AiDeliveryPermitConfiguration.class)
 class AiDeliveryPermitConfigurationTest {
 
@@ -79,11 +84,19 @@ class AiDeliveryPermitConfigurationTest {
         assertEquals(0, holder.closeAll(request));
     }
 
-    /** 无请求绑定（非 web 线程）时 register 静默跳过，不能把登录/切片打炸。 */
+    /**
+     * 无请求绑定（非 web 线程、内部直调、异步收尾）时，{@code register} 必须**就地释放**这条 permit。
+     *
+     * <p>旧写法叫 {@code registerOutsideARequestIsSkipped} 且**只调用不断言**，等于把"既不登记也不释放"
+     * 固化成期望行为 —— 而调用方 {@code AiResourceController.reply} 在登记之前已经
+     * {@code revocations.enter()} 往库里落了 ACTIVE permit，静默跳过就是 (3) 泄漏的第二条路径。
+     */
     @Test
-    void registerOutsideARequestIsSkipped() {
-        holder.register(() -> {
-        }, "permit-none", "op-none");
+    void registerOutsideARequestReleasesThePermitInPlace() {
+        AtomicInteger closed = new AtomicInteger();
+        holder.register(closed::incrementAndGet, "permit-none", "op-none");
+
+        assertEquals(1, closed.get(), "无请求绑定时 permit 必须就地释放，不能留在 ACTIVE");
     }
 
     @AfterEach
