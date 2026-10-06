@@ -32,6 +32,7 @@ import com.nageoffer.ai.ragent.runtime.web.DeliveryPermits;
 import com.nageoffer.ai.ragent.runtime.web.RunApiExceptionHandler;
 import com.nageoffer.ai.ragent.runtime.web.RunController;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -84,6 +85,31 @@ public class AiEmbeddedRunConfiguration {
             @ConditionalOnMissingBean
             public RunEventAppender runEventAppender(RunLedgerDao runLedgerDao, ObjectMapper objectMapper) {
                 return new RunEventAppender(runLedgerDao, objectMapper);
+            }
+
+            /**
+             * 平台"当前事实"端口（U02）。
+             *
+             * <p><b>W4 P0 修复</b>：独立 AI 应用里 {@link PlatformFactsClient} 是
+             * {@code @Component}（由该应用自己的组件扫描注册）；**内嵌形态不做该包的
+             * 组件扫描**（本组所有 bean 均显式声明）⇒ 该端口原先**整体缺席**，而
+             * {@link RunAccessService#current} 对其 fail-closed ⇒ 每一个 run 在执行的
+             * 第一个动作就 75–175ms 失败 {@code AUTHORIZATION_UNAVAILABLE}（0 个 step）。
+             * 实测证据：内嵌实例 {@code /actuator/beans} 无该类型 bean（即便命令行传入
+             * {@code ai.integration.security.enabled=true} 也不出现 —— 因为从未被扫描/声明）。
+             *
+             * <p>修法 = 显式声明**同一个实现**，并保留原门控：{@code ai.integration.security.enabled=true}
+             * 才创建（默认关 ⇒ 语义不变，仍是 fail-closed），构造器仍要求 base-url 与
+             * 服务凭证非空（空白即启动期响亮失败，不静默降级）。内嵌同进程自呼
+             * {@code /internal/platform/v1/authorization/current}（该路由已在本形态注册）。
+             */
+            @Bean
+            @ConditionalOnMissingBean
+            @ConditionalOnProperty(name = "ai.integration.security.enabled", havingValue = "true")
+            public PlatformFactsClient platformFactsClient(
+                    @Value("${ai.integration.platform-base-url:}") String baseUrl,
+                    @Value("${ai.integration.platform-service-credential:}") String credential) {
+                return new PlatformFactsClient(baseUrl, credential);
             }
 
             @Bean

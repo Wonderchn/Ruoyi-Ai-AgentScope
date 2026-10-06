@@ -53,6 +53,13 @@ public class RunAdmissionService {
 
     private static final Pattern IDEMPOTENCY_KEY = Pattern.compile("[\\x21-\\x7E]{1,128}");
 
+    /**
+     * §6.1-11：fail-closed 的拒绝路径必须留**可归因的服务端日志**，否则"拒绝"与"崩了"
+     * 在证据面不可分（W3-T0-11 立案、W4-7 ⑤-D 核验确证本类原先连 logger 都没有）。
+     * 文案只含 tenant/action/reason 常量与 authority 侧本就回传客户端的 message，不新增泄漏面。
+     */
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(RunAdmissionService.class);
+
     private final RunLedgerDao dao;
     private final RunEventAppender events;
     private final P2RuntimeProperties properties;
@@ -111,15 +118,19 @@ public class RunAdmissionService {
      * {@code RunConfigBindingPort} 会对**每一个** run 拒绝 —— 契约从受理侧就是空的。
      */
     private com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority.PublishedModel
-    requirePublishedModel(String action) {
+    requirePublishedModel(String tenantId, String action) {
         var authority = modelAuthority;
         if (authority == null) {
+            log.warn("config authority read failed reason=AuthorityReadFailed tenant={} action={} cause={}",
+                    tenantId, action, "authority-bean-absent");
             throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE,
                     "config authority unavailable: refusing admission (no published config authority)");
         }
         try {
             return authority.requirePublished(action);
         } catch (com.nageoffer.ai.ragent.runtime.config.ConfigAuthorityUnavailable unavailable) {
+            log.warn("config authority read failed reason=AuthorityReadFailed tenant={} action={} cause={}",
+                    tenantId, action, unavailable.getMessage());
             throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE,
                     "config authority unavailable: refusing admission (" + unavailable.getMessage() + ")");
         }
@@ -144,17 +155,22 @@ public class RunAdmissionService {
      * <p>权威端口缺席（旧装配/纯单测形态）时跳过：维度不是 V15 冻结受理契约的一部分；
      * 权威存在而新端口缺席的形态下拒绝反而会打断可受理路径。
      */
-    private void requireSupportedDimension(String action) {
+    private void requireSupportedDimension(String tenantId, String action) {
         var port = publishedModelFactsPort;
         if (port == null) {
             return;
         }
         var facts = port.currentPublishedFacts();
         if (facts == null) {
+            log.warn("config authority read failed reason=PublishedFactsUnreadable tenant={} action={}",
+                    tenantId, action);
             throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE,
                     "config authority unavailable: refusing admission (published facts unreadable)");
         }
         if (facts.dimension() != com.nageoffer.ai.ragent.runtime.config.PublishedModelFactsPort.REQUIRED_DIMENSION) {
+            log.warn("config authority read failed reason=DimensionGateRejected tenant={} action={} dimension={} required={}",
+                    tenantId, action, facts.dimension(),
+                    com.nageoffer.ai.ragent.runtime.config.PublishedModelFactsPort.REQUIRED_DIMENSION);
             throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE,
                     "embedding dimension " + facts.dimension() + " != required "
                             + com.nageoffer.ai.ragent.runtime.config.PublishedModelFactsPort.REQUIRED_DIMENSION
@@ -209,10 +225,10 @@ public class RunAdmissionService {
         String tenantId = principal.tenantId();
         // 0) 配置权威：受理是**唯一**能固定版本的时刻（C1.2 第 1 行）。读不到权威即拒绝受理，
         //    不写 NULL 让执行期去猜，也不回退 YAML/默认模型（C1.1）。放在任何写入之前。
-        var published = requirePublishedModel(request.action());
+        var published = requirePublishedModel(tenantId, request.action());
         // 0b) 维度门（WP-040 A2）：当前 PUBLISHED 版本的 embedding 维度必须等于
         //     统一向量列物理维度（1536）；失败 ⇒ 响亮拒绝，本轮受理对 DB 零写入。
-        requireSupportedDimension(request.action());
+        requireSupportedDimension(tenantId, request.action());
         // 1) 预算：锁租户行 → 叠加预占不超上限（并发失败方 BUDGET_EXCEEDED）
         long limit = dao.lockTenantBudget(tenantId, properties.getBudget().getDefaultTenantUnits());
         long units = unitsOf(request.budget());

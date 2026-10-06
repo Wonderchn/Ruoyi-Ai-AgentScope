@@ -41,6 +41,15 @@ public class RunApiExceptionHandler {
     @ExceptionHandler(RunApiException.class)
     public ResponseEntity<Map<String, Object>> handle(RunApiException e) {
         String requestId = "req-" + java.util.UUID.randomUUID().toString().replace("-", "");
+        // §6.1-11（W3-T0-11 家族，W4 落地）：fail-closed 的 5xx 拒绝必须有**服务端可归因**日志，
+        // 否则"拒绝"与"崩了"在证据面不可分（本 handler 原先零日志，正是 W3-2 两轮"零 reason 行"成因）。
+        // 口径（T2r 租约方条件）：只 log.warn、不动响应体/状态/契约；requestId 与客户端所见同值；
+        // reason 用**已经进客户端响应体 msg 的同一串**（下一行 fail(..., e.getMessage(), ...)），不新开披露面。
+        if (e.errorCode().status().is5xxServerError()) {
+            log.warn("run request rejected type={} code={} httpStatus={} requestId={} reason={}",
+                    e.getClass().getSimpleName(), e.errorCode().name(), e.errorCode().status().value(),
+                    requestId, e.getMessage());
+        }
         return RunApiResponses.fail(e.errorCode(), e.getMessage(), requestId);
     }
 
