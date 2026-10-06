@@ -1,32 +1,44 @@
 /**
  * WP-036 / F05+F17：**消息反馈面**（`POST|DELETE /api/ai/v1/conversations/messages/{messageId}/feedback`）。
  *
- * ## 可达性（读**平台树**源码核实 —— 结论是"当前交付下不可达"，本模块如实建模，不造假成功）
+ * ## 可达性演进（两个判据态，均读**平台树**源码核实；当前 = W3-5-BE-1 已落地）
  *
- * | 事实 | 证据 |
+ * ### 判据态 A（W3-5-BE-1 前，≤ f589934）——历史口径，保留作取证基线
+ *
+ * 网关 ROUTES 未登记 ⇒ 404；内层 `MessageFeedbackController` 内嵌无 bean 且映射在应用根
+ * （网关转送 `/internal/ai/v1 + subPath` 必 miss）；包络是 `Result`（字符串 code）双不符；
+ * MQ 消费者内嵌非 bean。前端当时按"端点未开放"如实呈现 404，**不渲染成功**。
+ *
+ * ### 判据态 B（W3-5-BE-1 起，commit a987ed6，T3 装配 + T0 ROUTES 两行）——**当前事实**
+ *
+ * | 事实 | 证据（a987ed6） |
  * | --- | --- |
- * | **网关白名单未登记** | `ruoyi-ai-integration/.../AiGatewayController.ROUTES`：**0 条** `conversations/messages/{messageId}/feedback` 路由（对照 `/conversations/{id}/messages` 在 :117 有登记）⇒ 网关唯一入口 `:206/:239-242` 白名单外一律 **404 `RESOURCE_NOT_FOUND_OR_FORBIDDEN`** |
- * | 内层 handler 存在但**内嵌无 bean** | `ruoyi-ai-rag/.../rag/controller/MessageFeedbackController`（类上**无** `@RequestMapping` 前缀，映射在应用根 `/conversations/messages/{messageId}/feedback`）。内嵌装配只显式列举 `AiResourceController`/`UploadController`/`ConversationSurface`/`RunAcceptanceController` 等 —— **没有它**；且即使装配，网关转送目标是 `/internal/ai/v1 + subPath`，而它映射在应用根 ⇒ 内层也必然 miss |
- * | 包络形状不符（第二重） | 它返回 `Result`（字符串 `code="0"`，`@ruoyi` 旧约定），而网关对 POST/DELETE 强制"单 JSON 对象 + **整数** code 等于 HTTP 状态" ⇒ 就算路由登记了也会被收敛为 503 |
- * | 异步依赖 | `submitFeedbackAsync` 走 RocketMQ（`message-feedback_topic`）+ `MessageFeedbackConsumer`；**T3 已复核该消费者在内嵌态不是 bean** ⇒ "反馈异步持久化"当前不可能生效 |
+ * | ROUTES 已登记（**复用 `conversation.rename`** = `ai:conversation:write`，不新增动作/权限行/迁移） | `AiGatewayController.ROUTES` 新增 `POST\|DELETE /conversations/messages/{messageId}/feedback → conversation.rename` |
+ * | 内嵌受理面 `FeedbackSurface`（`AiEmbeddedFeedbackConfiguration`，门控 `ai.integration.enabled` + `transport=local`） | 路径 = `/internal/ai/v1` + 客户端子路径（`ConversationSurface` 同形）；返回 `ApiEnvelope<Void>`（整数 code，`ApiEnvelope.ok(null)` ⇒ `data:null`） |
+ * | 身份 fail-closed 双层 | 面上 `requirePrincipal()`（缺主体 → `ClientException` → 403 `TENANT_CONTEXT_MISSING`；无 scope → 403 `FORBIDDEN`）+ 服务层 `acceptanceUserId()` 只认 `PrincipalContext` |
+ * | **🔴 生产者缺席 ⇒ 响亮拒绝（D07）** | `MessageFeedbackServiceImpl.requireProducer()`：`MessageQueueProducer` 为 null（`ai.integration.legacy-listeners-enabled` 默认关）时抛 `ClientException("消息反馈队列未装配（legacy 消息链未开启），本次反馈未受理")` ⇒ `AiInternalExceptionResolver` 映射 **403 `TENANT_CONTEXT_MISSING`** |
+ * | 异步持久化 = `ai.integration.legacy-listeners-enabled=true` 时 `MessageFeedbackConsumer` 才装配 | 默认交付下**不装配** ⇒ "200 受理"只在该开关开启的形态出现 |
  *
- * ⇒ **前端判据口径（与 C13.4 同形，不以 401/其他码冒充）**：
- * 当前交付下任何反馈调用**必然**失败 —— 白名单未登记 ⇒ 404（未登录时先 401，与既有路由面一致）。
- * 页面按 `not-registered` 如实呈现"端点未开放"，**不渲染成功**。
+ * ⇒ **前端判据口径（M-01：403 有两源，必须连来源记，不许混）**：
+ * ① 权限缺口（无 `ai:conversation:write`）→ 403；② **生产者缺席（默认形态）→ 同样 403**，
+ * 但 message 含"消息反馈队列未装配"——两者都是**失败**、都不渲染成功，文案由 `failure.message`
+ * 原样透出以区分来源；`feedback-state-submitted` 只在整数 code=200（= MQ 链已开启的真受理）到达。
  *
- * ## 契约本身（`MessageFeedbackController` + `MessageFeedbackRequest`，平台树）
+ * ## 契约本身（`FeedbackSurface` + `MessageFeedbackRequest`，平台树 a987ed6）
  *
- * - `POST …/feedback` body `{vote: 1|-1, reason?, comment?}`；`vote` **必填**且仅 1/-1
- *   （`MessageFeedbackServiceImpl.submitFeedback:99-101`：null/其它值 → ClientException）；
+ * - `POST …/feedback` body `{vote: 1|-1, reason?, comment?}`；`vote` **必填**且仅 1/-1；
  * - `DELETE …/feedback` 无 body（取消赞踩）；
- * - 身份：写路径身份取自**被反馈的已持久化消息行**（`feedbackOf` 注释），客户端不传 userId；
+ * - **200 = 已受理进反馈链，不代表持久化已完成**（`FeedbackSurface.submit` 注释逐字口径，
+ *   与本客户端头注释一致——异步链的持久化由消费者在 MQ 侧完成）；
+ * - 写路径身份取自**被反馈的已持久化消息行**（`AiDomainWriteIdentity.applyFromPersistedFact`），
+ *   客户端不传 userId；
  * - 仅支持对**助手消息**反馈（`loadAssistantMessage:138`）。
  *
- * ## 为什么先建客户端而不是等端点
+ * ## "零改动直联"承诺的兑现检查（a987ed6 实测）
  *
- * 契约是台账/02-api-map 已钉的（`POST|DELETE /conversations/messages/{messageId}/feedback`）；
- * 端点在网关登记 + 内嵌装配 + MQ 消费者三件事齐备后，本客户端无需再改即可联调。
- * 判据（401/404/双形状包络）现在就能把"端点开放后的错误接线"检出。
+ * 客户端**未改任何请求/响应逻辑**：逐字路径、整数 code===200 放行、`data.errorCode` 取符号码、
+ * 401 触发 onAuthExpired 全部命中落地实现。本文件此轮只更新**头注释**（事实演进）——
+ * 逻辑零 diff 由 `git diff` 可证。单测 196/196 保持绿。
  *
  * 零 `@/` 依赖（理由同 `conversation-writes.ts`）。
  */
@@ -114,15 +126,26 @@ export function classifyFeedbackFailure(error: unknown): FeedbackFailure {
   return { kind: 'other', status, errorCode, message };
 }
 
-/** 分类 → 用户文案。404 明说"端点未开放"，不冒充"消息不存在"。 */
+/**
+ * 分类 → 用户文案。
+ *
+ * 403 有**两源**（M-01：同码不同源，不许混）：
+ * ① 权限缺口；② 生产者缺席（默认形态，`ai.integration.legacy-listeners-enabled` 关 ⇒
+ * `requireProducer()` 抛 ClientException ⇒ 403 `TENANT_CONTEXT_MISSING`，message 含
+ * "消息反馈队列未装配"）。两者固定前缀相同、`failure.message` 原样透出以区分来源 ——
+ * **不把生产者缺席改写成权限文案**（那会把部署决策伪装成授权缺陷）。
+ * 404 = 端点未登记（W3-5-BE-1 前的历史形态，保留兜底不删）。
+ */
 export function feedbackFailureMessage(failure: FeedbackFailure): string {
   switch (failure.kind) {
     case 'auth-expired':
       return '登录状态已失效，请重新登录后重试。';
     case 'forbidden':
-      return '没有反馈该消息的权限（需要 ai:conversation 相关动作授权）。';
+      return failure.message.includes('队列未装配')
+        ? `反馈链未开启：${failure.message}`
+        : `没有反馈该消息的权限（需要 ai:conversation:write）。${failure.message ? `服务端：${failure.message}` : ''}`;
     case 'not-found':
-      return '反馈端点当前未开放（网关未登记该路由，404）。本条反馈未提交。';
+      return '反馈端点未开放（404，网关未登记该路由——W3-5-BE-1 前的历史形态）。本条反馈未提交。';
     case 'bad-request':
       return '反馈内容不合法（反馈值必须是 1 或 -1）。';
     case 'unavailable':
@@ -137,9 +160,10 @@ export function feedbackFailureMessage(failure: FeedbackFailure): string {
  *
  * - `idle`：未反馈（页面上只能从服务端成功响应进入 `submitted`/`cancelled`）；
  * - `pending`：请求在路上；
- * - `submitted`：服务端确认（`code === 200`）；
+ * - `submitted`：服务端确认（整数 `code === 200`）= **已受理进反馈链**（W3-5-BE-1 的
+ *   `FeedbackSurface.submit` 注释逐字口径），不代表持久化已完成；
  * - `cancelled`：服务端确认取消；
- * - `failed`：分类后的失败（含 `not-found` = 端点未开放 —— **如实呈现**）。
+ * - `failed`：分类后的失败（403 两源/404 历史形态/503/400 —— 全部如实呈现，不渲染成功）。
  */
 export type FeedbackViewState
   = { kind: 'idle' }

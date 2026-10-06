@@ -26,10 +26,16 @@
 | R6 | /rag | `rag-ingest-run[data-ingest-status=SUCCEEDED]` 且 `rag-docs[data-doc-count>=1]` | run snapshot JSON |
 | R7 | /rag | `rag-answer` + `rag-citations[data-citation-count>=1]` | SSE 帧 / run snapshot；citation 含 versionId/docId/chunkIndex |
 | R8 | /rag | 私有 PDF 弹窗（`rag-view-source-0` 后 iframe/canvas 渲染） | GET `/documents/{id}/source` 响应 content-type=`application/pdf` 且非 HTML（SPA fallback 排除） |
-| R9 | /history | `feedback-state-not-found` | POST feedback → HTTP 404（W3-5-BE-1 **前**现状取证） |
-| R10 | /history | `feedback-state-submitted` → `feedback-cancel` → `feedback-state-cancelled`；幂等=连赞两次不产生重复行 | W3-5-BE-1 **后**：HTTP 200 受理 |
+| R9 | /history | `feedback-state-not-found` | POST feedback → HTTP 404（W3-5-BE-1 **前**现状取证；该态在 a987ed6 后不再出现，仅当产物早于 a987ed6 时执行） |
+| R10 | /history | **主判据（默认形态，shipped 纪律：legacy-listeners-enabled 产品不打开）**：`feedback-state-not_found`…见下 —— 实际预期 `feedback-state-forbidden`（403 `TENANT_CONTEXT_MISSING`）且文案含"队列未装配"原文（`requireProducer()` D07 响亮拒绝，`AiInternalExceptionResolver` 映射 403） | POST feedback → HTTP 403 + 原文核对 |
 
-R9/R10 **不可混写**：分属 W3-5-BE-1 前后两个判据态；R10 执行前必须先核 T0 宣布的三件套已进**当前产物 SHA**（门禁 16）。
+**R10 分支裁定（T0 验收 team-message-863e5fc4）**：
+- **主判据 = 403 + "队列未装配"原文**（默认形态下 `requireProducer()` 响亮拒绝是 D07 正确 fail-closed，**不是缺陷**，不得记 FAIL）；
+- **submitted 分支（`feedback-state-submitted` → cancel → `feedback-state-cancelled`）本波 `NOT_RUN`**：结构性未接通 —— `MessageFeedbackConsumer` 装配需 `ai.integration.legacy-listeners-enabled=true` 专用实验窗 + RocketMQ 基础设施（T3 的 C12.5-5 消费链容器接线尚未打通），成本高收益低，**不伪造**；
+- 两分支**不可混写**；submitted 分支解锁条件 = 专用实验窗 + broker 链就位，由 T0/T3 后续宣布。
+- 幂等判据（连赞两次不产生重复行）随 submitted 分支一并顺延。
+
+R9/R10 **不可混写**：R9 = W3-5-BE-1 前判据态（产物含 feade4f、不含 a987ed6 时才有意义）；R10 = W3-5-BE-1 后判据态（产物含 a987ed6，当前锚 05E7F856 即满足门禁 16 的"已进当前产物"核对）。执行前先核产物提交清单（门禁 16）。
 
 ## 登录态
 
@@ -39,8 +45,19 @@ R9/R10 **不可混写**：分属 W3-5-BE-1 前后两个判据态；R10 执行前
 ## 产物锚（每次执行前核对，门禁 16）
 
 ```
-期望 ruoyi-admin.jar SHA256 = 05E7F856E7D33864B74DEA7F59F2F942A5FFAD94C691A581BB785268FA811898
-（若 T10 登记簿出现更新锚，以登记簿为准并在执行记录里写明）
+期望 ruoyi-admin.jar SHA256 = B96DC1B91B831C0BC802C9BE647A0EF654D774C11FA2AD204305CAC5833142FD
+（commit cd053b9，W6 绿产物，测试 1579/0/0/32；取代 05E7F856——若 T10 登记簿出现更新锚，以登记簿为准并写明）
+```
+
+**双锚执行口径（T10 已登记进 ARTIFACTS.md v2 锚节；R10 文案判定依赖）**：
+R10 的 403 两源**文案**分支（`feedbackFailureMessage` 的"反馈链未开启：队列未装配"）在**待集成**前端增量里，不在产物内（产物内是 a987ed6 时点版本）。双锚形态执行时，前端 3 文件 SHA256 与后端锚**并列写出**，两锚独立可查（64 位值执行时 `Get-FileHash` 现采并全文落盘）：
+
+```
+后端锚：ruoyi-admin.jar SHA256 = B96DC1B91B831C0BC802C9BE647A0EF654D774C11FA2AD204305CAC5833142FD (cd053b9)
+前端锚：src/api/ai/message-feedback.ts        = F6C1EE7501C56875…（执行时现采 64 位）
+        tests/message-feedback.test.ts         = 2143ECED5FDA47E5…（同上）
+        tests/e2e/README-w3-5-r1-r10.md       = 464F5E082679A9DE…（同上）
+（若窗口排在 T0 集成批次之后 ⇒ 前端已进产物 ⇒ 自动单锚，前端锚行写"已集成，见产物 commit"）
 ```
 
 ## 结果落盘

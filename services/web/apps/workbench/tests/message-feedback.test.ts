@@ -124,6 +124,32 @@ describe('🔴 当前交付下的预期失败：网关 404（路由未登记）�
     assert.equal(classifyFeedbackFailure({ status: 503, errorCode: 'AUTHORIZATION_UNAVAILABLE' }).kind, 'unavailable');
     assert.equal(classifyFeedbackFailure(new DOMException('x', 'AbortError')).kind, 'other');
   });
+
+  it('🔴 403 两源区分（W3-5-BE-1/a987ed6 落地后的事实判据）：生产者缺席 ≠ 权限缺口', () => {
+    // 源②：默认形态（ai.integration.legacy-listeners-enabled 关）下 requireProducer()
+    // 抛 ClientException → AiInternalExceptionResolver 映射 403 TENANT_CONTEXT_MISSING，
+    // message 含"队列未装配"。文案必须原样透出该特征，不得改写成权限文案（M-01 同码不同源）。
+    const producerMissing = classifyFeedbackFailure({
+      status: 403,
+      errorCode: 'TENANT_CONTEXT_MISSING',
+      message: '消息反馈队列未装配（legacy 消息链未开启），本次反馈未受理',
+    });
+    assert.equal(producerMissing.kind, 'forbidden');
+    assert.match(feedbackFailureMessage(producerMissing), /反馈链未开启/);
+    assert.match(feedbackFailureMessage(producerMissing), /队列未装配/, '服务端原文必须保留在文案里');
+    // 源①：真权限缺口（FORBIDDEN / 无 ai:conversation:write）。
+    const noPerms = classifyFeedbackFailure({ status: 403, errorCode: 'FORBIDDEN', message: '权限不足' });
+    assert.equal(noPerms.kind, 'forbidden');
+    const permsText = feedbackFailureMessage(noPerms);
+    assert.match(permsText, /权限/);
+    assert.doesNotMatch(permsText, /反馈链未开启/, '两源文案必须可区分（否则 403 归因失真）');
+  });
+
+  it('data:null 的 200 受理包络（FeedbackSurface 返回 ApiEnvelope.ok(null)）不炸解析', async () => {
+    const h = harness([{ body: { code: 200, msg: 'success', data: null } }]);
+    await api(h).submitFeedback('msg-2', -1);
+    assert.equal(h.calls.length, 1, '锚点：200 受理正常放行');
+  });
 });
 
 describe('toFeedbackViewState：状态机只认服务端确认', () => {
