@@ -20,6 +20,7 @@ package org.ruoyi.aiweb.embedded;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.ingest.ChatGateway;
 import com.nageoffer.ai.ragent.ingest.EmbeddingGateway;
+import com.nageoffer.ai.ragent.ingest.LocalMinerUClient;
 import com.nageoffer.ai.ragent.ingest.PrivateObjectStore;
 import com.nageoffer.ai.ragent.ingest.RealChatGateway;
 import com.nageoffer.ai.ragent.ingest.SyntheticChatGateway;
@@ -38,6 +39,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.ruoyi.ai.api.runtime.ChunkingPort;
+import org.ruoyi.ai.api.runtime.MinerUPort;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
@@ -250,6 +252,65 @@ class AiEmbeddedWorkerConfigurationTest {
                         + "门控不一致时其中一边会以缺 bean 启动失败")
                 .isEqualTo(theirs);
         assertThat(mine).contains("p3.enabled=true");
+    }
+
+    /**
+     * W3-3 边界 2（T0 单文件移交）：本地 MinerU 适配器的装配判据。
+     *
+     * <p><b>背景（§6.1-7 排查顺序第一层）</b>：MinerU 在 VM 上 healthy，而内嵌形态的
+     * {@code document.ingest} 仍会以 {@code MINERU_NOT_CONFIGURED} 收场 —— 根因是
+     * {@code LocalMinerUClient} 在内嵌进程从来不是 bean（{@code com.nageoffer.ai.ragent}
+     * 不在扫描根，且此前没有任何内嵌装配组注册它）。本组判据钉住三件事：
+     * <ol>
+     *   <li><b>正例</b>：{@code mineru.local.enabled=true} 时 {@code MinerUPort} 装配，
+     *       且实现就是 {@link LocalMinerUClient}（{@code documentIngestExecutor} 的
+     *       {@code ObjectProvider<MinerUPort>} 从此取得到值）；</li>
+     *   <li><b>负例（fail-closed 默认）</b>：开关缺省时不装配 —— 保持 G-40 同纪律，
+     *       shipped 默认不产生对 MinerU 的任何依赖；</li>
+     *   <li><b>值缺失响亮失败</b>：开关打开但 base-url/token 空白 ⇒ 构造抛
+     *       {@code IllegalStateException}（启动期失败，不给运行期静默留门）。</li>
+     * </ol>
+     */
+    @Test
+    @DisplayName("mineru.local.enabled=true 时 MinerUPort 装配为 LocalMinerUClient")
+    void minerUPortIsAssembledWhenEnabled() {
+        runner.withPropertyValues(EMBEDDED_LOCAL)
+                .withPropertyValues("p2.worker.enabled=true", "p2.outbox.relay-enabled=true",
+                        "mineru.local.enabled=true",
+                        "mineru.local.base-url=http://127.0.0.1:1",
+                        "mineru.local.token=test-token")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(MinerUPort.class);
+                    assertThat(context.getBean(MinerUPort.class)).isInstanceOf(LocalMinerUClient.class);
+                    // documentIngestExecutor 仍在（装配面没有被新 bean 破坏）
+                    assertThat(context).hasBean("documentIngestExecutor");
+                });
+    }
+
+    @Test
+    @DisplayName("mineru.local.enabled 缺省：MinerUPort 不装配（shipped fail-closed 默认）")
+    void minerUPortIsAbsentByDefault() {
+        runner.withPropertyValues(EMBEDDED_LOCAL)
+                .withPropertyValues("p2.worker.enabled=true", "p2.outbox.relay-enabled=true")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(MinerUPort.class);
+                });
+    }
+
+    @Test
+    @DisplayName("开关打开但 base-url/token 空白：启动期响亮失败（不静默留门）")
+    void minerUPortFailsLoudlyWithoutConnectionValues() {
+        runner.withPropertyValues(EMBEDDED_LOCAL)
+                .withPropertyValues("p2.worker.enabled=true", "p2.outbox.relay-enabled=true",
+                        "mineru.local.enabled=true")
+                .run(context -> {
+                    // 启动失败本身就是判据：LocalMinerUClient 构造对空白值抛 IllegalStateException
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasRootCauseInstanceOf(IllegalStateException.class);
+                });
     }
 
     private static Set<String> conditionProperties(Class<?> type) {

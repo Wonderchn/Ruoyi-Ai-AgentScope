@@ -20,6 +20,8 @@ package org.ruoyi.aiweb.embedded;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.ingest.ChatGateway;
 import com.nageoffer.ai.ragent.ingest.EmbeddingGateway;
+import com.nageoffer.ai.ragent.ingest.LocalMinerUClient;
+import com.nageoffer.ai.ragent.ingest.LocalMinerUProperties;
 import com.nageoffer.ai.ragent.ingest.MarkdownChunker;
 import com.nageoffer.ai.ragent.ingest.PrivateObjectStore;
 import com.nageoffer.ai.ragent.ingest.RealChatGateway;
@@ -46,6 +48,7 @@ import com.nageoffer.ai.ragent.runtime.usage.UsageLedgerService;
 import org.ruoyi.ai.api.runtime.ChunkingPort;
 import org.ruoyi.ai.api.runtime.DocumentPort;
 import org.ruoyi.ai.api.runtime.MinerUPort;
+
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -102,11 +105,40 @@ public class AiEmbeddedWorkerConfiguration {
         @Configuration(proxyBeanMethods = false)
         @ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
         @ConditionalOnProperty(name = "p2.worker.enabled", havingValue = "true")
-        @EnableConfigurationProperties(P2RuntimeProperties.class)
+        @EnableConfigurationProperties({P2RuntimeProperties.class, LocalMinerUProperties.class})
         @EnableScheduling
         public static class WorkerEnabled {
 
             // ---------------------------------------------------------- 协作件
+
+            /**
+             * 本地 MinerU 适配器（W3-3 边界 2，T0 单文件移交）。
+             *
+             * <p><b>装配缺口（"摄取 FAILED"按接线缺陷排查的第一层答案，§6.1-7）。</b>
+             * {@code DocumentIngestExecutor} 经 {@code ObjectProvider<MinerUPort>} 取解析客户端，
+             * 取不到时把 run 收成 {@code MINERU_NOT_CONFIGURED} 显式终态。而
+             * {@code LocalMinerUClient} 是独立应用的 {@code @Component}（扫描根
+             * {@code com.nageoffer.ai.ragent}），内嵌形态下它<b>从来不是 bean</b>，也没有任何
+             * 内嵌装配组注册它 —— 即使 VM 上 MinerU healthy，{@code document.ingest} 的
+             * parse 步骤也必然以 MINERU_NOT_CONFIGURED 收场。本 bean 补上这层接线。
+             *
+             * <p><b>门控与 fail-closed 形态。</b>{@code mineru.local.enabled=true} 才装配
+             * （shipped yml 保持缺省 false：开关默认关，base-url/token 经环境注入，G-40 同纪律）；
+             * 构造函数对空白 base-url/token 抛 {@code IllegalStateException}（既有实现，
+             * "配置说要但不给值"必须启动期响亮失败，不给运行期静默留门）。
+             * {@code LocalMinerUProperties} 的绑定登记在 WorkerEnabled 类级
+             * {@code @EnableConfigurationProperties} 数组里（原挂在 IngestConfiguration 的那份
+             * 只活在独立应用的组件扫描里；且该注解是类级注解，不能标在 @Bean 方法上）。
+             *
+             * <p>变更范围（T0 移交裁定）：本组内<b>仅新增本 bean 与 properties 绑定</b>；
+             * ragChatExecutor 窄门 / agentRunExecutor 等既有装配一字未动。
+             */
+            @Bean
+            @ConditionalOnMissingBean(MinerUPort.class)
+            @ConditionalOnProperty(name = "mineru.local.enabled", havingValue = "true")
+            public LocalMinerUClient minerUPort(LocalMinerUProperties properties, ObjectMapper objectMapper) {
+                return new LocalMinerUClient(properties, objectMapper);
+            }
 
             @Bean
             @ConditionalOnMissingBean
