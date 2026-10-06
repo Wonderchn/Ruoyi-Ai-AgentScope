@@ -30,6 +30,7 @@ import com.nageoffer.ai.ragent.runtime.P2FaultInjector;
 import com.nageoffer.ai.ragent.runtime.P2RuntimeProperties;
 import com.nageoffer.ai.ragent.runtime.RunEventAppender;
 import com.nageoffer.ai.ragent.runtime.RunWorker;
+import com.nageoffer.ai.ragent.runtime.config.RuntimeModelGatewayPort;
 import com.nageoffer.ai.ragent.runtime.dao.OutboxDao;
 import com.nageoffer.ai.ragent.runtime.dao.RunLedgerDao;
 import com.nageoffer.ai.ragent.runtime.exec.DocumentIngestExecutor;
@@ -210,11 +211,25 @@ public class AiEmbeddedWorkerConfiguration {
 
             // ---------------------------------------------------------- 执行器
 
+            /**
+             * G-41 收口后的消费点（2026-10-06 与 T2m 端口语义对齐后改）：执行器只依赖
+             * {@link RuntimeModelGatewayPort} 窄门（run 作用域三方法），宽 {@code ChatGateway}
+             * 的无身份方法不在执行链可见面上。
+             *
+             * <p>委托链：窄门 bean（{@code RuntimeAuthorityConfiguration#runtimeModelGatewayPort}，
+             * 经 {@code ObjectProvider<RunScopedChatPort>} 延迟解析）→ {@code ChatGateway}
+             * （它 extends {@code RunScopedChatPort}）→ 本组按 {@code p2.chat.mode} 互斥注册的
+             * real/synthetic 网关。因此上面两个 {@code ChatGateway} bean 保留不动——
+             * 它们不再是执行器的直接依赖，而是委托链的源头；{@code p2.chat.mode} 配成非法值
+             * （两个条件都不命中）时，委托在使用期抛 {@code ConfigAuthorityUnavailable}
+             * （fail-closed，D02 响亮失败），装配期不静默。
+             */
             @Bean
             @ConditionalOnMissingBean
             @ConditionalOnProperty(name = "p2.executor.mode", havingValue = "real", matchIfMissing = true)
             public RagChatExecutor ragChatExecutor(
-                    DocumentPort documentDao, EmbeddingGateway embeddingGateway, ChatGateway chatGateway,
+                    DocumentPort documentDao, EmbeddingGateway embeddingGateway,
+                    RuntimeModelGatewayPort chatGateway,
                     EgressPolicy egressPolicy, UsageLedgerService usageLedger,
                     ObjectProvider<com.nageoffer.ai.ragent.runtime.usage.PlatformFactsClient> platformFacts,
                     ObjectProvider<com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService> authorization,
