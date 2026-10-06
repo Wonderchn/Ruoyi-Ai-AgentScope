@@ -72,11 +72,23 @@ public class AiDeliveryPermitConfiguration implements WebMvcConfigurer {
 
         private static final String ATTR = DeliveryPermitHolder.class.getName() + ".pending";
 
-        /** 登记一条待释放的交付许可；非 web 线程/无请求绑定时静默跳过（不改变 reply 的失败语义）。 */
+        /**
+         * 登记一条待释放的交付许可。
+         *
+         * <p><b>无请求绑定时必须就地释放，不能静默 return。</b>调用方
+         * （{@code AiResourceController.reply}）在登记之前<b>已经</b> {@code revocations.enter(...)}
+         * 往库里落了一条 ACTIVE permit；这里若只是"跳过"，就没有任何人再来释放它
+         * —— 那正是 (3) 泄漏的第二条路径（非 web 线程、内部直调、异步收尾）。
+         * <b>跟踪不了就释放，而不是丢掉。</b>
+         */
         @SuppressWarnings("unchecked")
         public void register(AutoCloseable permit, String permitId, String operationId) {
+            if (permit == null) {
+                return;
+            }
             RequestAttributes attributes = RequestContextHolder.getRequestAttributes();
-            if (attributes == null || permit == null) {
+            if (attributes == null) {
+                releaseUntrackable(permit, permitId, operationId);
                 return;
             }
             // 追加而不是覆盖：同一请求可能登记多条（reply 与 kb.retrieve 各有一次 enter）
@@ -85,6 +97,17 @@ public class AiDeliveryPermitConfiguration implements WebMvcConfigurer {
                 ? new ArrayList<>((List<PendingPermit>) list) : new ArrayList<>();
             pending.add(new PendingPermit(permit, permitId, operationId));
             attributes.setAttribute(ATTR, pending, RequestAttributes.SCOPE_REQUEST);
+        }
+
+        /** 无请求绑定分支的就地释放：失败要暴露（permit 会留在 ACTIVE），成功也要留下证据。 */
+        private void releaseUntrackable(AutoCloseable permit, String permitId, String operationId) {
+            try {
+                permit.close();
+                log.warn("交付 permit 无请求绑定，已就地释放 permitId={} operationId={}", permitId, operationId);
+            } catch (Exception e) {
+                log.error("交付 permit 无请求绑定且就地释放失败，permit 将保持 ACTIVE 直至租约过期"
+                        + " permitId={} operationId={}", permitId, operationId, e);
+            }
         }
 
         /** 单点释放：逐项 catch（真失败要暴露），无论成败最后清空列表（避免同请求二次调用多一次无谓 DB 往返）。 */

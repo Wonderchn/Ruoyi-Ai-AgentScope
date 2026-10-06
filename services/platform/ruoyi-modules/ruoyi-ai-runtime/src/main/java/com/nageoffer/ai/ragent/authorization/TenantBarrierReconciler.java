@@ -24,6 +24,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -33,9 +34,10 @@ import java.util.Map;
  * 读侧 {@code findActive} 过滤 {@code expires_at}，而 drain 不过滤 —— 同一个事实有两种解释，
  * 于是"还有没有活跃 permit"这句话在两处给出不同答案。若把"PENDING 能否收回 OPEN"的判据
  * 在 {@code writeInternal} 的 finally 与租约回收里各写一份，两处迟早分叉，会再得到一族同源缺陷。
- * 因此本类**唯一持有**两段 SQL：
+ * 因此本类**唯一持有**三段 SQL：
  * <ul>
  *   <li>{@link #SQL_ACTIVE_PERMITS_OUTSIDE}：可回收判据（<b>与 drain 循环当前口径逐字一致</b>）；</li>
+ *   <li>{@link #SQL_BARRIER_STATUS}：屏障行的实际状态（用来区分"真卡在 PENDING"与"本来就不在 PENDING"）；</li>
  *   <li>{@link #SQL_REOPEN_IF_PENDING}：回收语句，**只写 OPEN**。</li>
  * </ul>
  *
@@ -67,10 +69,22 @@ public class TenantBarrierReconciler {
                     + " AND status='ACTIVE' AND permit_id<>:permit"
                     + " AND expires_at > CURRENT_TIMESTAMP";
 
+    /**
+     * 屏障行的实际状态。<b>为什么需要它</b>：{@code status} 才是"这张屏障卡在 PENDING"的唯一判据；
+     * 只凭"排不空活跃 permit"就宣告 PENDING，会把<b>已经正常闭合的屏障</b>也说成卡住
+     * （每一次成功写的 finally 都会撞上这个形态：并发读还握着 permit，而本操作的屏障早已 CLOSED/OPEN）。
+     * 这条假 error 会淹掉运维判断真卡障的唯一信号，所以状态必须先于告警确立。
+     */
+    static final String SQL_BARRIER_STATUS =
+            "SELECT status FROM ai_tenant_barrier WHERE tenant_id=:tenant AND barrier_id=:barrier";
+
     /** 回收语句（**唯一一份**）：只把 PENDING 收回 OPEN。 */
     static final String SQL_REOPEN_IF_PENDING =
             "UPDATE ai_tenant_barrier SET status='OPEN', updated_at=now()"
                     + " WHERE tenant_id=:tenant AND barrier_id=:barrier AND status='PENDING'";
+
+    /** {@code ai_tenant_barrier.status} 的"卡住"取值（其余 OPEN/CLOSED/UNKNOWN 都不由本类收回）。 */
+    private static final String BARRIER_STATUS_PENDING = "PENDING";
 
     private final NamedParameterJdbcTemplate jdbc;
     private final TransactionTemplate requiresNew;
@@ -91,7 +105,11 @@ public class TenantBarrierReconciler {
         NOT_PENDING
     }
 
-    /** {@code activePermits} 仅在 {@code STILL_ACTIVE} 时有意义；其余为 0/-1。 */
+    /**
+     * {@code activePermits} 是本次观察到的"其它未过期活跃 permit 数"：{@code RECLAIMED} 恒为 0，
+     * {@code STILL_ACTIVE} 与"因不是 PENDING 而 {@code NOT_PENDING}"都带真实计数（后者可用于排查
+     * "同一个租户为什么长期排不空"），标识缺失的短路返回 -1。
+     */
     public record ReclaimResult(Outcome outcome, long activePermits) {
     }
 
@@ -117,19 +135,30 @@ public class TenantBarrierReconciler {
         return requiresNew.execute(status -> {
             Long active = jdbc.queryForObject(SQL_ACTIVE_PERMITS_OUTSIDE, parameters, Long.class);
             long remaining = active == null ? -1L : active;
-            if (remaining != 0L) {
-                log.error("屏障保持 PENDING：仍有未过期活跃 permit, tenant={}, remaining={}",
-                        tenantId, remaining);
-                return new ReclaimResult(Outcome.STILL_ACTIVE, remaining);
+            if (remaining == 0L) {
+                int reopened = jdbc.update(SQL_REOPEN_IF_PENDING, parameters);
+                if (reopened == 1) {
+                    log.warn("屏障由 PENDING 收回 OPEN：无未过期活跃 permit, tenant={}, barrier={}",
+                            tenantId, barrierId);
+                    return new ReclaimResult(Outcome.RECLAIMED, 0L);
+                }
+                // 0 行 = 该 barrier 已不是 PENDING（正常提交已 CLOSED / 已被收回）——**不是失败**。
+                return new ReclaimResult(Outcome.NOT_PENDING, 0L);
             }
-            int reopened = jdbc.update(SQL_REOPEN_IF_PENDING, parameters);
-            if (reopened == 1) {
-                log.warn("屏障由 PENDING 收回 OPEN：无未过期活跃 permit, tenant={}, barrier={}",
-                        tenantId, barrierId);
-                return new ReclaimResult(Outcome.RECLAIMED, 0L);
+            // 稀有分支：只有"看起来排不空"时才多读一次屏障状态，用它区分"真卡住"和"本来就不在 PENDING"。
+            // 放在这一侧，是为了不给每一次成功的写都插一条额外查询（本方法在 finally 里必执行）。
+            if (!BARRIER_STATUS_PENDING.equals(barrierStatus(parameters))) {
+                return new ReclaimResult(Outcome.NOT_PENDING, remaining);
             }
-            // 0 行 = 该 barrier 已不是 PENDING（正常提交已 CLOSED / 已被收回）——**不是失败**。
-            return new ReclaimResult(Outcome.NOT_PENDING, 0L);
+            log.error("屏障保持 PENDING：仍有未过期活跃 permit, tenant={}, barrier={}, remaining={}",
+                    tenantId, barrierId, remaining);
+            return new ReclaimResult(Outcome.STILL_ACTIVE, remaining);
         });
+    }
+
+    /** 读屏障行状态；行不存在返回 null（按"不是 PENDING"处理——没有本操作准备过的屏障就无从回收）。 */
+    private String barrierStatus(Map<String, Object> parameters) {
+        List<String> rows = jdbc.query(SQL_BARRIER_STATUS, parameters, (rs, rowNum) -> rs.getString(1));
+        return rows.isEmpty() ? null : rows.get(0);
     }
 }

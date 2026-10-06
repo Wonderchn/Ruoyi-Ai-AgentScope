@@ -28,6 +28,8 @@ import com.nageoffer.ai.ragent.framework.security.P04AiException;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict;
 import com.nageoffer.ai.ragent.framework.security.StaleVersionException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -45,6 +47,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 授权域内部端点（P1.3a）：{@code /internal/ai/v1} 下的 KB 元数据与 ACL 管理。
@@ -86,6 +89,11 @@ public class AiResourceController {
     private AuthorizedDownloadService downloads;
     private AuthorizedExportService exports;
     private org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private static final Logger log = LoggerFactory.getLogger(AiResourceController.class);
+
+    /** holder 缺席只报一次：重复报会在每个 AI 读请求上刷屏。 */
+    private static final AtomicBoolean PERMIT_HOLDER_MISSING = new AtomicBoolean();
+
     private TenantConversationReadRepository conversations;
     private TenantRunReadRepository runs;
     private TenantEventReadRepository events;
@@ -117,7 +125,20 @@ public class AiResourceController {
         var operation=revocations.enter(PrincipalContext.require(),action,ref);
         // (3) 交付 permit 泄漏修复：登记给请求级持有者，成功路径不再需要人工释放；
         // 失败路径仍走下面的 operation.close()（两侧都幂等，见 AiDeliveryPermitConfiguration 注释）。
-        if(deliveryPermits!=null){deliveryPermits.register(operation,operation.permitId(),operation.operationId());}
+        if(deliveryPermits==null){
+            // holder 缺席 == 这条请求的 permit 没有人释放，(3) 的泄漏原样复发。
+            // 之所以可能缺席：AiDeliveryPermitConfiguration 靠 ruoyi-ai-web 的
+            // AutoConfiguration.imports 加载，而**切片测试验不到那一行**（装配面变更不被 javac 覆盖）。
+            // 静默继续等于把"泄漏复发"做成无证据事件，所以必须留日志；只打一次，
+            // 否则这条 error 会在每一个 AI 读请求上刷屏，把日志重新变成噪声。
+            if (PERMIT_HOLDER_MISSING.compareAndSet(false, true)) {
+                log.error("交付 permit 持有者未装配：成功路径的 permit 不会被释放"
+                        + "（检查 ruoyi-ai-web 的 AutoConfiguration.imports 是否仍登记 "
+                        + "AiDeliveryPermitConfiguration）action={} ref={}", action, ref);
+            }
+        } else {
+            deliveryPermits.register(operation,operation.permitId(),operation.operationId());
+        }
         try {
             return ResponseEntity.ok().header("Cache-Control","no-store")
                     .header("X-AI-Delivery-Permit",operation.permitId()).header("X-AI-Delivery-Operation",operation.operationId())
