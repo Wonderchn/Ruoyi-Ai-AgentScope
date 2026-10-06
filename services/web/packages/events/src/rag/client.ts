@@ -91,6 +91,17 @@ export interface AgentAction {
   state: string;
   externalId?: string;
   version: number;
+  /**
+   * WP-037A 视图字段：工具**实际结果**（后端以结构化 JSON 返回；动作未结束时为 `null`）。
+   *
+   * 刻意声明为 `unknown` 而**不是** `Record<string, unknown>`：后端 `parseJsonOrNull` 把 jsonb
+   * 文本解析成结构化 JSON，**NULL/空白 → `null`**（`AgentActionViewTest.nullResultStaysNull` 钉的
+   * 就是"未结束 ≠ 空对象"）。写成 `Record<...>` 会诱导消费方把 `null` 当 `{}`
+   * —— 那正是"结果是空对象"与"还没有结果"混为一谈。消费方必须先判 `null` 再窄化。
+   */
+  result?: unknown;
+  /** WP-037A 视图字段：副作用动作的幂等身份（空串不渲染）。 */
+  operationKey?: string;
 }
 
 export interface RunAccepted {

@@ -288,6 +288,30 @@ export interface ChatMessageVo {
    * 用户id
    */
   userId?: number;
+
+  // ---- F03 完整历史（WP-035A/WP-035B 之后后端会返回这些字段） ----
+  // 这些字段此前在 `getChatList` 的内联映射里被丢掉，前端再完整也拿不到数据；
+  // 映射现在集中在 `api/chat/history.ts`（纯函数，有单元测试）。
+  /** 消息状态（NORMAL 等） */
+  messageStatus?: string;
+  /** 创建时间（后端 create_time） */
+  createTime?: Date;
+  /** 深度思考内容；未记录时为 undefined（不伪造空串） */
+  thinkingContent?: string;
+  /** 深度思考耗时（毫秒）；未记录时为 undefined（不是 0） */
+  thinkingDuration?: number;
+  /** 引用来源（解析后的 JSON） */
+  sources?: unknown;
+  /** 引用来源的原始 JSON 文本（解析失败时保留，不丢数据） */
+  sourcesRaw?: string;
+  /** 推荐问题（解析后的 JSON） */
+  recommendedQuestions?: unknown;
+  recommendedQuestionsRaw?: string;
+  /** 检索片段（解析后的 JSON） */
+  retrievedChunks?: unknown;
+  retrievedChunksRaw?: string;
+  /** 回复的目标消息 id */
+  replyToMessageId?: string;
 }
 
 export interface workflowVo {

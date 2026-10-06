@@ -24,6 +24,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
+    "test": "node --import ./tests/ts-loader.mjs --test \"tests/*.test.ts\"",
     "typecheck": "vue-tsc -b",
     "preview": "vite preview",
     "prepare": "husky",
@@ -38,6 +39,7 @@
     "@floating-ui/vue": "^1.1.7",
     "@jsonlee_12138/enum": "^1.0.4",
     "@ruoyi/events": "workspace:*",
+    "@ruoyi/platform-client": "workspace:*",
     "@vueuse/core": "^13.5.0",
     "@vueuse/integrations": "^13.5.0",
     "echarts": "^6.0.0",

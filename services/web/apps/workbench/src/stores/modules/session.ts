@@ -1,5 +1,6 @@
 import type { ChatSessionVo, CreateSessionDTO, GetSessionListParams } from '@/api/session/types';
 import { ChatLineRound } from '@element-plus/icons-vue';
+import { ElMessage } from 'element-plus';
 import { defineStore } from 'pinia';
 import { markRaw } from 'vue';
 import { useRouter } from 'vue-router';
@@ -8,13 +9,23 @@ import {
   delete_session,
   get_session,
   get_session_list,
-  update_session,
 } from '@/api';
+import { createConversationWriteApi } from '@/api/ai/conversation-writes';
+import { createRenameController } from '@/api/ai/session-rename';
 import { useUserStore } from './user';
 
 export const useSessionStore = defineStore('session', () => {
   const router = useRouter();
   const userStore = useUserStore();
+
+  // C9/D10 会话写入面：身份**每次调用时读取**（不缓存 token），
+  // 401 交由既有的 `handleAuthExpired`（清身份 + 弹登录 + 记录回跳路径）。
+  const conversationWrites = createConversationWriteApi({
+    baseUrl: import.meta.env.VITE_API_URL,
+    clientId: import.meta.env.VITE_CLIENT_ID,
+    identity: () => ({ token: userStore.token, epoch: userStore.authEpoch }),
+    onAuthExpired: () => userStore.handleAuthExpired(),
+  });
 
   // 当前选中的会话信息
   const currentSession = ref<ChatSessionVo | null>(null);
@@ -203,23 +214,46 @@ export const useSessionStore = defineStore('session', () => {
     await requestSessionList(1, true);
   };
 
-  // 更新会话（供组件调用）
+  // 更新会话（供组件调用）—— **改名走 C9/D10 的乐观锁路径**。
+  //
+  // 改动前这里调的是 `update_session`（`PUT /system/session`，`ChatSessionBo` 无 version 字段），
+  // 于是 C9 的 409 在 UI 上**永远不可能出现**，且失败被 `catch { console.error }` 吞掉
+  // （用户点了改名、服务端拒绝，页面上什么都不显示）。现在改走
+  // `PUT /api/ai/v1/conversations/{id}`（`AiResourceController.renameConversation`）：
+  // 唯一实现 `{title, expectedVersion}` 与 409 `RESOURCE_VERSION_CONFLICT` 的入口。
+  //
+  // 编排逻辑本身在 `@/api/ai/session-rename`（纯模块、有单测）；这里只做注入与状态落地。
+  // 注意：本方法**刻意不再发送** `sessionContent` —— 改名对话框从不修改正文，
+  // 原先只是把原值回写一次；而 AI 资源面的改名请求体按契约只接受 `{title, expectedVersion}`。
+  const applyTitle = (id: string, title: string) => {
+    sessionList.value = sessionList.value.map(session =>
+      session.id === id ? { ...session, sessionTitle: title } : session,
+    );
+    if (currentSession.value?.id === id)
+      currentSession.value = { ...currentSession.value, sessionTitle: title };
+  };
+
+  const renameController = createRenameController({
+    rename: (id, title, expectedVersion) => conversationWrites.renameConversation(id, title, expectedVersion),
+    applyTitle,
+    refresh: () => requestSessionList(1, true),
+    notify: (message, kind) => {
+      if (kind === 'success')
+        ElMessage.success(message);
+      else
+        ElMessage.error(message);
+    },
+  });
+
+  const renameSession = (id: string, title: string) => renameController.rename(id, title);
+
+  // 兼容旧调用点：签名不变，但返回 `RenameOutcome`，调用方**必须**按 outcome 决定是否提示成功。
   const updateSession = async (item: ChatSessionVo) => {
-    try {
-      await update_session(item);
-      // 1. 先找到被修改会话在 sessionList 中的索引（假设 sessionList 是按服务端排序的完整列表）
-      const targetIndex = sessionList.value.findIndex(session => session.id === item.id);
-      // 2. 计算该会话所在的页码（页大小固定为 pageSize.value）
-      const targetPage
-        = targetIndex >= 0
-          ? Math.floor(targetIndex / pageSize.value) + 1 // 索引从0开始，页码从1开始
-          : 1; // 未找到时默认刷新第一页（可能因排序变化导致位置改变）
-      // 3. 刷新目标页数据
-      await requestSessionList(targetPage, true);
+    if (!item.id) {
+      console.error('updateSession: 会话 id 缺失，拒绝改名');
+      return undefined;
     }
-    catch (error) {
-      console.error('updateSession错误:', error);
-    }
+    return renameSession(String(item.id), String(item.sessionTitle ?? ''));
   };
 
   // 删除会话（供组件调用）
@@ -285,6 +319,9 @@ export const useSessionStore = defineStore('session', () => {
     requestSessionList,
     loadMoreSessions,
     updateSession,
+    renameSession,
+    // C9：某会话已知的版本（来自一次改名响应；读路径不返回 version，见 session-rename 模块注释）
+    conversationVersionOf: (id: string) => renameController.versionOf(id),
     deleteSessions,
     // 搜索方法
     searchSessions,

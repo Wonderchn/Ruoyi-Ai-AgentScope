@@ -17,6 +17,7 @@ import { useModelStore } from '@/stores/modules/model';
 import { useUserStore } from '@/stores/modules/user';
 import { codeXRender } from '@/utils/markdownRenderers';
 import { buildWorkflowInputs, workflowFinalText } from '@/utils/workflow';
+import MessageDetails from './components/MessageDetails.vue';
 import ToolCallCard from './components/ToolCallCard.vue';
 import WorkflowRunStatus from './components/WorkflowRunStatus.vue';
 
@@ -640,6 +641,13 @@ function sendMessageByKey(key: number) {
             :themes="{ light: 'github-light', dark: 'github-dark' }"
             default-theme-mode="dark"
           />
+          <!--
+            F03 详情：深度思考 / 引用来源 / 检索片段 / 推荐问题 / 用量。
+            WP-035A/B 起后端会返回这些字段，WP-036A 的 toChatHistory 把它们映射到消息上，
+            但在 WP-035 之前**没有任何组件消费它们**——数据到了前端却看不见。
+            MessageDetails 内部对空数据返回 null，因此这里的 v-if 可以省略。
+          -->
+          <MessageDetails :message="item" />
           <div v-if="item.content && item.role === 'user'" class="userContent">
             <div class="user-bubble" :class="{ editing: editingMessageKeys.includes(item.key) }">
               <template v-if="!editingMessageKeys.includes(item.key)">

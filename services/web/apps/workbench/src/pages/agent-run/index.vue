@@ -3,12 +3,52 @@ import type { AgentAction, Citation, KnowledgeBaseView, ReconciliationView, RunS
 import { ElMessage } from 'element-plus';
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { classifyWriteFailure } from '@/api/ai/conversation-writes';
+import { createEngineApi } from '@/api/ai/engine';
+import { toolResultLabel, toolResultText, toToolActionView, unknownSideEffectHint } from '@/api/ai/tool-action';
 import { agentRunBody, approveAgentAction, cancelRun, downloadSource, getReconciliation, getRun, listAgentActions, listKnowledgeBases, newRequestId, queryAgentAction, resumeRun, submitRun, terminalSummary } from '@/api/rag';
 import PrivatePdf from '@/components/rag/PrivatePdf.vue';
 import { useUserStore } from '@/stores';
 import { openRunStream } from '@/utils/sse/RunStreamClient';
 
 const user = useUserStore();
+
+// WP-037 / F15：工具动作视图（`result` + `operationKey` + 版本）。
+// 映射逻辑在 `@/api/ai/tool-action`（纯函数、有单测）：那里把
+// "动作未结束（result=null）" 与 "工具返回了空对象（result={}）" 做成**两个不同的 kind**，
+// 并在 UI 上给不同标题 —— 后端 `parseJsonOrNull` + `nullResultStaysNull` 正是这么定的。
+function actionView(action: AgentAction) {
+  return toToolActionView(action as unknown as Record<string, unknown>);
+}
+function actionUnknownHint(action: AgentAction) {
+  return unknownSideEffectHint((action as unknown as { state?: unknown }).state);
+}
+
+// C13 引擎探活（`GET /api/ai/v1/agent/v1/meta`）。
+// 门控关闭时（`ragent.engine.type` 未设置 ⇒ 控制器不是 bean）网关把它泛化为
+// **503 `AUTHORIZATION_UNAVAILABLE`**（C13.4）—— 这里如实显示"引擎未启用"，
+// **不伪造能力清单**，也不把 503 画成"没有能力"。
+const engine = createEngineApi({
+  baseUrl: import.meta.env.VITE_API_URL,
+  clientId: import.meta.env.VITE_CLIENT_ID,
+  identity: () => ({ token: user.token, epoch: user.authEpoch }),
+  onAuthExpired: () => user.handleAuthExpired('/agent-run'),
+});
+const engineMeta = ref<{ framework: string; model: string; maxIters: number | null; capabilities: string[]; toolProvider: string; mcpConfigured: boolean } | null>(null);
+const engineNote = ref('');
+async function loadEngineMeta() {
+  try {
+    engineMeta.value = await engine.getEngineMeta();
+    engineNote.value = '';
+  }
+  catch (error) {
+    const failure = classifyWriteFailure(error);
+    engineMeta.value = null;
+    engineNote.value = failure.kind === 'unavailable'
+      ? '引擎未启用（BLOCKED-BY-ENGINE-GATE）：网关返回 503，引擎链属 WP-032/033 装配范围。'
+      : `引擎探活失败：${failure.kind}${failure.errorCode ? `（${failure.errorCode}）` : ''}`;
+  }
+}
 const route = useRoute();
 const router = useRouter();
 const bases = ref<KnowledgeBaseView[]>([]);
@@ -101,6 +141,7 @@ watch(() => user.authEpoch, () => {
   }
 });
 onMounted(async () => {
+  void loadEngineMeta();
   await load();
   const runId = route.query.run;
   if (typeof runId !== 'string' || !/^r-[a-f0-9]{32}$/.test(runId))
@@ -268,6 +309,16 @@ async function inspectReconciliation(action: AgentAction, query = false) {
 <template>
   <div class="p-4 space-y-4">
     <h2>Agent 任务</h2>
+    <!-- C13 引擎探活：真数据或如实说明未启用；不显示伪造的能力清单 -->
+    <ElCard v-if="engineMeta" class="engine-meta">
+      <p>
+        引擎：{{ engineMeta.framework || '（未声明）' }} · 模型 {{ engineMeta.model || '（未声明，来自数据库发布版本）' }}
+        <span v-if="engineMeta.maxIters !== null"> · 迭代上限 {{ engineMeta.maxIters }}</span>
+      </p>
+      <p>工具提供方：{{ engineMeta.toolProvider || '（未声明）' }} · MCP {{ engineMeta.mcpConfigured ? '已配置' : '未配置' }}</p>
+      <p>能力：{{ engineMeta.capabilities.length ? engineMeta.capabilities.join('、') : '（清单为空）' }}</p>
+    </ElCard>
+    <ElAlert v-else-if="engineNote" :title="engineNote" type="warning" :closable="false" data-testid="engine-unavailable" />
     <ElCard>
       <ElSelect v-model="kbId" placeholder="知识库" :disabled="busy">
         <ElOption v-for="base in bases" :key="base.kbId" :label="base.name" :value="base.kbId" />
@@ -325,13 +376,45 @@ async function inspectReconciliation(action: AgentAction, query = false) {
           查看当前来源
         </ElButton>
       </p>
-      <div v-for="action in actions" :key="action.actionId" class="mt-4 border p-3">
+      <div v-for="action in actions" :key="action.actionId" class="mt-4 border p-3" :data-testid="`tool-action-${action.state}`">
         <p>{{ action.tool }} · {{ action.state }} · {{ action.externalId }}</p>
         <p>目标 {{ action.target }} · 工具版本 {{ action.toolVersion }} · 审批版本 {{ action.approvalVersion }}</p>
+        <p v-if="actionView(action).version !== null" class="text-12px c-gray-500">
+          动作版本 {{ actionView(action).version }}
+          <span v-if="actionView(action).approvalVersion !== null"> · 审批版本 {{ actionView(action).approvalVersion }}</span>
+        </p>
         <p class="break-all">
           参数 hash：{{ action.argsHash }}
         </p>
         <pre class="whitespace-pre-wrap">{{ JSON.stringify(action.args, null, 2) }}</pre>
+
+        <!-- WP-037A 的 `result`：**"尚无结果"与"结果是空对象"分开显示**（后端 nullResultStaysNull 同一条语义） -->
+        <div class="tool-result mt-2">
+          <p class="text-12px c-gray-500">
+            {{ toolResultLabel(actionView(action).result) }}
+          </p>
+          <pre
+            v-if="actionView(action).result.kind !== 'none'"
+            class="whitespace-pre-wrap break-all"
+            :data-testid="`tool-result-${actionView(action).result.kind}`"
+          >{{ toolResultText(actionView(action).result) }}</pre>
+        </div>
+
+        <!-- 副作用动作的幂等身份：空串不渲染 -->
+        <p v-if="actionView(action).operationKey" class="break-all text-12px c-gray-500" data-testid="tool-operation-key">
+          幂等标识：{{ actionView(action).operationKey }}
+        </p>
+
+        <!-- UNKNOWN：只给"先查询核对"，UI 不自动重发/重批（C7） -->
+        <ElAlert
+          v-if="actionUnknownHint(action)"
+          :title="actionUnknownHint(action)"
+          type="warning"
+          :closable="false"
+          class="mt-2"
+          data-testid="tool-unknown-hint"
+        />
+
         <template v-if="action.state === 'PROPOSED' && snapshot.status === 'WAITING_APPROVAL'">
           <ElButton type="primary" :disabled="busy" @click="command(() => approveAgentAction(snapshot!.runId, action, 'ALLOW'))">
             确认这些参数并创建

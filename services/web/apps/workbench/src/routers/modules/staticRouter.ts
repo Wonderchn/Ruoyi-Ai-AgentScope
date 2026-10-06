@@ -58,6 +58,25 @@ export const layoutRouter: RouteRecordRaw[] = [
         meta: { title: '会话历史' },
       },
       {
+        // WP-048 工作台侧：上下文记忆（`GET /api/ai/v1/memories`，动作 memory.read）。
+        // 路由名进 `ROUTER_WHITE_LIST` 的**反面**：本页需要登录（无 token 时页面自己
+        // 渲染"尚未登录"态，而不是被守卫拦住），因此不加白名单。
+        path: '/memory',
+        name: 'memoryConsole',
+        component: () => import('@/pages/memory/index.vue'),
+        meta: { title: '上下文记忆', stayOnAuthExpired: true },
+      },
+      {
+        // WP-036 / F15 私有文档预览（page-map 目标 `/preview/doc/:docId`）。
+        // 来源端点 `GET /api/ai/v1/documents/{id}/source`（动作 `document.download`，V4 已播种权限）
+        // 已核实**可达**；元信息走 `.../meta`（`document.read`）。
+        // 不进白名单：私有文档必须登录后由服务端复核授权（401/403 与 404 分别渲染）。
+        path: '/preview/doc/:docId',
+        name: 'docPreview',
+        component: () => import('@/pages/preview/index.vue'),
+        meta: { title: '文档预览', stayOnAuthExpired: true },
+      },
+      {
         path: '/media',
         name: 'mediaWorkbench',
         component: () => import('@/pages/media/index.vue'),

@@ -154,28 +154,12 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
           }
           return true;
         },
-      }).then(({ value }) => {
-        sessionStore
-          .updateSession({
-            id: item.id!,
-            sessionTitle: value,
-            sessionContent: item.sessionContent,
-          })
-          .then(() => {
-            ElMessage({
-              type: 'success',
-              message: '修改成功',
-            });
-            nextTick(() => {
-              // 濡傛灉鏄綋鍓嶄細璇濓紝鍒欐洿鏂板綋鍓嶉€変腑浼氳瘽淇℃伅
-              if (sessionStore.currentSession?.id === item.id) {
-                sessionStore.setCurrentSession({
-                  ...item,
-                  sessionTitle: value,
-                });
-              }
-            });
-          });
+      }).then(async ({ value }) => {
+        // C9/D10：改名走 `PUT /api/ai/v1/conversations/{id}`（带 expectedVersion），
+        // 这是唯一会返回 409 `RESOURCE_VERSION_CONFLICT` 的入口；另两条同名「改名」路径没有乐观锁。
+        // 成功/失败提示与本地标题落地都在 rename 控制器里（服务端确认后才改状态），
+        // 因此这里不再重复弹「修改成功」（旧实现无论服务端成败都弹成功）。
+        await sessionStore.renameSession(String(item.id!), String(value));
       });
       break;
     default:
@@ -247,6 +231,9 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
         </router-link>
         <router-link v-if="userStore.token" :to="{ name: 'conversationHistory' }" class="workbench-entry">
           <span>会话历史</span>
+        </router-link>
+        <router-link v-if="userStore.token" :to="{ name: 'memoryConsole' }" class="workbench-entry">
+          <span>上下文记忆</span>
         </router-link>
         <router-link :to="{ name: 'mediaWorkbench' }" class="workbench-entry media-entry" :class="{ active: isMediaActive }">
           <el-icon><VideoCamera /></el-icon>

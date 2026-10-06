@@ -23,26 +23,12 @@ function handleClickTitle() {
       return true;
     },
   })
-    .then(({ value }) => {
-      sessionStore
-        .updateSession({
-          id: currentSession.value!.id,
-          sessionTitle: value,
-          sessionContent: currentSession.value!.sessionContent,
-        })
-        .then(() => {
-          ElMessage({
-            type: 'success',
-            message: '修改成功',
-          });
-          nextTick(() => {
-            // 如果是当前会话，则更新当前选中会话信息
-            sessionStore.setCurrentSession({
-              ...currentSession.value,
-              sessionTitle: value,
-            });
-          });
-        });
+    .then(async ({ value }) => {
+      // 成功/失败提示由 `session-rename` 控制器统一发出（那是可单测的一层）。
+      // 这里**不再无条件报"修改成功"**：旧实现无论服务端成败都弹成功，
+      // 且失败被 console.error 吞掉，用户会看到"改成功了但刷新就变回去"的假象。
+      // 当前会话的标题落地由 store 的 applyTitle 完成（服务端确认之后才改）。
+      await sessionStore.renameSession(String(currentSession.value!.id), String(value));
     })
     .catch(() => {
       // ElMessage({
