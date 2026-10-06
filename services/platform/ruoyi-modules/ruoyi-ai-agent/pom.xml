@@ -48,6 +48,13 @@
             <version>${agentscope.version}</version>
         </dependency>
 
+        <!-- K1/W3-4（T4 补丁建议 A，T0 集成）：MCP SDK 显式声明，版本与 agentscope-core 2.0.2 的传递版本一致（0.17.0），防传递漂移 -->
+        <dependency>
+            <groupId>io.modelcontextprotocol.sdk</groupId>
+            <artifactId>mcp</artifactId>
+            <version>0.17.0</version>
+        </dependency>
+
         <!-- 与 agentscope-core 的 opentelemetry-api 对齐，不依赖其传递 -->
         <dependency>
             <groupId>io.opentelemetry</groupId>
