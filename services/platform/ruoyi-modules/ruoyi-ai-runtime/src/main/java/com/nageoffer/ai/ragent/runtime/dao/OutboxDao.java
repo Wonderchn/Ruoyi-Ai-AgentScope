@@ -49,12 +49,18 @@ public class OutboxDao {
 
     /** 认领待投递行；locked_until 过期后可被再次认领（at-least-once）。 */
     public List<OutboxRow> claim(String workerId, int lockSeconds, int batch) {
+        // W3-6 A1（lead 批准）：认领条件必须带**存活锁过滤**。缺它时 relay A 认领后
+        // locked_until 仍在存活期内，但行仍是 PENDING 且 next_attempt_at 已到 ——
+        // relay B 下一 tick 会再次认领同一行：认领锁失效、并发双投递超出 at-least-once
+        // 的"崩溃后锁过期重投"包络。对照同族正确实现 RunLedgerDao.claimNext 的
+        // (lease_until IS NULL OR lease_until < now())；负例见 OutboxClaimLeaseFilterTest。
         return jdbc.query(
                 "UPDATE outbox_event o SET locked_by=?, locked_until=now() + (? * interval '1 second'), "
                         + "attempt_count=o.attempt_count+1 "
                         + "WHERE (o.tenant_id, o.event_id) IN ("
                         + "  SELECT tenant_id, event_id FROM outbox_event "
                         + "  WHERE state='PENDING' AND next_attempt_at <= now() "
+                        + "  AND (locked_until IS NULL OR locked_until < now()) "
                         + "  ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT ?) "
                         + "RETURNING o.tenant_id, o.event_id, o.run_id, o.event_type, o.seq, o.attempt_count, "
                         + "o.payload::text AS payload_text, o.payload ->> 'operationKey' AS operation_key",

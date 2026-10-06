@@ -21,6 +21,8 @@ import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.lang.Assert;
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.authorization.AiDomainWriteIdentity;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
@@ -48,14 +50,64 @@ public class MessageFeedbackServiceImpl implements MessageFeedbackService {
 
     private final MessageFeedbackMapper feedbackMapper;
     private final ConversationMessageMapper conversationMessageMapper;
+    /**
+     * 反馈队列生产者。<b>独立 ragent 应用</b>由 {@code RocketMQAutoConfiguration} 装配，恒非空；
+     * <b>内嵌形态</b>由 {@code AiEmbeddedFeedbackConfiguration} 显式注册本服务时经
+     * {@code ObjectProvider} 解析——legacy 消息链未开启时为 {@code null}，此时受理必须响亮拒绝
+     * （见 {@link #requireProducer()}），不允许"受理 200 但消息永远发不出去"的假成功（D07 红线）。
+     */
     private final MessageQueueProducer messageQueueProducer;
+    /** 构造用默认主题（与消费者侧 {@code message-feedback_topic${unique-name:}} 空后缀形态一致）。 */
+    public static final String DEFAULT_FEEDBACK_TOPIC = "message-feedback_topic";
+
+    /**
+     * 反馈主题。<b>默认值兜底 + {@code @Value} 覆盖</b>，而不是把主题做成构造参数：
+     * 构造参数形态会让组件扫描（独立应用）按类型找 {@code String} bean 而启动失败。
+     * {@code @Value} 只在容器装配时生效（独立应用）；显式 {@code new}（内嵌装配）拿默认值，
+     * 与消费者侧空后缀主题逐字一致，不会发出字面量 {@code "null"} 主题。
+     */
+    private String feedbackTopic = DEFAULT_FEEDBACK_TOPIC;
 
     @Value("message-feedback_topic${unique-name:}")
-    private String feedbackTopic;
+    void applyFeedbackTopic(String topic) {
+        this.feedbackTopic = topic;
+    }
+
+    /**
+     * 受理身份：**内嵌形态**（有执行主体）只认 {@link PrincipalContext#require()} ——
+     * 主体是经网关/身份桥验证的不可伪造事实，"网关已校验"不构成服务层免检的理由
+     * （fail-closed，与 {@code ConversationSurface.requirePrincipal} 同口径）；
+     * **独立 ragent 应用**没有执行主体，回落到旧 {@link UserContext}（兼容形态，
+     * 权限行存在但能力关闭，见 {@code SaasCapabilityBoundary.MESSAGE_FEEDBACK_CONSUMER}）。
+     */
+    private static String acceptanceUserId() {
+        if (PrincipalContext.hasPrincipal()) {
+            return PrincipalContext.require().userId();
+        }
+        String userId = UserContext.getUserId();
+        Assert.notBlank(userId, () -> new ClientException("未获取到当前登录用户"));
+        return userId;
+    }
+
+    /**
+     * 异步发送前的生产者复核：消息链缺席时<b>响亮拒绝</b>。
+     *
+     * <p>独立应用恒非空（{@code RocketMQAutoConfiguration} 装配）；内嵌 legacy 消息链
+     * （{@code ai.integration.legacy-listeners-enabled=true}）未开启时为 {@code null}。
+     * 此时若照常"受理成功"，客户端会拿到 200 而事件永远不会离开本进程 ——
+     * 正是 D07 明文禁止的"假执行成功"。拒绝发生在任何校验通过之后、发送之前，
+     * 客户端能拿到确定的失败而不是假成功。
+     */
+    private MessageQueueProducer requireProducer() {
+        if (messageQueueProducer == null) {
+            throw new ClientException("消息反馈队列未装配（legacy 消息链未开启），本次反馈未受理");
+        }
+        return messageQueueProducer;
+    }
 
     @Override
     public void submitFeedbackAsync(String messageId, MessageFeedbackRequest request) {
-        String userId = UserContext.getUserId();
+        String userId = acceptanceUserId();
         Assert.notBlank(userId, () -> new ClientException("未获取到当前登录用户"));
         Assert.notBlank(messageId, () -> new ClientException("消息ID不能为空"));
         Assert.notNull(request, () -> new ClientException("反馈内容不能为空"));
@@ -71,12 +123,12 @@ public class MessageFeedbackServiceImpl implements MessageFeedbackService {
                 .comment(request.getComment())
                 .submitTime(System.currentTimeMillis())
                 .build();
-        messageQueueProducer.send(feedbackTopic, userId + ":" + messageId, "消息反馈", event);
+        requireProducer().send(feedbackTopic, userId + ":" + messageId, "消息反馈", event);
     }
 
     @Override
     public void cancelFeedbackAsync(String messageId) {
-        String userId = UserContext.getUserId();
+        String userId = acceptanceUserId();
         Assert.notBlank(userId, () -> new ClientException("未获取到当前登录用户"));
         Assert.notBlank(messageId, () -> new ClientException("消息ID不能为空"));
 
@@ -86,12 +138,12 @@ public class MessageFeedbackServiceImpl implements MessageFeedbackService {
                 .cancelled(true)
                 .submitTime(System.currentTimeMillis())
                 .build();
-        messageQueueProducer.send(feedbackTopic, userId + ":" + messageId, "取消消息反馈", event);
+        requireProducer().send(feedbackTopic, userId + ":" + messageId, "取消消息反馈", event);
     }
 
     @Override
     public void submitFeedback(String messageId, MessageFeedbackRequest request) {
-        String userId = UserContext.getUserId();
+        String userId = acceptanceUserId();
         Assert.notBlank(userId, () -> new ClientException("未获取到当前登录用户"));
         Assert.notBlank(messageId, () -> new ClientException("消息ID不能为空"));
         Assert.notNull(request, () -> new ClientException("反馈内容不能为空"));

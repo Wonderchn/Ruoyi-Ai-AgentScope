@@ -128,6 +128,12 @@ public class AiGatewayController {
             new Route("POST", "/conversations", "conversation.rename"),
             new Route("PUT", "/conversations/{id}", "conversation.rename"),
             new Route("DELETE", "/conversations/{id}", "conversation.delete"),
+            // W3-5-BE-1（T0 登记，2026-10-06；t3-ingest 交付 AiEmbeddedFeedbackConfiguration 后）：
+            // 消息反馈面（T6 workbench 历史页赞/踩）。此前 MessageFeedbackController 内层存在
+            // 但不在白名单 ⇒ 网关必然 404（T6 判据钉死的缺口）。动作复用 conversation.rename
+            //（= ai:conversation:write，会话消息是同一聚合的写面），不新增动作/权限行/迁移。
+            new Route("POST", "/conversations/messages/{messageId}/feedback", "conversation.rename"),
+            new Route("DELETE", "/conversations/messages/{messageId}/feedback", "conversation.rename"),
             // WP-034：F10 Agent 会话面。此前 `/agent/v1/**` 完全没有白名单路由，
             // 所以客户端**无法**经 `/api/ai/v1` 到达 WP-033B 交付的会话面——
             // 那是"服务端可装配"与"客户端可访问"之间的缺口。

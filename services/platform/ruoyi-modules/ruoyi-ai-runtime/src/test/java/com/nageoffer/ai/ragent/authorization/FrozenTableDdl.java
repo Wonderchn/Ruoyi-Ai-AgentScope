@@ -33,14 +33,18 @@ import java.util.stream.Stream;
  * <p>为什么坚持解析而不是在测试里手写 {@code CREATE TABLE}：手写一份立刻产生
  * "测试通过、生产列不同"的分叉——被测的必须是冻结形状本身。表加列（V9/V10/…）也自动跟上，
  * 因为 ALTER 是一起抽出来的。
+ *
+ * <p>2026-10-06：W3-6 起 runtime 侧真库测试（如 {@code OutboxClaimLeasePostgresTest}）
+ * 也复用本工具，类与 {@link #forTable} 提为 public（原 authorization 包私有）——
+ * 工具语义不变，只是可见性随消费方扩大。
  */
-final class FrozenTableDdl {
+public final class FrozenTableDdl {
 
     private FrozenTableDdl() {
     }
 
     /** @return 按版本顺序排列的可直接执行的 DDL 语句 */
-    static List<String> forTable(String table) throws IOException {
+    public static List<String> forTable(String table) throws IOException {
         Path sqlDir = locate(Path.of("services", "platform", "docs", "script", "sql", "postgres"));
         List<Path> files;
         try (Stream<Path> stream = Files.list(sqlDir)) {
