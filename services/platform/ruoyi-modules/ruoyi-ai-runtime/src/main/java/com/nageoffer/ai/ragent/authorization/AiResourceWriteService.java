@@ -243,17 +243,34 @@ public class AiResourceWriteService {
                 if (versions.isEmpty() || versions.get(0) != principal.aclVersion()) {
                     throw new com.nageoffer.ai.ragent.framework.security.StaleVersionException("aclVersion changed");
                 }
-                int prepared=jdbc.update("INSERT INTO ai_tenant_barrier(tenant_id,status,barrier_id,reason,updated_at)"
-                        + " VALUES(:tenant,'PENDING',:barrier,'resource mutation',now()) ON CONFLICT(tenant_id) DO UPDATE"
-                        + " SET status='PENDING',barrier_id=EXCLUDED.barrier_id,updated_at=now()"
-                        + " WHERE ai_tenant_barrier.status='OPEN' OR ai_tenant_barrier.barrier_id=EXCLUDED.barrier_id",parameters);
+                // W3-1 屏障租约（L3-T2R-AUTHZ，V23 列契约）：写 PENDING 必须 stamp
+                // lease_expires_at（"PENDING 必带租约"——本进程若死，别的进程凭该租约走
+                // acquire 门的 reconciler CAS 自愈），attempt_count 递增（诊断列）。
+                // ⚠️ 两个刻意不做（与 V23 对齐记录在案）：
+                //  ① 覆盖条件**不**加"无活跃 permit"——prepare 时刻并发读 permit 存在是常态，
+                //     drain 在本 prepare 之后才排它们；加了会把正常写打成 503；
+                //  ② 覆盖条件**不**加"PENDING 且租约已过"分支——跨进程自愈的唯一入口是
+                //     DefaultRevocationGuard.acquire 屏障门的 CAS（在 prepare 之前把卡死行
+                //     收回 OPEN，本 upsert 的 status='OPEN' 分支自然接管），两处都改反而制造
+                //     第二套口径（G-55b 同族）。
+                Map<String, Object> prepare = new HashMap<>(parameters);
+                prepare.put("barrierLease", (int) TenantBarrierReconciler.BARRIER_LEASE_SECONDS);
+                int prepared=jdbc.update("INSERT INTO ai_tenant_barrier(tenant_id,status,barrier_id,reason,updated_at,lease_expires_at,attempt_count)"
+                        + " VALUES(:tenant,'PENDING',:barrier,'resource mutation',now(),now() + (:barrierLease * interval '1 second'),1)"
+                        + " ON CONFLICT(tenant_id) DO UPDATE"
+                        + " SET status='PENDING',barrier_id=EXCLUDED.barrier_id,updated_at=now(),"
+                        + " lease_expires_at=EXCLUDED.lease_expires_at,"
+                        + " attempt_count=ai_tenant_barrier.attempt_count+1, reconciled_at=NULL, reconciled_by=NULL"
+                        + " WHERE ai_tenant_barrier.status='OPEN' OR ai_tenant_barrier.barrier_id=EXCLUDED.barrier_id",prepare);
                 if(prepared!=1){throw new ServiceException("另一资源屏障尚未闭合");}
             });
             long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
             while(true){
-                Long active = jdbc.queryForObject("SELECT count(*) FROM ai_execution_permit WHERE tenant_id=:tenant"
-                        + " AND status='ACTIVE' AND permit_id<>:permit"
-                        + " AND expires_at > CURRENT_TIMESTAMP", parameters, Long.class);
+                // W3-1 drain 收敛（L3-T2R-AUTHZ）：活跃集判据**只此一份**——引用
+                // TenantBarrierReconciler.SQL_ACTIVE_PERMITS_OUTSIDE，不再内联第三份副本。
+                // 此前这里的 SQL 文本与 reconciler 逐字一致但物理上各自维护，改判据必须同步两处，
+                // 漏一处就是 G-55b"同表两套口径"的同族缺陷。反向证明见 BarrierSqlConvergenceTest。
+                Long active = jdbc.queryForObject(TenantBarrierReconciler.SQL_ACTIVE_PERMITS_OUTSIDE, parameters, Long.class);
                 if(active==null || active<0){throw new ServiceException("活跃集未知；屏障保持 PENDING");}
                 if(active==0){break;}
                 if(System.nanoTime()>=deadline){throw new ServiceException("资源 drain 超时；屏障保持 PENDING");}
@@ -264,12 +281,13 @@ public class AiResourceWriteService {
                 if(versions.isEmpty() || versions.get(0)!=principal.aclVersion()){
                     throw new com.nageoffer.ai.ragent.framework.security.StaleVersionException("aclVersion changed");
                 }
-                Long active=jdbc.queryForObject("SELECT count(*) FROM ai_execution_permit WHERE tenant_id=:tenant"
-                        + " AND status='ACTIVE' AND permit_id<>:permit"
-                        + " AND expires_at > CURRENT_TIMESTAMP",parameters,Long.class);
+                // 同上：提交前最后一次排空复核也走 reconciler 的**同一份**常量（drain 收敛）。
+                Long active=jdbc.queryForObject(TenantBarrierReconciler.SQL_ACTIVE_PERMITS_OUTSIDE,parameters,Long.class);
                 if(active==null || active!=0){throw new ServiceException("资源活跃集未排空");}
                 T value=work.doInTransaction(status);
-                if(jdbc.update("UPDATE ai_tenant_barrier SET status='CLOSED',target_acl_version=(SELECT version FROM ai_acl_epoch WHERE tenant_id=:tenant),updated_at=now()"
+                // 提交闭合：lease_expires_at 一并清空（"PENDING 必带租约"的逆面——
+                // 非 PENDING 行不留租约，避免把已闭合屏障误当可自愈对象）。
+                if(jdbc.update("UPDATE ai_tenant_barrier SET status='CLOSED',target_acl_version=(SELECT version FROM ai_acl_epoch WHERE tenant_id=:tenant),updated_at=now(),lease_expires_at=NULL"
                         + " WHERE tenant_id=:tenant AND barrier_id=:barrier AND status='PENDING'",parameters)!=1){throw new ServiceException("资源屏障提交未确认");}
                 return value;
             });

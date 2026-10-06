@@ -57,8 +57,31 @@ public class DefaultRevocationGuard implements RevocationGuard {
     /** permit 租约时长：只用于识别失联节点，不用于宣告撤权成功。 */
     static final long LEASE_SECONDS = 300;
 
+    /**
+     * 屏障 PENDING 租约时长（秒）：本类写 PENDING 时 stamp
+     * {@code lease_expires_at = now() + 本常量}（W3-1 裁定：不引入第三个自定义时长，
+     * 与 permit 侧、平台侧 sys 屏障同源）。它同时经 {@link TenantBarrierReconciler#BARRIER_LEASE_SECONDS}
+     * 被自愈 CAS 口径引用——"谁写租约、多长"只有一个事实来源。
+     */
+    static final long BARRIER_LEASE_SECONDS = LEASE_SECONDS;
+
     private final JdbcTemplate jdbc;
     private com.nageoffer.ai.ragent.framework.security.PlatformPermitPort platformPermits;
+
+    /**
+     * W3-1 屏障自愈（L3-T2R-AUTHZ）：{@code required=false} + 缺席时 fail-closed ——
+     * acquire 的屏障门在 PENDING 时若 reconciler 缺席，维持"拒绝新 permit"的既有行为，
+     * 绝不因组件缺席而放宽（自愈是加路径，不是替换拒绝）。
+     */
+    private TenantBarrierReconciler barrierReconciler;
+
+    /** 屏障门自愈的来源标识：CAS 成功后 reconcile 行里留痕用。 */
+    static final String LEASE_RECONCILER = "lease-reconciler";
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void configureBarrierReconciler(TenantBarrierReconciler barrierReconciler) {
+        this.barrierReconciler = barrierReconciler;
+    }
 
     /**
      * platform 层许可镜像端口。内嵌装配提供本地实现（同进程调用 platform 许可提供者，
@@ -109,8 +132,29 @@ public class DefaultRevocationGuard implements RevocationGuard {
         }
 
         // 2) 屏障状态：PENDING/CLOSED/UNKNOWN 一律拒绝新 permit。
+        //    W3-1 自愈唯一入口（L3-T2R-AUTHZ）：PENDING 且 reconciler 在位 ⇒ 先尝试
+        //    "租约过期 + 无未过期 ACTIVE permit"的 CAS（reconciler 口径，全判据在 UPDATE 的
+        //    WHERE 里）。SELF_HEALED ⇒ 屏障已收回 OPEN，本次 acquire 继续往下走；
+        //    其余一切结果（LEASE_NOT_EXPIRED / STILL_ACTIVE / NOT_PENDING）与 reconciler
+        //    缺席 ⇒ 维持拒绝。语义精确化：今天"PENDING 一律拒"，改为"PENDING 且不可自愈才拒"
+        //    ——旧锚点测试（P1RevocationRaceTest.nonOpenBarrierRefuses）负例语义不消失：
+        //    它们的 mock 场景里 CAS 影响 0 行（未配置 reconciler ⇒ 自愈不存在），
+        //    拒绝行为保持不变、测试保持绿。
+        //    本方法此刻正持有 ai_acl_epoch 租户行锁（上面第 1 步 FOR UPDATE），CAS 的
+        //    活跃集判据在该锁内是稳定的；CAS 是 UPDATE 一次性裁决，不需要 Java 侧二次判断。
         BarrierState state = readBarrierState(request.tenantId());
-        if (state == BarrierState.PENDING || state == BarrierState.CLOSED || state == BarrierState.UNKNOWN) {
+        if (state == BarrierState.PENDING) {
+            if (barrierReconciler == null
+                    || barrierReconciler.selfHealIfLeaseExpired(request.tenantId())
+                            != TenantBarrierReconciler.LeaseSelfHeal.SELF_HEALED
+                    || readBarrierState(request.tenantId()) != BarrierState.OPEN) {
+                log.warn("租户屏障 PENDING 且不可自愈，拒绝新 permit, tenantId={}, operationId={}",
+                        request.tenantId(), request.operationId());
+                throw new ServiceException("租户屏障 PENDING，拒绝新 permit");
+            }
+            log.warn("屏障租约过期自愈放行, tenantId={}, operationId={}",
+                    request.tenantId(), request.operationId());
+        } else if (state == BarrierState.CLOSED || state == BarrierState.UNKNOWN) {
             throw new ServiceException("租户屏障 " + state + "，拒绝新 permit");
         }
 
@@ -230,12 +274,14 @@ public class DefaultRevocationGuard implements RevocationGuard {
                 && (state == BarrierState.OPEN || !"OPEN".equals(existing.get(0).get("status")))) {
             throw new ServiceException("屏障标识不匹配");
         }
-        int updated = jdbc.update("INSERT INTO ai_tenant_barrier (tenant_id, status, barrier_id, target_acl_version, reason, updated_at)"
-                        + " VALUES (?,?,?,?,?, now())"
+        int updated = jdbc.update("INSERT INTO ai_tenant_barrier (tenant_id, status, barrier_id, target_acl_version, reason, updated_at, lease_expires_at)"
+                        + " VALUES (?,?,?,?,?, now(),"
+                        + " CASE WHEN ? = 'PENDING' THEN now() + (? * interval '1 second') ELSE NULL END)"
                         + " ON CONFLICT (tenant_id) DO UPDATE SET status = EXCLUDED.status,"
                         + " barrier_id = EXCLUDED.barrier_id, target_acl_version = EXCLUDED.target_acl_version,"
-                        + " reason = EXCLUDED.reason, updated_at = now()",
-                tenantId, state.name(), barrierId, targetAclVersion, reason);
+                        + " reason = EXCLUDED.reason, updated_at = now(),"
+                        + " lease_expires_at = EXCLUDED.lease_expires_at, reconciled_at = NULL, reconciled_by = NULL",
+                tenantId, state.name(), barrierId, targetAclVersion, reason, state.name(), BARRIER_LEASE_SECONDS);
         if (updated != 1) { throw new ServiceException("屏障写入未确认"); }
     }
 

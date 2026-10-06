@@ -174,8 +174,15 @@ class RunAdmissionBindingJudgmentTest {
 
         assertEquals("QUEUED", result.status());
         ArgumentCaptor<RunConfigBinding> binding = ArgumentCaptor.forClass(RunConfigBinding.class);
+        // G-48 闭环口径（本轮固化）：pos8/pos9（input/budget 的 JSON 文本）不在此断言范围——
+        // 执行侧读端（JdbcRunConfigBindingPort.BOUND_REVISION_SQL）重建 RunConfigBinding 的
+        // 事实只取 ai_run 的 config_revision_id 与 config_operator/config_published_at，
+        // 其余事实一律取自版本行（ai_runtime_config_revision）；input/budget 不参与执行侧
+        // 解析，null 合法（V15 列 NULLABLE，且 insertRun 以 ?::jsonb 直透 null）。
+        // 执行侧自洽的四组事实见 config* 断言：revisionId 不可空（config_revision_id），
+        // provider/model/catalog/params 必须与版本行一致（requireAgrees 不一致即拒绝执行）。
         verify(dao).insertRun(anyString(), anyString(), anyString(), anyString(), anyString(),
-                anyString(), anyString(), anyString(), anyString(), anyString(), anyInt(), anyInt(),
+                anyString(), anyString(), isNull(), isNull(), anyString(), anyInt(), anyInt(),
                 anyString(), isNull(), binding.capture());
         assertEquals("rev-1", binding.getValue().revisionId());
         assertEquals("deepseek", binding.getValue().providerId());

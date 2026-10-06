@@ -34,11 +34,19 @@ import java.util.Map;
  * 读侧 {@code findActive} 过滤 {@code expires_at}，而 drain 不过滤 —— 同一个事实有两种解释，
  * 于是"还有没有活跃 permit"这句话在两处给出不同答案。若把"PENDING 能否收回 OPEN"的判据
  * 在 {@code writeInternal} 的 finally 与租约回收里各写一份，两处迟早分叉，会再得到一族同源缺陷。
- * 因此本类**唯一持有**三段 SQL：
+ * 因此本类**唯一持有**五段 SQL：
  * <ul>
- *   <li>{@link #SQL_ACTIVE_PERMITS_OUTSIDE}：可回收判据（<b>与 drain 循环当前口径逐字一致</b>）；</li>
- *   <li>{@link #SQL_BARRIER_STATUS}：屏障行的实际状态（用来区分"真卡在 PENDING"与"本来就不在 PENDING"）；</li>
- *   <li>{@link #SQL_REOPEN_IF_PENDING}：回收语句，**只写 OPEN**。</li>
+ *   <li>{@link #SQL_ACTIVE_PERMITS_OUTSIDE}：可回收判据（<b>drain 循环两处也引用本常量</b>——
+ *       W3-1 收敛后全工程不再存在第二份"活跃 permit"SQL 文本）；</li>
+ *   <li>{@link #SQL_BARRIER_STATUS}：屏障行的实际状态（按 barrier_id，区分"真卡在 PENDING"
+ *       与"本来就不在 PENDING"）；</li>
+ *   <li>{@link #SQL_BARRIER_STATUS_BY_TENANT}：同上但按租户（自愈 CAS 的 0 行归因用）；</li>
+ *   <li>{@link #SQL_REOPEN_IF_PENDING}：回收语句，**只写 OPEN**；</li>
+ *   <li>{@link #SQL_SELF_HEAL_IF_LEASE_EXPIRED}：W3-1 跨进程自愈 CAS——进程被杀后无人跑
+ *       finally 对账，屏障永久 PENDING ⇒ 全租户写 503。自愈入口是
+ *       {@code DefaultRevocationGuard.acquire} 的屏障门：PENDING + 租约已过 + 无未过期
+ *       ACTIVE permit ⇒ 先收回 OPEN 再登记新 permit。租约条件**必须进 CAS 的 WHERE**
+ *       （不能只做 Java 侧预判），否则与并发 prepare 刷租约竞争时会收回一个仍在推进的屏障。</li>
  * </ul>
  *
  * <p><b>红线：本类没有任何写 {@code CLOSED} 的方法。</b>{@code CLOSED} 只能由业务写事务内的那条
@@ -60,9 +68,17 @@ public class TenantBarrierReconciler {
     /**
      * 可回收判据（**唯一一份**）：本租户除自己之外是否还有**未过期**的 ACTIVE permit。
      *
-     * <p>{@code expires_at > CURRENT_TIMESTAMP} 这一条与 drain 循环
-     * （{@code AiResourceWriteService} 内两处 count）逐字一致；{@code permit_id<>:permit}
-     * 排除本次操作自己的 permit（它此刻必然是 ACTIVE，不排除就永远排不空）。
+     * <p><b>W3-1 drain 收敛</b>：{@code AiResourceWriteService} 的 drain 轮询与提交前复核
+     * 曾经内联着与本常量逐字相同的文本 —— "同一张表、两套口径"的 G-55b 同族隐患
+     * （改一处漏一处 = 两处对"还有没有活跃 permit"给出不同答案）。收敛后 drain 两侧
+     * 直接引用本常量，本类是唯一权威。
+     *
+     * <p><b>反向证明</b>（{@code BarrierSqlConvergenceTest}）：把本常量里的
+     * {@code expires_at > CURRENT_TIMESTAMP} 子句摘掉，drain 两侧与 reconciler 必须
+     * <b>一起</b>变红 —— 只单点变红 = 没收敛。
+     *
+     * <p>{@code permit_id<>:permit} 排除本次操作自己的 permit（它此刻必然是 ACTIVE，
+     * 不排除就永远排不空）。
      */
     static final String SQL_ACTIVE_PERMITS_OUTSIDE =
             "SELECT count(*) FROM ai_execution_permit WHERE tenant_id=:tenant"
@@ -78,13 +94,58 @@ public class TenantBarrierReconciler {
     static final String SQL_BARRIER_STATUS =
             "SELECT status FROM ai_tenant_barrier WHERE tenant_id=:tenant AND barrier_id=:barrier";
 
+    /**
+     * 屏障行的实际状态（按租户，自愈 CAS 的 0 行归因用）。
+     * 自愈 CAS 不能按 {@code barrier_id} 匹配——卡死行的 barrier_id 属于**已死进程**，
+     * 新操作的 operationId 与它必然不同；租户行本身（PK tenant_id）才是自愈对象。
+     */
+    static final String SQL_BARRIER_STATUS_BY_TENANT =
+            "SELECT status FROM ai_tenant_barrier WHERE tenant_id=:tenant";
+
     /** 回收语句（**唯一一份**）：只把 PENDING 收回 OPEN。 */
     static final String SQL_REOPEN_IF_PENDING =
             "UPDATE ai_tenant_barrier SET status='OPEN', updated_at=now()"
                     + " WHERE tenant_id=:tenant AND barrier_id=:barrier AND status='PENDING'";
 
+    /**
+     * W3-1 跨进程自愈 CAS（**唯一一份**）：PENDING + 屏障租约已过 + 无未过期 ACTIVE permit
+     * ⇒ 收回 OPEN。租约未过或仍有未过期活跃 permit 时 WHERE 不成立、影响 0 行 ⇒
+     * <b>绝不回收</b>（红线：租约未过绝不放行；只写 OPEN，绝不写 CLOSED）。
+     *
+     * <p>三个判据全部在 SQL 里（不是 Java 预判）：CAS 的原子性依赖 WHERE 一次性裁决，
+     * 否则"读到过期 → 判断 → 写回"之间并发 prepare 刷了租约，就会收回一个仍在推进的屏障。
+     * <b>刻意不按 {@code barrier_id} 匹配</b>：卡死行的 barrier_id 属于已死进程，新操作无从知道；
+     * 自愈对象是"该租户当前这张卡死的 PENDING 行"（PK tenant_id 唯一）。
+     * {@code NOT EXISTS} 刻意<b>没有</b> {@code permit_id<>} 排除项：本 CAS 的调用时刻
+     * 新 permit 尚未登记，全量计数才保守（调用点被 {@code ai_acl_epoch} 行锁串行化保护）。
+     * {@code lease_expires_at IS NULL} 一支只兜底历史遗留行——V23 之后 PENDING 必带租约
+     * （{@code DefaultRevocationGuard.setBarrierState} 与 {@code AiResourceWriteService} 的
+     * prepare 都 stamp）。
+     *
+     * <p>写入 {@code reconciled_at/reconciled_by}：kill 演练判据的取证列（V23 约定）。
+     */
+    static final String SQL_SELF_HEAL_IF_LEASE_EXPIRED =
+            "UPDATE ai_tenant_barrier SET status='OPEN', updated_at=now(),"
+                    + " reconciled_at=now(), reconciled_by='lease-reconciler'"
+                    + " WHERE tenant_id=:tenant AND status='PENDING'"
+                    + " AND (lease_expires_at IS NULL OR lease_expires_at <= now())"
+                    + " AND NOT EXISTS(SELECT 1 FROM ai_execution_permit p WHERE p.tenant_id=:tenant"
+                    + " AND p.status='ACTIVE' AND p.expires_at>CURRENT_TIMESTAMP)";
+
     /** {@code ai_tenant_barrier.status} 的"卡住"取值（其余 OPEN/CLOSED/UNKNOWN 都不由本类收回）。 */
     private static final String BARRIER_STATUS_PENDING = "PENDING";
+
+    /**
+     * 屏障 PENDING 租约时长（秒）：写 PENDING 的一方（prepare / {@code setBarrierState}）
+     * 必须 stamp {@code lease_expires_at = now() + 本常量}。
+     *
+     * <p>W3-1 裁定（T0 批准）：取 {@link DefaultRevocationGuard#LEASE_SECONDS}（300）——
+     * 平台侧 {@code RevocationBarrierCoordinator} 与 AI 侧 permit 已是同一常量，
+     * 本表不再引入第三个自定义时长。租约只用于"失联判定"（跨进程自愈的**解锁**条件），
+     * 绝不用于宣告成功；自愈能否真正收回由 SQL_SELF_HEAL_IF_LEASE_EXPIRED 的
+     * 活跃集判据独立裁决。
+     */
+    static final long BARRIER_LEASE_SECONDS = DefaultRevocationGuard.LEASE_SECONDS;
 
     private final NamedParameterJdbcTemplate jdbc;
     private final TransactionTemplate requiresNew;
@@ -111,6 +172,65 @@ public class TenantBarrierReconciler {
      * "同一个租户为什么长期排不空"），标识缺失的短路返回 -1。
      */
     public record ReclaimResult(Outcome outcome, long activePermits) {
+    }
+
+    /**
+     * 跨进程自愈 CAS 的三态（W3-1）。与 {@link #reclaimIfNoActivePermit} 的区别：
+     * 本方法从不读屏障状态、从不记 error —— 调用场景是 {@code acquire} 的屏障门，
+     * 门本身的拒绝语义由调用方表达；这里只回答"CAS 是否成立"。
+     */
+    public enum LeaseSelfHeal {
+        /** CAS 成立：PENDING + 屏障租约已过 + 无未过期 ACTIVE permit ⇒ 行已收回 OPEN。 */
+        SELF_HEALED,
+        /** 租约未过 ⇒ 绝不回收（红线）。 */
+        LEASE_NOT_EXPIRED,
+        /** 租约已过但仍有未过期 ACTIVE permit ⇒ 绝不回收。 */
+        STILL_ACTIVE,
+        /** 该行当前不是 PENDING（已被正常闭合或已收回）—— CAS 无对象。 */
+        NOT_PENDING
+    }
+
+    /**
+     * 跨进程自愈 CAS：屏障租约已过且无未过期活跃 permit 时，把该租户卡死的 PENDING 行收回 OPEN。
+     *
+     * <p>全部判据在 {@link #SQL_SELF_HEAL_IF_LEASE_EXPIRED} 的 WHERE 里一次性裁决。
+     * 影响行数是唯一事实：1 = 已收回；0 = 三种原因之一（租约未过 / 仍活跃 / 已不是 PENDING），
+     * 0 行时用 {@link #SQL_BARRIER_STATUS_BY_TENANT} 复核状态、用 {@link #SQL_ACTIVE_PERMITS_OUTSIDE}
+     * 复核活跃集来区分，绝不猜测。
+     *
+     * <p><b>调用方纪律</b>：本方法应在已持有 {@code ai_acl_epoch} 租户行锁的事务里调用
+     * （{@code DefaultRevocationGuard.acquire} 正是如此）——自愈与并发 prepare/permit 登记的
+     * 竞争由该锁串行化，CAS 判据在锁内是稳定的。缺席该锁的调用是弱化形态，允许存在但语义降级为
+     * "尽力而为"（0 行的细分结果可能过时）。
+     *
+     * @param tenantId 租户（空即 {@code NOT_PENDING}，不猜）
+     */
+    public LeaseSelfHeal selfHealIfLeaseExpired(String tenantId) {
+        if (tenantId == null || tenantId.isBlank()) {
+            return LeaseSelfHeal.NOT_PENDING;
+        }
+        Map<String, Object> parameters = Map.of("tenant", tenantId);
+        int healed = jdbc.update(SQL_SELF_HEAL_IF_LEASE_EXPIRED, parameters);
+        if (healed == 1) {
+            log.warn("屏障租约过期自愈：PENDING 收回 OPEN, tenant={}, leaseSeconds={}",
+                    tenantId, BARRIER_LEASE_SECONDS);
+            return LeaseSelfHeal.SELF_HEALED;
+        }
+        // 0 行：区分三种原因（租约未过 / 仍活跃 / 已不是 PENDING）——不猜，逐项复核。
+        List<String> rows = jdbc.query(SQL_BARRIER_STATUS_BY_TENANT, parameters, (rs, rowNum) -> rs.getString(1));
+        if (rows.isEmpty() || !BARRIER_STATUS_PENDING.equals(rows.get(0))) {
+            return LeaseSelfHeal.NOT_PENDING;
+        }
+        Long active = jdbc.queryForObject(SQL_ACTIVE_PERMITS_OUTSIDE,
+                Map.of("tenant", tenantId,
+                        // 本操作自己的 permit 尚未登记；占位值使语义退化为"全量未过期 ACTIVE 计数"。
+                        "permit", ""),
+                Long.class);
+        long remaining = active == null ? -1L : active;
+        if (remaining > 0) {
+            return LeaseSelfHeal.STILL_ACTIVE;
+        }
+        return LeaseSelfHeal.LEASE_NOT_EXPIRED;
     }
 
     /**
