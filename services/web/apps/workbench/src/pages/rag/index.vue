@@ -490,30 +490,33 @@ onBeforeUnmount(() => {
       <el-divider content-position="left">
         文档摄入
       </el-divider>
-      <div class="rag-row">
+      <div class="rag-row" data-testid="rag-upload-row">
         <el-select v-model="versionTarget" placeholder="上传为新文档" clearable style="width: 220px">
           <el-option v-for="doc in rag.documents" :key="doc.docId" :value="doc.docId" :label="`更新版本：${doc.name}`" />
         </el-select>
         <input ref="fileInput" type="file" accept="application/pdf" style="display: none" @change="onFilePicked">
-        <el-button :disabled="!rag.currentKbId" @click="pickFile">
+        <el-button :disabled="!rag.currentKbId" data-testid="rag-pick-file" @click="pickFile">
           选择 PDF 上传
         </el-button>
-        <el-button v-if="pendingUpload" @click="retryUpload">
+        <el-button v-if="pendingUpload" data-testid="rag-upload-retry" @click="retryUpload">
           重试原上传
         </el-button>
         <span v-if="rag.uploadPercent > 0 && rag.uploadPercent < 100">上传中 {{ rag.uploadPercent }}%</span>
-        <span v-if="rag.upload">已上传：{{ rag.upload.docId }}（sha256 {{ rag.upload.sha256.slice(0, 12) }}…）</span>
-        <el-button v-if="rag.upload" type="primary" :loading="ingesting" @click="startIngest">
+        <span v-if="rag.upload" data-testid="rag-uploaded">已上传：{{ rag.upload.docId }}（sha256 {{ rag.upload.sha256.slice(0, 12) }}…）</span>
+        <el-button v-if="rag.upload" type="primary" :loading="ingesting" data-testid="rag-start-ingest" @click="startIngest">
           开始摄入
         </el-button>
       </div>
-      <div v-if="rag.ingestRun" class="rag-steps">
+      <div v-if="rag.ingestRun" class="rag-steps" data-testid="rag-ingest-run" :data-ingest-status="rag.ingestRun.status">
         <div>摄入任务：{{ rag.ingestRun.runId }} / {{ rag.ingestRun.status }}</div>
         <el-steps direction="vertical" :active="ingestStepActive" finish-status="success">
           <el-step v-for="step in rag.ingestRun.steps || []" :key="step.stepId" :title="step.stepName" :description="step.state" />
         </el-steps>
       </div>
-      <div class="rag-docs">
+      <div class="rag-docs" data-testid="rag-docs" :data-doc-count="rag.documents.length">
+        <div v-if="!rag.documents.length" data-testid="rag-docs-empty">
+          当前知识库没有可见文档
+        </div>
         <div v-for="doc in rag.documents" :key="doc.docId" class="rag-doc">
           <span>{{ doc.name }}</span>
           <el-tag size="small" :type="doc.publishedVersionId ? 'success' : 'info'">
@@ -526,9 +529,9 @@ onBeforeUnmount(() => {
       <el-divider content-position="left">
         带引用问答
       </el-divider>
-      <el-input v-model="question" type="textarea" :rows="2" placeholder="基于已发布文档提问" />
-      <div class="rag-row" style="margin-top: 8px">
-        <el-button type="primary" :disabled="!rag.currentKbId || !question" :loading="asking" @click="ask">
+      <el-input v-model="question" type="textarea" :rows="2" placeholder="基于已发布文档提问" data-testid="rag-question" />
+      <div class="rag-row" style="margin-top: 8px" data-testid="rag-ask-row">
+        <el-button type="primary" :disabled="!rag.currentKbId || !question" :loading="asking" data-testid="rag-ask" @click="ask">
           提问
         </el-button>
         <el-button v-if="rag.chatRunId && !isTerminal" @click="cancel">
@@ -540,13 +543,13 @@ onBeforeUnmount(() => {
         <span v-if="rag.lastSeq" class="rag-muted">游标 seq={{ rag.lastSeq }}</span>
         <span v-if="rag.streamNote" class="rag-note">{{ rag.streamNote }}</span>
       </div>
-      <div v-if="rag.errorCode" class="rag-error">
+      <div v-if="rag.errorCode" class="rag-error" data-testid="rag-error">
         错误：{{ rag.errorCode }}
       </div>
-      <div v-if="rag.answer" class="rag-answer">
+      <div v-if="rag.answer" class="rag-answer" data-testid="rag-answer">
         {{ rag.answer }}
       </div>
-      <div v-if="rag.citations.length" class="rag-citations">
+      <div v-if="rag.citations.length" class="rag-citations" data-testid="rag-citations" :data-citation-count="rag.citations.length">
         <div class="rag-muted">
           引用（{{ rag.citations.length }}）
         </div>
@@ -554,7 +557,7 @@ onBeforeUnmount(() => {
           [{{ index + 1 }}] {{ citation.docName || citation.docId }} · 版本 {{ citation.versionId.slice(0, 10) }} ·
           chunk {{ citation.chunkIndex }}<span v-if="citation.score"> · 相似度 {{ citation.score }}</span>
           <span v-if="citation.pageFrom"> · 第 {{ citation.pageFrom }}<template v-if="citation.pageTo !== citation.pageFrom">–{{ citation.pageTo }}</template> 页</span>
-          <el-button link type="primary" @click="viewSource(citation.docId, citation.versionId, citation.pageFrom)">
+          <el-button link type="primary" :data-testid="`rag-view-source-${index}`" @click="viewSource(citation.docId, citation.versionId, citation.pageFrom)">
             查看当前来源
           </el-button>
         </div>

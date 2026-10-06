@@ -7,8 +7,10 @@
  * - 绑定只做一次，**不新建第二个客户端**（C7 禁止第二套客户端）。
  */
 import platformClient from '@/utils/request';
+import { createAiApi } from './ai';
 import { createMonitorApi } from './monitor';
 import { createSystemApi } from './system';
 
+export const aiApi = createAiApi(platformClient);
 export const systemApi = createSystemApi(platformClient);
 export const monitorApi = createMonitorApi(platformClient);

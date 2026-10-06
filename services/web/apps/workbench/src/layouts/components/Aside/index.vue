@@ -226,6 +226,9 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
         <router-link v-if="userStore.token" :to="{ name: 'ragConsole' }" class="workbench-entry">
           <span>知识库问答</span>
         </router-link>
+        <router-link v-if="userStore.token" :to="{ name: 'ragRetrievalDebug' }" class="workbench-entry">
+          <span>检索调试</span>
+        </router-link>
         <router-link v-if="userStore.token" :to="{ name: 'agentConsole' }" class="workbench-entry">
           <span>Agent 任务</span>
         </router-link>

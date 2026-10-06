@@ -45,6 +45,15 @@ export const layoutRouter: RouteRecordRaw[] = [
         },
       },
       {
+        // W3-5 / F05 检索调试（`POST /api/ai/v1/knowledge-bases/retrievals`，动作 kb.retrieve）。
+        // 路由已登记（AiGatewayController.ROUTES:112）；失败态（404/403/503/500）与空态
+        // 结构互斥，由 `@/api/ai/retrieval-debug` 的单测钉死。需登录（私有资源授权检索）。
+        path: '/rag/debug',
+        name: 'ragRetrievalDebug',
+        component: () => import('@/pages/rag/retrieval-debug.vue'),
+        meta: { title: '检索调试', stayOnAuthExpired: true },
+      },
+      {
         path: '/agent-run',
         alias: '/agent',
         name: 'agentConsole',

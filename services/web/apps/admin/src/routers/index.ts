@@ -102,6 +102,64 @@ export const layoutRouter: RouteRecordRaw[] = [
         component: () => import('@/pages/traces/index.vue'),
         meta: { title: '链路追踪', icon: 'DataLine', permission: 'monitor:trace:list' },
       },
+      {
+        // W3-5：AI 管理域页面族（成对核对表见 src/config/permission-page-pairs.ts）。
+        // permission 串逐字取自 sys_menu 分母（V2/V4/V14/V16/V19）；
+        // agents/skills/ingestion/settings 四页**没有**对应权限行（ragent 管理面
+        // 从未播种 C 行）——成对表里登记为 PAIR-GAP-NO-ROW，补行走 T0 迁移。
+        path: 'ai/knowledge',
+        name: 'aiKnowledgeList',
+        component: () => import('@/pages/ai/knowledge/index.vue'),
+        meta: { title: '知识库', icon: 'Reading', permission: 'ai:kb:list' },
+      },
+      {
+        path: 'ai/knowledge/:kbId',
+        name: 'aiKnowledgeDocuments',
+        component: () => import('@/pages/ai/knowledge/documents.vue'),
+        meta: { title: '知识文档', permission: 'ai:document:read' },
+      },
+      {
+        path: 'ai/knowledge/:kbId/docs/:docId',
+        name: 'aiKnowledgeChunks',
+        component: () => import('@/pages/ai/knowledge/chunks.vue'),
+        meta: { title: '文档分块', permission: 'ai:document:read' },
+      },
+      {
+        path: 'ai/models',
+        name: 'aiModels',
+        component: () => import('@/pages/ai/models/index.vue'),
+        meta: { title: '模型与提供方', icon: 'Cpu', permission: 'system:model:list' },
+      },
+      {
+        path: 'ai/agents',
+        name: 'aiAgents',
+        component: () => import('@/pages/ai/agents/index.vue'),
+        meta: { title: 'Agent 定义', icon: 'ChatDotRound', permission: '' },
+      },
+      {
+        path: 'ai/skills',
+        name: 'aiSkills',
+        component: () => import('@/pages/ai/skills/index.vue'),
+        meta: { title: 'Skills', icon: 'MagicStick', permission: '' },
+      },
+      {
+        path: 'ai/mcp',
+        name: 'aiMcp',
+        component: () => import('@/pages/ai/mcp/index.vue'),
+        meta: { title: 'MCP 工具目录', icon: 'SetUp', permission: 'mcp:tool:list' },
+      },
+      {
+        path: 'ai/ingestion',
+        name: 'aiIngestion',
+        component: () => import('@/pages/ai/ingestion/index.vue'),
+        meta: { title: '摄取流水线', icon: 'Box', permission: '' },
+      },
+      {
+        path: 'ai/settings',
+        name: 'aiSettings',
+        component: () => import('@/pages/ai/settings/index.vue'),
+        meta: { title: '系统设置', icon: 'Tools', permission: '' },
+      },
     ],
   },
 ];

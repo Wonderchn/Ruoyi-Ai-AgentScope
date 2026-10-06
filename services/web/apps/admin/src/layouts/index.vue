@@ -31,6 +31,16 @@ const staticMenus = [
   { path: '/monitor/operlog', title: '操作日志', icon: 'Document', permission: 'monitor:operlog:list' },
   { path: '/monitor/logininfor', title: '登录日志', icon: 'Key', permission: 'monitor:logininfor:list' },
   { path: '/monitor/online', title: '在线用户', icon: 'Monitor', permission: 'monitor:online:list' },
+  // W3-5 AI 管理域（成对核对表：src/config/permission-page-pairs.ts）。
+  // agents/skills/ingestion/settings 无权限行（ragent 管理面未播种 C 行），
+  // permission 留空 = 菜单恒显；后端端点本身 404（BLOCKED-BY-EMBEDDED-REGISTRY）。
+  { path: '/ai/knowledge', title: '知识库', icon: 'Reading', permission: 'ai:kb:list' },
+  { path: '/ai/models', title: '模型与提供方', icon: 'Cpu', permission: 'system:model:list' },
+  { path: '/ai/agents', title: 'Agent 定义', icon: 'ChatDotRound', permission: '' },
+  { path: '/ai/skills', title: 'Skills', icon: 'MagicStick', permission: '' },
+  { path: '/ai/mcp', title: 'MCP 工具目录', icon: 'SetUp', permission: 'mcp:tool:list' },
+  { path: '/ai/ingestion', title: '摄取流水线', icon: 'Box', permission: '' },
+  { path: '/ai/settings', title: '系统设置', icon: 'Tools', permission: '' },
 ];
 
 const collapsed = ref(false);
