@@ -101,6 +101,22 @@ V7 按 AI 侧形状建表，V9 只追加平台侧独有列（E2 §2.4b）。它�
 解除方式不改迁移：往生成器补有证据的别名/派生登记（落地区适配脚本与注册表同步生成），
 把表模式改为 `copy`，重新生成并重跑 V11 即可。
 
+### 解除 blocked 之前必须过的契约（WP-027，手工维护，非生成物）
+
+`30-knowledge-import-contract.sql` + `31-knowledge-import-contract-selftest.sql` 是**手工维护的工具**
+（生成器只写 10/20/V11，不会覆盖它们）：
+
+- `knowledge_import_contract`：统一侧**每一列一条来源声明**（`source_kind` + `source_ref` + `evidence_ref`），
+  覆盖 README 上表列出的 11 列。**没有 `evidence_ref` 的声明连登记都登记不进去**（表约束）。
+- `knowledge_collection_prefix`：G-01 的真实 collection 前缀（`collection_name = prefix || kid`）。
+- `knowledge_import_contract_check(p_synthetic)`：逐条校验覆盖完整性与可信性，并做
+  **断关联 / 多义 / 跨租户 / NULL / 超宽** 检查，输出对账计数；任一项不满足即 `RAISE`，
+  调用方在一个事务里跑 ⇒ 失败整体回滚。
+- `31-…-selftest.sql`：**合成夹具**（`is_synthetic = true`、URL 用 `synthetic.invalid`、前缀用源码默认
+  `LocalKnowledge`）+ **1 条正向 + 11 条负例**，证明校验器"该拒绝时真的拒绝"。
+  **合成跑通 ≠ 真实签收**：真实模式（`p_synthetic = false`）拒绝任何合成声明，
+  当前真实状态仍是 `blocked`（G-01/G-02 未提供）。
+
 ## 生成物与再生成
 
 三个文件都由 `scripts/db/generate-legacy-ai-copy.py` 生成，**不要手改**：

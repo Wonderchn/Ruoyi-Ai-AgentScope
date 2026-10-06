@@ -3,8 +3,8 @@
 # database, starting from both supported entry points.
 #
 # Two entry points must both reach the same unified schema:
-#   A. fresh install        : platform V1..V8 on an empty database
-#   B. upgrade from two schemas: platform V1..V6 + AI V1..V12, then platform V7..V8,
+#   A. fresh install        : platform V1..V(latest) on an empty database
+#   B. upgrade from two schemas: platform V1..V6 + AI V1..V(latest), then platform V7..V(latest),
 #      which must move the AI domain into `platform` without losing rows
 #
 # Assertions encode what the E0 table map and release-compatibility.json promise:
@@ -20,6 +20,7 @@ set -u
 
 PG_IMAGE=${PG_IMAGE:-pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b}
 FLYWAY_IMAGE=${FLYWAY_IMAGE:-flyway/flyway@sha256:94a81ca7db9a9f24fd8acd7463fa4560cb8f66aae2aa64485c27eb296f5851cf}
+PYTHON_BIN=${PYTHON_BIN:-python3}
 DB_HOST=${DB_HOST:-127.0.0.1}
 DB_PORT=${DB_PORT:-5432}
 DB_NAME=${DB_NAME:-ci_unified}
@@ -37,7 +38,7 @@ ok()  { echo "  [ok]   $1"; }
 bad() { echo "  [FAIL] $1"; FAILS=$((FAILS + 1)); }
 assert_eq() { if [ "$2" = "$3" ]; then ok "$1 = $3"; else bad "$1 expected=[$2] actual=[$3]"; fi; }
 
-for tool in docker openssl python; do
+for tool in docker openssl "$PYTHON_BIN"; do
   command -v "$tool" >/dev/null || { echo "missing required tool: $tool"; exit 2; }
 done
 [ -f "$PLATFORM_SQL/V1__platform_baseline.sql" ] || { echo "missing platform baseline"; exit 2; }
@@ -46,14 +47,42 @@ done
 [ -f "$PLATFORM_SQL/V9__legacy_ai_domain_ddl.sql" ] || { echo "missing legacy AI domain DDL migration"; exit 2; }
 [ -f "$PLATFORM_SQL/V10__entity_only_tables.sql" ] || { echo "missing entity-only tables migration"; exit 2; }
 [ -f "$PLATFORM_SQL/V11__legacy_ai_domain_data.sql" ] || { echo "missing legacy AI domain data migration"; exit 2; }
+[ -f "$PLATFORM_SQL/V12__conversation_write_permissions.sql" ] || { echo "missing conversation write permissions migration"; exit 2; }
 STAGING_SQL=${STAGING_SQL:-$REPO_ROOT/services/platform/docs/script/sql/legacy-mysql}
 [ -f "$STAGING_SQL/10-legacy-ai-domain-staging.sql" ] || { echo "missing legacy MySQL staging DDL"; exit 2; }
 [ -f "$STAGING_SQL/20-legacy-ai-domain-adaptation.sql" ] || { echo "missing legacy MySQL landing-zone adaptation"; exit 2; }
+
+# Validate coverage before starting a database. A failed parser or an empty map
+# must never turn into a successful check of zero tables.
+EXPECTED=$("$PYTHON_BIN" - "$TABLE_MAP" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1],encoding="utf-8"))
+names={e["target"]["table"] for e in d["tables"]
+       if e.get("source",{}).get("schema")=="ai" and e.get("target")}
+# V9 authors the legacy MySQL-only AI domain; those entries carry a non-ai source schema
+names |= {e["target"]["table"] for e in d["tables"]
+          if e.get("status")=="needs_pg_ddl" and e.get("target")}
+print(" ".join(sorted(names)))
+PY
+) || { bad 'table map could not be read; refusing empty coverage'; exit 2; }
+[ -n "$EXPECTED" ] || { bad 'table map has no expected AI tables'; exit 2; }
 
 umask 077
 rm -rf $WORK; mkdir -p "$WORK/platform" "$WORK/ai" "$WORK/bootstrap"
 cp "$PLATFORM_SQL"/V*.sql "$WORK/platform/"
 cp "$AI_SQL"/V*.sql "$WORK/ai/"
+
+# WP-034A: 期望的 Flyway 版本清单从暂存目录**推导**，避免再次出现"加了迁移、断言没跟着改"
+# 的陈旧期望（历史问题：这里曾写死到 V8，而链已经是 V11，脚本在本机 NOT_RUN 所以没人发现）。
+versions_of() { ls "$1" 2>/dev/null | sed -n 's/^V\([0-9][0-9]*\)__.*/\1/p' | sort -n | paste -sd, -; }
+PLATFORM_VERSIONS=$(versions_of "$WORK/platform")
+AI_VERSIONS=$(versions_of "$WORK/ai")
+PLATFORM_TOP=$(versions_of "$WORK/platform" | tr ',' '\n' | tail -1)
+AI_TOP=$(versions_of "$WORK/ai" | tr ',' '\n' | tail -1)
+# 旧双 schema 的入口 B 先只上到 V6，再一次性升级到最新；目标版本与断言用同一个变量。
+LEGACY_TARGET=${LEGACY_TARGET:-6}
+[ -n "$PLATFORM_VERSIONS" ] || { echo "no platform migrations staged"; exit 2; }
+[ -n "$AI_VERSIONS" ] || { echo "no AI migrations staged"; exit 2; }
 cp "$PLATFORM_SQL"/bootstrap/00-platform-identity.sql "$WORK/bootstrap/"
 cp "$PLATFORM_SQL"/bootstrap/01-platform-casts.sql "$WORK/bootstrap/"
 cp "$STAGING_SQL"/10-legacy-ai-domain-staging.sql "$WORK/bootstrap/"
@@ -63,6 +92,20 @@ cp "$STAGING_SQL"/20-legacy-ai-domain-adaptation.sql "$WORK/bootstrap/"
 # landing-zone adaptation (member id + public conversation id) and the refusal to fill a
 # blocked table's unmapped columns.
 cat > "$WORK/bootstrap/legacy-ai-fixture.sql" <<'SQL'
+-- chat_config has no shipped source DDL. This synthetic shape follows the
+-- entity/V11 column contract solely to exercise its copy path; it is not a
+-- claim about a historical deployment's catalog.
+CREATE TABLE legacy_mysql.chat_config (
+    id bigint NOT NULL PRIMARY KEY, tenant_id varchar(64) NOT NULL,
+    category varchar(64), config_name varchar(128) NOT NULL,
+    config_value varchar(1024), config_dict varchar(512), remark varchar(500),
+    version bigint, del_flag char(1) NOT NULL, update_ip varchar(64),
+    create_dept bigint, create_by bigint, create_time timestamp,
+    update_by bigint, update_time timestamp
+);
+INSERT INTO legacy_mysql.chat_config
+    (id, tenant_id, category, config_name, config_value, version, del_flag)
+VALUES (7001, 'T-CONFIG', 'ci-only', 'ci-fixture-config', 'synthetic-value', 3, '0');
 INSERT INTO legacy_mysql.chat_model
     (id, category, model_name, provider_code, model_describe, model_dimension, model_show,
      api_host, api_key, create_dept, create_by, create_time, update_by, update_time, remark, tenant_id)
@@ -98,14 +141,20 @@ VALUES
     (6002, 1, NULL, 'doc-b', 'hash-b', 'CI 夹具文档B', 'pdf', NULL, '1', '2026-01-01 00:00:00', NULL, NULL, NULL, 0, 1),
     (6003, 1, NULL, 'doc-c', 'hash-c', 'CI 夹具文档C', 'pdf', NULL, '1', '2026-01-01 00:00:00', NULL, NULL, NULL, 0, 2),
     (6004, 1, NULL, 'doc-d', 'hash-d', 'CI 夹具文档D', 'pdf', NULL, '1', '2026-01-01 00:00:00', NULL, NULL, NULL, 0, 3);
+INSERT INTO legacy_mysql.agent_info (id, tenant_id, agent_name, model_id, create_time, update_time)
+VALUES (8001, 0, 'CI 夹具Agent', 1001, '2026-01-01 00:00:00', '2026-01-01 00:00:00');
+SQL
+
+# The target table is authored by V9. Loading it with the landing-zone rows before
+# even V1 ran used to stop the fixture at a missing relation and omit agent_info.
+# Seed an existing target key only after the unified shape exists and before V11.
+cat > "$WORK/bootstrap/platform-existing-fixture.sql" <<'SQL'
 INSERT INTO platform.ai_model
     (id, category, model_name, provider_code, model_describe, model_dimension, model_show,
      api_host, api_key, create_dept, create_by, create_time, update_by, update_time, remark, tenant_id)
 VALUES
     (9999, 'chat', 'platform-owned-row', 'ci-fixture-provider', '平台侧既有行', 1, '0',
      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '000000');
-INSERT INTO legacy_mysql.agent_info (id, tenant_id, agent_name, model_id, create_time, update_time)
-VALUES (8001, 0, 'CI 夹具Agent', 1001, '2026-01-01 00:00:00', '2026-01-01 00:00:00');
 SQL
 
 PG_SUPER=$(openssl rand -hex 16); MIGRATE_PW=$(openssl rand -hex 16); APP_PW=$(openssl rand -hex 16)
@@ -141,11 +190,12 @@ flyway_ai() { docker run --rm --net host \
 echo "### 1. throwaway PostgreSQL"
 if docker inspect "$PG_CONTAINER" >/dev/null 2>&1; then echo 'owned container name collision; refusing reuse'; exit 2; fi
 docker run -d --name "$PG_CONTAINER" --label "e2.unified.owner=$PG_OWNER" --cpus "${PG_CPUS:-1}" --memory "${PG_MEM:-768m}" \
+  --tmpfs /var/lib/postgresql/data:rw,size=${PG_DATA_SIZE:-512m} \
   -p 127.0.0.1:$DB_PORT:5432 -e POSTGRES_PASSWORD -e POSTGRES_DB -e POSTGRES_USER $PG_IMAGE >/dev/null \
   || { bad 'container failed to start'; exit 1; }
 cleanup() {
   if [ "$(docker inspect --format '{{index .Config.Labels "e2.unified.owner"}}' "$PG_CONTAINER" 2>/dev/null)" = "$PG_OWNER" ]; then
-    docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+    docker rm -fv "$PG_CONTAINER" >/dev/null 2>&1 || true
   fi
   [ "${KEEP_WORK:-0}" = 1 ] || rm -rf $WORK
 }
@@ -182,14 +232,14 @@ assert_eq 'adaptation resolved the public conversation id' 'ci-conv-fixture-aaaa
 q "GRANT USAGE ON SCHEMA legacy_mysql TO migrate_platform; GRANT SELECT ON ALL TABLES IN SCHEMA legacy_mysql TO migrate_platform" >/dev/null 2>&1
 assert_eq 'migration identity granted read-only staging access' 0 $?
 
-echo "### 3. entry point B: legacy two-schema deployment (platform V1..V6 + AI V1..V12)"
-flyway_platform -target=6 migrate > "$WORK/b1.txt" 2>&1
+echo "### 3. entry point B: legacy two-schema deployment (platform V1..V${LEGACY_TARGET} + AI V1..V${AI_TOP})"
+flyway_platform -target=${LEGACY_TARGET} migrate > "$WORK/b1.txt" 2>&1
 assert_eq 'platform V1..V6 exit' 0 $?
-assert_eq 'platform history at v6' '1,2,3,4,5,6' \
+assert_eq "platform history at v${LEGACY_TARGET}" "$(seq -s, 1 "${LEGACY_TARGET}")" \
   "$(q "select string_agg(version, ',' order by installed_rank) from platform.flyway_schema_history_platform where version is not null")"
 flyway_ai migrate > "$WORK/b2.txt" 2>&1
-assert_eq 'AI V1..V12 exit' 0 $?
-assert_eq 'AI history at v12' '1,2,3,4,5,6,7,8,9,10,11,12' \
+assert_eq "AI V1..V${AI_TOP} exit" 0 $?
+assert_eq "AI history at v${AI_TOP}" "$AI_VERSIONS" \
   "$(q "select string_agg(version, ',' order by installed_rank) from ai.flyway_schema_history where version is not null")"
 AI_LEGACY_TABLES=$(q "select count(*) from information_schema.tables where table_schema='ai' and table_type='BASE TABLE' and table_name not like 'flyway%'")
 echo "  legacy ai tables: $AI_LEGACY_TABLES"
@@ -203,11 +253,23 @@ if [ -n "$SAMPLE_TABLE" ]; then
 else
   bad 'ai.t_sample_question missing; cannot verify the copy'
 fi
+q "INSERT INTO ai.t_conversation
+     (id, conversation_id, user_id, title, tenant_id, member_id)
+   VALUES ('E2-MARKER-CONV', 'e2-marker-conv', '2101', 'CI identity marker',
+           'T-UPGRADE', 'platform:T-UPGRADE:2101')" > "$WORK/identity-fixture.log" 2>&1
+assert_eq 'historical identity marker loaded before unified copy' 0 $?
 
 echo "### 4. entry point B continued: the unified integration versions"
+flyway_platform -target=10 migrate > "$WORK/b3-shape.txt" 2>&1
+assert_eq 'unified target shape through V10 exit' 0 $?
+psql_super_file /bootstrap/platform-existing-fixture.sql > "$WORK/platform-existing-fixture.log" 2>&1
+assert_eq 'pre-existing unified row fixture loaded before V11' 0 $?
 flyway_platform migrate > "$WORK/b3.txt" 2>&1
 assert_eq 'unified migrate exit' 0 $?
-assert_eq 'platform history now' '1,2,3,4,5,6,7,8' \
+# WP-034A: 期望的版本清单从**暂存的 SQL 文件**推导，不再硬编码。
+# 原来这里写死 '1,2,3,4,5,6,7,8'——V9/V10/V11 加进来之后它就已经不可能通过了，
+# 而脚本在本机是 NOT_RUN（无 Docker），所以这个陈旧断言一直没被发现。
+assert_eq 'platform history now' "$PLATFORM_VERSIONS" \
   "$(q "select string_agg(version, ',' order by installed_rank) from platform.flyway_schema_history_platform where version is not null")"
 assert_eq 'no failed platform rows' 0 "$(q "select count(*) from platform.flyway_schema_history_platform where not success")"
 assert_eq 'AI history archived' 1 \
@@ -251,6 +313,8 @@ assert_eq 'V11 copied the shape-matching tables, the evidenced aliases and the d
   "$(q "select count(*) from platform.ai_legacy_domain_migration_audit where mode='copied'")"
 assert_eq 'V11 blocked the remaining merged tables with a reason' 3 \
   "$(q "select count(*) from platform.ai_legacy_domain_migration_audit where mode='blocked' and blocked_reason is not null")"
+assert_eq 'V11 preserved the synthetic entity-only configuration row' 1 \
+  "$(q "select count(*) from platform.ai_model_config where id=7001 and tenant_id='T-CONFIG' and config_value='synthetic-value' and version=3")"
 assert_eq 'V11 copied a fixture row with tenant 0 as literal text' 1 \
   "$(q "select count(*) from platform.ai_model where id=1001 and tenant_id='0'")"
 assert_eq 'V11 kept the pre-existing unified row' 'platform-owned-row' \
@@ -278,17 +342,6 @@ assert_eq 'V11 copied the parent before the child (immediate conversation FK hol
 
 
 echo "### 5. every AI-domain table from the table map exists in platform"
-EXPECTED=$(python - "$TABLE_MAP" <<'PY'
-import json,sys
-d=json.load(open(sys.argv[1],encoding="utf-8"))
-names={e["target"]["table"] for e in d["tables"]
-       if e.get("source",{}).get("schema")=="ai" and e.get("target")}
-# V9 authors the legacy MySQL-only AI domain; those entries carry a non-ai source schema
-names |= {e["target"]["table"] for e in d["tables"]
-          if e.get("status")=="needs_pg_ddl" and e.get("target")}
-print(" ".join(sorted(names)))
-PY
-)
 MISSING=""
 for t in $EXPECTED; do
   n=$(q "select count(*) from information_schema.tables where table_schema='platform' and table_name='$t'")
@@ -366,6 +419,44 @@ assert_eq 'platform_app cannot create a table' 1 \
   "$(as_app -c 'CREATE TABLE platform.unified_ddl_probe (id int)' > "$WORK/ddl.txt" 2>&1; echo $?)"
 assert_eq 'platform_app cannot read the archived AI history' 0 \
   "$(as_app -tAc "select count(*) from information_schema.tables where table_schema='ai'" 2>/dev/null || echo 0)"
+# WP-029 F-1（T8 实测，run-20261006-t8-mig02）：运行态身份不得能伪造/篡改迁移历史。
+# bootstrap/00-platform-identity.sql 的 ALTER DEFAULT PRIVILEGES ... GRANT
+# SELECT,INSERT,UPDATE,DELETE ON TABLES TO platform_app 会顺带覆盖 Flyway 以
+# migrate_platform 创建的 flyway_schema_history_platform；加固由 V17 提供。
+# (a) 目录断言：除 SELECT 外不得有任何权限残留（非破坏性）
+assert_eq 'platform_app holds no write privilege on the migration history' '' \
+  "$(q "select coalesce(string_agg(privilege_type, ',' order by privilege_type), '') \
+        from information_schema.role_table_grants \
+        where grantee='platform_app' and table_schema='platform' \
+          and table_name='flyway_schema_history_platform' and privilege_type <> 'SELECT'")"
+# (b) 活体负例：伪造一行必须被拒；加固生效时该 INSERT 失败并且不留痕
+assert_eq 'platform_app cannot insert a forged migration history row' 1 \
+  "$(as_app -c "INSERT INTO platform.flyway_schema_history_platform \
+     (installed_rank,version,description,type,script,checksum,installed_by,execution_time,success) \
+     VALUES (999999,'9999','wp029 probe','SQL','wp029-probe.sql',1,'wp029',1,true)" \
+   > "$WORK/history-insert.txt" 2>&1; echo $?)"
+assert_eq 'no forged history row was written' 0 \
+  "$(q "select count(*) from platform.flyway_schema_history_platform where version='9999'")"
+# (c) 归档的 AI 历史链同样不得对运行态身份可写
+assert_eq 'platform_app holds no privilege in the ai schema' 0 \
+  "$(q "select count(*) from information_schema.role_table_grants where grantee='platform_app' and table_schema='ai'")"
+# (d) 归档 AI 历史链的**活体**探针（仅当该表存在）。
+#     为什么 (c) 不够：T8 定向验证证明，bootstrap 的 ALTER DEFAULT PRIVILEGES 只作用于
+#     `IN SCHEMA platform`，`ai` 的表本来就不授 platform_app —— 所以在"删掉 V17"的
+#     反向状态下 (c) 也会通过。(c) 是有效的目录级回归护栏，但它**证明不了 V17 的
+#     ai.flyway_schema_history_ai_legacy REVOKE 在干活**。故补同样形状的活体负例：
+#     加固生效时该 INSERT 必须失败且不留痕（非恒真，同 (b) 的推理）。
+if [ "$(q "select to_regclass('ai.flyway_schema_history_ai_legacy') is not null")" = "t" ]; then
+  assert_eq 'platform_app cannot insert into the archived AI history' 1 \
+    "$(as_app -c "INSERT INTO ai.flyway_schema_history_ai_legacy \
+       (installed_rank,version,description,type,script,checksum,installed_by,execution_time,success) \
+       VALUES (999999,'9999','wp029 probe ai','SQL','wp029-probe-ai.sql',1,'wp029',1,true)" \
+     > "$WORK/history-insert-ai.txt" 2>&1; echo $?)"
+  assert_eq 'no forged AI history row was written' 0 \
+    "$(q "select count(*) from ai.flyway_schema_history_ai_legacy where version='9999'")"
+else
+  ok 'archived AI history table absent in this path; (d) live probe skipped by design'
+fi
 
 echo
 if [ "$FAILS" -eq 0 ]; then echo "UNIFIED MIGRATION CHECK PASSED"; exit 0; fi
