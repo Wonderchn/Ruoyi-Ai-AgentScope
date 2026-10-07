@@ -104,9 +104,10 @@ export const layoutRouter: RouteRecordRaw[] = [
       },
       {
         // W3-5：AI 管理域页面族（成对核对表见 src/config/permission-page-pairs.ts）。
-        // permission 串逐字取自 sys_menu 分母（V2/V4/V14/V16/V19）；
-        // agents/skills/ingestion/settings 四页**没有**对应权限行（ragent 管理面
-        // 从未播种 C 行）——成对表里登记为 PAIR-GAP-NO-ROW，补行走 T0 迁移。
+        // permission 串逐字取自 sys_menu 分母（V2/V4/V14/V16/V19/V27）；
+        // skills/ingestion/settings 三页**没有**对应权限行（端点未装配，T0 裁决
+        // 不播 C 行）——成对表里登记为 PAIR-GAP-NO-ROW。
+        // ai/agents 已由 V27（7132-7136 权限行 + 7141 C 行）与 RW-03 成对，权限串逐字 ai:agent:list。
         path: 'ai/knowledge',
         name: 'aiKnowledgeList',
         component: () => import('@/pages/ai/knowledge/index.vue'),
@@ -131,10 +132,13 @@ export const layoutRouter: RouteRecordRaw[] = [
         meta: { title: '模型与提供方', icon: 'Cpu', permission: 'system:model:list' },
       },
       {
+        // RW-03（2026-10-07）：Agent 目录**已装配且已进网关白名单**
+        // （AiEmbeddedAgentCatalogConfiguration + AiGatewayController.ROUTES 8 条），
+        // 权限行 V27 7132-7136，页面 C 行 V27 7141 ⇒ 与成对表 live 行一致。
         path: 'ai/agents',
         name: 'aiAgents',
         component: () => import('@/pages/ai/agents/index.vue'),
-        meta: { title: 'Agent 定义', icon: 'ChatDotRound', permission: '' },
+        meta: { title: 'Agent 定义', icon: 'ChatDotRound', permission: 'ai:agent:list' },
       },
       {
         path: 'ai/skills',
