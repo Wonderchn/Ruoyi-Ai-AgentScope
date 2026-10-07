@@ -104,10 +104,11 @@ export const layoutRouter: RouteRecordRaw[] = [
       },
       {
         // W3-5：AI 管理域页面族（成对核对表见 src/config/permission-page-pairs.ts）。
-        // permission 串逐字取自 sys_menu 分母（V2/V4/V14/V16/V19/V27）；
-        // skills/ingestion/settings 三页**没有**对应权限行（端点未装配，T0 裁决
+        // permission 串逐字取自 sys_menu 分母（V2/V4/V14/V16/V19/V27/V28）；
+        // skills/ingestion 两页**没有**对应权限行（端点未装配，T0 裁决
         // 不播 C 行）——成对表里登记为 PAIR-GAP-NO-ROW。
         // ai/agents 已由 V27（7132-7136 权限行 + 7141 C 行）与 RW-03 成对，权限串逐字 ai:agent:list。
+        // ai/models 与 ai/settings 已由 V28（7150-7152）与 RW-07 成对，权限串逐字 ai:config:read。
         path: 'ai/knowledge',
         name: 'aiKnowledgeList',
         component: () => import('@/pages/ai/knowledge/index.vue'),
@@ -126,10 +127,14 @@ export const layoutRouter: RouteRecordRaw[] = [
         meta: { title: '文档分块', permission: 'ai:document:read' },
       },
       {
+        // RW-07（2026-10-07）：模型/提供方页改由**运行配置权威面**服务
+        // （/api/ai/v1/runtime-config/**，RW-06 交付；权限 V28-7150/7151/7152）。
+        // 旧 `/system/model|provider`（ruoyi-chat，G-22）与其 system:model:list /
+        // system:provider:list 已退役（成对表登记为 NO-PAGE）。
         path: 'ai/models',
         name: 'aiModels',
         component: () => import('@/pages/ai/models/index.vue'),
-        meta: { title: '模型与提供方', icon: 'Cpu', permission: 'system:model:list' },
+        meta: { title: '模型与提供方', icon: 'Cpu', permission: 'ai:config:read' },
       },
       {
         // RW-03（2026-10-07）：Agent 目录**已装配且已进网关白名单**
@@ -159,10 +164,12 @@ export const layoutRouter: RouteRecordRaw[] = [
         meta: { title: '摄取流水线', icon: 'Box', permission: '' },
       },
       {
+        // RW-07（2026-10-07）：设置页改由运行配置权威分布面服务
+        // （GET /api/ai/v1/runtime-config/settings，V28-7150 ai:config:read）。
         path: 'ai/settings',
         name: 'aiSettings',
         component: () => import('@/pages/ai/settings/index.vue'),
-        meta: { title: '系统设置', icon: 'Tools', permission: '' },
+        meta: { title: '系统设置', icon: 'Tools', permission: 'ai:config:read' },
       },
     ],
   },

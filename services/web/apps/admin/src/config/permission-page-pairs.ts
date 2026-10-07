@@ -106,24 +106,70 @@ export const AI_ADMIN_PAIRS: readonly PermissionPagePair[] = [
     note: 'DELETE /api/ai/v1/knowledge-bases/{kbId}（白名单 kb.delete）',
   },
 
-  // ---- 模型/提供方/MCP（有行有页，端点 BLOCKED-BY-G-22）----
+  // ---- 运行配置权威（F02）：**有行有页且有可达端点**（RW-07 2026-10-07 接通）----
+  // V28 播了 3 条权限行（7150-7152，默认不分配角色/套餐）；端点经网关白名单
+  // /api/ai/v1/runtime-config/** 真实可达（RW-06 RuntimeCatalogController + 既有四条路由）。
+  // /ai/models 与 /ai/settings 两页都用 config.read；写操作按 publish/revoke 独立权限显示。
+  {
+    permission: 'ai:config:read',
+    rowSource: 'V28__runtime_config_permissions.sql 菜单 7150',
+    route: '/ai/models',
+    page: '模型与提供方（运行配置权威：目录/版本序列/单版本）',
+    status: 'live',
+    endpoint: 'live',
+    note: 'GET /api/ai/v1/runtime-config/{catalog,settings,revisions}（config.read）；无已发布版本时 /catalog 503 CONFIG_AUTHORITY_UNAVAILABLE（页面按"尚未发布权威"空态）',
+  },
+  {
+    permission: 'ai:config:read',
+    rowSource: 'V28__runtime_config_permissions.sql 菜单 7150',
+    route: '/ai/settings',
+    page: '系统设置（运行配置权威分布：可写事实 vs 仅展示）',
+    status: 'live',
+    endpoint: 'live',
+    note: 'GET /api/ai/v1/runtime-config/settings（config.read）；无版本仍 200（revisionAvailable=false）',
+  },
+  {
+    permission: 'ai:config:publish',
+    rowSource: 'V28__runtime_config_permissions.sql 菜单 7151',
+    route: '/ai/models',
+    page: '模型与提供方（发布新版本/回滚/档位附加）',
+    status: 'live',
+    endpoint: 'live',
+    note: 'POST /runtime-config/revisions、…/rollback、…/{id}/catalog（config.publish）；发布=追加不可变版本',
+  },
+  {
+    permission: 'ai:config:revoke',
+    rowSource: 'V28__runtime_config_permissions.sql 菜单 7152',
+    route: '/ai/models',
+    page: '模型与提供方（撤销版本）',
+    status: 'live',
+    endpoint: 'live',
+    note: 'POST /runtime-config/revisions/{revisionId}/revoke（config.revoke，不可逆）',
+  },
+
+  // ---- 已退场旧权限（NO-PAGE）：ruoyi-chat 模型/提供方管理面（G-22 未打包）----
+  // RW-07（2026-10-07）：admin 的 /ai/models 页改由 runtime-config 权威面服务，
+  // 旧 `/system/model|provider` 客户端方法与页面入口一并退役（RW-06 §2.7 的旧→新映射）。
+  // V2 的两条 perms 行仍在 sys_menu 里（不改冻结/既有迁移），此处如实登记为"无页面"。
   {
     permission: 'system:model:list',
     rowSource: 'V2__seed_system.sql 菜单 2000210913846157314',
-    route: '/ai/models',
-    page: '模型管理',
-    status: 'live',
+    route: '',
+    page: '（已退役：旧 ruoyi-chat 模型管理页，G-22 未打包；现由 /ai/models 的 runtime-config 面承接）',
+    status: 'pair-gap',
+    gapKind: 'NO-PAGE',
     endpoint: 'BLOCKED-BY-G-22',
-    note: '/system/model/** 在 ruoyi-chat，本形态未打包',
+    note: 'RW-07 退役：不再有页面使用 system:model:list',
   },
   {
     permission: 'system:provider:list',
     rowSource: 'V2__seed_system.sql 菜单 2000210913451892738',
-    route: '/ai/models',
-    page: '提供方管理',
-    status: 'live',
+    route: '',
+    page: '（已退役：旧 ruoyi-chat 提供方管理页，同上）',
+    status: 'pair-gap',
+    gapKind: 'NO-PAGE',
     endpoint: 'BLOCKED-BY-G-22',
-    note: '/system/provider/** 同上',
+    note: 'RW-07 退役：不再有页面使用 system:provider:list',
   },
   {
     permission: 'mcp:tool:list',
@@ -197,11 +243,12 @@ export const AI_ADMIN_PAIRS: readonly PermissionPagePair[] = [
   // ---- ragent 管理面（有页面、**无权限行** ⇒ PAIR-GAP-NO-ROW）----
   // 【T0 裁决 2026-10-06，team-message-d1d39727 ②】C 行**现在不播种**：
   // 判则 =「扩套餐/播权限的唯一依据是端点真实可达」（G-36b trace 教训同形）。
-  // 这三族端点 BLOCKED-BY-EMBEDDED-REGISTRY（装配未登记），现在播 C 行 =
+  // 这两族端点 BLOCKED-BY-EMBEDDED-REGISTRY（装配未登记），现在播 C 行 =
   // 制造"有权限无端点"的假公开面。处置：页面保留 + blocked 标注，
   // **C 行播种与端点落地绑定同一个批次**（进维护者决策批次 + 下一迭代，
-  // 迁移号届时由 T0 分配）。测试把"3 gap 未播种"如实钉住。
-  // （/ai/agents 已于 2026-10-07 由 RW-03 移出本清单：端点落地 ⇒ 上表 live 行。）
+  // 迁移号届时由 T0 分配）。测试把"2 gap 未播种"如实钉住。
+  // （/ai/agents 已于 2026-10-07 由 RW-03 移出本清单：端点落地 ⇒ 上表 live 行；
+  //   /ai/settings 已于 2026-10-07 由 RW-07 移出：改由 runtime-config/settings 服务。）
   {
     permission: '',
     rowSource: '（无；同上裁决）',
@@ -217,16 +264,6 @@ export const AI_ADMIN_PAIRS: readonly PermissionPagePair[] = [
     rowSource: '（无；同上裁决）',
     route: '/ai/ingestion',
     page: '摄取流水线/任务详情',
-    status: 'pair-gap',
-    gapKind: 'NO-ROW',
-    endpoint: 'BLOCKED-BY-EMBEDDED-REGISTRY',
-    note: '同上',
-  },
-  {
-    permission: '',
-    rowSource: '（无；同上裁决）',
-    route: '/ai/settings',
-    page: '系统设置（rag.settings）',
     status: 'pair-gap',
     gapKind: 'NO-ROW',
     endpoint: 'BLOCKED-BY-EMBEDDED-REGISTRY',
