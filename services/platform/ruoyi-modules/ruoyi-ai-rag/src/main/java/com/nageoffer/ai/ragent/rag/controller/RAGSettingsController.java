@@ -42,6 +42,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -90,8 +91,39 @@ public class RAGSettingsController {
                         .maxFileSize(maxFileSize.toBytes())
                         .maxRequestSize(maxRequestSize.toBytes())
                         .build())
+                .authority(authoritySettings())
                 .build();
         return Results.success(response);
+    }
+
+    /**
+     * RW-06：把"哪些是可写运行事实、哪些仅展示"写进响应本身。
+     *
+     * <p>本控制器汇总的每个值都读自部署配置（YAML/环境属性），所以它整份都是**展示面**：
+     * 真正决定 run 使用哪个模型/参数/维度/限额的是
+     * {@code platform.ai_runtime_config_revision} 的已发布版本（V15），
+     * 由 {@code /api/ai/v1/runtime-config/**} 的发布/读取/撤销/追加回滚路径读写。
+     * 这里显式声明，避免管理页把 YAML 目录当成第二套运行权威。
+     */
+    private SystemSettingsVO.AuthoritySettings authoritySettings() {
+        return SystemSettingsVO.AuthoritySettings.builder()
+                .runtimeAuthority("platform.ai_runtime_config_revision")
+                .yamlIsRuntimeAuthority(false)
+                .legacyChatConfigAffectsRuntimeAuthority(false)
+                .writableRuntimeFacts(List.of(
+                        "providerId", "modelId", "catalogVersion", "paramsHash", "params",
+                        "embeddingDimension", "budgetUnits", "tiers", "settings"))
+                .displayOnly(List.of(
+                        "engine.type", "backends.*", "rag.features", "rag.search", "rag.rateLimit",
+                        "rag.memory", "ai.providers.*", "ai.chat/embedding/rerank/vlm", "upload.*"))
+                .paths(Map.of(
+                        "publish", "/api/ai/v1/runtime-config/revisions",
+                        "read", "/api/ai/v1/runtime-config/revisions/{revisionId}",
+                        "revoke", "/api/ai/v1/runtime-config/revisions/{revisionId}/revoke",
+                        "rollback", "/api/ai/v1/runtime-config/revisions/{revisionId}/rollback",
+                        "catalog", "/api/ai/v1/runtime-config/catalog",
+                        "authoritySettings", "/api/ai/v1/runtime-config/settings"))
+                .build();
     }
 
     private BackendSettings toBackendSettings() {

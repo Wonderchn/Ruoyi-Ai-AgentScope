@@ -38,6 +38,52 @@ public class SystemSettingsVO {
     private AISettings ai;
     private UploadSettings upload;
 
+    /**
+     * RW-06：本视图（{@code GET /rag/settings}）的权威归属说明。
+     *
+     * <p>本视图汇总的值<b>全部来自部署配置（YAML/环境）</b>，因此它在运行期只是"展示"：
+     * 用户模型选择的真值在 {@code platform.ai_runtime_config_revision}，由
+     * {@code /api/ai/v1/runtime-config/**} 读写。把这件事写进响应而不是只写在注释里，
+     * 是因为管理页很容易把 {@code ai.providers/ai.chat} 当作"当前模型"渲染——
+     * V15 明确定义 YAML 只剩两处合法用途（初装引导与连接引导），不是运行权威。
+     */
+    private AuthoritySettings authority;
+
+    @Data
+    @Builder
+    public static class AuthoritySettings {
+
+        /**
+         * 运行权威表名（唯一真值来源）
+         */
+        private String runtimeAuthority;
+
+        /**
+         * YAML（ai.* 目录）是否为运行权威：恒 false
+         */
+        private Boolean yamlIsRuntimeAuthority;
+
+        /**
+         * 旧 /chat/config 是否影响运行权威：恒 false
+         */
+        private Boolean legacyChatConfigAffectsRuntimeAuthority;
+
+        /**
+         * 可写运行事实：只能经"发布新版本"改变
+         */
+        private List<String> writableRuntimeFacts;
+
+        /**
+         * 仅展示项：部署配置/环境注入，改了不影响已发布版本与在飞 run
+         */
+        private List<String> displayOnly;
+
+        /**
+         * 权威面的公开路径（网关前缀）
+         */
+        private Map<String, String> paths;
+    }
+
     @Data
     @Builder
     public static class EngineSettings {
