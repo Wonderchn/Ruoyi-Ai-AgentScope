@@ -29,3 +29,16 @@ new migration. The legacy database and native-runtime checks continue to stage
 platform V1–V6 only; the required unified check covers both fresh installation and
 upgrade, retained rows, archived history, runtime privileges and default-denied
 agent catalog grants.
+
+The unified check also compiles the platform's production P2 projection and
+vector queries and executes them on both database paths using rollback-only
+synthetic fixtures. It verifies a newly published chunk is returned, tenant and
+document scopes exclude other content, and publication changes, tombstones,
+staging, missing embeddings and closed registries prevent stale delivery. HTTP
+retrieval reads `ai_document*`; it does not fall back to the legacy vector index.
+
+Native runtime CI preserves the actual platform/AI JAR SHA256 values, checkout
+revision, PR head revision, migration hashes and individual case verdicts as an
+artifact. Its separate-service N1–N3 checks do not stand in for an embedded page
+test or an endpoint latency benchmark. N4/N5 retain their explicit `NOT_RUN`
+reasons when their external dependencies are absent.

@@ -194,19 +194,12 @@ public class PgVectorRetrieverService implements VectorRetrieverService,
         String docSlots = docIds.stream().map(id -> "?").collect(java.util.stream.Collectors.joining(","));
         String chunkSlots = chunkIds.stream().map(id -> "?").collect(java.util.stream.Collectors.joining(","));
 
-        // 仅使用服务端投影的授权集合，并核对 registry 当前发布版本。
+        // Only server-authorized sets over the P2 current published version.
         try {
             // noinspection SqlDialectInspection,SqlNoDataSourceInspection
             return jdbcTemplate.query(
-                    "SELECT v.id, v.content, v.collection_name, 1 - (v.embedding <=> ?::vector) AS score "
-                            + "FROM platform.ai_knowledge_vector v JOIN platform.ai_knowledge_document d ON d.tenant_id=v.tenant_id AND d.id=v.document_id "
-                            + "JOIN ai_resource dr ON dr.tenant_id=d.tenant_id AND dr.resource_type='DOCUMENT' AND dr.resource_id=d.id "
-                            + "JOIN ai_resource kr ON kr.tenant_id=d.tenant_id AND kr.resource_type='KB' AND kr.resource_id=d.kb_id "
-                            + "WHERE v.tenant_id = ? AND v.deleted = 0 AND d.deleted=0 AND d.enabled=1 AND dr.status='ACTIVE' AND kr.status='ACTIVE' "
-                            + "AND dr.parent_type='KB' AND dr.parent_id=d.kb_id AND v.doc_version=dr.resource_version "
-                            + "AND v.collection_name IN (" + placeholders + ") AND d.kb_id IN ("+kbSlots+") "
-                            + "AND v.document_id IN ("+docSlots+") AND v.id IN ("+chunkSlots+") "
-                            + "ORDER BY v.embedding <=> ?::vector LIMIT ?",
+                    com.nageoffer.ai.ragent.authorization.P2PublishedChunkSql.retrieval(
+                            placeholders, kbSlots, docSlots, chunkSlots),
                     (rs, rowNum) -> RetrievedChunk.builder()
                             .id(rs.getString("id"))
                             .text(rs.getString("content"))
@@ -215,10 +208,9 @@ public class PgVectorRetrieverService implements VectorRetrieverService,
                             .build(),
                     args.toArray());
         } catch (BadSqlGrammarException e) {
-            // 结构性缺失（V3 未部署）只把检索能力保持关闭：绝不改跑不带 tenant_id 的旧 SQL，
-            // 那条语句在共享物理表上等于跨租户检索，是本次改动要消除的缺陷本身。
+            // Missing P2 schema keeps retrieval closed; never fall back to an old index.
             log.error("tenant-scoped vector query rejected by schema tenant={} collections={} reason={}; "
-                            + "platform.ai_knowledge_vector lacks the P1 tenant columns, so the retrieval path stays "
+                            + "P2 published document schema is unavailable, so the retrieval path stays "
                             + "closed instead of falling back to an unscoped query",
                     tenantId, collectionNames.size(), e.getClass().getSimpleName());
             throw new com.nageoffer.ai.ragent.framework.exception.ServiceException("authorized vector schema unavailable");

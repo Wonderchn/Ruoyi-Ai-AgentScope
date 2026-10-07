@@ -152,6 +152,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
       - name: Verify the unified chain from fresh and legacy databases
         env:
           PG_OWNER: unified-${{ github.run_id }}-${{ github.run_attempt }}
@@ -184,9 +188,20 @@ jobs:
       - name: Run the native failure matrix (N1 admission / N2 worker takeover / N3 SSE continuity)
         env:
           OWNER: nativerun-${{ github.run_id }}-${{ github.run_attempt }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           AI_JAR: ${{ github.workspace }}/services/ai/bootstrap/target/bootstrap-0.0.1-SNAPSHOT.jar
           PLATFORM_JAR: ${{ github.workspace }}/services/platform/ruoyi-admin/target/ruoyi-admin.jar
         run: bash scripts/ci/verify-native-runtime.sh
+      - name: Preserve product hashes and runtime verdicts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-runtime-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/native-runtime-evidence/**/source-revision.txt
+            target/native-runtime-evidence/**/artifacts.sha256
+            target/native-runtime-evidence/**/migrations-applied.txt
+            target/native-runtime-evidence/**/results.jsonl
       - name: Ensure the checks left the sources unchanged
         run: git diff --exit-code
 

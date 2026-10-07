@@ -446,6 +446,19 @@ for query in q q_fresh; do
     "$("$query" "select count(*) from platform.sys_role_menu where menu_id in (7132,7133,7134,7135,7136,7141)")"
 done
 
+echo "### 10. HTTP retrieval reads current P2 data with tenant and scope boundaries"
+if "$PYTHON_BIN" "$REPO_ROOT/scripts/ci/check-p2-published-retrieval.py" \
+    --repo "$REPO_ROOT" --output "$WORK/bootstrap/p2-retrieval-check.sql"; then
+  psql_super_file /bootstrap/p2-retrieval-check.sql > "$WORK/p2-upgrade.txt" 2>&1 \
+    && ok 'P2 published retrieval on upgraded database' || bad "P2 upgraded retrieval: $(tail -3 "$WORK/p2-upgrade.txt")"
+  PGPASSWORD=$PG_SUPER docker run --rm -i --net host -e PGPASSWORD "${PSQL_VOLS[@]}" "$PG_IMAGE" \
+    psql "host=$DB_HOST port=$DB_PORT dbname=ci_unified_fresh user=postgres" -X -q -v ON_ERROR_STOP=1 \
+    -f /bootstrap/p2-retrieval-check.sql > "$WORK/p2-fresh.txt" 2>&1 \
+    && ok 'P2 published retrieval on fresh database' || bad "P2 fresh retrieval: $(tail -3 "$WORK/p2-fresh.txt")"
+else
+  bad 'could not compile production P2 retrieval queries'
+fi
+
 echo
 if [ "$FAILS" -eq 0 ]; then echo "UNIFIED MIGRATION CHECK PASSED"; exit 0; fi
 echo "UNIFIED MIGRATION CHECK FAILED ($FAILS assertion(s))"; exit 1

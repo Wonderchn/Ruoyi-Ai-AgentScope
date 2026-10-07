@@ -198,6 +198,8 @@ class P1PreModelAuthorizationTest {
         assertNotNull(sql, "有效作用域下必须真的执行检索 SQL");
         assertTrue(sql.contains("tenant_id = ?"), "过滤条件必须包含 tenant_id，实际 SQL=" + sql);
         assertTrue(sql.contains("deleted = 0"), "过滤条件必须排除 tombstone，实际 SQL=" + sql);
+        assertTrue(sql.contains("d.tombstoned_at IS NULL"), "P2 文档 tombstone 必须拒绝，实际 SQL=" + sql);
+        assertTrue(sql.contains("c.version_id=d.published_version_id"), "P2 必须只读当前发布指针，实际 SQL=" + sql);
         assertTrue(sql.contains("collection_name IN"), "collection 条件必须存在，实际 SQL=" + sql);
         assertTrue(java.util.Arrays.asList(capturedArgs[0]).contains(TENANT),
                 "绑定的参数里必须出现当前租户，实际参数=" + java.util.Arrays.toString(capturedArgs[0]));

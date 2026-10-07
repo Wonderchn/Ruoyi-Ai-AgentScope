@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -74,6 +75,9 @@ class PgVectorRetrieverServiceTest {
         );
 
         assertTrue(sqlCaptor.getValue().contains("collection_name IN (?, ?)"));
+        assertTrue(sqlCaptor.getValue().contains("FROM ai_document_chunk"));
+        assertTrue(sqlCaptor.getValue().contains("c.version_id=d.published_version_id"));
+        assertFalse(sqlCaptor.getValue().contains("ai_knowledge_vector"));
         Object[] args = argsCaptor.getValue();
         // 参数顺序：向量字面量、tenant_id、授权 collection 列表、再次向量字面量（ORDER BY）、LIMIT。
         // tenant 必须排在 collection 之前——过滤条件的第一条永远是租户，它不能被"可选化"。

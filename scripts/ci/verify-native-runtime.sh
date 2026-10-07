@@ -29,7 +29,7 @@
 set -u
 
 die() { echo "FATAL: $*" >&2; exit 2; }
-for tool in docker openssl curl unzip javac java ss; do command -v "$tool" >/dev/null || die "missing required tool: $tool"; done
+for tool in docker openssl curl unzip javac java ss git sha256sum; do command -v "$tool" >/dev/null || die "missing required tool: $tool"; done
 
 OWNER=${OWNER:?set OWNER to a unique run tag}
 WORK=${WORK:-/tmp/native-runtime-$OWNER}
@@ -64,6 +64,13 @@ SERVICE_CREDENTIAL=$(openssl rand -hex 24)
 FIXTURE_PASSWORD="NrtSynth-$(openssl rand -hex 10)"
 mkdir -p "$WORK"/{objects,keys,bcrypt} "$EVIDENCE"
 umask 077
+# Bind runtime results to the products actually launched and their source tree.
+CHECKOUT_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD) || die 'source revision unavailable'
+PR_HEAD_SHA=${PR_HEAD_SHA:-$CHECKOUT_SHA}
+[[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ && "$PR_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || die 'invalid source SHA'
+printf 'checkout=%s\npr_head=%s\n' "$CHECKOUT_SHA" "$PR_HEAD_SHA" > "$EVIDENCE/source-revision.txt"
+sha256sum "$PLATFORM_JAR" "$AI_JAR" > "$EVIDENCE/artifacts.sha256" || die 'product hashing failed'
+cat "$EVIDENCE/source-revision.txt" "$EVIDENCE/artifacts.sha256"
 PASS=0; FAIL=0
 PIDS=""
 note() { echo "[native] $*"; }
