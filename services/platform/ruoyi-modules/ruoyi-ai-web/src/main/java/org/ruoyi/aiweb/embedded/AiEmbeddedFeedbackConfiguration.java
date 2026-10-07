@@ -107,6 +107,42 @@ public class AiEmbeddedFeedbackConfiguration {
             return new FeedbackSurface(feedbackService);
         }
 
+        // ---------------------------------------------------------------- 会话历史写面（RW-01-CHATHIST，T0 集成）
+        //
+        // 背景：聊天受理 DTO 带 conversationId，但 `RagChatExecutor` 原先只写 `ai_chat_message`，
+        // 而历史读路径（`GET /conversations/{id}/messages`）读 `ai_message` ⇒ 发送后刷新看不到该轮。
+        // 修法是"让写路径写入读路径所读的表"：执行器经 `ConversationHistoryPort` 调
+        // `ConversationMessageService.addMessage` 落 `platform.ai_message`；**读路径一行未改、无 union**。
+        //
+        // 为什么端口在执行器侧声明、实现留在 ai-rag：`ruoyi-ai-rag` 依赖 `ruoyi-ai-runtime`（单向），
+        // 在 `RagChatExecutor` 里直接 import `rag.service.*` 会编译失败 ⇒ 按本仓既有约定
+        // （`RuntimeModelGatewayPort` / `RunConfigBindingPort` / `PlatformFactsPort`）反向声明端口。
+        //
+        // 为什么必须在此显式登记：`com.nageoffer.**` 不在 platform 组件扫描根之下，`@Component` 不生效。
+        // **不登记则生产在使用点 fail-closed**（带 conversationId 的 run 明确失败，而不是静默不落历史）。
+        // 四个 Mapper 由 `AiEmbeddedMapperConfiguration` 的 `@MapperScan`（`rag.dao.mapper`）覆盖；
+        // `MessageFeedbackService` 由本类上方 `@Bean` 提供；`TenantConversationReadRepository` 由
+        // `AiEmbeddedRagConfiguration` 登记（`AiResourceController` 同批）。无需改 `AutoConfiguration.imports`。
+        @Bean
+        @ConditionalOnMissingBean
+        public com.nageoffer.ai.ragent.rag.service.ConversationMessageService conversationMessageService(
+                com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMessageMapper conversationMessageMapper,
+                com.nageoffer.ai.ragent.rag.dao.mapper.ConversationSummaryMapper conversationSummaryMapper,
+                com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMapper conversationMapper,
+                MessageFeedbackService messageFeedbackService) {
+            return new com.nageoffer.ai.ragent.rag.service.impl.ConversationMessageServiceImpl(
+                    conversationMessageMapper, conversationSummaryMapper, conversationMapper, messageFeedbackService);
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public com.nageoffer.ai.ragent.runtime.port.ConversationHistoryPort conversationHistoryPort(
+                com.nageoffer.ai.ragent.rag.service.ConversationMessageService conversationMessageService,
+                com.nageoffer.ai.ragent.authorization.TenantConversationReadRepository conversations) {
+            return new com.nageoffer.ai.ragent.rag.service.impl.ConversationHistoryAdapter(
+                    conversationMessageService, conversations);
+        }
+
         /**
          * 反馈受理面：内部前缀下的两个 handler（提交/取消），客户端路径由网关白名单放行
          * （{@code POST|DELETE /conversations/messages/{messageId}/feedback} → 动作
