@@ -15,6 +15,7 @@ import org.ruoyi.common.core.utils.MessageUtils;
 import org.ruoyi.common.core.utils.ServletUtils;
 import org.ruoyi.common.core.utils.SpringUtils;
 import org.ruoyi.common.core.utils.StringUtils;
+import org.ruoyi.common.log.event.LoginClientFacts;
 import org.ruoyi.common.log.event.LogininforEvent;
 import org.ruoyi.common.redis.utils.RedisUtils;
 import org.ruoyi.common.tenant.helper.TenantHelper;
@@ -120,11 +121,12 @@ public class SysRegisterService {
     /**
      * 记录登录信息
      *
+     * <p>G-53（RW-14）：客户端事实在事件入队前捕获为不可变快照，异步监听器不再读取请求对象。</p>
+     *
      * @param tenantId 租户ID
      * @param username 用户名
      * @param status   状态
      * @param message  消息内容
-     * @return
      */
     private void recordLogininfor(String tenantId, String username, String status, String message) {
         LogininforEvent logininforEvent = new LogininforEvent();
@@ -132,7 +134,7 @@ public class SysRegisterService {
         logininforEvent.setUsername(username);
         logininforEvent.setStatus(status);
         logininforEvent.setMessage(message);
-        logininforEvent.setRequest(ServletUtils.getRequest());
+        logininforEvent.setClientFacts(LoginClientFacts.capture(ServletUtils.getRequest()));
         SpringUtils.context().publishEvent(logininforEvent);
     }
 
