@@ -229,7 +229,24 @@ public class AiGatewayController {
             new Route("GET", "/runtime-config/catalog", "config.read"),
             new Route("GET", "/runtime-config/settings", "config.read"),
             new Route("GET", "/runtime-config/revisions", "config.read"),
-            new Route("POST", "/runtime-config/revisions/{revisionId}/catalog", "config.publish"));
+            new Route("POST", "/runtime-config/revisions/{revisionId}/catalog", "config.publish"),
+            // RW-04-R1（T3 交付，T0 集成）：知识管理**分块面**的内层 handler
+            // = KnowledgeChunkController（类级 /internal/ai/v1，公开前缀 /api/ai/v1）。
+            // 只登记**闭包已闭合**的分块面 6 条；KB 面与文档面的装配闭包未闭合
+            // （FileStorageService→ObjectStorageClient/凭据；文档面还要 ParserRegistry/
+            //  IngestionEngine 等），由 AiEmbeddedKnowledgeAdminConfiguration 默认关闭
+            // （ai.embedded.knowledge-admin.full=false），故此处**不登记**它们的路由 ——
+            // 登记了却没有 handler 会让 LocalWhitelistHandlerCoverageTest 的
+            // "放行了但没人接"护栏变红，且等于开放不可用面。
+            // 动作复用既有集合（document.read / kb.write），**不新增 canonical 动作、
+            // 不新增权限行、不新增迁移**。段数互不遮蔽：{chunk-id}/enable 为 6 段、
+            // batch-enable 为 5 段，与 5 段的 {chunk-id} 形状不同。
+            new Route("GET", "/knowledge-base/docs/{docId}/chunks", "document.read"),
+            new Route("POST", "/knowledge-base/docs/{docId}/chunks", "kb.write"),
+            new Route("PUT", "/knowledge-base/docs/{docId}/chunks/{chunkId}", "kb.write"),
+            new Route("DELETE", "/knowledge-base/docs/{docId}/chunks/{chunkId}", "kb.write"),
+            new Route("PATCH", "/knowledge-base/docs/{docId}/chunks/{chunkId}/enable", "kb.write"),
+            new Route("PATCH", "/knowledge-base/docs/{docId}/chunks/batch-enable", "kb.write"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;
