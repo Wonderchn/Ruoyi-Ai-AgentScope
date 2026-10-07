@@ -212,9 +212,16 @@ public class AiEmbeddedRagConfiguration {
         // （与本组其余 bean 同规矩）。与 AiGatewayController.ROUTES 的
         // POST /conversations/batch-delete 行**成对**：只加白名单会让
         // LocalWhitelistHandlerCoverageTest 的"放行了但没人接"护栏变红；只加 bean 则客户端仍 404。
+        //
+        // ⚠️ bean 名刻意带 F03 前缀：`AiEmbeddedAgentConversationConfiguration` 里已有一个**同名**
+        // `conversationBatchDeleteService`，但类型是 `com.nageoffer.ai.ragent.agent.service.
+        // ConversationBatchDeleteService`（Agent 会话面）。两者**同名不同类型**会让后者的
+        // `ConversationSurface`（构造参数按类型注入）拿不到自己的 bean —— 实测在
+        // `agent.conversation.enabled=true` 下**上下文初始化直接失败**（不只是测试，生产同样会挂）。
+        // 故本 bean 用唯一名，避免与 Agent 侧同名冲突。
         @Bean
         @ConditionalOnMissingBean
-        public com.nageoffer.ai.ragent.runtime.web.ConversationBatchDeleteService conversationBatchDeleteService(
+        public com.nageoffer.ai.ragent.runtime.web.ConversationBatchDeleteService f03ConversationBatchDeleteService(
                 AiResourceAuthorizationService authorization,
                 TenantConversationReadRepository conversations,
                 ObjectProvider<RevocationGuard> revocations,
@@ -226,10 +233,10 @@ public class AiEmbeddedRagConfiguration {
 
         @Bean
         @ConditionalOnMissingBean
-        public com.nageoffer.ai.ragent.runtime.web.ConversationBatchDeleteController conversationBatchDeleteController(
-                com.nageoffer.ai.ragent.runtime.web.ConversationBatchDeleteService conversationBatchDeleteService) {
+        public com.nageoffer.ai.ragent.runtime.web.ConversationBatchDeleteController f03ConversationBatchDeleteController(
+                com.nageoffer.ai.ragent.runtime.web.ConversationBatchDeleteService f03ConversationBatchDeleteService) {
             return new com.nageoffer.ai.ragent.runtime.web.ConversationBatchDeleteController(
-                    conversationBatchDeleteService);
+                    f03ConversationBatchDeleteService);
         }
 
         // ------------------------------------------------------------------ 运行配置目录（RW-06 / T2m，T0 集成）
