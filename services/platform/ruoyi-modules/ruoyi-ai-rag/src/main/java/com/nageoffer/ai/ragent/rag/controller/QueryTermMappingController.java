@@ -18,8 +18,7 @@
 package com.nageoffer.ai.ragent.rag.controller;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
-import com.nageoffer.ai.ragent.framework.convention.Result;
-import com.nageoffer.ai.ragent.framework.web.Results;
+import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
 import com.nageoffer.ai.ragent.rag.controller.request.QueryTermMappingCreateRequest;
 import com.nageoffer.ai.ragent.rag.controller.request.QueryTermMappingPageRequest;
 import com.nageoffer.ai.ragent.rag.controller.request.QueryTermMappingUpdateRequest;
@@ -32,12 +31,23 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
  * 关键词映射管理控制器
+ *
+ * <p><b>路径面（RW-22-R1）</b>：类级前缀 {@code /internal/ai/v1}；公开面经网关白名单为
+ * {@code /api/ai/v1/query-terms/**}。此前无类级 {@code @RequestMapping}，裸路径
+ * {@code /mappings/...} 不在委托主体保护前缀下 ⇒ 拿不到主体（WP-034/RW-04-R1 同形缺陷）。
+ *
+ * <p><b>信封（RW-22-R1）</b>：返回 {@link ApiEnvelope}（整数 {@code code}）。
+ * 平台 {@code Result} 的字符串 {@code code="0"} 会被网关判成"缺少包络 code"⇒ 503。
+ *
+ * <p>授权不在本层：动作复用 {@code config.read}/{@code config.publish}，不新增 canonical 动作。
  */
 @RestController
+@RequestMapping("/internal/ai/v1")
 @RequiredArgsConstructor
 public class QueryTermMappingController {
 
@@ -47,41 +57,41 @@ public class QueryTermMappingController {
      * 分页查询映射规则
      */
     @GetMapping("/mappings")
-    public Result<IPage<QueryTermMappingVO>> pageQuery(QueryTermMappingPageRequest requestParam) {
-        return Results.success(queryTermMappingAdminService.pageQuery(requestParam));
+    public ApiEnvelope<IPage<QueryTermMappingVO>> pageQuery(QueryTermMappingPageRequest requestParam) {
+        return ApiEnvelope.ok(queryTermMappingAdminService.pageQuery(requestParam));
     }
 
     /**
      * 查询映射规则详情
      */
     @GetMapping("/mappings/{id}")
-    public Result<QueryTermMappingVO> queryById(@PathVariable String id) {
-        return Results.success(queryTermMappingAdminService.queryById(id));
+    public ApiEnvelope<QueryTermMappingVO> queryById(@PathVariable String id) {
+        return ApiEnvelope.ok(queryTermMappingAdminService.queryById(id));
     }
 
     /**
      * 创建映射规则
      */
     @PostMapping("/mappings")
-    public Result<String> create(@RequestBody QueryTermMappingCreateRequest requestParam) {
-        return Results.success(queryTermMappingAdminService.create(requestParam));
+    public ApiEnvelope<String> create(@RequestBody QueryTermMappingCreateRequest requestParam) {
+        return ApiEnvelope.ok(queryTermMappingAdminService.create(requestParam));
     }
 
     /**
      * 更新映射规则
      */
     @PutMapping("/mappings/{id}")
-    public Result<Void> update(@PathVariable String id, @RequestBody QueryTermMappingUpdateRequest requestParam) {
+    public ApiEnvelope<Void> update(@PathVariable String id, @RequestBody QueryTermMappingUpdateRequest requestParam) {
         queryTermMappingAdminService.update(id, requestParam);
-        return Results.success();
+        return ApiEnvelope.ok(null);
     }
 
     /**
      * 删除映射规则
      */
     @DeleteMapping("/mappings/{id}")
-    public Result<Void> delete(@PathVariable String id) {
+    public ApiEnvelope<Void> delete(@PathVariable String id) {
         queryTermMappingAdminService.delete(id);
-        return Results.success();
+        return ApiEnvelope.ok(null);
     }
 }

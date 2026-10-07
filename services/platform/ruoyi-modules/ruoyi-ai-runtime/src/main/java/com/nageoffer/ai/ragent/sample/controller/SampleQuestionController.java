@@ -18,8 +18,7 @@
 package com.nageoffer.ai.ragent.sample.controller;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
-import com.nageoffer.ai.ragent.framework.convention.Result;
-import com.nageoffer.ai.ragent.framework.web.Results;
+import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
 import com.nageoffer.ai.ragent.sample.controller.request.SampleQuestionCreateRequest;
 import com.nageoffer.ai.ragent.sample.controller.request.SampleQuestionPageRequest;
 import com.nageoffer.ai.ragent.sample.controller.request.SampleQuestionUpdateRequest;
@@ -41,9 +40,21 @@ import java.util.List;
 /**
  * 示例问题控制器
  * 前台各引擎欢迎页取随机若干条，后台走标准 CRUD
+ *
+ * <p><b>路径面（RW-22-R1）</b>：类级前缀从裸 {@code /sample-questions} 改为
+ * {@code /internal/ai/v1/sample-questions}；公开面经网关白名单为
+ * {@code /api/ai/v1/sample-questions/**}。裸路径不在
+ * {@code DelegatedPrincipalFilter.PROTECTED_PREFIX} 之下 ⇒ 拿不到委托主体
+ * （与 {@code IntentTreeController} 等三处同形的缺陷，一并修正）。
+ *
+ * <p><b>信封（RW-22-R1）</b>：返回 {@link ApiEnvelope}（整数 {@code code}）。
+ * 平台 {@code Result} 的字符串 {@code code="0"} 会被网关判成"缺少包络 code"⇒ 503。
+ *
+ * <p>授权不在本层：动作复用 {@code kb.read}（读）/ {@code config.publish}（写），
+ * 不新增 canonical 动作。
  */
 @RestController
-@RequestMapping("/sample-questions")
+@RequestMapping("/internal/ai/v1/sample-questions")
 @RequiredArgsConstructor
 public class SampleQuestionController {
 
@@ -54,49 +65,49 @@ public class SampleQuestionController {
      * 字面量段优先于 /{id} 模板匹配，两者不会打架
      */
     @GetMapping("/random")
-    public Result<List<SampleQuestionVO>> listRandom(@RequestParam(defaultValue = "3") int limit) {
-        return Results.success(sampleQuestionService.listRandomQuestions(limit));
+    public ApiEnvelope<List<SampleQuestionVO>> listRandom(@RequestParam(defaultValue = "3") int limit) {
+        return ApiEnvelope.ok(sampleQuestionService.listRandomQuestions(limit));
     }
 
     /**
      * 分页查询示例问题列表
      */
     @GetMapping
-    public Result<IPage<SampleQuestionVO>> pageQuery(SampleQuestionPageRequest requestParam) {
-        return Results.success(sampleQuestionService.pageQuery(requestParam));
+    public ApiEnvelope<IPage<SampleQuestionVO>> pageQuery(SampleQuestionPageRequest requestParam) {
+        return ApiEnvelope.ok(sampleQuestionService.pageQuery(requestParam));
     }
 
     /**
      * 查询示例问题详情
      */
     @GetMapping("/{id}")
-    public Result<SampleQuestionVO> queryById(@PathVariable String id) {
-        return Results.success(sampleQuestionService.queryById(id));
+    public ApiEnvelope<SampleQuestionVO> queryById(@PathVariable String id) {
+        return ApiEnvelope.ok(sampleQuestionService.queryById(id));
     }
 
     /**
      * 创建示例问题
      */
     @PostMapping
-    public Result<String> create(@RequestBody SampleQuestionCreateRequest requestParam) {
-        return Results.success(sampleQuestionService.create(requestParam));
+    public ApiEnvelope<String> create(@RequestBody SampleQuestionCreateRequest requestParam) {
+        return ApiEnvelope.ok(sampleQuestionService.create(requestParam));
     }
 
     /**
      * 更新示例问题
      */
     @PutMapping("/{id}")
-    public Result<Void> update(@PathVariable String id, @RequestBody SampleQuestionUpdateRequest requestParam) {
+    public ApiEnvelope<Void> update(@PathVariable String id, @RequestBody SampleQuestionUpdateRequest requestParam) {
         sampleQuestionService.update(id, requestParam);
-        return Results.success();
+        return ApiEnvelope.ok(null);
     }
 
     /**
      * 删除示例问题
      */
     @DeleteMapping("/{id}")
-    public Result<Void> delete(@PathVariable String id) {
+    public ApiEnvelope<Void> delete(@PathVariable String id) {
         sampleQuestionService.delete(id);
-        return Results.success();
+        return ApiEnvelope.ok(null);
     }
 }
