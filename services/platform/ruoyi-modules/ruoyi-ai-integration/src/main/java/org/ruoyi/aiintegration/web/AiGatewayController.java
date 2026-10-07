@@ -215,7 +215,21 @@ public class AiGatewayController {
             new Route("POST", "/agent-catalog/agents/{id}/activate", "agent.activate"),
             new Route("GET", "/agent-catalog/agents/{id}/prompts", "agent.read"),
             new Route("PUT", "/agent-catalog/agents/{id}/prompts/{slotKey}", "agent.write"),
-            new Route("GET", "/agent-catalog/agents/prompt-slots/{slotKey}/default", "agent.read"));
+            new Route("GET", "/agent-catalog/agents/prompt-slots/{slotKey}/default", "agent.read"),
+            // RW-06（T2m，T0 集成；t2m-models 交付 RuntimeCatalogController）：
+            // 运行配置目录（模型 / 提供方 / 档位 / 参数 / embedding 维度 / 限额）。
+            // 内层 handler = RuntimeCatalogController（类级 /internal/ai/v1/runtime-config）。
+            // 动作复用既有三条（config.read / config.publish / config.revoke）：
+            // **不新增 canonical 动作、不新增权限行、不新增迁移**；既有四条
+            // /runtime-config/revisions* 路由保持原样不动。
+            // 段数不冲突：GET /runtime-config/revisions（列表，2 段）与既有
+            // GET /runtime-config/revisions/{revisionId}（3 段）形状不同；
+            // POST .../{revisionId}/catalog 是"给已发布不可变版本附加档位事实"（write-once），
+            // 与 POST .../{revisionId}/rollback（追加新版本）是两件事，语义见 RW-06 报告。
+            new Route("GET", "/runtime-config/catalog", "config.read"),
+            new Route("GET", "/runtime-config/settings", "config.read"),
+            new Route("GET", "/runtime-config/revisions", "config.read"),
+            new Route("POST", "/runtime-config/revisions/{revisionId}/catalog", "config.publish"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;
