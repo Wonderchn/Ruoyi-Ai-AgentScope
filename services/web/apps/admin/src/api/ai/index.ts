@@ -16,8 +16,15 @@
  *    页面把可达状态如实标为 BLOCKED-BY-G-22，不假装成功。
  * 2. **ragent 旧控制器（/agents、/agent-skills、/ingestion、/knowledge-base 旧路径）
  *    未进内嵌装配**：`AiEmbedded*Configuration` 是显式登记制
- *    （AiResource/Upload/Run/AgentAction/引擎面），没有登记 AgentProfileController
- *    等 rag 控制器 ⇒ 本形态 404。路径照分母登记，页面标 BLOCKED-BY-EMBEDDED-REGISTRY。
+ *    （AiResource/Upload/Run/AgentAction/引擎面），没有登记这些 rag 控制器 ⇒ 本形态 404。
+ *    路径照分母登记，页面标 BLOCKED-BY-EMBEDDED-REGISTRY。
+ *
+ *    ⚠️ **例外（2026-10-07 更正，RW-03）**：Agent 目录**已经**装配并放行 ——
+ *    `AiEmbeddedAgentCatalogConfiguration`（`AutoConfiguration.imports`，条件
+ *    `ai.integration.enabled=true`）登记了 `AgentProfileController`，
+ *    `AiGatewayController.ROUTES` 逐条登记 8 条 `/agent-catalog/agents/**`，
+ *    权限行由 `V27` 播种。该族契约见 `./agentProfiles.ts`（**独立子域，不用 ragent 信封**），
+ *    旧 `/agents` 路径与 `code:"0"` 判别对**这一族**已作废。
  * 3. **知识库族 8 条白名单路由活着**（`AiGatewayController` ROUTES，M19/M20 实测
  *    200/400/404 分布健康）——经 `/api/ai/v1` 前缀。这是本波唯一可真实联调的族。
  *
@@ -25,6 +32,8 @@
  *
  * - 知识库族走 `platform` `ApiEnvelope`：`{code:200,...}` —— 直接用共享 client。
  * - `/system/model|provider`（ruoyi-chat）也是平台 `R`（code=200）。
+ * - **Agent 目录族（`/api/ai/v1/agent-catalog/agents`）同样是 `ApiEnvelope`（整数 code=200）**，
+ *   由 `./agentProfiles.ts` 独立持有（RW-03 起）。
  * - ragent 旧控制器返回**自己的 `Result`**：`{code:"0", message, data}`（字符串码）。
  *   若将来装配了这批控制器，`classifyResponse` 会把 `"0"` 当 business-error（code=0≠200），
  *   **届时需要专用解包**，不能直接用 `client.get`——本工厂刻意为它们留独立方法，
@@ -38,6 +47,9 @@
  */
 import type { PlatformClient } from '@ruoyi/platform-client/http';
 import type { PageParams } from '../../utils/list';
+import { createAgentProfilesApi } from './agentProfiles';
+
+export * from './agentProfiles';
 
 /** ragent 旧信封形状（`framework/convention/Result`：code 是**字符串**）。 */
 export interface RagResultEnvelope<T> {
@@ -127,24 +139,6 @@ export interface KnowledgeBaseQuery {
 // ---------------------------------------------------------------------------
 // ragent 管理面（分母登记；本形态 BLOCKED-BY-EMBEDDED-REGISTRY）
 // ---------------------------------------------------------------------------
-
-/** `AgentProfileController`（`/agents`）列表返回 `Result<AgentProfileListVO>`。 */
-export interface AgentProfileRow {
-  id?: string;
-  name?: string;
-  description?: string;
-  model?: string;
-  active?: boolean;
-  [key: string]: unknown;
-}
-
-/** `AgentProfileController` prompt 槽位配置（`GET /agents/{id}/prompts`）。 */
-export interface AgentPromptConfig {
-  agentId?: string;
-  /** 槽位 → 模板内容（默认回落：`GET /agents/prompt-slots/{slotKey}/default`）。 */
-  slots?: Record<string, string>;
-  [key: string]: unknown;
-}
 
 /** `AgentSkillController`（`/agent-skills`）行分母。 */
 export interface AgentSkillRow {
@@ -275,31 +269,18 @@ export function createAiApi(client: PlatformClient) {
     },
 
     /**
-     * ragent 管理面（Agent/Prompt/Skills/Ingestion）。⚠️ BLOCKED-BY-EMBEDDED-REGISTRY：
-     * 内嵌装配未登记这些控制器（`AiEmbedded*Configuration` 显式登记制），
-     * 本形态调用会 404。路径是分母（02-api-map.json ai_reference_only 组），
-     * 信封是 ragent `Result`（`code:"0"`）——**将来装配后也不能直接用 client.get**，
-     * 见 `ragResultEnvelopeOf` 的注释。
+     * Agent 目录（F09）—— **本形态真实可达**（见 `./agentProfiles.ts` 的契约表）。
+     * 走 `/api/ai/v1/agent-catalog/agents`（网关白名单 8 条）+ `ApiEnvelope` 整数 code；
+     * 不再走旧 `/agents`，也不再用字符串 `code:"0"` 判别。
      */
-    agentProfiles: {
-      /** `GET /agents` → `Result<AgentProfileListVO>`（注意：不是分页包络）。 */
-      list: () => client.get<RagResultEnvelope<AgentProfileRow[]>>('/agents'),
-      create: (body: Record<string, unknown>) => client.post<RagResultEnvelope<string>>('/agents', { body }),
-      update: (id: string, body: Record<string, unknown>) =>
-        client.put<RagResultEnvelope<string>>(`/agents/${encodeURIComponent(id)}`, { body }),
-      remove: (id: string) => client.del<RagResultEnvelope<string>>(`/agents/${encodeURIComponent(id)}`),
-      activate: (id: string) => client.post<RagResultEnvelope<unknown>>(`/agents/${encodeURIComponent(id)}/activate`, { body: {} }),
-      prompts: (id: string) =>
-        client.get<RagResultEnvelope<AgentPromptConfig>>(`/agents/${encodeURIComponent(id)}/prompts`),
-      savePrompt: (id: string, slotKey: string, body: Record<string, unknown>) =>
-        client.put<RagResultEnvelope<unknown>>(
-          `/agents/${encodeURIComponent(id)}/prompts/${encodeURIComponent(slotKey)}`,
-          { body },
-        ),
-      promptDefault: (slotKey: string) =>
-        client.get<RagResultEnvelope<Record<string, unknown>>>(`/agents/prompt-slots/${encodeURIComponent(slotKey)}/default`),
-    },
+    agentProfiles: createAgentProfilesApi(client),
 
+    /**
+     * ragent 管理面其余族（Skills/Ingestion）。⚠️ BLOCKED-BY-EMBEDDED-REGISTRY：
+     * 内嵌装配未登记这些控制器，本形态调用会 404。路径是分母
+     * （02-api-map.json ai_reference_only 组），信封是 ragent `Result`（`code:"0"`）
+     * ——**将来装配后也不能直接用 client.get**，见 `ragResultEnvelopeOf` 的注释。
+     */
     agentSkills: {
       /** `GET /agent-skills` → `Result<List<AgentSkillVO>>`。 */
       list: () => client.get<RagResultEnvelope<AgentSkillRow[]>>('/agent-skills'),
