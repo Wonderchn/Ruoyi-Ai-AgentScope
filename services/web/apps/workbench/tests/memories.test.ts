@@ -64,11 +64,12 @@ describe('checkMemoryQuery（镜像服务端边界 1..200）', () => {
   });
 });
 
-describe('toMemoryRows（宽松读取，坏数据不丢）', () => {
-  it('5 个字段全覆盖，id 保持字符串（雪花 Long 不得 Number 化）', () => {
+describe('toMemoryRows（契约：只有 {id, content} 两个字段）', () => {
+  it('只取 id 与 content，id 保持字符串（雪花 Long 不得 Number 化）', () => {
     const [row] = toMemoryRows([{
       id: SNOWFLAKE,
       content: '用户偏好：先给结论',
+      // 即使服务端将来回传这些列，也不展示：响应契约里没有它们
       source_refs: [{ docId: 'd-1' }],
       source_policy_version: 3,
       source_acl_version: 7,
@@ -76,38 +77,18 @@ describe('toMemoryRows（宽松读取，坏数据不丢）', () => {
     assert.equal(row.id, SNOWFLAKE);
     assert.equal(typeof row.id, 'string');
     assert.equal(row.content, '用户偏好：先给结论');
-    assert.deepEqual(row.sourceRefs, [{ docId: 'd-1' }]);
-    assert.equal(row.sourcePolicyVersion, 3);
-    assert.equal(row.sourceAclVersion, 7);
-    assert.equal(row.sourceRefsRaw, '');
+    assert.deepEqual(Object.keys(row).sort(), ['content', 'id']);
   });
 
-  it('source_refs 以 jsonb 文本返回时解析成数组（后端两种返回形状都见过）', () => {
-    const [row] = toMemoryRows([{ id: 'm-1', source_refs: '[{"chunkId":"c-1"}]' }]);
-    assert.deepEqual(row.sourceRefs, [{ chunkId: 'c-1' }]);
-    assert.equal(row.sourceRefsRaw, '');
+  it('缺 content 时给空串（不伪造内容），缺 id 时给空串（不编造 id）', () => {
+    const [row] = toMemoryRows([{}]);
+    assert.equal(row.id, '');
+    assert.equal(row.content, '');
   });
 
-  it('坏 JSON 保留原文而不是丢掉整行（坏数据也要看得见）', () => {
-    const [row] = toMemoryRows([{ id: 'm-2', content: 'x', source_refs: '{"unterminated":' }]);
-    assert.deepEqual(row.sourceRefs, []);
-    assert.equal(row.sourceRefsRaw, '{"unterminated":');
-  });
-
-  it('单体对象包成单元素；null → 空数组', () => {
-    assert.deepEqual(toMemoryRows([{ id: 'm', source_refs: { a: 1 } }])[0].sourceRefs, [{ a: 1 }]);
-    assert.deepEqual(toMemoryRows([{ id: 'm', source_refs: null }])[0].sourceRefs, []);
-  });
-
-  it('版本字段缺失保持 null（`Number(null)===0` 的陷阱不得让"没记录"变成 0）', () => {
-    const [row] = toMemoryRows([{ id: 'm', source_policy_version: null, source_acl_version: '' }]);
-    assert.equal(row.sourcePolicyVersion, null);
-    assert.equal(row.sourceAclVersion, null);
-  });
-
-  it('version=0 是合法值，必须与"缺失"区分', () => {
-    const [row] = toMemoryRows([{ id: 'm', source_policy_version: 0 }]);
-    assert.equal(row.sourcePolicyVersion, 0);
+  it('content 非字符串时给空串（不把对象 toString 成 "[object Object]"）', () => {
+    const [row] = toMemoryRows([{ id: 'm', content: { a: 1 } }]);
+    assert.equal(row.content, '');
   });
 
   it('空/非数组输入返回空数组（不抛错）', () => {
@@ -120,6 +101,14 @@ describe('toMemoryRows（宽松读取，坏数据不丢）', () => {
   it('不重排、不丢行（顺序是服务端的 create_time,id）', () => {
     const rows = toMemoryRows([{ id: 'b' }, { id: 'a' }, { id: 'c' }]);
     assert.deepEqual(rows.map(r => r.id), ['b', 'a', 'c']);
+  });
+
+  it('撤权消失是**服务端行为**：本地只映射收到的行，不补行、不解释缺失', () => {
+    // 服务端逐条复核来源，不合格的条目根本不返回；前端拿不到 sourceRefs，
+    // 因此这里唯一正确的行为就是"服务端给几行就显示几行"。
+    const rows = toMemoryRows([{ id: 'm-1', content: 'a' }]);
+    assert.equal(rows.length, 1);
+    assert.equal('sourceRefs' in rows[0], false);
   });
 });
 
@@ -175,7 +164,7 @@ describe('视图状态机：**"空"只能来自成功响应**', () => {
   it('200 + 行 → rows', () => {
     const state = toMemoryViewState({
       kind: 'loaded',
-      rows: [{ id: 'm', content: 'c', sourceRefs: [], sourceRefsRaw: '', sourcePolicyVersion: null, sourceAclVersion: null }],
+      rows: [{ id: 'm', content: 'c' }],
       offset: 0,
       limit: 100,
       hasMore: false,
