@@ -143,3 +143,62 @@ describe('PlatformApiError.errorCode：服务端符号码不得被吞', () => {
     assert.equal(error.errorCode, null);
   });
 });
+
+/**
+ * R（RW-29）的 E5：此前 `kind` 三分支与 `message` 恒为 `HTTP ${httpCode}` 这两条语义
+ * 只能靠**读源码**确认，没有测试钉住。这里补上——免得将来有人为了让某个调用方
+ * "更好看"而改掉 message 或合并 kind 分支，却没有任何判据变红。
+ */
+describe('PlatformApiError：kind 三分支与 message 语义（E5）', () => {
+  it('401 ⇒ kind=auth-expired，403 ⇒ kind=forbidden，其余非 2xx ⇒ kind=business-error', async () => {
+    const cases: Array<{ status: number, kind: string }> = [
+      { status: 401, kind: 'auth-expired' },
+      { status: 403, kind: 'forbidden' },
+      { status: 500, kind: 'business-error' },
+      { status: 503, kind: 'business-error' },
+    ];
+
+    for (const { status, kind } of cases) {
+      const client = clientReturning(status, { code: status, msg: 'x', data: { errorCode: 'X' } });
+      await assert.rejects(
+        client.get('/x'),
+        (error: unknown) =>
+          error instanceof PlatformApiError && error.kind === kind && error.code === status,
+      );
+    }
+  });
+
+  it('非 2xx 的 message 恒为 `HTTP ${httpCode}`（不因新增 errorCode 而改变）', async () => {
+    const client = clientReturning(503, {
+      code: 503,
+      msg: '服务端自己的话',
+      data: { errorCode: 'SERVICE_DOWN' },
+    });
+
+    await assert.rejects(
+      client.get('/x'),
+      (error: unknown) =>
+        // message 仍由 HTTP 状态生成，**不**取服务端 msg：这条是刻意保持的既有语义。
+        error instanceof PlatformApiError
+        && error.message === 'HTTP 503'
+        && error.errorCode === 'SERVICE_DOWN',
+    );
+  });
+
+  it('401/403 仍触发回调（新增 errorCode 不得影响身份/权限副作用）', async () => {
+    const seen: string[] = [];
+    const make = (status: number) =>
+      createPlatformClient({
+        baseURL: '',
+        identity: () => ({ token: 't', clientId: 'c' }),
+        onAuthExpired: () => seen.push('auth'),
+        onForbidden: () => seen.push('forbidden'),
+        fetchImpl: (async () =>
+          jsonResponse(status, { code: status, data: { errorCode: 'ANY' } })) as unknown as typeof fetch,
+      });
+
+    await assert.rejects(make(401).get('/x'));
+    await assert.rejects(make(403).get('/x'));
+    assert.deepEqual(seen, ['auth', 'forbidden']);
+  });
+});
