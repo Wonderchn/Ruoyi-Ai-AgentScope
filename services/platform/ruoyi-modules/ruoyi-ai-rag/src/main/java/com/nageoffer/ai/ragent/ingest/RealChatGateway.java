@@ -202,10 +202,11 @@ public class RealChatGateway implements ChatGateway {
         // 而 :111 已被实测排除、:197 与"env key 长度 35 非空"冲突 ⇒ 需要**可判事实**而不是继续排除法。
         // **只打布尔与长度，绝不打值**（K3：凭据内容不出日志），且**不改变任何行为**。
         String cred=credential(connection);
-        log.warn("chat credential check provider={} ref={} present={} len={} bootstrapPresent={}",
+        log.warn("chat credential check provider={} ref={} present={} len={} bootstrapPresent={} spendPresent={} connectionsPresent={} providerEndpoint={}",
                 bound.providerId(), connection.credentialRef(),
                 cred!=null && !cred.isBlank(), cred==null?-1:cred.length(),
-                bootstrapKey!=null && !bootstrapKey.isBlank());
+                bootstrapKey!=null && !bootstrapKey.isBlank(),
+                spend!=null, connections!=null, providerEndpoint);
         if(cred==null || cred.isBlank()) throw ProviderHttp.unavailable();
         if(!providerEndpoint) return null;
         if(spend==null) throw ProviderHttp.unavailable();

@@ -217,10 +217,27 @@ public class RunWorker {
         String message = e.getMessage();
         String base = (message == null || message.isBlank()) ? e.getClass().getSimpleName()
                 : e.getClass().getSimpleName() + ": " + message;
-        // 附**首个栈帧**：本轮实测有多个抛出点共用同一 message（同码不同因），
-        // 只有栈帧能把它直接指到"文件:行"。栈帧不含任何凭据内容，K3 安全。
+        // 附**调用链前 3 帧**（跳过工厂方法帧）。
+        // 教训（W4-10 实测）：`ProviderHttp.unavailable()` 是工厂方法 ⇒ 它的 frame[0] 永远是
+        // `ProviderHttp.java:54` 自己，**对定位调用者无用**；真正的调用者是 frame[1] 起。
+        // 栈帧不含凭据内容，K3 安全。
+        return base + " at " + where(e);
+    }
+
+    /** 前 3 帧（跳过 ProviderHttp 这类工厂帧），形如 {@code RealChatGateway:111 <- …:153}。 */
+    private static String where(Throwable e) {
         StackTraceElement[] frames = e.getStackTrace();
-        return frames == null || frames.length == 0 ? base : base + " at " + frames[0];
+        if (frames == null || frames.length == 0) {
+            return "(no stack)";
+        }
+        return java.util.Arrays.stream(frames)
+                .filter(f -> f.getClassName() == null || !f.getClassName().endsWith("ProviderHttp"))
+                .limit(3)
+                .map(f -> {
+                    String cls = f.getClassName() == null ? "?" : f.getClassName();
+                    return cls.substring(cls.lastIndexOf('.') + 1) + ":" + f.getLineNumber();
+                })
+                .collect(java.util.stream.Collectors.joining(" <- "));
     }
 
     private void safeFail(RunExecutionGuard guard, String errorCode) {
