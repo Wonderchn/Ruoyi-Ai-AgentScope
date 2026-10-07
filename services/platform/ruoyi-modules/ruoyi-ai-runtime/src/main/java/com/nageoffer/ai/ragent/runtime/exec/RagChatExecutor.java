@@ -326,6 +326,13 @@ public class RagChatExecutor implements RunExecutor {
                             }
                         });
             } catch (RuntimeException e) {
+                // W4-10/task-24（T0 落点）：**本处是唯一同时知道站点与 provider/model 的地方**
+                //（RunWorker 只看到异常类名/error_code，不知道是哪一步、也不知道 provider/model）。
+                // 本轮实测：model 步的 DEPENDENCY_UNAVAILABLE 有 ≥2 个同码 gate，
+                // 而日志里同形 ⇒ 只能靠"有没有 spend 行"间接反推。**只加日志、不改行为**。
+                log.warn("model step failed runId={} step=model site=RagChatExecutor.model provider={} model={} callId={} reason={}",
+                        execution.runId(), binding.providerId(), binding.modelId(), callId,
+                        e.getClass().getSimpleName() + ": " + e.getMessage());
                 guard.commitAtomic(()->{usageLedger.markUnknown(execution.tenantId(),callId);return null;});
                 if(cancelled[0]) return new Outcome("CANCELLED",Map.of("usage","PENDING_RECONCILIATION"),null);
                 throw e;

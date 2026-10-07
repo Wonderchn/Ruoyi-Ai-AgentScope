@@ -176,9 +176,17 @@ public class RunWorker {
                 log.warn("run {} rejected by fence; another worker owns it", run.runId());
                 return;
             }
+            // W4-10/task-24 追补（T0 落点）：本分支原先**除 VERSION_CONFLICT 外完全不留痕**，
+            // 导致同一 error_code 下的不同门（如 run 作用域面的多个 gate 共用 DEPENDENCY_UNAVAILABLE）
+            // 在日志里同形、不可分辨。**只加日志、不改行为**（safeFail 的码与 fail-closed 语义不变）。
+            log.warn("run {} failed: site=RunWorker.execute errorCode={} reason={}",
+                    run.runId(), e.errorCode(), cause(e));
             safeFail(guard, expired.get()?"BUDGET_EXCEEDED":e.errorCode().name());
         } catch (Exception e) {
-            log.warn("run {} failed: {}", run.runId(), e.getClass().getSimpleName());
+            // W4-10/task-24（T0 落点）：原先只打异常**类名** ⇒ 各类 ConfigAuthorityUnavailable /
+            // 同名不同义的异常无法区分。改为带 message（message 为空时退回类名，覆盖 NPE 等）。
+            log.warn("run {} failed: site=RunWorker.execute code=EXECUTION_FAILED reason={}",
+                    run.runId(), cause(e));
             safeFail(guard, expired.get()?"BUDGET_EXCEEDED":"EXECUTION_FAILED");
         } finally {
             capacity.release();
@@ -193,6 +201,22 @@ public class RunWorker {
                 // 释放失败由租约过期扫描兜底
             }
         }
+    }
+
+    /**
+     * W4-10/task-24（T0 落点）：失败的**可归因**口径。
+     *
+     * <p>原先多处只打 {@code e.getClass().getSimpleName()}，使"同一类名/同一 error_code 下的
+     * 不同抛出点"在日志里**同形**（本轮实测：{@code ConfigAuthorityUnavailable} 有 ≥4 个 message
+     * 各异的抛出点；{@code DEPENDENCY_UNAVAILABLE} 有 2 个 gate 共用），排查只能靠间接反推。
+     *
+     * <p>本助手只影响日志文本，**不改变任何行为**：message 为空/空白（含 NPE）时退回类名，
+     * 保证永远有可读输出。
+     */
+    private static String cause(Throwable e) {
+        String message = e.getMessage();
+        return (message == null || message.isBlank()) ? e.getClass().getSimpleName()
+                : e.getClass().getSimpleName() + ": " + message;
     }
 
     private void safeFail(RunExecutionGuard guard, String errorCode) {
