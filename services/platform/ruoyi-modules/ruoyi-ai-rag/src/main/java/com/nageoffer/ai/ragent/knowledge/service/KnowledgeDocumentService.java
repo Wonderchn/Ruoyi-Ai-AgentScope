@@ -100,6 +100,18 @@ public interface KnowledgeDocumentService {
     void enable(String docId, boolean enabled);
 
     /**
+     * 启用或禁用文档（带乐观锁）
+     *
+     * <p>{@code expectedVersion} 为 {@code null} 时与 {@link #enable(String, boolean)} 等价；
+     * 带值时版本不符在任何写入（含向量重建）之前拒绝。
+     *
+     * @param docId           文档 ID
+     * @param enabled         是否启用
+     * @param expectedVersion 期望版本（update_time 的 epoch 毫秒），可为 null
+     */
+    void enable(String docId, boolean enabled, Long expectedVersion);
+
+    /**
      * 搜索文档（用于全局检索建议）
      *
      * @param keyword 关键词

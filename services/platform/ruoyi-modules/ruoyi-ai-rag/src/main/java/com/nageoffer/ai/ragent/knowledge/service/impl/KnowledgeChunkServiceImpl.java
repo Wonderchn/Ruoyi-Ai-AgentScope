@@ -64,6 +64,7 @@ import org.springframework.util.StringUtils;
 
 import cn.hutool.crypto.SecureUtil;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -80,6 +81,17 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
      * 代理主键全局唯一可以保留，但访问路径必须带租户条件（逐表账判据）。
      */
     private static final String TENANT_PREDICATE = "tenant_id = {0}";
+
+    /**
+     * 单次批量启停的 Chunk 数量上限。
+     *
+     * <p>取值来自维护者决定 D05（批量写：同租户内的有界资源集合、整体授权、整体事务，
+     * <b>初始上限 100</b>）。这里从 500 收紧到 100 是**有意的**：批量启停是
+     * N 个资源的写集合，不是一条记录；集合越大，"整体校验后整体提交"要保证的
+     * 不变式越贵，而越界只会让客户端拿到一个含糊的部分结果。
+     * 需要更多块时由调用方分批，而不是把上限继续抬高。
+     */
+    private static final int MAX_BATCH_TOGGLE = 100;
 
     private final KnowledgeChunkMapper chunkMapper;
     private final KnowledgeDocumentMapper documentMapper;
@@ -167,9 +179,26 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
                         .orderByDesc(KnowledgeChunkDO::getChunkIndex)
                         .last("LIMIT 1")
         );
-        int chunkIndex = requestParam.getIndex() != null
-                ? requestParam.getIndex()
-                : (latest != null ? latest.getChunkIndex() + 1 : 0);
+        Integer requestedIndex = requestParam.getIndex();
+        if (requestedIndex != null) {
+            // 序号是分块顺序的唯一依据（列表 orderByAsc(chunkIndex)、重建向量也按它排序），
+            // 两条同序号会让顺序变成不确定的：这里显式拒绝，而不是任由它写进去
+            if (requestedIndex < 0) {
+                throw new ClientException("Chunk 序号不能为负数");
+            }
+            Long occupied = chunkMapper.selectCount(
+                    Wrappers.lambdaQuery(KnowledgeChunkDO.class)
+                            .eq(KnowledgeChunkDO::getDocId, docId)
+                            .eq(KnowledgeChunkDO::getChunkIndex, requestedIndex)
+                            .apply(TENANT_PREDICATE, requireTenantId())
+            );
+            if (occupied != null && occupied > 0) {
+                throw new ClientException("Chunk 序号已被占用：" + requestedIndex);
+            }
+        }
+        int chunkIndex = requestedIndex != null
+                ? requestedIndex
+                : (latest != null && latest.getChunkIndex() != null ? latest.getChunkIndex() + 1 : 0);
 
         String contentHash = SecureUtil.sha256(content);
         int charCount = content.length();
@@ -376,8 +405,17 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
             throw new ClientException("请指定需要操作的 Chunk，全量启用/禁用请使用文档启用接口");
         }
         List<String> requestedIds = requestParam.getChunkIds();
-        if (requestedIds.size() > 500) {
-            throw new ClientException("单次批量操作 Chunk 数量不能超过 500");
+        // 重复 ID 显式拒绝：`IN (dup, dup)` 只命中一行，"请求 N 个 / 找到 M 个"的比对
+        // 虽然也会失败，但报错会变成"存在无效的 Chunk ID"——把客户端的参数错误
+        // 说成资源不存在，归因就错了
+        if (new HashSet<>(requestedIds).size() != requestedIds.size()) {
+            throw new ClientException("批量操作的 Chunk ID 不能重复");
+        }
+        if (requestedIds.stream().anyMatch(id -> !StringUtils.hasText(id))) {
+            throw new ClientException("批量操作的 Chunk ID 不能为空");
+        }
+        if (requestedIds.size() > MAX_BATCH_TOGGLE) {
+            throw new ClientException("单次批量操作 Chunk 数量不能超过 " + MAX_BATCH_TOGGLE);
         }
 
         KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);

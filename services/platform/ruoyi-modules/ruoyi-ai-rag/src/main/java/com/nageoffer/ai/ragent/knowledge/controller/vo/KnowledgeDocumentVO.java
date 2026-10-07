@@ -131,6 +131,16 @@ public class KnowledgeDocumentVO {
     private LocalDateTime updateTime;
 
     /**
+     * 乐观锁版本：等于 {@code update_time} 的 epoch 毫秒。
+     *
+     * <p><b>为什么单独出一个字段而不是让前端用 updateTime。</b>
+     * {@code updateTime} 的线路形状由 Jackson 的日期格式决定（可能是字符串、可能丢精度），
+     * 而版本比较必须是精确的整数相等。这里给出的毫秒整数与库里 {@code update_time}
+     * 是同一个瞬间，前端原样回传即可（PUT / PATCH enable 的 {@code expectedVersion}）。
+     */
+    private Long version;
+
+    /**
      * 是否存在被手工编辑过的分块（基于 chunk.updateTime > chunk.createTime 推断）
      * 仅查询时填充，不持久化。重新分块会将该状态清零
      */
