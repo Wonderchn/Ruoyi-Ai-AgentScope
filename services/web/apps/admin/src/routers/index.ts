@@ -82,6 +82,48 @@ export const layoutRouter: RouteRecordRaw[] = [
         meta: { title: '在线用户', icon: 'Monitor', permission: 'monitor:online:list' },
       },
       {
+        // RW-15（2026-10-07）：F01 op15 缓存监控（CacheController 只有 GET /monitor/cache 一条）。
+        path: 'monitor/cache',
+        name: 'cacheList',
+        component: () => import('@/pages/cache/index.vue'),
+        meta: { title: '缓存监控', icon: 'Coin', permission: 'monitor:cache:list' },
+      },
+      {
+        // RW-15：F01 op1 租户管理（写面：新增/编辑/删除/启停/套餐-字典-配置同步）。
+        path: 'tenant',
+        name: 'tenantList',
+        component: () => import('@/pages/tenant/index.vue'),
+        meta: { title: '租户管理', icon: 'OfficeBuilding', permission: 'system:tenant:list' },
+      },
+      {
+        // RW-15：F01 op2 租户套餐（V2 出厂套餐行；权限 system:tenantPackage:*）。
+        path: 'package',
+        name: 'tenantPackageList',
+        component: () => import('@/pages/package/index.vue'),
+        meta: { title: '租户套餐', icon: 'Box', permission: 'system:tenantPackage:list' },
+      },
+      {
+        // RW-15：F01 op11 对象存储（文件 + 配置；上传/下载是 multipart/二进制 ⇒ 页面标注缺口）。
+        path: 'oss',
+        name: 'ossList',
+        component: () => import('@/pages/oss/index.vue'),
+        meta: { title: '对象存储', icon: 'Files', permission: 'system:oss:list' },
+      },
+      {
+        // RW-15：F01 op13 个人中心 + 社交关系（服务端无 @SaCheckPermission ⇒ 仅登录可见）。
+        path: 'profile',
+        name: 'profileCenter',
+        component: () => import('@/pages/profile/index.vue'),
+        meta: { title: '个人中心', icon: 'Avatar', permission: '' },
+      },
+      {
+        // RW-15：F01 op14 短链（system:url:*；无 export 端点）。
+        path: 'url',
+        name: 'urlList',
+        component: () => import('@/pages/url/index.vue'),
+        meta: { title: '短链管理', icon: 'Link', permission: 'system:url:list' },
+      },
+      {
         path: 'user',
         name: 'userList',
         component: () => import('@/pages/user/index.vue'),
