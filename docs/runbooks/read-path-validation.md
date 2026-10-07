@@ -42,3 +42,5 @@ revision, PR head revision, migration hashes and individual case verdicts as an
 artifact. Its separate-service N1–N3 checks do not stand in for an embedded page
 test or an endpoint latency benchmark. N4/N5 retain their explicit `NOT_RUN`
 reasons when their external dependencies are absent.
+Verdicts use a JSON encoder; CI rejects malformed records, duplicate cases,
+summary mismatches and absent or skipped mandatory N1–N3 cases.

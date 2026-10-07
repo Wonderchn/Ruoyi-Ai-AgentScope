@@ -218,6 +218,7 @@ jobs:
         run: |
           python3 scripts/ci/check-unified-contract.py
           python3 scripts/ci/test-unified-contract.py
+          python3 scripts/ci/test-native-runtime-results.py
 
   ci-required:
     if: always()
