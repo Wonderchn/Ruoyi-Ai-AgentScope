@@ -1,33 +1,43 @@
 /**
- * 会话 API 的**路径契约**（纯常量 + 纯函数，零依赖，可单测）。
+ * 运行面 / 会话面的**路径契约**（纯常量 + 纯函数，零依赖，可单测）。
  *
- * 为什么把路径单独抽出来：工作台的会话资产有**两个入口**（同一资产、两条路由），
- * 而两条路由的路径前缀规则**不同**：
+ * ## 为什么要单独抽出来
  *
- * | 入口 | 前缀 | 后端权威 |
- * | --- | --- | --- |
- * | AI 资源面（列表/详情/消息） | `/api/ai/v1/conversations...` | `AiGatewayController` 的 `@RequestMapping("/api/ai/v1")`（实测） |
- * | 平台路由（新建/改名/删除） | `/system/session` | `ChatSessionController` 的 `@RequestMapping("/system/session")`（实测） |
+ * 请求封装 `hook-fetch.create({ baseURL: import.meta.env.VITE_API_URL })`
+ * **会把 baseURL 原样拼在路径前面**。实测（见 `.env.example`）：
+ * baseURL=`/api` 时 `get('/api/ai/v1/conversations')` 实际请求 `/api/api/ai/v1/conversations`。
+ * 也就是说"路径里再写一次 `/api`"只在 `VITE_API_URL` 为空或纯 origin 时才是对的。
+ * 把路径与 base 拆开并用测试钉住，"多一层前缀"会在改配置时立刻暴露，而不是变成线上 404。
  *
- * 危险点在于：请求封装 `hook-fetch.create({ baseURL: import.meta.env.VITE_API_URL })`
- * **会真的把 baseURL 拼在前面**（本机实测：baseURL=`/api` 时，
- * `get('/api/ai/v1/conversations')` 实际请求 `/api/api/ai/v1/conversations`）。
- * 也就是说"路径里再写一次 `/api`"只在 `VITE_API_URL` 为空时才是对的，
- * 而这个耦合**在原代码里是隐式的**——把路径与 base 拆开、并用测试钉住，
- * 才能让"多一层前缀 / 少一层前缀"在改配置时立刻暴露，而不是变成线上 404。
+ * ## 本轮的变化（RW-02）：**只剩一个入口**
  *
- * 注意：这里**不**去猜测部署时 `VITE_API_URL` 该填什么（那是部署决定，见规格登记）。
- * 这一层只保证"路径常量本身与后端逐字一致"以及"拼出来的 URL 不会静默多/少前缀"。
+ * 旧实现里会话资产有"两个入口"：读走 AI 网关、写走平台路由 `/system/session`
+ * （承接者 `ChatSessionController`）。该模块**已退场**，该路径现在恒为 **404**，
+ * 因此 `PLATFORM_SESSION_PREFIX` 已从本模块**删除**——保留一个指向 404 的常量
+ * 只会让下一次改动继续把它当成"可用入口"。
+ *
+ * 现在创建/改名/删除/批量删除与运行受理、事件流**全部**在 AI 网关下：
+ *
+ * | 动作 | 路径 |
+ * | --- | --- |
+ * | 会话列表/详情/消息/导出 | `/api/ai/v1/conversations…` |
+ * | 创建 / 改名 / 单删 | `POST|PUT|DELETE /api/ai/v1/conversations…` |
+ * | 批量删除（D05） | `POST /api/ai/v1/conversations/batch-delete` |
+ * | 运行受理 | `POST /api/ai/v1/runs` |
+ * | 运行事件流（SSE） | `GET /api/ai/v1/runs/{id}/events` |
  */
 
 /** AI 网关的公共前缀（与 `AiGatewayController` 逐字一致）。 */
 export const AI_GATEWAY_PREFIX = '/api/ai/v1';
 
-/** 平台会话路由前缀（与 `ChatSessionController` 逐字一致）。 */
-export const PLATFORM_SESSION_PREFIX = '/system/session';
-
-/** 会话列表 / 详情 / 消息都挂在 AI 网关下。 */
+/** 会话列表 / 详情 / 消息 / 写入都挂在 AI 网关下。 */
 export const CONVERSATIONS_PATH = `${AI_GATEWAY_PREFIX}/conversations`;
+
+/** D05 批量删除（RW-01 交付，T0 集成 `09e20428` 放行公开路由）。 */
+export const CONVERSATIONS_BATCH_DELETE_PATH = `${CONVERSATIONS_PATH}/batch-delete`;
+
+/** 运行受理（`POST`）与运行读取（`GET /{id}`）的根。 */
+export const RUNS_PATH = `${AI_GATEWAY_PREFIX}/runs`;
 
 /** 会话详情路径。 */
 export function conversationPath(id: string): string {
@@ -42,6 +52,16 @@ export function conversationMessagesPath(id: string): string {
 /** 会话导出路径。 */
 export function conversationExportPath(id: string): string {
   return `${conversationPath(id)}/export`;
+}
+
+/** 运行详情路径（`GET`，取 `version` 供 cancel/resume 的显式 CAS 使用）。 */
+export function runPath(runId: string): string {
+  return `${RUNS_PATH}/${encodeURIComponent(runId)}`;
+}
+
+/** 运行事件流路径（SSE，专用流式通道；`afterSeq` 由客户端按游标追加）。 */
+export function runEventsPath(runId: string): string {
+  return `${runPath(runId)}/events`;
 }
 
 /**
