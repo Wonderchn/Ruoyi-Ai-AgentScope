@@ -53,7 +53,9 @@ import java.util.List;
  * <p><b>scope = {@code agent.execute}</b>（C13.4 登记，V6 已播种 {@code ai:agent:execute}）。
  * 该端点返回引擎能力清单、迭代上限与<b>当前模型名</b>，是"能否使用 Agent 引擎"的发现面；
  * 用"可执行"权限门控它，比新增一个只为读的权限行更保守（且不触碰
- * {@code P1CurrentAuthorizationTest:205} 的 {@code knownActions().size() == 26} 护栏）。
+ * {@code P1CurrentAuthorizationTest:209} 的 {@code knownActions().size() == 34} 护栏）。
+ * （注：本条注释曾写作 {@code 26} 且行号写作 205，均为过期信息；权威值见该测试第 209 行。
+ *   该过期数字已两次造成误导，故更正并保留说明。）
  *
  * <p><b>C13.6 / C1.4：{@code model} 字段是"第二权威"消费面。</b>
  * 原实现对外声明的模型名取自 {@code agentProperties.getChat().getModel()}，
