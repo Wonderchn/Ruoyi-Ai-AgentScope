@@ -19,6 +19,9 @@ package com.nageoffer.ai.ragent.rag.controller.request;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.Data;
+import org.springframework.format.annotation.DateTimeFormat;
+
+import java.util.Date;
 
 /**
  * RAG Trace 运行记录分页请求
@@ -33,4 +36,16 @@ public class RagTraceRunPageRequest extends Page {
     private String taskId;
 
     private String status;
+
+    /**
+     * 起始时间（含），按链路开始时间过滤（F18 op2「运行列表（筛选）」）。
+     */
+    @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private Date beginTime;
+
+    /**
+     * 结束时间（含），按链路开始时间过滤。
+     */
+    @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private Date endTime;
 }
