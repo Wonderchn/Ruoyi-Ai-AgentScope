@@ -13,8 +13,11 @@
  *    `params` 只含白名单生成参数；`revoke` 与 `rollback` 是 POST 且 body 为空对象。
  * 4. **档位附加是 write-once**：`replayed=true` 是幂等命中（页面不得当新版本）。
  *
- * ⚠️ 已知限制（如实登记）：共享客户端丢掉 `data.errorCode`，所以 `CONFIG_AUTHORITY_UNAVAILABLE`
- * 与其它 503 在前端不可区分——本测试只断言 HTTP 码，不断言符号码。
+ * ✅ 符号码契约（共享客户端 `bdb5467f` 起成立）：`PlatformApiError.errorCode` 原样透出信封
+ * `data.errorCode`，因此同为 503 的 `CONFIG_AUTHORITY_UNAVAILABLE` / `AUTHORIZATION_UNAVAILABLE` /
+ * `DEPENDENCY_UNAVAILABLE` 三种原因**必须**按 `errorCode` 分支区分，不得按 HTTP 码或 `kind` 猜原因；
+ * 本测试既钉住本子域的 503 符号码，也钉住"三种 503 互不相等"这一可区分性。
+ * （早先此处登记的"共享客户端丢掉 `data.errorCode`"是已知限制，该限制现已不成立。）
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -240,17 +243,65 @@ describe('信封与错误语义', () => {
     });
   });
 
-  it('503 ⇒ code=503（前端只能看到 HTTP 码：errorCode 不随 PlatformApiError 传递）', async () => {
+  it('503 ⇒ code=503 且 errorCode=CONFIG_AUTHORITY_UNAVAILABLE（符号码随 PlatformApiError 透出）', async () => {
     const { api } = harness([
       { status: 503, body: { code: 503, msg: 'published config revision unavailable', data: { errorCode: 'CONFIG_AUTHORITY_UNAVAILABLE' } } },
     ]);
     await assert.rejects(() => api.catalog(), (error: unknown) => {
       assert.ok(error instanceof PlatformApiError);
       assert.equal(error.code, 503);
-      // 如实钉住限制：符号码没有随错误对象暴露（共享客户端只保留 msg）。
-      assert.equal((error as unknown as { errorCode?: unknown }).errorCode, undefined);
+      // 自共享客户端 bdb5467f 起，信封 `data.errorCode` 透出为 `PlatformApiError.errorCode`。
+      // "尚无已发布运行配置权威"这一原因必须按符号码分支，不得只落到 HTTP 码。
+      assert.equal(error.errorCode, 'CONFIG_AUTHORITY_UNAVAILABLE');
       return true;
     });
+  });
+
+  it('同为 HTTP 503 的三种原因必须可区分（errorCode 各自命中且互不相等）', async () => {
+    // 符号码逐字取自后端 `AiInternalExceptionResolver.envelopeOf`（该文件 83-110 行）：
+    //   ConfigAuthorityUnavailable → 503「运行配置不可用」`CONFIG_AUTHORITY_UNAVAILABLE`
+    //   DataAccessException / TransactionException → 503「依赖不可用」`DEPENDENCY_UNAVAILABLE`
+    //   ServiceException → `P04AiErrorCode.AUTHORIZATION_UNAVAILABLE`（httpStatus 503「授权服务不可用」）
+    // 三条 msg 互不相同，因此只比 HTTP 码或只比 msg 都不足以钉住区分度：断言必须落在 errorCode 上。
+    const causes = ['CONFIG_AUTHORITY_UNAVAILABLE', 'AUTHORIZATION_UNAVAILABLE', 'DEPENDENCY_UNAVAILABLE'] as const;
+    const messages: Record<(typeof causes)[number], string> = {
+      CONFIG_AUTHORITY_UNAVAILABLE: '运行配置不可用',
+      AUTHORIZATION_UNAVAILABLE: '授权服务不可用',
+      DEPENDENCY_UNAVAILABLE: '依赖不可用',
+    };
+
+    const captured: PlatformApiError[] = [];
+    for (const errorCode of causes) {
+      const { api } = harness([
+        { status: 503, body: { code: 503, msg: messages[errorCode], data: { errorCode } } },
+      ]);
+      let error: unknown = null;
+      try {
+        await api.catalog();
+      }
+      catch (thrown) {
+        error = thrown;
+      }
+      assert.ok(error instanceof PlatformApiError, `${errorCode} 必须以 PlatformApiError 抛出`);
+      captured.push(error);
+    }
+
+    assert.equal(captured.length, causes.length);
+    captured.forEach((error, index) => {
+      assert.equal(error.code, 503, `${causes[index]} 的 HTTP 状态必须是 503`);
+      assert.equal(error.errorCode, causes[index], `${causes[index]} 的符号码必须原样透出`);
+    });
+    // 三者同为 503，若前端只按 HTTP 码分支就会被压成同一个原因——这里证明它们互不相等。
+    for (let i = 0; i < captured.length; i += 1) {
+      for (let j = i + 1; j < captured.length; j += 1) {
+        assert.notEqual(
+          captured[i].errorCode,
+          captured[j].errorCode,
+          `${causes[i]} 与 ${causes[j]} 同为 503，必须可区分`,
+        );
+      }
+    }
+    assert.deepEqual(new Set(captured.map(error => error.errorCode)).size, causes.length);
   });
 
   it('409 ⇒ RESOURCE_VERSION_CONFLICT 语义（档位异内容/版本已撤销）；400 ⇒ limit 越界', async () => {
