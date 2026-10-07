@@ -19,8 +19,8 @@ import org.ruoyi.common.core.domain.dto.RoleDTO;
 import org.ruoyi.common.core.domain.model.LoginUser;
 import org.ruoyi.common.core.enums.LoginType;
 import org.ruoyi.common.core.exception.ServiceException;
-import org.ruoyi.common.core.exception.user.UserException;
 import org.ruoyi.common.core.utils.*;
+import org.ruoyi.common.log.event.LoginClientFacts;
 import org.ruoyi.common.log.event.LogininforEvent;
 import org.ruoyi.common.mybatis.helper.DataPermissionHelper;
 import org.ruoyi.common.redis.utils.RedisUtils;
@@ -129,6 +129,9 @@ public class SysLoginService {
     /**
      * 记录登录信息
      *
+     * <p>G-53（RW-14）：在<b>事件入队之前</b>于请求线程内捕获 UA/IP/client 不可变快照，
+     * 异步监听器不再读取请求对象（请求结束后会被容器回收）。</p>
+     *
      * @param tenantId 租户ID
      * @param username 用户名
      * @param status   状态
@@ -140,7 +143,7 @@ public class SysLoginService {
         logininforEvent.setUsername(username);
         logininforEvent.setStatus(status);
         logininforEvent.setMessage(message);
-        logininforEvent.setRequest(ServletUtils.getRequest());
+        logininforEvent.setClientFacts(LoginClientFacts.capture(ServletUtils.getRequest()));
         SpringUtils.context().publishEvent(logininforEvent);
     }
 
@@ -186,6 +189,10 @@ public class SysLoginService {
 
     /**
      * 登录校验
+     *
+     * <p>G-53（RW-14）：三种失败（重试锁定、达到上限、未达上限）一律以
+     * {@link AuthDenial#denied()} 抛出稳定安全拒绝码；审计消息仍保留各自原因，
+     * 便于运维排查，但客户端不可区分失败原因与账号是否存在。</p>
      */
     public void checkLogin(LoginType loginType, String tenantId, String username, Supplier<Boolean> supplier) {
         String errorKey = CacheConstants.PWD_ERR_CNT_KEY + username;
@@ -196,7 +203,7 @@ public class SysLoginService {
         // 锁定时间内登录 则踢出
         if (errorNumber >= maxRetryCount) {
             recordLogininfor(tenantId, username, loginFail, MessageUtils.message(loginType.getRetryLimitExceed(), maxRetryCount, lockTime));
-            throw new UserException(loginType.getRetryLimitExceed(), maxRetryCount, lockTime);
+            throw AuthDenial.denied();
         }
 
         if (supplier.get()) {
@@ -206,11 +213,11 @@ public class SysLoginService {
             // 达到规定错误次数 则锁定登录
             if (errorNumber >= maxRetryCount) {
                 recordLogininfor(tenantId, username, loginFail, MessageUtils.message(loginType.getRetryLimitExceed(), maxRetryCount, lockTime));
-                throw new UserException(loginType.getRetryLimitExceed(), maxRetryCount, lockTime);
+                throw AuthDenial.denied();
             } else {
                 // 未达到规定错误次数
                 recordLogininfor(tenantId, username, loginFail, MessageUtils.message(loginType.getRetryLimitCount(), errorNumber));
-                throw new UserException(loginType.getRetryLimitCount(), errorNumber);
+                throw AuthDenial.denied();
             }
         }
 

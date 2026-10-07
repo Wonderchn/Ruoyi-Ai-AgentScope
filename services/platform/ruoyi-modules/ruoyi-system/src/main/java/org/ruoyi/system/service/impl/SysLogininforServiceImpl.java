@@ -1,22 +1,18 @@
 package org.ruoyi.system.service.impl;
 
 import cn.hutool.core.util.ObjectUtil;
-import cn.hutool.http.useragent.UserAgent;
-import cn.hutool.http.useragent.UserAgentUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.ruoyi.common.core.constant.Constants;
 import org.ruoyi.common.core.utils.MapstructUtils;
-import org.ruoyi.common.core.utils.ServletUtils;
 import org.ruoyi.common.core.utils.StringUtils;
 import org.ruoyi.common.core.utils.ip.AddressUtils;
+import org.ruoyi.common.log.event.LoginClientFacts;
 import org.ruoyi.common.log.event.LogininforEvent;
 import org.ruoyi.common.mybatis.core.page.PageQuery;
 import org.ruoyi.common.mybatis.core.page.TableDataInfo;
-import org.ruoyi.common.satoken.utils.LoginHelper;
 import org.ruoyi.system.domain.SysLogininfor;
 import org.ruoyi.system.domain.bo.SysLogininforBo;
 import org.ruoyi.system.domain.vo.SysClientVo;
@@ -50,62 +46,93 @@ public class SysLogininforServiceImpl implements ISysLogininforService {
     /**
      * 记录登录信息
      *
+     * <p>G-53（RW-14）：客户端事实全部来自事件入队前捕获的 {@link LoginClientFacts} 不可变快照。
+     * 本方法在 {@code @Async} 线程执行，<b>绝不读取 {@link jakarta.servlet.http.HttpServletRequest}</b>：
+     * 请求结束后容器回收/复位请求对象，旧实现（读 UA/IP/client 三处）会拿到错值或 NPE 并静默丢审计。</p>
+     *
      * @param logininforEvent 登录事件
      */
     @Async
     @EventListener
     public void recordLogininfor(LogininforEvent logininforEvent) {
-        HttpServletRequest request = logininforEvent.getRequest();
-        final UserAgent userAgent = UserAgentUtil.parse(request.getHeader("User-Agent"));
-        final String ip = ServletUtils.getClientIP(request);
-        // 客户端信息
-        String clientId = request.getHeader(LoginHelper.CLIENT_KEY);
-        SysClientVo client = null;
-        if (StringUtils.isNotBlank(clientId)) {
-            client = clientService.queryByClientId(clientId);
+        LoginClientFacts facts = ObjectUtil.defaultIfNull(logininforEvent.getClientFacts(), LoginClientFacts.unknown());
+        try {
+            // 客户端信息：仅用快照里的 clientId 解析（缓存查询，不再触碰请求）
+            SysClientVo client = null;
+            if (StringUtils.isNotBlank(facts.clientId())) {
+                client = clientService.queryByClientId(facts.clientId());
+            }
+            String address = AddressUtils.getRealAddressByIP(facts.ip());
+            // 打印信息到日志（脱敏 IP + 控制字符清洗，防日志伪造）
+            log.info("{}", auditLogLine(facts, address, logininforEvent));
+            // 封装对象
+            SysLogininforBo logininfor = new SysLogininforBo();
+            logininfor.setTenantId(logininforEvent.getTenantId());
+            logininfor.setUserName(logininforEvent.getUsername());
+            if (ObjectUtil.isNotNull(client)) {
+                logininfor.setClientKey(client.getClientKey());
+                logininfor.setDeviceType(client.getDeviceType());
+            }
+            logininfor.setIpaddr(facts.ip());
+            logininfor.setLoginLocation(address);
+            logininfor.setBrowser(facts.browser());
+            logininfor.setOs(facts.os());
+            logininfor.setMsg(logininforEvent.getMessage());
+            // 日志状态
+            if (StringUtils.equalsAny(logininforEvent.getStatus(), Constants.LOGIN_SUCCESS, Constants.LOGOUT, Constants.REGISTER)) {
+                logininfor.setStatus(Constants.SUCCESS);
+            } else if (Constants.LOGIN_FAIL.equals(logininforEvent.getStatus())) {
+                logininfor.setStatus(Constants.FAIL);
+            }
+            // 插入数据
+            insertLogininfor(logininfor);
+        } catch (RuntimeException e) {
+            // 审计是旁路：失败不得冒泡到登录流程，但必须留下可检索痕迹（旧实现在缺 UA 时 NPE 静默丢行）
+            log.warn("login_audit_failed tenantId={} status={} errorType={}",
+                logininforEvent.getTenantId(), logininforEvent.getStatus(), e.getClass().getName(), e);
         }
-
-        String address = AddressUtils.getRealAddressByIP(ip);
-        StringBuilder s = new StringBuilder();
-        s.append(getBlock(ip));
-        s.append(address);
-        s.append(getBlock(logininforEvent.getUsername()));
-        s.append(getBlock(logininforEvent.getStatus()));
-        s.append(getBlock(logininforEvent.getMessage()));
-        // 打印信息到日志
-        log.info(s.toString(), logininforEvent.getArgs());
-        // 获取客户端操作系统
-        String os = userAgent.getOs().getName();
-        // 获取客户端浏览器
-        String browser = userAgent.getBrowser().getName();
-        // 封装对象
-        SysLogininforBo logininfor = new SysLogininforBo();
-        logininfor.setTenantId(logininforEvent.getTenantId());
-        logininfor.setUserName(logininforEvent.getUsername());
-        if (ObjectUtil.isNotNull(client)) {
-            logininfor.setClientKey(client.getClientKey());
-            logininfor.setDeviceType(client.getDeviceType());
-        }
-        logininfor.setIpaddr(ip);
-        logininfor.setLoginLocation(address);
-        logininfor.setBrowser(browser);
-        logininfor.setOs(os);
-        logininfor.setMsg(logininforEvent.getMessage());
-        // 日志状态
-        if (StringUtils.equalsAny(logininforEvent.getStatus(), Constants.LOGIN_SUCCESS, Constants.LOGOUT, Constants.REGISTER)) {
-            logininfor.setStatus(Constants.SUCCESS);
-        } else if (Constants.LOGIN_FAIL.equals(logininforEvent.getStatus())) {
-            logininfor.setStatus(Constants.FAIL);
-        }
-        // 插入数据
-        insertLogininfor(logininfor);
     }
 
-    private String getBlock(Object msg) {
+    /**
+     * 审计日志行：沿用 [ip][地点][账号][状态][消息] 形状，但 IP 脱敏、各字段清洗控制字符。
+     */
+    static String auditLogLine(LoginClientFacts facts, String address, LogininforEvent event) {
+        StringBuilder line = new StringBuilder();
+        line.append(getBlock(facts.maskedIp()));
+        line.append(sanitizeLogValue(address));
+        line.append(getBlock(sanitizeLogValue(event.getUsername())));
+        line.append(getBlock(sanitizeLogValue(event.getStatus())));
+        line.append(getBlock(sanitizeLogValue(event.getMessage())));
+        Object[] args = event.getArgs();
+        if (args != null && args.length > 0) {
+            line.append(getBlock(sanitizeLogValue(Arrays.deepToString(args))));
+        }
+        return line.toString();
+    }
+
+    /**
+     * 去掉控制字符（CR/LF/TAB 等），防止账号/消息里的换行伪造日志行。
+     */
+    static String sanitizeLogValue(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder(raw.length());
+        for (int i = 0; i < raw.length(); i++) {
+            char ch = raw.charAt(i);
+            if (ch < 0x20 || ch == 0x7f) {
+                continue;
+            }
+            builder.append(ch);
+        }
+        return builder.toString();
+    }
+
+    private static String getBlock(Object msg) {
         if (msg == null) {
             msg = "";
         }
-        return "[" + msg.toString() + "]";
+        return "[" + msg + "]";
     }
 
     /**
