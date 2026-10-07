@@ -17,6 +17,8 @@
 
 package com.nageoffer.ai.ragent.admin.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.nageoffer.ai.ragent.admin.controller.vo.DashboardOverviewGroupVO;
@@ -27,6 +29,7 @@ import com.nageoffer.ai.ragent.admin.controller.vo.DashboardTrendPointVO;
 import com.nageoffer.ai.ragent.admin.controller.vo.DashboardTrendSeriesVO;
 import com.nageoffer.ai.ragent.admin.controller.vo.DashboardTrendsVO;
 import com.nageoffer.ai.ragent.admin.service.DashboardService;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.rag.dao.entity.ConversationDO;
 import com.nageoffer.ai.ragent.rag.dao.entity.ConversationMessageDO;
 import com.nageoffer.ai.ragent.rag.dao.entity.RagTraceRunDO;
@@ -76,14 +79,16 @@ public class DashboardServiceImpl implements DashboardService {
     public DashboardOverviewVO loadOverview(String window) {
         WindowRange range = resolveWindowRange(window, Duration.ofHours(24));
 
-        long totalUsers = userMapper.selectCount(Wrappers.lambdaQuery(UserDO.class));
+        // RW-23-R1：ai_legacy_user 没有租户列，无法归属到租户 —— 不能为了"看起来限域"编造归属，
+        // 因此用户口径改为"租户域内会话消息出现过的去重用户数"（真实且可限域）。
+        long totalUsers = countTenantUsers();
         long usersInWindow = countUsers(range.start, range.end);
 
-        long totalSessions = conversationMapper.selectCount(Wrappers.lambdaQuery(ConversationDO.class));
+        long totalSessions = conversationMapper.selectCount(conversationQuery());
         long sessionsInWindow = countConversations(range.start, range.end);
         long sessionsPrevWindow = countConversations(range.prevStart, range.prevEnd);
 
-        long totalMessages = messageMapper.selectCount(Wrappers.lambdaQuery(ConversationMessageDO.class));
+        long totalMessages = messageMapper.selectCount(messageQuery());
         long messagesInWindow = countMessages(range.start, range.end);
         long messagesPrevWindow = countMessages(range.prevStart, range.prevEnd);
 
@@ -271,26 +276,72 @@ public class DashboardServiceImpl implements DashboardService {
                 .build();
     }
 
+    /**
+     * 当前执行主体租户（RW-23-R1）：统计查询的唯一限域来源。
+     *
+     * <p>缺主体即抛 {@code ClientException}（经 {@code AiInternalExceptionResolver} → 403/整数码信封），
+     * 不允许"没有主体就查全平台"。
+     */
+    private String currentTenantId() {
+        return PrincipalContext.require().tenantId();
+    }
+
+    /**
+     * 给任意 wrapper 追加租户条件（参数化，不做字符串拼接）。
+     */
+    private static void applyTenant(AbstractWrapper<?, ?, ?> wrapper, String tenantId) {
+        wrapper.apply("tenant_id = {0}", tenantId);
+    }
+
+    /** 租户域内的会话查询（用于不带时间条件的"累计"计数）。 */
+    private LambdaQueryWrapper<ConversationDO> conversationQuery() {
+        return Wrappers.lambdaQuery(ConversationDO.class)
+                .eq(ConversationDO::getTenantId, currentTenantId());
+    }
+
+    /** 租户域内的消息查询（用于不带时间条件的"累计"计数）。 */
+    private LambdaQueryWrapper<ConversationMessageDO> messageQuery() {
+        return Wrappers.lambdaQuery(ConversationMessageDO.class)
+                .eq(ConversationMessageDO::getTenantId, currentTenantId());
+    }
+
+    /**
+     * 租户域内的去重用户数（口径变更，RW-23-R1）：
+     * {@code ai_legacy_user} 无租户列，改用租户域内会话消息里出现过的 {@code user_id}。
+     */
+    private long countTenantUsers() {
+        QueryWrapper<ConversationMessageDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
+        wrapper.select("count(distinct user_id) as cnt");
+        return extractCount(messageMapper.selectMaps(wrapper));
+    }
+
     private long countUsers(Date start, Date end) {
-        return userMapper.selectCount(Wrappers.lambdaQuery(UserDO.class)
-                .ge(UserDO::getCreateTime, start)
-                .lt(UserDO::getCreateTime, end));
+        QueryWrapper<ConversationMessageDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
+        wrapper.select("count(distinct user_id) as cnt")
+                .ge("create_time", start)
+                .lt("create_time", end);
+        return extractCount(messageMapper.selectMaps(wrapper));
     }
 
     private long countConversations(Date start, Date end) {
         return conversationMapper.selectCount(Wrappers.lambdaQuery(ConversationDO.class)
+                .eq(ConversationDO::getTenantId, currentTenantId())
                 .ge(ConversationDO::getCreateTime, start)
                 .lt(ConversationDO::getCreateTime, end));
     }
 
     private long countMessages(Date start, Date end) {
         return messageMapper.selectCount(Wrappers.lambdaQuery(ConversationMessageDO.class)
+                .eq(ConversationMessageDO::getTenantId, currentTenantId())
                 .ge(ConversationMessageDO::getCreateTime, start)
                 .lt(ConversationMessageDO::getCreateTime, end));
     }
 
     private long countActiveUsers(Date start, Date end) {
         QueryWrapper<ConversationMessageDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("count(distinct user_id) as cnt")
                 .ge("create_time", start)
                 .lt("create_time", end);
@@ -299,6 +350,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private long countActiveSessions(Date start, Date end) {
         QueryWrapper<ConversationMessageDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("count(distinct (conversation_id, user_id)) as cnt")
                 .ge("create_time", start)
                 .lt("create_time", end);
@@ -307,6 +359,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private long countTraceRuns(Date start, Date end, String status) {
         QueryWrapper<RagTraceRunDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.ge("start_time", start).lt("start_time", end);
         if (status != null) {
             wrapper.eq("status", status);
@@ -316,6 +369,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private long countAssistantMessages(Date start, Date end) {
         QueryWrapper<ConversationMessageDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.ge("create_time", start)
                 .lt("create_time", end)
                 .eq("role", ROLE_ASSISTANT);
@@ -324,6 +378,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private long countNoDocMessages(Date start, Date end) {
         QueryWrapper<ConversationMessageDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.ge("create_time", start)
                 .lt("create_time", end)
                 .eq("role", ROLE_ASSISTANT)
@@ -333,6 +388,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private List<Long> listDurations(Date start, Date end) {
         QueryWrapper<RagTraceRunDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("duration_ms")
                 .ge("start_time", start)
                 .lt("start_time", end)
@@ -381,6 +437,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private Map<LocalDate, Long> countConversationsByDay(LocalDate start, LocalDate endExclusive, ZoneId zoneId) {
         QueryWrapper<ConversationDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("to_char(create_time,'YYYY-MM-DD') as d", "count(*) as cnt")
                 .ge("create_time", toDate(start, zoneId))
                 .lt("create_time", toDate(endExclusive, zoneId))
@@ -390,6 +447,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private Map<LocalDate, Long> countMessagesByDay(LocalDate start, LocalDate endExclusive, ZoneId zoneId) {
         QueryWrapper<ConversationMessageDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("to_char(create_time,'YYYY-MM-DD') as d", "count(*) as cnt")
                 .ge("create_time", toDate(start, zoneId))
                 .lt("create_time", toDate(endExclusive, zoneId))
@@ -399,6 +457,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private Map<LocalDate, Long> countAssistantMessagesByDay(LocalDate start, LocalDate endExclusive, ZoneId zoneId) {
         QueryWrapper<ConversationMessageDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("to_char(create_time,'YYYY-MM-DD') as d", "count(*) as cnt")
                 .ge("create_time", toDate(start, zoneId))
                 .lt("create_time", toDate(endExclusive, zoneId))
@@ -409,6 +468,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private Map<LocalDate, Long> countNoDocMessagesByDay(LocalDate start, LocalDate endExclusive, ZoneId zoneId) {
         QueryWrapper<ConversationMessageDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("to_char(create_time,'YYYY-MM-DD') as d", "count(*) as cnt")
                 .ge("create_time", toDate(start, zoneId))
                 .lt("create_time", toDate(endExclusive, zoneId))
@@ -420,6 +480,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private Map<LocalDate, Long> countActiveUsersByDay(LocalDate start, LocalDate endExclusive, ZoneId zoneId) {
         QueryWrapper<ConversationMessageDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("to_char(create_time,'YYYY-MM-DD') as d", "count(distinct user_id) as cnt")
                 .ge("create_time", toDate(start, zoneId))
                 .lt("create_time", toDate(endExclusive, zoneId))
@@ -429,6 +490,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private Map<LocalDate, Double> averageLatencyByDay(LocalDate start, LocalDate endExclusive, ZoneId zoneId) {
         QueryWrapper<RagTraceRunDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("to_char(start_time,'YYYY-MM-DD') as d", "avg(duration_ms) as avg")
                 .ge("start_time", toDate(start, zoneId))
                 .lt("start_time", toDate(endExclusive, zoneId))
@@ -453,6 +515,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private Map<LocalDate, Long> countTraceRunsByDay(LocalDate start, LocalDate endExclusive, ZoneId zoneId, String status) {
         QueryWrapper<RagTraceRunDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("to_char(start_time,'YYYY-MM-DD') as d", "count(*) as cnt")
                 .ge("start_time", toDate(start, zoneId))
                 .lt("start_time", toDate(endExclusive, zoneId));
@@ -465,6 +528,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private Map<LocalDateTime, Long> countConversationsByHour(LocalDateTime start, LocalDateTime endExclusive, ZoneId zoneId) {
         QueryWrapper<ConversationDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("to_char(create_time,'YYYY-MM-DD HH24:00:00') as h", "count(*) as cnt")
                 .ge("create_time", toDate(start, zoneId))
                 .lt("create_time", toDate(endExclusive, zoneId))
@@ -474,6 +538,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private Map<LocalDateTime, Long> countMessagesByHour(LocalDateTime start, LocalDateTime endExclusive, ZoneId zoneId) {
         QueryWrapper<ConversationMessageDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("to_char(create_time,'YYYY-MM-DD HH24:00:00') as h", "count(*) as cnt")
                 .ge("create_time", toDate(start, zoneId))
                 .lt("create_time", toDate(endExclusive, zoneId))
@@ -483,6 +548,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private Map<LocalDateTime, Long> countAssistantMessagesByHour(LocalDateTime start, LocalDateTime endExclusive, ZoneId zoneId) {
         QueryWrapper<ConversationMessageDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("to_char(create_time,'YYYY-MM-DD HH24:00:00') as h", "count(*) as cnt")
                 .ge("create_time", toDate(start, zoneId))
                 .lt("create_time", toDate(endExclusive, zoneId))
@@ -493,6 +559,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private Map<LocalDateTime, Long> countNoDocMessagesByHour(LocalDateTime start, LocalDateTime endExclusive, ZoneId zoneId) {
         QueryWrapper<ConversationMessageDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("to_char(create_time,'YYYY-MM-DD HH24:00:00') as h", "count(*) as cnt")
                 .ge("create_time", toDate(start, zoneId))
                 .lt("create_time", toDate(endExclusive, zoneId))
@@ -504,6 +571,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private Map<LocalDateTime, Long> countActiveUsersByHour(LocalDateTime start, LocalDateTime endExclusive, ZoneId zoneId) {
         QueryWrapper<ConversationMessageDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("to_char(create_time,'YYYY-MM-DD HH24:00:00') as h", "count(distinct user_id) as cnt")
                 .ge("create_time", toDate(start, zoneId))
                 .lt("create_time", toDate(endExclusive, zoneId))
@@ -513,6 +581,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private Map<LocalDateTime, Double> averageLatencyByHour(LocalDateTime start, LocalDateTime endExclusive, ZoneId zoneId) {
         QueryWrapper<RagTraceRunDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("to_char(start_time,'YYYY-MM-DD HH24:00:00') as h", "avg(duration_ms) as avg")
                 .ge("start_time", toDate(start, zoneId))
                 .lt("start_time", toDate(endExclusive, zoneId))
@@ -523,6 +592,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private Map<LocalDateTime, Long> countTraceRunsByHour(LocalDateTime start, LocalDateTime endExclusive, ZoneId zoneId, String status) {
         QueryWrapper<RagTraceRunDO> wrapper = new QueryWrapper<>();
+        applyTenant(wrapper, currentTenantId());
         wrapper.select("to_char(start_time,'YYYY-MM-DD HH24:00:00') as h", "count(*) as cnt")
                 .ge("start_time", toDate(start, zoneId))
                 .lt("start_time", toDate(endExclusive, zoneId));
