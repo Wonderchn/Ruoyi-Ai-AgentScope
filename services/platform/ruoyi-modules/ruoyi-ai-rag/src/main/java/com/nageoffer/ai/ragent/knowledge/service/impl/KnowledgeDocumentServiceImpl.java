@@ -527,9 +527,10 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                 .apply(TENANT_PREDICATE, requireTenantId())
                 .set(KnowledgeDocumentDO::getDocName, docName.trim())
                 .set(KnowledgeDocumentDO::getUpdatedBy, UserContext.getUsername())
-                // 版本令牌必须随每次成功写入前进：wrapper 更新不触发 updateTime 自动填充，
-                // 不显式写回就会出现"改了内容、版本没变"，乐观锁随即失效（旧值永远匹配）
+                // update_time 只服务展示/排序（wrapper 更新不触发自动填充，必须显式写回）
                 .set(KnowledgeDocumentDO::getUpdateTime, new Date());
+        // 版本令牌是 version 计数器，由数据库在行上自增（V29）：不依赖时钟，同毫秒也不会停住
+        applyVersionIncrement(updateWrapper);
         applyExpectedVersion(updateWrapper, requestParam == null ? null : requestParam.getExpectedVersion());
 
         // 如果传了 processMode，校验并更新处理配置
@@ -665,23 +666,26 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         return vo;
     }
 
-    // ==================== 文档乐观锁（编辑 / 状态） ====================
+    // ==================== 文档乐观锁（编辑 / 状态，V29 计数器） ====================
 
     /**
-     * 文档版本 = {@code update_time} 的 epoch 毫秒；行上没有时间（本不该发生）时返回 null，
-     * 此时调用方不带 {@code expectedVersion} 编辑，行为回落到无校验。
+     * 文档版本 = {@code ai_knowledge_document.version} 计数器（V29 起，0 起递增）。
      *
-     * <p>只作为"自上次读取以来有没有被改过"的令牌，不承诺恢复历史版本。
+     * <p><b>语义变化（要传给 T7/R）：</b>数值含义从"update_time 的 epoch 毫秒"
+     * 变成"行内计数器"。线路形状不变（仍是 {@code Long}），前端零改动，
+     * 但**不要**再把它当时刻用（不要做时间差、不要排序、不要与 {@code updateTime} 比较）。
+     *
+     * <p>列为空（迁移未部署的库）时返回 null：此时调用方不带 {@code expectedVersion} 编辑，
+     * 行为回落到无并发校验——这是刻意保留的兼容路径，不是"版本等于 0"。
      */
     private static Long versionOf(KnowledgeDocumentDO documentDO) {
-        Date updateTime = documentDO == null ? null : documentDO.getUpdateTime();
-        return updateTime == null ? null : updateTime.getTime();
+        return documentDO == null ? null : documentDO.getVersion();
     }
 
     /**
      * 写入前的乐观锁前置检查：期望版本与当前行不一致时，<b>在任何副作用之前</b>拒绝。
      *
-     * <p>真正的判定仍是下面条件更新里的 {@code WHERE update_time = ?}（0 行即冲突）：
+     * <p>真正的判定仍是条件更新里的 {@code WHERE version = ?}（0 行即冲突）：
      * 这一层只是让"读-改-写"之间的窗口在无竞争时也尽早失败，不替代 CAS。
      * 两层都保留是刻意的——把前置检查当唯一判定，等于在并发下退回最后写入覆盖。
      */
@@ -698,13 +702,27 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
     }
 
     /**
-     * 条件更新的版本谓词：只有 {@code update_time} 仍是调用方读到的那个瞬间才允许落库。
+     * 条件更新的版本谓词：只有计数器仍是调用方读到的那个值才允许落库。
+     *
+     * <p>与旧实现（{@code update_time = ?}）的关键差别：计数器由
+     * {@code version = version + 1} 在行上自增，**不依赖任何时钟**，
+     * 因此"同一毫秒两次提交"不再让令牌停住。
      */
     private static void applyExpectedVersion(LambdaUpdateWrapper<KnowledgeDocumentDO> updateWrapper,
                                              Long expectedVersion) {
         if (expectedVersion != null) {
-            updateWrapper.apply("update_time = {0}", new Date(expectedVersion));
+            updateWrapper.apply("version = {0}", expectedVersion);
         }
+    }
+
+    /**
+     * 计数器自增：每次成功写入 {@code version = version + 1}。
+     *
+     * <p>用 {@code setSql} 而不是 {@code set(version, 新值)}：读-改-写之间可能已有别的
+     * 提交，Java 侧算出来的"新值"会覆盖别人的自增；必须让数据库在行上自增。
+     */
+    private static void applyVersionIncrement(LambdaUpdateWrapper<KnowledgeDocumentDO> updateWrapper) {
+        updateWrapper.setSql("version = version + 1");
     }
 
     private Set<String> findEditedDocIds(List<String> docIds) {
@@ -849,8 +867,9 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                     .apply(TENANT_PREDICATE, tenantId)
                     .set(KnowledgeDocumentDO::getEnabled, targetEnabled)
                     .set(KnowledgeDocumentDO::getUpdatedBy, UserContext.getUsername())
-                    // 版本令牌随写入前进：否则"停用→启用"来回切都不改版本，乐观锁形同虚设
+                    // update_time 只服务展示/排序；版本令牌是下面的 version 计数器
                     .set(KnowledgeDocumentDO::getUpdateTime, new Date());
+            applyVersionIncrement(updateWrapper);
             applyExpectedVersion(updateWrapper, expectedVersion);
             int updated = documentMapper.update(updateWrapper);
             if (updated == 0) {
