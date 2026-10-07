@@ -17,9 +17,6 @@
         <module>ruoyi-ai-agent</module>
         <module>ruoyi-ai-web</module>
         <module>ruoyi-ai-runtime</module>
-        <module>ruoyi-aiflow</module>
-        <module>ruoyi-chat</module>
-        <module>ruoyi-generator</module>
         <module>ruoyi-system</module>
         <module>ruoyi-workflow</module>
     </modules>

@@ -9,5 +9,6 @@ WORKDIR /app
 COPY --from=build /src/ruoyi-admin/target/ruoyi-admin.jar /app/application.jar
 RUN mkdir -p /app/tmp && chown -R 10001:0 /app
 USER 10001
+ENV SPRING_PROFILES_ACTIVE=prod
 EXPOSE 6039
-ENTRYPOINT ["java", "-Djava.io.tmpdir=/app/tmp", "-jar", "/app/application.jar", "--spring.profiles.active=prod"]
+ENTRYPOINT ["java", "-Djava.io.tmpdir=/app/tmp", "-jar", "/app/application.jar"]

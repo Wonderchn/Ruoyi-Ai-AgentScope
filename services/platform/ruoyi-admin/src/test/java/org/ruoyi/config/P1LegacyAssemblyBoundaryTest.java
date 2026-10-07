@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.opentest4j.MultipleFailuresError;
 import org.junit.jupiter.api.function.Executable;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -12,6 +14,10 @@ import org.w3c.dom.NodeList;
 import org.yaml.snakeyaml.Yaml;
 
 import javax.xml.parsers.DocumentBuilderFactory;
+import javax.tools.ToolProvider;
+import java.net.URLClassLoader;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
 import java.io.InputStream;
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
@@ -29,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * P1.2a: the platform runtime must no longer ship the legacy AI identity, legacy AI routes or legacy AI
@@ -84,7 +91,8 @@ class P1LegacyAssemblyBoundaryTest {
      */
     private static final List<String> LEGACY_AI_ARTIFACTS = List.of(
         "ruoyi-chat",
-        "ruoyi-aiflow");
+        "ruoyi-aiflow",
+        "ruoyi-generator");
 
     /** The exclusion removed by this unit. */
     private static final String REMOVED_SECURITY_EXCLUSION = "/workflow/run";
@@ -115,24 +123,9 @@ class P1LegacyAssemblyBoundaryTest {
 
     private static final String APPLICATION_YML = "src/main/resources/application.yml";
 
-    private static final List<String> LEGACY_MODULE_SOURCE_ROOTS = List.of(
-        "ruoyi-modules/ruoyi-chat/src/main/java",
-        "ruoyi-modules/ruoyi-aiflow/src/main/java",
-        "services/platform/ruoyi-modules/ruoyi-chat/src/main/java",
-        "services/platform/ruoyi-modules/ruoyi-aiflow/src/main/java");
-
     /**
-     * A: no old AI / Harness / legacy-runtime artifact is reachable from the platform runtime.
-     *
-     * <p>The probe runs against the <em>test</em> classpath of {@code ruoyi-admin}. That is exactly the admin
-     * runtime classpath: {@code ruoyi-admin/pom.xml} declares only postgresql, ruoyi-common-doc/social/
-     * ratelimiter/mail, ruoyi-system, ruoyi-ai-integration (P1.2b production authorization wiring),
-     * ruoyi-workflow and spring-boot-admin-starter-client (plus spring-boot-starter-test in test scope),
-     * and neither ruoyi-system nor ruoyi-workflow depends on ruoyi-chat / ruoyi-aiflow (asserted in
-     * {@link #adminPomKeepsBusinessWorkflowAndDeclaresNoLegacyAiModule()}). Absence here therefore means
-     * "not shipped in the platform runtime", which is the property this unit has to guarantee. The old modules
-     * are still compiled by the reactor, so their sources are asserted to exist in
-     * {@link #everyAssertedAbsentClassStillExistsInItsLegacyModule()} — the absence probes are not vacuous.</p>
+     * The supported runtime excludes every retired AI class. A synthetic jar below proves that
+     * this exact assertion rejects reintroduction after the legacy source trees are removed.
      */
     @Test
     void legacyAiArtifactsAreAbsentFromThePlatformRuntimeClasspath() {
@@ -161,16 +154,61 @@ class P1LegacyAssemblyBoundaryTest {
             "the absence probe reports non-existing classes as present, so its negative result proves nothing");
     }
 
-    /**
-     * Non-vacuity control for A: the classes asserted absent are real classes of the legacy modules that the
-     * reactor still builds. Without this, a typo in {@link #ABSENT_CLASSES} would look like a passing boundary.
-     */
+    /** Reintroduce all 18 historical class names in a real jar; every absence check must fail. */
     @Test
-    void everyAssertedAbsentClassStillExistsInItsLegacyModule() {
-        assertAll(ABSENT_CLASSES.stream()
-            .map(className -> (Executable) () -> assertNotNull(locateLegacySourceFile(className),
-                () -> "no legacy source file found for " + className
-                    + "; the assertion in legacyAiArtifactsAreAbsentFromThePlatformRuntimeClasspath() would be vacuous")));
+    void absenceGuardRejectsJarThatReintroducesLegacyClasses(@TempDir Path temporary) throws Exception {
+        Path classes = Files.createDirectories(temporary.resolve("classes"));
+        List<String> arguments = new ArrayList<>(List.of("-d", classes.toString()));
+        for (String name : ABSENT_CLASSES) {
+            int separator = name.lastIndexOf('.');
+            Path source = temporary.resolve("sources").resolve(name.replace('.', '/') + ".java");
+            Files.createDirectories(source.getParent());
+            Files.writeString(source, "package " + name.substring(0, separator) + "; public class "
+                + name.substring(separator + 1) + " {}", StandardCharsets.UTF_8);
+            arguments.add(source.toString());
+        }
+        var compiler = ToolProvider.getSystemJavaCompiler();
+        assertNotNull(compiler, "the retirement control requires the build JDK");
+        assertEquals(0, compiler.run(null, null, null, arguments.toArray(String[]::new)));
+        Path jar = temporary.resolve("reintroduced-legacy.jar");
+        try (var output = new JarOutputStream(Files.newOutputStream(jar))) {
+            for (String name : ABSENT_CLASSES) {
+                String entry = name.replace('.', '/') + ".class";
+                output.putNextEntry(new JarEntry(entry));
+                Files.copy(classes.resolve(entry), output);
+                output.closeEntry();
+            }
+        }
+        ClassLoader previous = Thread.currentThread().getContextClassLoader();
+        try (var loader = new URLClassLoader(new java.net.URL[]{jar.toUri().toURL()}, runtimeClassLoader())) {
+            Thread.currentThread().setContextClassLoader(loader);
+            MultipleFailuresError failure = assertThrows(MultipleFailuresError.class,
+                this::legacyAiArtifactsAreAbsentFromThePlatformRuntimeClasspath);
+            assertEquals(ABSENT_CLASSES.size(), failure.getFailures().size(),
+                "all historical absence checks must reject the injected jar");
+        } finally {
+            Thread.currentThread().setContextClassLoader(previous);
+        }
+    }
+
+    /** Retired modules cannot return through the reactor, dependency management or source directories. */
+    @Test
+    void retiredModulesCannotReappearInReactorOrDependencyManagement() throws Exception {
+        Path modulesPom = resolveModuleFile("ruoyi-modules/pom.xml", "ruoyi-modules/pom.xml",
+            "services/platform/ruoyi-modules/pom.xml");
+        Document reactor = parseXml(modulesPom);
+        Document parent = parseXml(modulesPom.getParent().getParent().resolve("pom.xml"));
+        for (String artifact : LEGACY_AI_ARTIFACTS) {
+            assertFalse(Files.exists(modulesPom.getParent().resolve(artifact)), "retired source tree: " + artifact);
+            NodeList modules = reactor.getElementsByTagName("module");
+            for (int i = 0; i < modules.getLength(); i++) {
+                assertFalse(artifact.equals(modules.item(i).getTextContent().trim()), "retired reactor module: " + artifact);
+            }
+            NodeList artifacts = parent.getElementsByTagName("artifactId");
+            for (int i = 0; i < artifacts.getLength(); i++) {
+                assertFalse(artifact.equals(artifacts.item(i).getTextContent().trim()), "retired managed dependency: " + artifact);
+            }
+        }
     }
 
     /**
@@ -327,20 +365,6 @@ class P1LegacyAssemblyBoundaryTest {
     private static ClassLoader runtimeClassLoader() {
         ClassLoader contextLoader = Thread.currentThread().getContextClassLoader();
         return contextLoader != null ? contextLoader : P1LegacyAssemblyBoundaryTest.class.getClassLoader();
-    }
-
-    /** Locates the legacy module source of a class asserted to be absent, or {@code null} when it does not exist. */
-    private static Path locateLegacySourceFile(String className) {
-        String relativeSource = className.replace('.', '/') + ".java";
-        for (Path ancestor = currentDirectory(); ancestor != null; ancestor = ancestor.getParent()) {
-            for (String sourceRoot : LEGACY_MODULE_SOURCE_ROOTS) {
-                Path candidate = ancestor.resolve(sourceRoot).resolve(relativeSource).normalize();
-                if (Files.isRegularFile(candidate)) {
-                    return candidate;
-                }
-            }
-        }
-        return null;
     }
 
     private static Map<String, Object> loadApplicationYml() throws Exception {
