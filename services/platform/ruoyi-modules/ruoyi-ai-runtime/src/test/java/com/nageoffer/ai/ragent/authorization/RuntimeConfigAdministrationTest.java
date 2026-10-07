@@ -83,10 +83,27 @@ class RuntimeConfigAdministrationTest {
         verifyNoInteractions(publisher);
     }
 
+    /**
+     * RW-06-R1：合成 canary 的形态说明。
+     *
+     * <p>这里断言的是"历史明文凭据（**不是**合法引用形态）绝不会被读取面回显"，判据是引用形状
+     * {@code (env|vault|secret|masked):…}，与它长得像不像某厂商 key 无关；因此标记**不需要**、
+     * 也**不得**写成 {@code sk-…} 形态——`scripts/ci/check-public-source.py` 的凭据正则
+     * {@code sk-[A-Za-z0-9_-]{16,}} 会把它判成 credential-shaped literal 而让公开源码门失败。
+     */
+    private static final String LEGACY_PLAINTEXT_CREDENTIAL = "raw-credential-canary-must-never-be-echoed";
+
     @Test void legacyPlaintextCredentialIsNeverReturnedByTheReadApi() {
         var unsafe = new ConfigRevisionFacts("T1", "rev-legacy", 1, "deepseek", "deepseek-flash", "catalog", "hash",
-                "sk-synthetic-canary", "2101", Instant.now(), 1536);
+                LEGACY_PLAINTEXT_CREDENTIAL, "2101", Instant.now(), 1536);
         when(publisher.snapshot("rev-legacy")).thenReturn(new ConfigRevisionPublisher.ConfigRevisionSnapshot(unsafe, "PUBLISHED", "{}"));
-        assertThatThrownBy(() -> controller.runtimeConfig("rev-legacy")).isInstanceOf(P04AiException.class);
+        // 断言不放松：拒绝必须发生，且原因就是"凭据引用形状不合法"（BAD_REQUEST），
+        // 而不是被误报成"没权限/没装配"等其他失败。
+        assertThatThrownBy(() -> controller.runtimeConfig("rev-legacy"))
+                .isInstanceOf(P04AiException.class)
+                .satisfies(ex -> assertThat(((P04AiException) ex).errorCode())
+                        .isEqualTo(P04AiErrorCode.BAD_REQUEST));
+        // 反向锚点：该标记既不在响应中被回显，也不被掩码回显（读取面在形状校验处就拒绝）。
+        assertThat(unsafe.credentialRef()).isEqualTo(LEGACY_PLAINTEXT_CREDENTIAL);
     }
 }

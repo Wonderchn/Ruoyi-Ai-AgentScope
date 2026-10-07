@@ -87,6 +87,17 @@ class RuntimeCatalogControllerTest {
     private static final String TENANT = "T1";
     private static final String REVISION = "rev-1";
 
+    /**
+     * 历史明文凭据（**非引用形态**）的合成标记。
+     *
+     * <p>刻意不写成 {@code sk-…} 这类字面量：`scripts/ci/check-public-source.py` 的凭据正则
+     * {@code sk-[A-Za-z0-9_-]{16,}} 会把它判成 credential-shaped literal 而让公开源码门失败
+     * （RW-06-R1 实测命中）。这里要表达的事实是"它**不是**合法凭据引用（无 env/vault/secret/masked
+     * 前缀）"，与它长得像不像某厂商的 key 无关——生产判据就是引用形状
+     * {@code (env|vault|secret|masked):…}，不是厂商前缀。
+     */
+    private static final String LEGACY_PLAINTEXT_CREDENTIAL = "raw-credential-canary-must-never-be-echoed";
+
     private AiResourceAuthorizationService authorization;
     private RuntimeCatalogService catalog;
     private ConfigRevisionPublisher publisher;
@@ -322,14 +333,18 @@ class RuntimeCatalogControllerTest {
     @DisplayName("历史明文凭据引用：不回显、不掩码回显，只标 refused")
     void legacyPlaintextCredentialIsNeverEchoed() {
         when(catalog.currentRevision(TENANT)).thenReturn(
-                revision(TENANT, "rev-legacy", "PUBLISHED", "deepseek", "deepseek-chat", "sk-synthetic-canary"));
+                revision(TENANT, "rev-legacy", "PUBLISHED", "deepseek", "deepseek-chat",
+                        LEGACY_PLAINTEXT_CREDENTIAL));
 
         RuntimeCatalogVO.CatalogView view = controller.catalog().getBody().data();
 
         assertThat(view.revision().credentialRef()).isNull();
         assertThat(view.revision().credentialKind()).isEqualTo("refused");
         assertThat(view.providers()).anySatisfy(provider -> assertThat(provider.credentialRef()).isNull());
-        assertThat(new ObjectMapper().valueToTree(view).toString()).doesNotContain("sk-synthetic-canary");
+        String json = new ObjectMapper().valueToTree(view).toString();
+        assertThat(json).doesNotContain(LEGACY_PLAINTEXT_CREDENTIAL);
+        // 对照断言（防"整段字段被清空"式的假通过）：同一份响应里合法引用必须照常保留。
+        assertThat(json).contains("env:deepseek");
     }
 
     @Test
