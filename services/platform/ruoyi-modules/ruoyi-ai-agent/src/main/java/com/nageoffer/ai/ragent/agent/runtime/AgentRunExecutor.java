@@ -62,8 +62,22 @@ public class AgentRunExecutor implements RunExecutor {
     public String action(){return "agent.run";}
     public Outcome execute(RunExecution execution) {
         var run=execution.run();var guard=execution.guard();
+        // ① 执行契约版本：**先于任何配置权威/DB 读取**判定（旧 checkpoint 不得因为读不到权威而
+        //    变成另一种错误码）。不匹配即显式拒绝，不做任何"尽力兼容"。
         if(!"p3-core-v1".equals(run.executionVersion())) return Outcome.failed("AGENT_CHECKPOINT_INCOMPATIBLE");
-        ledger.compatible(run,gateway.model(bound(execution)));
+        // ② 绑定行的五个兼容条件（agent/engine/catalog/model/checkpoint_version）。
+        //
+        //    这里与 ① 必须给出**同一个**终态码：此前 ① 返回 Outcome.failed("AGENT_CHECKPOINT_INCOMPATIBLE")，
+        //    而 ledger.compatible(...) 抛 RUN_STATE_CONFLICT 被 Worker 的 safeFail 收成
+        //    error_code=RUN_STATE_CONFLICT —— 同一类"旧 checkpoint"在客户端是两个不同事实。
+        //    现在两者都收敛为 AGENT_CHECKPOINT_INCOMPATIBLE，且**授权失败不被吞**：
+        //    ledger.compatible(...) 的 access.current 仍原样上抛（见 ③ 的注释）。
+        String boundModel = gateway.model(bound(execution));
+        AgentLedger.Binding binding = ledger.binding(run);
+        if(!AgentLedger.isCompatible(binding,boundModel)) return Outcome.failed("AGENT_CHECKPOINT_INCOMPATIBLE");
+        // ③ 授权门：兼容性通过后才走 access.current。**这一句不能并进 ② 的判定**，
+        //    否则"授权不可用"会被误报成"checkpoint 不兼容"，把 fail-closed 的原因说错。
+        ledger.compatible(binding,run,boundModel);
         // Wall budget is measured from first start, including approval wait and subsequent attempts.
         var budget=AgentModelAdapter.parse(run.budgetJson()==null?"{}":run.budgetJson());
         if(run.startedAt()!=null && java.time.Instant.now().isAfter(run.startedAt().plusSeconds(budget.path("maxWallClockSeconds").asInt(600)))) return Outcome.failed("BUDGET_EXCEEDED");
@@ -85,7 +99,9 @@ public class AgentRunExecutor implements RunExecutor {
             // The SDK reserves its final iteration for summarization. Application model-step
             // budgets are enforced by AgentModelAdapter; do not suppress an already admitted tool.
             .toolkit(toolkit).maxIters(12).maxRetries(1)
-            .stateStore(new FencedAgentStateStore(jdbc,ledger,run,guard,gateway.model(bound(execution)))).build();
+            // 绑定模型复用 ② 读出的那一份：同一 run 的绑定版本在受理时刻已固定（C1.2），
+            // 执行期再读一次不会得到不同事实，只会多一次配置权威查询。
+            .stateStore(new FencedAgentStateStore(jdbc,ledger,run,guard,boundModel)).build();
         try {
             var context=RuntimeContext.builder().userId(run.subject()).sessionId(run.runId()).build();
             var reply=agent.call(AgentModelAdapter.parse(run.inputJson()).path("text").asText(),context).block();

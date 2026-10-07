@@ -42,9 +42,46 @@ public class AgentLedger {
         return rows.get(0);
     }
     public void compatible(RunRecord run,String model) {
-        var b=binding(run);
-        if(!AGENT.equals(b.agent()) || !ENGINE.equals(b.engine()) || !CATALOG.equals(b.catalog()) || !model.equals(b.model()) || b.checkpointVersion()!=1) throw new RunApiException(RunErrorCode.RUN_STATE_CONFLICT,"AGENT_CHECKPOINT_INCOMPATIBLE");
+        compatible(binding(run),run,model);
+    }
+
+    /**
+     * 接受**已读出的**绑定行的兼容性判定（RW-20）。
+     *
+     * <p>抽出这个重载是为了让"绑定行的读取次数"与"判定点"解耦：调用方若已经为了别的目的读过
+     * {@link #binding(RunRecord)}，不必为了过这道门再读一次（同一行两次 SELECT 不是错误，
+     * 但会让"这次执行读了几次绑定"变成不可断言的事实）。
+     *
+     * <p>语义与 {@link #compatible(RunRecord, String)} **完全一致**：不兼容即
+     * {@link RunErrorCode#RUN_STATE_CONFLICT} 抛出，兼容时仍执行同一条授权门
+     * （{@code access.current}）。**授权失败与不兼容是两件事**：前者必须原样冒出去，
+     * 不能被任何调用方收敛成"checkpoint 不兼容"。
+     */
+    public void compatible(Binding binding,RunRecord run,String model) {
+        if(!isCompatible(binding,model)) throw new RunApiException(RunErrorCode.RUN_STATE_CONFLICT,"AGENT_CHECKPOINT_INCOMPATIBLE");
         access.current(run,Set.of("agent.execute","kb.read"));
+    }
+
+    /**
+     * 冻结的 checkpoint 兼容性判定（纯函数，RW-20）。
+     *
+     * <p>五个条件必须<b>同时</b>成立，缺一即"旧/异样 checkpoint"：
+     * {@code agent_version=core-v1}、{@code engine_version=2.0.2}、{@code tool_catalog=p3-tools-v1}、
+     * 绑定的模型与当前绑定模型一致、{@code checkpoint_version=1}。
+     *
+     * <p><b>为什么必须是纯函数。</b>它是"旧 checkpoint 兼容或显式拒绝"这条判据的核心：
+     * 抛异常与返回 FAILED 是两种不同的外显形态，把它们混在一条语句里，
+     * 同一种不兼容就会随判定点不同而给出不同的 {@code error_code}（RW-20 实测：
+     * 执行器入口给 {@code AGENT_CHECKPOINT_INCOMPATIBLE}，而本类抛出的路径被 Worker 收成
+     * {@code RUN_STATE_CONFLICT}）。拆出来之后，调用方可以**显式选择**外显形态，
+     * 并让"哪一种不兼容"对客户端是一个稳定事实。
+     *
+     * <p>{@code model} 为 null 一律判为不兼容（不得因为"两边都取不到模型"就放行）。
+     */
+    public static boolean isCompatible(Binding binding,String model) {
+        return binding!=null && AGENT.equals(binding.agent()) && ENGINE.equals(binding.engine())
+                && CATALOG.equals(binding.catalog()) && model!=null && model.equals(binding.model())
+                && binding.checkpointVersion()==1;
     }
     public void admitted(RunRecord run,com.nageoffer.ai.ragent.runtime.dto.AdmissionRequest request,String model) {
         var budget=request.budget();

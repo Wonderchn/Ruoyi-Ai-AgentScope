@@ -126,16 +126,51 @@ public class AgentActionController {
         try {var run=visible(id,"run.get");permit=deliveries.enter(principal(),"run.get","run:"+id);return ResponseEntity.ok().header("X-Ai-Delivery-Permit",permit.permitId()).header("X-Ai-Delivery-Operation",permit.operationId()).body(Map.of("code",200,"msg","success","data",ledger.actions(run).stream().map(this::view).toList(),"requestId",request));}
         catch(RuntimeException e){if(permit!=null) permit.close();if(e instanceof RunApiException api) return com.nageoffer.ai.ragent.runtime.web.RunApiResponses.fail(api.errorCode(),api.getMessage(),request);throw e;}
     }
+    /**
+     * 审批请求体的**形状**判定（RW-20 抽出；与 {@link #approvalMatchesProposal} 一起构成
+     * F15「审批版本与参数 hash」的客户端可核对契约）。
+     *
+     * <p>三个条件缺一不可：恰好六个字段（{@code actionId/argsHash/toolVersion/target/approvalVersion/decision}，
+     * 由调用方的 {@code AgentContract.fields} 先拒绝未知字段）、{@code approvalVersion} 是整数、
+     * {@code decision} ∈ {ALLOW, DENY}。**不允许缺字段**：{@code size()==6} 是"调用方必须显式
+     * 复述它看到的那条提案"的强制项，缺一个就退化成"服务端替它补"，那正是审批语义要防的。
+     */
+    static boolean approvalRequestWellFormed(JsonNode input) {
+        return input != null && input.isObject() && input.size() == 6
+                && input.path("approvalVersion").isIntegralNumber()
+                && Set.of("ALLOW", "DENY").contains(input.path("decision").asText());
+    }
+
+    /**
+     * 审批请求是否**指的就是**该提案（RW-20 抽出）。
+     *
+     * <p>五项必须逐项相等：{@code argsHash}（参数 hash —— 提案的参数被换过就必须拒）、
+     * {@code toolVersion}、{@code target}、{@code approvalVersion}（乐观锁代际）、
+     * 且工具必须是受控写工具 {@code sandbox_ticket}。任何一项不符都是
+     * {@code VERSION_CONFLICT}(409)：**服务端绝不按 actionId 就认账**。
+     *
+     * <p>用 {@link java.util.Objects#equals} 而不是直接解引用：列的 NULL 不该变成一次 500，
+     * "读不出可比对的提案字段"与"比对不上"在安全后果上完全一致 —— 都是拒绝（fail-closed）。
+     */
+    static boolean approvalMatchesProposal(AgentLedger.Action a, JsonNode input) {
+        return a != null && input != null
+                && java.util.Objects.equals(a.argsHash(), input.path("argsHash").asText())
+                && java.util.Objects.equals(a.toolVersion(), input.path("toolVersion").asText())
+                && java.util.Objects.equals(a.target(), input.path("target").asText())
+                && a.approvalVersion() == input.path("approvalVersion").intValue()
+                && "sandbox_ticket".equals(a.tool());
+    }
+
     @PostMapping("/{id}/approvals") public ResponseEntity<?> approve(@PathVariable String id,@RequestBody String body){return response(id,"run.approve",()->{
         var input=AgentModelAdapter.parse(body);AgentContract.fields(input,Set.of("actionId","argsHash","toolVersion","target","approvalVersion","decision"));
-        if(input.size()!=6 || !input.path("approvalVersion").isIntegralNumber() || !Set.of("ALLOW","DENY").contains(input.path("decision").asText())) throw new RunApiException(RunErrorCode.BAD_REQUEST);
+        if(!approvalRequestWellFormed(input)) throw new RunApiException(RunErrorCode.BAD_REQUEST);
         if(!properties.getApproval().isInitiatorEnabled()) throw new RunApiException(RunErrorCode.FORBIDDEN,"APPROVER_POLICY_CLOSED");
         var initial=visible(id,"run.approve");
         return transactions.execute(status->{
             var run=runs.lockRun(initial.tenantId(),id).orElseThrow();visible(id,"run.approve");
             var a=ledger.action(run.tenantId(),input.path("actionId").asText()).orElseThrow(()->new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
             if(!id.equals(a.runId()) || !principal().membershipId().equals(a.member())) throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
-            if(!a.argsHash().equals(input.path("argsHash").asText()) || !a.toolVersion().equals(input.path("toolVersion").asText()) || !a.target().equals(input.path("target").asText()) || a.approvalVersion()!=input.path("approvalVersion").intValue() || !"sandbox_ticket".equals(a.tool())) throw new RunApiException(RunErrorCode.VERSION_CONFLICT);
+            if(!approvalMatchesProposal(a,input)) throw new RunApiException(RunErrorCode.VERSION_CONFLICT);
             if(Set.of("CANCELLED","CANCEL_REQUESTED","FAILED").contains(run.status())) throw new RunApiException(RunErrorCode.RUN_STATE_CONFLICT);
             var prior=jdbc.queryForList("SELECT decision,expires_at>now() AS valid FROM ai_action_approval WHERE tenant_id=? AND action_id=? AND approval_version=?",run.tenantId(),a.id(),a.approvalVersion());
             String decision=input.path("decision").asText();
