@@ -34,12 +34,50 @@ export interface PlatformEnvelope<T> {
 export class PlatformApiError extends Error {
   readonly code: number;
   readonly kind: IdentityOutcome['kind'];
+  /**
+   * 服务端业务**符号码**（信封 `data.errorCode`）。缺失时为 `null`（服务端没给）。
+   *
+   * 为什么必须有这个字段：平台 `R<T>` 信封里 **HTTP 状态可以相同而业务原因不同** ——
+   * 例如同为 503 的 `CONFIG_AUTHORITY_UNAVAILABLE`（尚无已发布权威）/
+   * `AUTHORIZATION_UNAVAILABLE`（授权服务不可用）/ `DEPENDENCY_UNAVAILABLE`（依赖不可用），
+   * 又例如同为 409 的 `VERSION_CONFLICT` / `RESOURCE_VERSION_CONFLICT`。
+   * 调用方**必须**按本字段分支；按 `code`(HTTP) 或 `kind` 猜原因会把不同故障说成同一个。
+   */
+  readonly errorCode: string | null;
 
-  constructor(kind: IdentityOutcome['kind'], code: number, message: string) {
+  constructor(kind: IdentityOutcome['kind'], code: number, message: string, errorCode: string | null = null) {
     super(message);
     this.name = 'PlatformApiError';
     this.kind = kind;
     this.code = code;
+    this.errorCode = errorCode;
+  }
+}
+
+/**
+ * 从信封里取服务端符号码 `data.errorCode`。
+ * 只认非空字符串：`undefined`/`null`/空串/非字符串一律归为"服务端未给"，不编造原因。
+ */
+export function envelopeErrorCode(envelope: PlatformEnvelope<unknown> | null | undefined): string | null {
+  const data = envelope?.data;
+  if (data !== null && typeof data === 'object') {
+    const value = (data as Record<string, unknown>).errorCode;
+    if (typeof value === 'string' && value.trim() !== '')
+      return value;
+  }
+  return null;
+}
+
+/**
+ * 尽力读取失败响应的 JSON 信封；读不出来（空体 / 非 JSON / 流已消费）返回 `null`。
+ * 解析失败**不得**掩盖真实失败：调用方仍按 HTTP 状态码抛错，只是没有符号码。
+ */
+async function readFailureEnvelope(response: Response): Promise<PlatformEnvelope<unknown> | null> {
+  try {
+    return (await response.json()) as PlatformEnvelope<unknown>;
+  }
+  catch {
+    return null;
   }
 }
 
@@ -74,6 +112,7 @@ export function unwrapData<T>(envelope: PlatformEnvelope<unknown> | null | undef
       outcome.kind,
       outcome.kind === 'business-error' ? outcome.code : Number(envelope?.code ?? -1),
       outcome.message || '请求失败',
+      envelopeErrorCode(envelope),
     );
   }
   return envelope?.data as T;
@@ -89,6 +128,7 @@ export function unwrapRows<T>(
       outcome.kind,
       outcome.kind === 'business-error' ? outcome.code : Number(envelope?.code ?? -1),
       outcome.message || '请求失败',
+      envelopeErrorCode(envelope),
     );
   }
   const rows = Array.isArray(envelope?.rows) ? (envelope.rows as T[]) : [];
@@ -198,6 +238,10 @@ export function createPlatformClient(deps: PlatformClientDeps): PlatformClient {
 
     if (!response.ok) {
       const httpCode = response.status;
+      // 服务端符号码在失败响应体里（`data.errorCode`）。同为 503/409 的不同业务原因
+      // 只能靠它区分，故这里尽力读一次信封；读不出来也只是没有符号码，不掩盖 HTTP 失败。
+      const failureEnvelope = await readFailureEnvelope(response);
+      const errorCode = envelopeErrorCode(failureEnvelope);
       if (httpCode === 401)
         deps.onAuthExpired?.('登录状态已失效，请重新登录');
       if (httpCode === 403)
@@ -206,6 +250,7 @@ export function createPlatformClient(deps: PlatformClientDeps): PlatformClient {
         httpCode === 401 ? 'auth-expired' : httpCode === 403 ? 'forbidden' : 'business-error',
         httpCode,
         `HTTP ${httpCode}`,
+        errorCode,
       );
     }
 
