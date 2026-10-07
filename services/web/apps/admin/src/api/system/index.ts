@@ -306,6 +306,144 @@ export interface StatusBody {
   [key: string]: string | undefined;
 }
 
+// ---------------------------------------------------------------------------
+// RW-15 补齐的 F01 子域类型（OSS / 个人中心 / 社交 / 短链）
+// ---------------------------------------------------------------------------
+
+/** `SysOssVo`：OSS 对象行（`ossId` 是雪花 Long ⇒ string）。 */
+export interface SysOssVo {
+  ossId?: string;
+  fileName?: string;
+  originalName?: string;
+  fileSuffix?: string;
+  url?: string;
+  createTime?: string;
+  createBy?: string;
+  service?: string;
+}
+
+export interface SysOssQuery extends PageParams {
+  fileName?: string;
+  originalName?: string;
+  service?: string;
+}
+
+/** `SysOssConfigVo`：OSS 配置行（**不含**密钥明文；服务端按 VO 边界决定掩码/省略）。 */
+export interface SysOssConfigVo {
+  ossConfigId?: string;
+  configKey?: string;
+  accessKey?: string;
+  secretKey?: string;
+  bucketName?: string;
+  prefix?: string;
+  endpoint?: string;
+  region?: string;
+  accessPolicy?: string;
+  /** '0' 正常 / '1' 停用 */
+  status?: string;
+  remark?: string;
+  createTime?: string;
+}
+
+export interface SysOssConfigQuery extends PageParams {
+  configKey?: string;
+  bucketName?: string;
+  status?: string;
+}
+
+export interface SysOssConfigBody {
+  ossConfigId?: string;
+  configKey?: string;
+  accessKey?: string;
+  secretKey?: string;
+  bucketName?: string;
+  prefix?: string;
+  endpoint?: string;
+  region?: string;
+  accessPolicy?: string;
+  status?: string;
+  remark?: string;
+}
+
+/** 个人中心（`ProfileVo`）：`{user, roleGroup, postGroup}`。 */
+export interface SysProfileVo {
+  user?: Record<string, unknown> | null;
+  roleGroup?: string;
+  postGroup?: string;
+}
+
+/** `SysUserProfileBo`：可改的本人资料字段。 */
+export interface SysProfileBody {
+  nickName?: string;
+  email?: string;
+  phonenumber?: string;
+  sex?: string;
+}
+
+export interface SysSocialVo {
+  id?: string;
+  userId?: string;
+  tenantId?: string;
+  /** 第三方平台（如 gitee/wechat） */
+  source?: string;
+  openId?: string;
+  userName?: string;
+  nickName?: string;
+  email?: string;
+  avatar?: string;
+  createTime?: string;
+}
+
+export interface SysUrlVo {
+  urlId?: string;
+  /** 短链后的完整 URL */
+  shortUrl?: string;
+  /** 原始 URL */
+  url?: string;
+  comment?: string;
+  createTime?: string;
+  createBy?: string;
+  [key: string]: unknown;
+}
+
+export interface SysUrlShortcutVo {
+  id?: string;
+  name?: string;
+  url?: string;
+  icon?: string;
+  [key: string]: unknown;
+}
+
+export interface SysUrlQuery extends PageParams {
+  url?: string;
+  comment?: string;
+}
+
+export interface SysUrlBody {
+  urlId?: string;
+  url?: string;
+  comment?: string;
+}
+
+/** RW-15 新增子域的逐字权限串（后端 `@SaCheckPermission`）。 */
+export const SYSTEM_F01_PERMISSIONS = {
+  ossList: 'system:oss:list',
+  ossQuery: 'system:oss:query',
+  ossUpload: 'system:oss:upload',
+  ossDownload: 'system:oss:download',
+  ossRemove: 'system:oss:remove',
+  ossConfigList: 'system:ossConfig:list',
+  ossConfigAdd: 'system:ossConfig:add',
+  ossConfigEdit: 'system:ossConfig:edit',
+  ossConfigRemove: 'system:ossConfig:remove',
+  urlList: 'system:url:list',
+  urlQuery: 'system:url:query',
+  urlAdd: 'system:url:add',
+  urlEdit: 'system:url:edit',
+  urlRemove: 'system:url:remove',
+  cacheList: 'monitor:cache:list',
+} as const;
+
 export function createSystemApi(client: PlatformClient) {
   return {
     roles: {
@@ -426,6 +564,72 @@ export function createSystemApi(client: PlatformClient) {
         client.put<unknown>('/system/client/changeStatus', { body: { id, status } }),
       remove: (ids: readonly string[]) => client.del<unknown>(`/system/client/${ids.map(encodeURIComponent).join(',')}`),
       exportUrl: () => '/system/client/export',
+    },
+
+    /**
+     * OSS 对象存储（F01 op11，RW-15 补）。`SysOssController`（`/resource/oss`）：
+     * `GET /list`（`system:oss:list`）、`GET /listByIds/{ossIds}`（`system:oss:query`）、
+     * `DELETE /{ossIds}`（`system:oss:remove`）。
+     * ⚠️ `POST /upload|/fileUpload`（multipart）与 `GET /download/{ossId}`（二进制流）
+     * 依赖 multipart / blob 传输，共享 `PlatformClient` 只处理 JSON ⇒ 不在本模块提供
+     * （前端缺口已登记，见 RW-15 报告 §NOT_RUN）。
+     */
+    oss: {
+      list: (query: SysOssQuery) => client.getRows<SysOssVo>('/resource/oss/list', { query: { ...query } }),
+      listByIds: (ossIds: readonly string[]) =>
+        client.get<SysOssVo[]>(`/resource/oss/listByIds/${ossIds.map(encodeURIComponent).join(',')}`),
+      remove: (ossIds: readonly string[]) =>
+        client.del<unknown>(`/resource/oss/${ossIds.map(encodeURIComponent).join(',')}`),
+      /** 下载是二进制响应（后端直接写 `HttpServletResponse`）——见上方说明。 */
+      downloadPath: (ossId: string) => `/resource/oss/download/${encodeURIComponent(ossId)}`,
+    },
+
+    /** OSS 配置（`SysOssConfigController`，`/resource/oss/config`）。 */
+    ossConfigs: {
+      list: (query: SysOssConfigQuery) =>
+        client.getRows<SysOssConfigVo>('/resource/oss/config/list', { query: { ...query } }),
+      get: (ossConfigId: string) =>
+        client.get<SysOssConfigVo>(`/resource/oss/config/${encodeURIComponent(ossConfigId)}`),
+      create: (body: SysOssConfigBody) => client.post<unknown>('/resource/oss/config', { body }),
+      update: (body: SysOssConfigBody) => client.put<unknown>('/resource/oss/config', { body }),
+      remove: (ids: readonly string[]) =>
+        client.del<unknown>(`/resource/oss/config/${ids.map(encodeURIComponent).join(',')}`),
+      changeStatus: (ossConfigId: string, status: PlatformStatus) =>
+        client.put<unknown>('/resource/oss/config/changeStatus', { body: { ossConfigId, status } }),
+    },
+
+    /**
+     * 个人中心（F01 op13，RW-15 补）。`SysProfileController`（`/system/user/profile`）：
+     * `GET`（无 `@SaCheckPermission`，只读本人）、`PUT`（改资料）、
+     * `PUT /updatePwd`（body `{oldPassword,newPassword}`）。
+     * ⚠️ `POST /avatar` 是 multipart ⇒ 不在本模块提供（缺口登记）。
+     */
+    profile: {
+      get: () => client.get<SysProfileVo>('/system/user/profile'),
+      update: (body: SysProfileBody) => client.put<unknown>('/system/user/profile', { body }),
+      updatePwd: (body: { oldPassword: string; newPassword: string }) =>
+        client.put<unknown>('/system/user/profile/updatePwd', { body }),
+    },
+
+    /** 社交关系（`SysSocialController`，`GET /system/social/list`，**无** `@SaCheckPermission`）。 */
+    socials: {
+      list: () => client.get<SysSocialVo[]>('/system/social/list'),
+    },
+
+    /**
+     * 短链（F01 op14，RW-15 补）。`SysUrlController`（`/system/url`）：
+     * `list`（`system:url:list`）、`shortcuts`（`system:url:list` 或 `coding:harness:use`，
+     * `SaMode.OR`）、`{urlId}`（`system:url:query`）、`POST`（`system:url:add`）、
+     * `PUT`（`system:url:edit`）、`DELETE`（`system:url:remove`）。
+     * ⚠️ 服务端**没有** `export` 端点。
+     */
+    urls: {
+      list: (query: SysUrlQuery) => client.getRows<SysUrlVo>('/system/url/list', { query: { ...query } }),
+      shortcuts: () => client.get<SysUrlShortcutVo[]>('/system/url/shortcuts'),
+      get: (urlId: string) => client.get<SysUrlVo>(`/system/url/${encodeURIComponent(urlId)}`),
+      create: (body: SysUrlBody) => client.post<unknown>('/system/url', { body }),
+      update: (body: SysUrlBody) => client.put<unknown>('/system/url', { body }),
+      remove: (urlIds: readonly string[]) => client.del<unknown>(`/system/url/${urlIds.map(encodeURIComponent).join(',')}`),
     },
   };
 }
