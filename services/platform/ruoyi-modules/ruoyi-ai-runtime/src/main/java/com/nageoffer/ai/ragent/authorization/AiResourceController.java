@@ -86,6 +86,16 @@ public class AiResourceController {
         this.writeService = writeService;
     }
 
+    private com.nageoffer.ai.ragent.runtime.config.ConfigRevisionPublisher configPublisher;
+    private com.nageoffer.ai.ragent.runtime.config.ProviderConnectionPort configConnections;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void configureRuntimeConfig(com.nageoffer.ai.ragent.runtime.config.ConfigRevisionPublisher publisher,
+            com.nageoffer.ai.ragent.runtime.config.ProviderConnectionPort connections) {
+        this.configPublisher = publisher;
+        this.configConnections = connections;
+    }
+
     private AuthorizedDownloadService downloads;
     private AuthorizedExportService exports;
     private org.springframework.jdbc.core.JdbcTemplate jdbc;
@@ -312,6 +322,116 @@ public class AiResourceController {
         return reply("run.events","run:"+runId,events.listEvents(principal.tenantId(),runId,afterSeq,limit));
     }
 
+    public record RuntimeConfigRequest(String providerId, String modelId, String catalogVersion,
+            String credentialRef, int dimension, java.util.Map<String, Object> params) { }
+
+    private void requireConfigAction(String action) {
+        var principal = PrincipalContext.require();
+        if (!principal.hasScope(action)) { throw new P04AiException(P04AiErrorCode.FORBIDDEN); }
+        authorization.requireFunction(principal, action, "tenant:runtime-config");
+        if (configPublisher == null || configConnections == null) {
+            throw new ServiceException("runtime config publisher unavailable");
+        }
+    }
+
+    @PostMapping("/runtime-config/revisions")
+    public ResponseEntity<ApiEnvelope<com.nageoffer.ai.ragent.runtime.config.ConfigRevisionFacts>> publishRuntimeConfig(
+            @RequestBody RuntimeConfigRequest request) {
+        requireConfigAction("config.publish");
+        return ResponseEntity.ok().header("Cache-Control", "no-store").body(ApiEnvelope.ok(publishConfig(request)));
+    }
+
+    @GetMapping("/runtime-config/revisions/{revisionId}")
+    public ResponseEntity<ApiEnvelope<com.nageoffer.ai.ragent.runtime.config.ConfigRevisionPublisher.ConfigRevisionSnapshot>> runtimeConfig(
+            @PathVariable String revisionId) {
+        requireConfigAction("config.read");
+        var snapshot = configPublisher.snapshot(revisionId);
+        requireCredentialReference(snapshot.facts().credentialRef());
+        // Historical rows were created outside this API: never echo secret-bearing params.
+        safeConfigParams(new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(parseConfigParams(snapshot.paramsJson())));
+        return reply("config.read", "tenant:runtime-config", snapshot);
+    }
+
+    @PostMapping("/runtime-config/revisions/{revisionId}/revoke")
+    public ResponseEntity<ApiEnvelope<java.util.Map<String, Object>>> revokeRuntimeConfig(@PathVariable String revisionId) {
+        requireConfigAction("config.revoke");
+        configPublisher.revoke(revisionId, PrincipalContext.require().userId());
+        return ResponseEntity.ok().header("Cache-Control", "no-store")
+                .body(ApiEnvelope.ok(Map.of("revisionId", revisionId, "state", "REVOKED")));
+    }
+
+    @PostMapping("/runtime-config/revisions/{revisionId}/rollback")
+    public ResponseEntity<ApiEnvelope<com.nageoffer.ai.ragent.runtime.config.ConfigRevisionFacts>> rollbackRuntimeConfig(
+            @PathVariable String revisionId) {
+        requireConfigAction("config.publish");
+        var old = configPublisher.snapshot(revisionId);
+        var f = old.facts();
+        return ResponseEntity.ok().header("Cache-Control", "no-store").body(ApiEnvelope.ok(publishConfig(
+                new RuntimeConfigRequest(f.providerId(), f.modelId(), f.catalogVersion(), f.credentialRef(),
+                        f.dimension(), parseConfigParams(old.paramsJson())))));
+    }
+
+    private com.nageoffer.ai.ragent.runtime.config.ConfigRevisionFacts publishConfig(RuntimeConfigRequest request) {
+        if (request == null || request.dimension() != 1536 || request.providerId() == null
+                || request.providerId().isBlank() || request.modelId() == null || request.modelId().isBlank()
+                || request.catalogVersion() == null || request.catalogVersion().isBlank()) {
+            throw new P04AiException(P04AiErrorCode.BAD_REQUEST);
+        }
+        requireCredentialReference(request.credentialRef());
+        var params = request.params() == null ? Map.<String, Object>of() : request.params();
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+                .enable(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
+        safeConfigParams(mapper.valueToTree(params));
+        configConnections.requireConnection(request.providerId().trim(), request.credentialRef());
+        try {
+            String json = mapper.writeValueAsString(params);
+            String hash = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(json.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            return configPublisher.publish(new com.nageoffer.ai.ragent.runtime.config.ConfigRevisionPublisher.ConfigRevisionCommand(
+                    request.providerId().trim(), request.modelId().trim(), request.catalogVersion().trim(), hash, json,
+                    request.credentialRef(), request.dimension()));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException | java.security.NoSuchAlgorithmException e) {
+            throw new P04AiException(P04AiErrorCode.BAD_REQUEST);
+        }
+    }
+
+    private java.util.Map<String, Object> parseConfigParams(String json) {
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().readValue(json == null ? "{}" : json,
+                    new com.fasterxml.jackson.core.type.TypeReference<java.util.Map<String, Object>>() { });
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) { throw new P04AiException(P04AiErrorCode.BAD_REQUEST); }
+    }
+
+    private void safeConfigParams(com.fasterxml.jackson.databind.JsonNode node) {
+        if (!node.isObject()) { throw new P04AiException(P04AiErrorCode.BAD_REQUEST); }
+        // These are generation parameters, never a second provider connection/key store.
+        var allowed = java.util.Set.of("temperature", "maxTokens", "topP", "presencePenalty", "frequencyPenalty", "seed");
+        var names = node.fieldNames();
+        while (names.hasNext()) {
+            String name = names.next();
+            var value = node.get(name);
+            if (!allowed.contains(name) || !value.isNumber() || !Double.isFinite(value.doubleValue())) {
+                throw new P04AiException(P04AiErrorCode.BAD_REQUEST);
+            }
+            double number = value.doubleValue();
+            boolean valid = switch (name) {
+                case "temperature" -> number >= 0 && number <= 2;
+                case "topP" -> number > 0 && number <= 1;
+                case "presencePenalty", "frequencyPenalty" -> number >= -2 && number <= 2;
+                case "maxTokens" -> value.isIntegralNumber() && value.canConvertToInt() && number > 0;
+                case "seed" -> value.isIntegralNumber() && value.canConvertToLong();
+                default -> false;
+            };
+            if (!valid) { throw new P04AiException(P04AiErrorCode.BAD_REQUEST); }
+        }
+    }
+
+    private void requireCredentialReference(String ref) {
+        if (ref != null && !ref.matches("(env|vault|secret|masked):[A-Za-z][A-Za-z0-9._/-]{0,190}")) {
+            throw new P04AiException(P04AiErrorCode.BAD_REQUEST);
+        }
+    }
+
     public record RetrievalRequest(String query,List<String> requestedKbIds,int topK) { }
 
     @PostMapping("/knowledge-bases/retrievals")
@@ -327,6 +447,9 @@ public class AiResourceController {
         var operation=revocations.enter(principal,"kb.retrieve","tenant:retrieval");
         try{
             var data=retriever.retrieve(scope,request.query(),request.topK());
+            if (deliveryPermits != null) {
+                deliveryPermits.register(operation, operation.permitId(), operation.operationId());
+            }
             // Transfer ownership of the same active lease to final delivery without an unprotected gap.
             return ResponseEntity.ok().header("Cache-Control","no-store").header("X-AI-Delivery-Permit",operation.permitId())
                     .header("X-AI-Delivery-Operation",operation.operationId()).body(ApiEnvelope.ok(data));
@@ -397,13 +520,11 @@ public class AiResourceController {
     @GetMapping("/knowledge-bases")
     public ResponseEntity<ApiEnvelope<List<Map<String, Object>>>> listKnowledgeBases() {
         ExecutionPrincipal principal = PrincipalContext.require();
-        List<Map<String, Object>> data = new ArrayList<>();
-        for (String ref : authorization.resolveScope(principal, "kb.list", List.of()).authorizedRefs()) {
-            if (!ref.startsWith("kb:")) { continue; }
-            String kbId = AiResourceAuthorizationService.parseResourceRef(ref).resourceId();
-            writeService.findKnowledgeBase(principal.tenantId(), kbId)
-                    .ifPresent(view -> data.add(kbView(view)));
-        }
+        var ids = authorization.resolveScope(principal, "kb.list", List.of()).authorizedRefs().stream()
+                .filter(ref -> ref.startsWith("kb:"))
+                .map(ref -> AiResourceAuthorizationService.parseResourceRef(ref).resourceId()).toList();
+        List<Map<String, Object>> data = writeService.findKnowledgeBases(principal.tenantId(), ids).stream()
+                .map(this::kbView).toList();
         return reply("kb.list","tenant:resources",data);
     }
 

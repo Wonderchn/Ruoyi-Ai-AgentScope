@@ -24,6 +24,10 @@
     </properties>
 
     <dependencies>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-tx</artifactId>
+        </dependency>
         <!-- E3：AI 能力的本地边界。规范动作表与执行事实从这里取，避免网关与运行模块各存一份。
              该模块是零依赖的纯契约模块，不会把 Spring/Servlet/AgentScope 带进来。 -->
         <dependency>

@@ -294,7 +294,11 @@ public class DefaultRevocationGuard implements RevocationGuard {
                         + " ON CONFLICT (tenant_id) DO UPDATE SET status = EXCLUDED.status,"
                         + " barrier_id = EXCLUDED.barrier_id, target_acl_version = EXCLUDED.target_acl_version,"
                         + " reason = EXCLUDED.reason, updated_at = now(),"
-                        + " lease_expires_at = EXCLUDED.lease_expires_at, reconciled_at = NULL, reconciled_by = NULL",
+                        + " lease_expires_at = EXCLUDED.lease_expires_at,"
+                        + " reconciled_at = CASE WHEN EXCLUDED.status = 'PENDING' THEN NULL"
+                        + " WHEN EXCLUDED.status = 'OPEN' THEN now() ELSE ai_tenant_barrier.reconciled_at END,"
+                        + " reconciled_by = CASE WHEN EXCLUDED.status = 'PENDING' THEN NULL"
+                        + " WHEN EXCLUDED.status = 'OPEN' THEN 'barrier-transition' ELSE ai_tenant_barrier.reconciled_by END",
                 tenantId, state.name(), barrierId, targetAclVersion, reason, state.name(), BARRIER_LEASE_SECONDS);
         if (updated != 1) { throw new ServiceException("屏障写入未确认"); }
     }

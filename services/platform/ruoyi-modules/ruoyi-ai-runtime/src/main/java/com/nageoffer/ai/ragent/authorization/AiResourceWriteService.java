@@ -38,6 +38,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -850,6 +851,23 @@ public class AiResourceWriteService {
                 rs.getString("collection_name"),
                 rs.getString("owner_member_id"),
                 rs.getString("owner_dept_id"))).stream().findFirst();
+    }
+
+    /** 空授权不发 SQL；元数据只读当前租户中已授权且未删除的 KB。 */
+    public List<KnowledgeBaseView> findKnowledgeBases(String tenantId, java.util.Collection<String> kbIds) {
+        if (tenantId == null || tenantId.isBlank()) { throw new com.nageoffer.ai.ragent.framework.exception.ClientException("tenantId is required"); }
+        if (kbIds == null || kbIds.isEmpty()) { return List.of(); }
+        List<String> ids = kbIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) { return List.of(); }
+        String sql = "SELECT id, name, embedding_model, collection_name, owner_member_id, owner_dept_id"
+                + " FROM platform.ai_knowledge_base WHERE tenant_id=:tenantId AND id IN (:kbIds) AND deleted=0";
+        List<KnowledgeBaseView> rows = jdbc.query(sql, Map.of("tenantId", tenantId, "kbIds", ids),
+                (rs, rowNum) -> new KnowledgeBaseView(rs.getString("id"), rs.getString("name"),
+                        rs.getString("embedding_model"), rs.getString("collection_name"),
+                        rs.getString("owner_member_id"), rs.getString("owner_dept_id")));
+        Map<String, KnowledgeBaseView> byId = new HashMap<>();
+        rows.forEach(row -> byId.put(row.kbId(), row));
+        return ids.stream().map(byId::get).filter(java.util.Objects::nonNull).toList();
     }
 
     /** 按租户读文档元数据；file_url（内部对象 key）刻意不进视图。 */

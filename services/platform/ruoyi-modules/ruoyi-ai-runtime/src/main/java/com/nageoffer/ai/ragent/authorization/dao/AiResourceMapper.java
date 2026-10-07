@@ -94,6 +94,16 @@ public class AiResourceMapper {
         return rows.stream().findFirst();
     }
 
+    public List<AiResourceRow> findByIds(String tenantId, Map<String, ? extends java.util.Collection<String>> idsByType) {
+        var batch = ResourceBatchQuery.of(tenantId, idsByType);
+        if ("FALSE".equals(batch.predicate())) { return List.of(); }
+        return jdbc.query("SELECT " + SELECT_COLUMNS + " FROM ai_resource WHERE tenant_id = :tenantId AND " + batch.predicate(),
+                batch.parameters(), (rs, rowNum) -> new AiResourceRow(rs.getString("tenant_id"),
+                        rs.getString("resource_type"), rs.getString("resource_id"), rs.getString("owner_member_id"),
+                        rs.getString("owner_dept_id"), rs.getString("parent_type"), rs.getString("parent_id"),
+                        rs.getString("status"), rs.getLong("resource_version")));
+    }
+
     /** 列出该租户全部 ACTIVE 注册行（resolveScope 空候选时的"全部已授权资源"候选来源）。 */
     public List<AiResourceRow> listActive(String tenantId) {
         String sql = "SELECT " + SELECT_COLUMNS + " FROM ai_resource"

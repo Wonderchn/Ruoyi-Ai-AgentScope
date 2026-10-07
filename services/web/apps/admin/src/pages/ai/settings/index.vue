@@ -51,6 +51,10 @@ async function load() {
 
 <template>
   <div>
+    <ElAlert
+      title="旧设置接口不影响运行权威。模型运行配置请通过运行配置发布接口管理，发布与回滚操作见运行手册。"
+      type="warning" :closable="false" data-testid="runtime-authority-notice"
+    />
     <BlockedBy
       reason="EMBEDDED-REGISTRY"
       detail="RAGSettingsController（GET /rag/settings）未进本形态内嵌装配，调用将 404。页面按 02-api-map 分母先行开发（检索/记忆/存储/向量设置分组展示）；联调判据 NOT_RUN。"

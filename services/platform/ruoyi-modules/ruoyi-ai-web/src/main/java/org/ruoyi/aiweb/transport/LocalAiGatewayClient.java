@@ -804,6 +804,7 @@ public class LocalAiGatewayClient extends AiGatewayClient {
         }
 
         byte[] body() {
+            if (writer != null) { writer.flush(); }
             return buffer.toByteArray();
         }
 
@@ -853,6 +854,15 @@ public class LocalAiGatewayClient extends AiGatewayClient {
             this.status = sc;
         }
 
+        @Override public int getStatus() { return status; }
+        @Override public String getHeader(String name) { return header(name); }
+        @Override public java.util.Collection<String> getHeaders(String name) {
+            return java.util.List.copyOf(headers.getOrDefault(name, java.util.List.of()));
+        }
+        @Override public java.util.Collection<String> getHeaderNames() { return java.util.List.copyOf(headers.keySet()); }
+        @Override public void setContentLength(int length) { setHeader("Content-Length", Integer.toString(length)); }
+        @Override public void setContentLengthLong(long length) { setHeader("Content-Length", Long.toString(length)); }
+
         @Override
         public void sendError(int sc) {
             this.status = sc;
@@ -871,7 +881,7 @@ public class LocalAiGatewayClient extends AiGatewayClient {
 
         @Override
         public void setContentType(String type) {
-            put("Content-Type", type);
+            setHeader("Content-Type", type);
             if (type != null) {
                 for (String part : type.toLowerCase(Locale.ROOT).split(";")) {
                     String trimmed = part.trim();
@@ -909,6 +919,7 @@ public class LocalAiGatewayClient extends AiGatewayClient {
 
         @Override
         public void resetBuffer() {
+            if (writer != null) { writer.flush(); }
             buffer.reset();
         }
 
@@ -976,6 +987,7 @@ public class LocalAiGatewayClient extends AiGatewayClient {
 
         @Override
         public void flushBuffer() {
+            if (writer != null) { writer.flush(); }
             // 截留语义：不向外层响应写任何字节
         }
     }

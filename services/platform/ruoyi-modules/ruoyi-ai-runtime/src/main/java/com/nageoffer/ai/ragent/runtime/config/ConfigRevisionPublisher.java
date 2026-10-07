@@ -75,6 +75,11 @@ public interface ConfigRevisionPublisher {
      */
     ConfigRevisionFacts require(String revisionId);
 
+    /** 管理面读取原始非密钥参数和状态；回滚仍需发布新版本。 */
+    ConfigRevisionSnapshot snapshot(String revisionId);
+
+    record ConfigRevisionSnapshot(ConfigRevisionFacts facts, String state, String paramsJson) { }
+
     /** 发布命令。{@code paramsJson} 只收非密钥参数；{@code credentialRef} 只收引用/掩码。 */
     record ConfigRevisionCommand(
             String providerId,

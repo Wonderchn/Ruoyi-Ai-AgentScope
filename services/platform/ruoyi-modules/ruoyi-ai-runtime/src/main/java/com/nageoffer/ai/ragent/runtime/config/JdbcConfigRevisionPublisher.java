@@ -75,7 +75,7 @@ public class JdbcConfigRevisionPublisher implements ConfigRevisionPublisher {
 
     private static final String REQUIRE_SQL =
             "SELECT revision_id, revision_no, provider_id, model_id, catalog_version, params_hash, "
-                    + "credential_ref, operator_id, published_at, dimension "
+                    + "credential_ref, operator_id, published_at, dimension, state, params_json "
                     + "FROM platform.ai_runtime_config_revision "
                     + "WHERE tenant_id = ? AND revision_id = ?";
 
@@ -106,18 +106,18 @@ public class JdbcConfigRevisionPublisher implements ConfigRevisionPublisher {
 
         // 审计 diff 需要上一版本；读失败会让整个发布失败（发布必须可审计，不允许"发了但没人知道上一版"）。
         // 首发布（租户还没有 PUBLISHED 行）是合法状态：diff 按"无上一版本"处理，不得与读失败混同。
-        Map<String, Object> previous;
-        try {
-            List<Map<String, Object>> rows = jdbc.queryForList(PREVIOUS_SQL, tenantId);
-            previous = rows.isEmpty() ? null : rows.get(0);
-        } catch (DataAccessException failure) {
-            throw new ConfigAuthorityUnavailable("config authority read failed");
-        }
-
         String revisionId = "rev-" + UUID.randomUUID().toString().replace("-", "");
-        String diff = diffJson(command, previous);
         try {
             return transactions.execute(status -> {
+                jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Void>) connection -> {
+                    try (var statement = connection.prepareStatement("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))")) {
+                        statement.setString(1, tenantId);
+                        statement.execute();
+                    }
+                    return null;
+                });
+                var rows = jdbc.queryForList(PREVIOUS_SQL, tenantId);
+                String diff = diffJson(command, rows.isEmpty() ? null : rows.get(0));
                 jdbc.update(INSERT_REVISION_SQL,
                         tenantId, revisionId, nextRevisionNo(tenantId), command.providerId(), command.modelId(),
                         command.catalogVersion(), command.paramsHash(), command.paramsJson(),
@@ -180,6 +180,19 @@ public class JdbcConfigRevisionPublisher implements ConfigRevisionPublisher {
         return require(principal.tenantId(), revisionId.trim());
     }
 
+    @Override
+    public ConfigRevisionSnapshot snapshot(String revisionId) {
+        ExecutionPrincipal principal = PrincipalContext.require();
+        if (revisionId == null || revisionId.isBlank()) { throw new ConfigAuthorityUnavailable("revisionId is required"); }
+        try {
+            var rows = jdbc.queryForList(REQUIRE_SQL, principal.tenantId(), revisionId.trim());
+            if (rows.size() != 1) { throw new ConfigAuthorityUnavailable("config revision not found"); }
+            var row = rows.get(0);
+            return new ConfigRevisionSnapshot(facts(principal.tenantId(), row), asString(row.get("state")),
+                    asString(row.get("params_json")));
+        } catch (DataAccessException failure) { throw new ConfigAuthorityUnavailable("config authority read failed"); }
+    }
+
     private ConfigRevisionFacts require(String tenantId, String revisionId) {
         List<Map<String, Object>> rows;
         try {
@@ -190,7 +203,10 @@ public class JdbcConfigRevisionPublisher implements ConfigRevisionPublisher {
         if (rows.isEmpty()) {
             throw new ConfigAuthorityUnavailable("config revision " + revisionId + " not found");
         }
-        Map<String, Object> row = rows.get(0);
+        return facts(tenantId, rows.get(0));
+    }
+
+    private ConfigRevisionFacts facts(String tenantId, Map<String, Object> row) {
         return new ConfigRevisionFacts(
                 tenantId,
                 asString(row.get("revision_id")),

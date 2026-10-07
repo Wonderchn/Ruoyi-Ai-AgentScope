@@ -19,7 +19,6 @@ package org.ruoyi.aiintegration.web;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -34,7 +33,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  * <p>作用范围限制在本模块包内（{@code basePackages}），避免影响其它模块的既有行为。
  */
 @RestControllerAdvice(basePackages = "org.ruoyi.aiintegration")
-@ConditionalOnProperty(name = "p04.enabled", havingValue = "true")
+@org.springframework.boot.autoconfigure.condition.ConditionalOnExpression("${p04.enabled:false} or ${ai.integration.enabled:false}")
+@org.springframework.core.annotation.Order(org.springframework.core.Ordered.HIGHEST_PRECEDENCE)
 public class P04ExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(P04ExceptionHandler.class);
@@ -47,6 +47,14 @@ public class P04ExceptionHandler {
         return ResponseEntity.status(errorCode.httpStatus())
                 .header(RequestId.HEADER, RequestId.currentOrEmpty())
                 .body(ApiResponse.error(errorCode.httpStatus(), ex.getMessage(), errorCode.name()));
+    }
+
+    @ExceptionHandler({org.springframework.dao.DataAccessException.class,
+            org.springframework.transaction.TransactionException.class, AiGatewayClient.UpstreamUnavailableException.class})
+    public ResponseEntity<ApiResponse<java.util.Map<String, Object>>> handleUnavailable(Exception ex) {
+        log.warn("gateway dependency unavailable type={} requestId={}", ex.getClass().getSimpleName(), RequestId.currentOrEmpty());
+        var code = P04ErrorCode.AUTHORIZATION_UNAVAILABLE;
+        return ResponseEntity.status(code.httpStatus()).body(ApiResponse.error(code.httpStatus(), code.message(), code.name()));
     }
 
     @ExceptionHandler(Exception.class)

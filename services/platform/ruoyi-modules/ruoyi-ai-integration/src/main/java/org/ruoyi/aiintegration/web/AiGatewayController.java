@@ -103,6 +103,10 @@ public class AiGatewayController {
     }
 
     private static final List<Route> ROUTES = List.of(
+            new Route("GET", "/runtime-config/revisions/{revisionId}", "config.read"),
+            new Route("POST", "/runtime-config/revisions", "config.publish"),
+            new Route("POST", "/runtime-config/revisions/{revisionId}/revoke", "config.revoke"),
+            new Route("POST", "/runtime-config/revisions/{revisionId}/rollback", "config.publish"),
             new Route("GET", "/knowledge-bases", "kb.list"),
             new Route("POST", "/knowledge-bases", "kb.write"),
             new Route("GET", "/knowledge-bases/{id}", "kb.read"),

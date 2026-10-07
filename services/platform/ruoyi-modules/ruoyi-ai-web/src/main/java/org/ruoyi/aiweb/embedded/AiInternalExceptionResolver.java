@@ -81,6 +81,16 @@ public class AiInternalExceptionResolver implements HandlerExceptionResolver, Or
     }
 
     private static ApiEnvelope<Map<String, Object>> envelopeOf(Throwable ex) {
+        if (ex instanceof com.nageoffer.ai.ragent.runtime.RunApiException run) {
+            return ApiEnvelope.error(run.errorCode().status().value(), run.errorCode().message(), run.errorCode().name());
+        }
+        if (ex instanceof com.nageoffer.ai.ragent.runtime.config.ConfigAuthorityUnavailable) {
+            return ApiEnvelope.error(503, "运行配置不可用", "CONFIG_AUTHORITY_UNAVAILABLE");
+        }
+        if (ex instanceof org.springframework.dao.DataAccessException
+                || ex instanceof org.springframework.transaction.TransactionException) {
+            return ApiEnvelope.error(503, "依赖不可用", "DEPENDENCY_UNAVAILABLE");
+        }
         if (ex instanceof P04AiException p04) {
             P04AiErrorCode code = p04.errorCode();
             return ApiEnvelope.error(code.httpStatus(), p04.getMessage(), code.name());

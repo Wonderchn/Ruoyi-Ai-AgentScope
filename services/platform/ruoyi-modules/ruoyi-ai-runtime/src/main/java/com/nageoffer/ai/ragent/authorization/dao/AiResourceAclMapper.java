@@ -79,6 +79,17 @@ public class AiResourceAclMapper {
                 rs.getString("granted_by")));
     }
 
+    public List<AclRow> findByIds(String tenantId, Map<String, ? extends java.util.Collection<String>> idsByType) {
+        var batch = ResourceBatchQuery.of(tenantId, idsByType);
+        if ("FALSE".equals(batch.predicate())) { return List.of(); }
+        return jdbc.query("SELECT id, tenant_id, resource_type, resource_id, subject_type, subject_id,"
+                        + " action, expires_at, granted_by FROM ai_resource_acl WHERE tenant_id = :tenantId AND " + batch.predicate(),
+                batch.parameters(), (rs, rowNum) -> new AclRow(rs.getString("id"), rs.getString("tenant_id"),
+                        rs.getString("resource_type"), rs.getString("resource_id"), rs.getString("subject_type"),
+                        rs.getString("subject_id"), rs.getString("action"),
+                        toEpochSecond(rs.getTimestamp("expires_at")), rs.getString("granted_by")));
+    }
+
     /**
      * 读该租户全部 ACL 行（<b>含已过期行</b>，是否存活由服务层按 Clock 时间判定）。
      *

@@ -36,7 +36,7 @@
       "verifiedBy": "scripts/ci/verify-ai-migrations.sh"
     },
     "unifiedPlatform": {
-      "migrations": 24,
+      "migrations": 25,
       "versionList": [
         1,
         2,
@@ -61,7 +61,8 @@
         22,
         23,
         24,
-        27
+        27,
+        28
       ],
       "verifiedBy": "scripts/ci/verify-unified-migrations.sh; scripts/ci/check-unified-contract.py"
     }
@@ -95,7 +96,7 @@
     "schemaCompatibility": {
       "ai": "v12",
       "platform": "v6",
-      "unifiedPlatform": "v27 (non-contiguous versions; see versionList)"
+      "unifiedPlatform": "v28 (non-contiguous versions; see versionList)"
     },
     "contractCompatibility": {
       "runRequest": "v1",
