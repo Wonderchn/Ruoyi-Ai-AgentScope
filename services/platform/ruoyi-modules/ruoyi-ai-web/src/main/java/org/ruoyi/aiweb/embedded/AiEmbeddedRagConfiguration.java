@@ -36,7 +36,10 @@ import com.nageoffer.ai.ragent.framework.security.PlatformFactsPort;
 import com.nageoffer.ai.ragent.framework.security.PlatformPermitPort;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService;
 import com.nageoffer.ai.ragent.framework.security.RevocationGuard;
+import com.nageoffer.ai.ragent.rag.controller.RuntimeCatalogController;
 import com.nageoffer.ai.ragent.rag.service.FileStorageService;
+import com.nageoffer.ai.ragent.rag.service.RuntimeCatalogService;
+import com.nageoffer.ai.ragent.rag.service.impl.JdbcRuntimeCatalogService;
 import org.ruoyi.aiintegration.authorization.OrganizationMatchController;
 import org.ruoyi.aiintegration.identity.PlatformIdentitySource;
 import org.ruoyi.aiintegration.identity.ProductionAuthorizationProvider;
@@ -51,8 +54,10 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionOperations;
 
 /**
@@ -225,6 +230,28 @@ public class AiEmbeddedRagConfiguration {
                 com.nageoffer.ai.ragent.runtime.web.ConversationBatchDeleteService conversationBatchDeleteService) {
             return new com.nageoffer.ai.ragent.runtime.web.ConversationBatchDeleteController(
                     conversationBatchDeleteService);
+        }
+
+        // ------------------------------------------------------------------ 运行配置目录（RW-06 / T2m，T0 集成）
+        //
+        // 模型 / 提供方 / 档位 / 参数 / embedding 维度 / 限额 的目录读取与档位 write-once 写入。
+        // 读写的是 V15 唯一运行权威表（platform.ai_runtime_config_revision）与 V24 附属行，
+        // 不新增权威，也不复制既有发布事务（发布/撤销/回滚仍走 AiResourceController 四条路由）。
+        // 控制器本体带 @ConditionalOnProperty(ai.integration.enabled=true)，与既有 AI 控制器同门控；
+        // 这里显式登记的原因：AI 类不在 platform 组件扫描路径内（org.ruoyi vs com.nageoffer.ai.ragent）。
+        @Bean
+        @ConditionalOnMissingBean
+        public RuntimeCatalogService runtimeCatalogService(JdbcTemplate jdbc,
+                                                           PlatformTransactionManager transactionManager) {
+            return new JdbcRuntimeCatalogService(jdbc, transactionManager);
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public RuntimeCatalogController runtimeCatalogController(AiResourceAuthorizationService authorization,
+                                                                 RuntimeCatalogService runtimeCatalogService,
+                                                                 Environment environment) {
+            return new RuntimeCatalogController(authorization, runtimeCatalogService, environment);
         }
 
         // ------------------------------------------------------------------ 本地端口（HTTP → 本地接口替换点）
