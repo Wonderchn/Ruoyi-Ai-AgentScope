@@ -176,9 +176,17 @@ public class RunWorker {
                 log.warn("run {} rejected by fence; another worker owns it", run.runId());
                 return;
             }
+            // W4-10/task-24 追补（T0 落点）：本分支原先**除 VERSION_CONFLICT 外完全不留痕**，
+            // 导致同一 error_code 下的不同门（如 run 作用域面的多个 gate 共用 DEPENDENCY_UNAVAILABLE）
+            // 在日志里同形、不可分辨。**只加日志、不改行为**（safeFail 的码与 fail-closed 语义不变）。
+            log.warn("run {} failed: site=RunWorker.execute errorCode={} reason={}",
+                    run.runId(), e.errorCode(), cause(e));
             safeFail(guard, expired.get()?"BUDGET_EXCEEDED":e.errorCode().name());
         } catch (Exception e) {
-            log.warn("run {} failed: {}", run.runId(), e.getClass().getSimpleName());
+            // W4-10/task-24（T0 落点）：原先只打异常**类名** ⇒ 各类 ConfigAuthorityUnavailable /
+            // 同名不同义的异常无法区分。改为带 message（message 为空时退回类名，覆盖 NPE 等）。
+            log.warn("run {} failed: site=RunWorker.execute code=EXECUTION_FAILED reason={}",
+                    run.runId(), cause(e));
             safeFail(guard, expired.get()?"BUDGET_EXCEEDED":"EXECUTION_FAILED");
         } finally {
             capacity.release();
@@ -193,6 +201,43 @@ public class RunWorker {
                 // 释放失败由租约过期扫描兜底
             }
         }
+    }
+
+    /**
+     * W4-10/task-24（T0 落点）：失败的**可归因**口径。
+     *
+     * <p>原先多处只打 {@code e.getClass().getSimpleName()}，使"同一类名/同一 error_code 下的
+     * 不同抛出点"在日志里**同形**（本轮实测：{@code ConfigAuthorityUnavailable} 有 ≥4 个 message
+     * 各异的抛出点；{@code DEPENDENCY_UNAVAILABLE} 有 2 个 gate 共用），排查只能靠间接反推。
+     *
+     * <p>本助手只影响日志文本，**不改变任何行为**：message 为空/空白（含 NPE）时退回类名，
+     * 保证永远有可读输出。
+     */
+    private static String cause(Throwable e) {
+        String message = e.getMessage();
+        String base = (message == null || message.isBlank()) ? e.getClass().getSimpleName()
+                : e.getClass().getSimpleName() + ": " + message;
+        // 附**调用链前 3 帧**（跳过工厂方法帧）。
+        // 教训（W4-10 实测）：`ProviderHttp.unavailable()` 是工厂方法 ⇒ 它的 frame[0] 永远是
+        // `ProviderHttp.java:54` 自己，**对定位调用者无用**；真正的调用者是 frame[1] 起。
+        // 栈帧不含凭据内容，K3 安全。
+        return base + " at " + where(e);
+    }
+
+    /** 前 3 帧（跳过 ProviderHttp 这类工厂帧），形如 {@code RealChatGateway:111 <- …:153}。 */
+    private static String where(Throwable e) {
+        StackTraceElement[] frames = e.getStackTrace();
+        if (frames == null || frames.length == 0) {
+            return "(no stack)";
+        }
+        return java.util.Arrays.stream(frames)
+                .filter(f -> f.getClassName() == null || !f.getClassName().endsWith("ProviderHttp"))
+                .limit(3)
+                .map(f -> {
+                    String cls = f.getClassName() == null ? "?" : f.getClassName();
+                    return cls.substring(cls.lastIndexOf('.') + 1) + ":" + f.getLineNumber();
+                })
+                .collect(java.util.stream.Collectors.joining(" <- "));
     }
 
     private void safeFail(RunExecutionGuard guard, String errorCode) {
