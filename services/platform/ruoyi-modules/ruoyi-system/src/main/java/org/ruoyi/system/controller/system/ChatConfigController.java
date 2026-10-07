@@ -40,12 +40,16 @@ public class ChatConfigController extends BaseController {
     /**
      * 旧配置面的权威声明（RW-06 复核后保持同一语义）。
      *
-     * <p>本控制器的读写只落到旧 {@code chat_config} 键值表，<b>不影响运行权威</b>：
+     * <p>本控制器的读写只落到本模块的旧键值配置表（该表在统一迁移里已改名，映射见
+     * {@code 03-table-map.json}），<b>不影响运行权威</b>：
      * 决定 run 使用哪个模型/参数/维度/限额的是 {@code platform.ai_runtime_config_revision}
      * 的不可变已发布版本。用户模型选择的读取契约是
      * {@code GET /api/ai/v1/runtime-config/catalog}，发布/撤销/回滚是
      * {@code /api/ai/v1/runtime-config/revisions}。这里的文案刻意指向它们，
      * 避免调用方从旧响应推断"当前模型已被改动"。
+     *
+     * <p>措辞刻意不写旧表名字面量：{@code P1UnifiedTableNameGuardTest} 按源码文本（含注释）
+     * 扫描冻结表名，注释里出现旧名同样会让统一链护栏失败。
      */
     private static final String AUTHORITY_NOTICE =
             "旧配置操作完成；不影响运行权威，请使用 /api/ai/v1/runtime-config/revisions（发布/撤销/回滚）"
