@@ -29,6 +29,7 @@ import org.apache.catalina.startup.Tomcat;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.ruoyi.ai.api.AiExecutionFacts;
@@ -198,6 +199,17 @@ class LocalRagRouteDispatchTest {
         return CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
     }
 
+    private static HttpResponse<String> post(String path, String body, boolean withLogin) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create("http://127.0.0.1:" + port + path))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body));
+        if (withLogin) {
+            builder.header("Authorization", "Bearer synthetic-session");
+        }
+        return CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
     @Test
     void knowledgeBaseListGoesLocalWithEnvelopeAndDeliveryAck() throws Exception {
         HttpResponse<String> response = get("/api/ai/v1/knowledge-bases", true);
@@ -253,6 +265,97 @@ class LocalRagRouteDispatchTest {
         assertThat(get("/api/ai/v1/knowledge-bases", false).statusCode()).isEqualTo(401);
     }
 
+    // ------------------------------------------- N2：F03 批量删除的**公开可达性**正腿（RW-01）
+
+    /**
+     * N2：{@code POST /api/ai/v1/conversations/batch-delete} 的公开可达性正腿。
+     *
+     * <p><b>为什么此前这块是空的。</b>全仓对该<b>公开</b>路径发 HTTP 的测试此前为 0：护栏只验
+     * "白名单里有一行 + 内层有 handler"（源码级），而"经网关真的能走到 F03 控制器"没有任何判据。
+     * 源码级护栏对"路由登记了但装配没生效""客户端可见子路径写错"这一类缺陷是结构性看不见的。
+     *
+     * <p><b>判据选择。</b>F03 的集合形状校验（① {@code requireWellFormedSet}）在
+     * <b>任何授权之前</b>执行，且只有 F03 控制器会产出 {@code BAD_REQUEST}+{@code errorCode}。
+     * 因此"空集合 ⇒ 400 + {@code data.errorCode=BAD_REQUEST}"**只可能**来自
+     * "白名单命中 → 内层前缀命中 → 控制器被调用"这条真实链路：
+     * <ul>
+     *   <li>未放行/未映射 ⇒ 404（白名单外与内层裸路径都如此）；</li>
+     *   <li>映射了但信封是字符串 code ⇒ 503（"缺少包络 code"，D2 实测定案）；</li>
+     *   <li>体为空但放行了 ⇒ 也会是 400，所以本判据额外断言<b>整数</b> {@code code} 与符号码，
+     *       把"网关自己产生的错误"排除在外（网关不产出 AI 侧符号码）。</li>
+     * </ul>
+     *
+     * <p><b>真实外发 NOTE。</b>本组不经模型/检索外发，也不连真库（JDBC 为替身）——
+     * 它验的是<b>网关到 F03 控制器的可达性与信封</b>，不是删除语义本身（后者由
+     * {@code ConversationBatchDeleteServiceTest}/{@code HttpTest} 覆盖）。真库端到端仍 NOT_RUN。
+     */
+    @Test
+    void f03BatchDeleteIsPubliclyReachableThroughTheGateway() throws Exception {
+        HttpResponse<String> response =
+                post("/api/ai/v1/conversations/batch-delete", "{\"conversationIds\":[]}", true);
+
+        // 关键否定：不是"没路由"（404）、不是"没登录"（401）、更不是信封被网关收敛（503）
+        assertThat(response.statusCode())
+                .as("F03 公开路由必须真的可达（404=没放行/没映射，503=信封不是整数 code）")
+                .isEqualTo(400);
+        // 关键肯定：错误码来自 AI 侧（网关不会产出它），且信封是**整数** code
+        assertThat(response.body())
+                .contains("\"code\":400")
+                .contains("BAD_REQUEST");
+    }
+
+    @Test
+    @DisplayName("F03 正腿：缺身份 401、内层路径对外 404、白名单精确不含相邻路径")
+    void f03BatchDeleteStaysClosedOutsideTheWhitelistedShape() throws Exception {
+        // 缺登录：必须先于任何业务处理被拒
+        assertThat(post("/api/ai/v1/conversations/batch-delete", "{\"conversationIds\":[]}", false).statusCode())
+                .isEqualTo(401);
+
+        // 内层路径直接对外：边界过滤器关成 404，不得穿透
+        HttpResponse<String> internal =
+                post("/internal/ai/v1/conversations/batch-delete", "{\"conversationIds\":[]}", false);
+        assertThat(internal.statusCode()).isEqualTo(404);
+        assertThat(internal.body()).isEqualTo(AiInternalAccessBoundaryFilter.CLOSED_BODY);
+
+        // 白名单是**逐条**的，不是前缀通配：相邻/相似路径不得被放行
+        assertThat(post("/api/ai/v1/conversations/batch-delete-extra", "{}", true).statusCode()).isEqualTo(404);
+        assertThat(post("/api/ai/v1/conversations/batch-delete/all", "{}", true).statusCode()).isEqualTo(404);
+        // Agent 会话面的同名端点**有意不放行**（D05：普通会话面放行 ≠ Agent 面放行）
+        assertThat(post("/api/ai/v1/agent/v1/conversations/batch-delete", "{}", true).statusCode()).isEqualTo(404);
+    }
+
+    @Test
+    @DisplayName("F03 负例语义：重复 id 与超限都在集合形状层整体拒绝（不截断、不去重）")
+    void f03BatchDeleteRejectsMalformedSetsWholesale() throws Exception {
+        HttpResponse<String> duplicate =
+                post("/api/ai/v1/conversations/batch-delete", "{\"conversationIds\":[\"c1\",\"c1\"]}", true);
+        assertThat(duplicate.statusCode()).isEqualTo(400);
+        assertThat(duplicate.body()).contains("BAD_REQUEST");
+
+        StringBuilder tooMany = new StringBuilder("{\"conversationIds\":[");
+        for (int i = 0; i < 101; i++) {
+            tooMany.append(i > 0 ? "," : "").append("\"c").append(i).append("\"");
+        }
+        tooMany.append("]}");
+        assertThat(post("/api/ai/v1/conversations/batch-delete", tooMany.toString(), true).statusCode())
+                .isEqualTo(400);
+    }
+
+    @Test
+    @DisplayName("F03 正腿续：形状合法但无授权资源 ⇒ 停在授权步，并以 AI 侧符号码外显")
+    void f03BatchDeleteReachesTheAuthorizationGateForAWellFormedSet() throws Exception {
+        // 形状合法 ⇒ 越过 ①；本 fixture 未给 conversation.delete 的 ACL/事实 ⇒ 必须停在 ③，
+        // 以符号码外显。这条把"可达性"与"授权闸门在路径上"分开钉住。
+        HttpResponse<String> response =
+                post("/api/ai/v1/conversations/batch-delete", "{\"conversationIds\":[\"conv-unregistered\"]}", true);
+
+        assertThat(response.body())
+                .as("必须带 AI 侧符号码（网关自身不会产出），证明链路已进入 F03 并且信封是整数 code")
+                .contains("\"code\":" + response.statusCode());
+        assertThat(response.body()).containsAnyOf("RESOURCE_NOT_FOUND_OR_FORBIDDEN", "AUTHORIZATION_UNAVAILABLE");
+        assertThat(response.statusCode()).isIn(403, 404, 409, 503);
+    }
+
     // ------------------------------------------------------------------ fixture
 
     @Configuration
@@ -290,7 +393,7 @@ class LocalRagRouteDispatchTest {
                         return null;
                     }
                     return new PlatformIdentity(TENANT, USER, MEMBER, true,
-                            Set.of("ai:kb:list", "ai:kb:read"), PV);
+                            Set.of("ai:kb:list", "ai:kb:read", "ai:conversation:delete"), PV);
                 }
             };
         }
@@ -330,7 +433,7 @@ class LocalRagRouteDispatchTest {
                     return override.currentFacts();
                 }
                 return Optional.of(new AiExecutionFacts(TENANT, USER, MEMBER, PV, AV,
-                        Set.of("ai:kb:list", "ai:kb:read")));
+                        Set.of("ai:kb:list", "ai:kb:read", "ai:conversation:delete")));
             };
         }
 
