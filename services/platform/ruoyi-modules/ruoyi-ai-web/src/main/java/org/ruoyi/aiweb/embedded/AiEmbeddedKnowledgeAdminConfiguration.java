@@ -95,15 +95,24 @@ import org.springframework.context.annotation.Import;
 public class AiEmbeddedKnowledgeAdminConfiguration {
 
     /**
-     * 分块管理面：闭包已闭合（见类注释），随内嵌 local 传输 + PG 向量后端装配。
+     * 分块管理面：闭包已闭合（见类注释），随内嵌 local 传输 + PG 向量后端 + <b>p2 交付面</b>装配。
      *
      * <p>用 {@code @Import} 登记实现类与控制器，让构造注入照常工作——
      * 与 {@code AiEmbeddedAgentCatalogConfiguration} 的写法一致，避免手写 {@code @Bean}
      * 方法时把参数顺序抄错。
+     *
+     * <p><b>为什么多一个 {@code p2.enabled} 判据（RW-04-R3 / D2）。</b>
+     * {@code KnowledgeChunkController} 的列表方法在网关上走<b>字节分支</b>，必须铸造交付回执头，
+     * 其依赖 {@link com.nageoffer.ai.ragent.runtime.web.DeliveryPermits} 由
+     * {@code AiEmbeddedRunConfiguration.LocalTransport.P2Enabled} 提供（门控 {@code p2.enabled}）。
+     * 不跟着门控的话，{@code p2.enabled=false} 的部署会在<b>启动阶段</b>因缺 bean 失败；
+     * 跟着门控则表现为"交付面不在 ⇒ 该面不装"（与 documents 面同形，fail-closed 且可解释）。
+     * 内嵌档案 {@code application-embedded.yml} 显式 {@code p2.enabled: true}，实际部署仍是可达面。
      */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnEmbeddedLocal
     @ConditionalOnProperty(name = "rag.vector.type", havingValue = "pg")
+    @ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
     @Import({KnowledgeChunkServiceImpl.class, KnowledgeChunkController.class})
     static class ChunkAdmin {
 

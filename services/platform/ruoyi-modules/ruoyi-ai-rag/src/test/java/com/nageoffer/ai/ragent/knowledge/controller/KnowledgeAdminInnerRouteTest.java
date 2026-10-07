@@ -17,29 +17,46 @@
 
 package com.nageoffer.ai.ragent.knowledge.controller;
 
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
+import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
 import com.nageoffer.ai.ragent.knowledge.controller.vo.KnowledgeDocumentVO;
 import com.nageoffer.ai.ragent.knowledge.service.KnowledgeBaseService;
 import com.nageoffer.ai.ragent.knowledge.service.KnowledgeChunkService;
 import com.nageoffer.ai.ragent.knowledge.service.KnowledgeDocumentService;
 import com.nageoffer.ai.ragent.knowledge.support.IngestionSpecSchemaProvider;
 import com.nageoffer.ai.ragent.rag.service.FileStorageService;
+import com.nageoffer.ai.ragent.runtime.web.DeliveryPermits;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.RequestBuilder;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 
 import java.io.ByteArrayInputStream;
+import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Set;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -102,10 +119,23 @@ class KnowledgeAdminInnerRouteTest {
         doReturn(new ByteArrayInputStream(new byte[] {1, 2, 3}))
                 .when(fileStorageService).openStream(anyString());
 
+        // GET 列表走网关字节分支 ⇒ 内层要铸交付回执（RW-04-R3 / D2），因此需要真实形状的许可；
+        // 主体也必须存在（PrincipalContext.require()），否则那条路由会 500 而不是被映射后的正常响应。
+        DeliveryPermits permits = mock(DeliveryPermits.class);
+        when(permits.enter(any(), any(), any()))
+                .thenReturn(new DeliveryPermits.Permit("permit-1", "operation-1", null));
+        PrincipalContext.set(new ExecutionPrincipal("T1", "2101", "platform:T1:2101",
+                7, 3, Set.of("ai:document:read"), "jti", "platform", 0, Long.MAX_VALUE));
+
         mvc = MockMvcBuilders.standaloneSetup(
                 new KnowledgeBaseController(baseService),
                 new KnowledgeDocumentController(documentService, fileStorageService, schemaProvider),
-                new KnowledgeChunkController(chunkService)).build();
+                new KnowledgeChunkController(chunkService, permits)).build();
+    }
+
+    @AfterEach
+    void clearPrincipal() {
+        PrincipalContext.clear();
     }
 
     // ------------------------------------------------------------ 注解判据
@@ -184,6 +214,40 @@ class KnowledgeAdminInnerRouteTest {
         mvc.perform(get(PREFIX + "/knowledge-base/docs/ingestion-spec-schema"));
         verify(schemaProvider).describe();
         verify(documentService, never()).get("ingestion-spec-schema");
+    }
+
+    // ------------------------------------------------------------ 信封形状判据（RW-04-R3 / D2）
+
+    @Test
+    @DisplayName("分块面 6 个方法必须返回整数 code 的 ApiEnvelope（字符串 code 经网关必然 503）")
+    void chunkHandlersMustReturnIntegralCodeEnvelope() {
+        int checked = 0;
+        for (Method method : KnowledgeChunkController.class.getDeclaredMethods()) {
+            if (!method.isAnnotationPresent(GetMapping.class)
+                    && !method.isAnnotationPresent(PostMapping.class)
+                    && !method.isAnnotationPresent(PutMapping.class)
+                    && !method.isAnnotationPresent(DeleteMapping.class)
+                    && !method.isAnnotationPresent(PatchMapping.class)) {
+                continue;
+            }
+            checked++;
+            Class<?> returned = method.getReturnType();
+            // GET 走网关字节分支 ⇒ 必须额外带回执头 ⇒ 用 ResponseEntity 承载（UploadController 同形）
+            if (returned == ResponseEntity.class) {
+                assertThat(method.getName())
+                        .as("只有列表（GET）需要 ResponseEntity 承载回执头，其余应直接返回信封")
+                        .isEqualTo("pageQuery");
+                assertThat(method.getGenericReturnType().getTypeName())
+                        .as("ResponseEntity 的体必须是 ApiEnvelope，不能回退成 Result")
+                        .contains("ApiEnvelope");
+                continue;
+            }
+            assertEquals(ApiEnvelope.class, returned,
+                    method.getName() + " 的返回类型必须是 ApiEnvelope："
+                            + "LocalAiGatewayClient.requireSingleJsonObject 要求 code 是整数，"
+                            + "而 Result 的 code 是字符串 \"0\" ⇒ 经网关必然 503");
+        }
+        assertEquals(6, checked, "分块面应有 6 个映射方法（判据不能空跑）");
     }
 
     // ------------------------------------------------------------ 反例：没有前缀就没有映射
