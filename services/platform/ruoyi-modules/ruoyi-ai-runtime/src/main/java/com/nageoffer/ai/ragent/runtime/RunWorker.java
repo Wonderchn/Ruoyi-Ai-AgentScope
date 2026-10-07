@@ -215,8 +215,12 @@ public class RunWorker {
      */
     private static String cause(Throwable e) {
         String message = e.getMessage();
-        return (message == null || message.isBlank()) ? e.getClass().getSimpleName()
+        String base = (message == null || message.isBlank()) ? e.getClass().getSimpleName()
                 : e.getClass().getSimpleName() + ": " + message;
+        // 附**首个栈帧**：本轮实测有多个抛出点共用同一 message（同码不同因），
+        // 只有栈帧能把它直接指到"文件:行"。栈帧不含任何凭据内容，K3 安全。
+        StackTraceElement[] frames = e.getStackTrace();
+        return frames == null || frames.length == 0 ? base : base + " at " + frames[0];
     }
 
     private void safeFail(RunExecutionGuard guard, String errorCode) {

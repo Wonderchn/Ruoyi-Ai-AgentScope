@@ -23,6 +23,8 @@ import com.nageoffer.ai.ragent.runtime.config.ConfigAuthorityUnavailable;
 import com.nageoffer.ai.ragent.runtime.config.ProviderConnectionPort;
 import com.nageoffer.ai.ragent.runtime.config.RunConfigBinding;
 import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -61,6 +63,8 @@ import java.util.function.Consumer;
 @Component
 @ConditionalOnProperty(name="p2.chat.mode",havingValue="real",matchIfMissing=true)
 public class RealChatGateway implements ChatGateway {
+    /** W4-10/task-24：本类原先**没有 logger**；为让"同码不同因"的瞬时失败可判而引入（只加日志、不改行为）。 */
+    private static final Logger log = LoggerFactory.getLogger(RealChatGateway.class);
     private final String bootstrapKey;
     private final EgressPolicy egress;
     /** 测试专用的显式 loopback 端点；**不是**生产端点来源（生产走连接引导）。 */
@@ -194,7 +198,15 @@ public class RealChatGateway implements ChatGateway {
     }
 
     private String reserve(RunConfigBinding bound,ProviderConnectionPort.ProviderConnection connection,String body,int maxTokens) {
-        if(credential(connection)==null || credential(connection).isBlank()) throw ProviderHttp.unavailable();
+        // W4-10/task-24 探针（T0 落点）：本轮 `DEPENDENCY_UNAVAILABLE` 只剩两处 message 相同的"瞬时"抛点，
+        // 而 :111 已被实测排除、:197 与"env key 长度 35 非空"冲突 ⇒ 需要**可判事实**而不是继续排除法。
+        // **只打布尔与长度，绝不打值**（K3：凭据内容不出日志），且**不改变任何行为**。
+        String cred=credential(connection);
+        log.warn("chat credential check provider={} ref={} present={} len={} bootstrapPresent={}",
+                bound.providerId(), connection.credentialRef(),
+                cred!=null && !cred.isBlank(), cred==null?-1:cred.length(),
+                bootstrapKey!=null && !bootstrapKey.isBlank());
+        if(cred==null || cred.isBlank()) throw ProviderHttp.unavailable();
         if(!providerEndpoint) return null;
         if(spend==null) throw ProviderHttp.unavailable();
         return spend.reserve(bound.providerId(),bound.modelId(),body.getBytes(StandardCharsets.UTF_8).length,maxTokens);

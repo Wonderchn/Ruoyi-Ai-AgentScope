@@ -332,7 +332,8 @@ public class RagChatExecutor implements RunExecutor {
                 // 而日志里同形 ⇒ 只能靠"有没有 spend 行"间接反推。**只加日志、不改行为**。
                 log.warn("model step failed runId={} step=model site=RagChatExecutor.model provider={} model={} callId={} reason={}",
                         execution.runId(), binding.providerId(), binding.modelId(), callId,
-                        e.getClass().getSimpleName() + ": " + e.getMessage());
+                        e.getClass().getSimpleName() + ": " + e.getMessage()
+                                + (e.getStackTrace().length == 0 ? "" : " at " + e.getStackTrace()[0]));
                 guard.commitAtomic(()->{usageLedger.markUnknown(execution.tenantId(),callId);return null;});
                 if(cancelled[0]) return new Outcome("CANCELLED",Map.of("usage","PENDING_RECONCILIATION"),null);
                 throw e;
