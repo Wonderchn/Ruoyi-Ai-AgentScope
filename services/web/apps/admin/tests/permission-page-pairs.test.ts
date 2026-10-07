@@ -157,7 +157,7 @@ describe('双向断言二：有页面 ⇒ 必须有权限行（或显式登记�
     }
   });
 
-  it('无权限行的 AI 页面（ragent 管理面）必须全部登记在 PAIR-GAP 清单里，数量为 4', () => {
+  it('无权限行的 AI 页面（ragent 管理面）必须全部登记在 PAIR-GAP 清单里，数量为 3', () => {
     const routers = readRoutersSource();
     const gaps = pairGapNoRows();
     const gapRoutes = new Set(gaps.map(pair => pair.route));
@@ -171,7 +171,9 @@ describe('双向断言二：有页面 ⇒ 必须有权限行（或显式登记�
         );
       }
     }
-    assert.equal(gaps.length, 4, `PAIR-GAP-NO-ROW 应为 4（agents/skills/ingestion/settings），实际 ${gaps.length}`);
+    // 2026-10-07 RW-03：/ai/agents 已随端点落地接到 ai:agent:list（V27-7141），
+    // 从 PAIR-GAP 清单移出 ⇒ 余下 skills/ingestion/settings 三条。
+    assert.equal(gaps.length, 3, `PAIR-GAP-NO-ROW 应为 3（skills/ingestion/settings），实际 ${gaps.length}`);
   });
 });
 

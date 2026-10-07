@@ -144,23 +144,64 @@ export const AI_ADMIN_PAIRS: readonly PermissionPagePair[] = [
     note: '/mcp/market/** 同上',
   },
 
+  // ---- Agent 目录（F09）：**有行有页且有可达端点**（RW-03 2026-10-07 接通）----
+  // V27 播了 5 条权限行（7132-7136）+ 1 条页面 C 行（7141）；端点经网关白名单
+  // /api/ai/v1/agent-catalog/agents/** 真实可达（AiEmbeddedAgentCatalogConfiguration）。
+  // 页面按 5 个动作分别显示入口，故 5 行都登记（route 相同）。
+  {
+    permission: 'ai:agent:list',
+    rowSource: 'V27__agent_catalog_permissions.sql 菜单 7132（页面 C 行 7141）',
+    route: '/ai/agents',
+    page: 'Agent 定义 + Prompt 槽位',
+    status: 'live',
+    endpoint: 'live',
+    note: 'GET /api/ai/v1/agent-catalog/agents（agent.list）；RW-03 已接，浏览器 E2E 记 NOT_RUN（待 T8 实例窗口）',
+  },
+  {
+    permission: 'ai:agent:read',
+    rowSource: 'V27__agent_catalog_permissions.sql 菜单 7133',
+    route: '/ai/agents',
+    page: 'Agent 定义 + Prompt 槽位（槽位抽屉）',
+    status: 'live',
+    endpoint: 'live',
+    note: 'GET /agents/{id}/prompts 与 GET /agents/prompt-slots/{slotKey}/default（agent.read）',
+  },
+  {
+    permission: 'ai:agent:write',
+    rowSource: 'V27__agent_catalog_permissions.sql 菜单 7134',
+    route: '/ai/agents',
+    page: 'Agent 定义 + Prompt 槽位（新建/编辑/存槽位）',
+    status: 'live',
+    endpoint: 'live',
+    note: 'POST /agents、PUT /agents/{id}、PUT /agents/{id}/prompts/{slotKey}（agent.write，体字段 content）',
+  },
+  {
+    permission: 'ai:agent:delete',
+    rowSource: 'V27__agent_catalog_permissions.sql 菜单 7135',
+    route: '/ai/agents',
+    page: 'Agent 定义（删除）',
+    status: 'live',
+    endpoint: 'live',
+    note: 'DELETE /agents/{id}（agent.delete；内置/激活中由服务端拒绝）',
+  },
+  {
+    permission: 'ai:agent:activate',
+    rowSource: 'V27__agent_catalog_permissions.sql 菜单 7136',
+    route: '/ai/agents',
+    page: 'Agent 定义（激活）',
+    status: 'live',
+    endpoint: 'live',
+    note: 'POST /agents/{id}/activate（agent.activate，唯一激活语义）',
+  },
+
   // ---- ragent 管理面（有页面、**无权限行** ⇒ PAIR-GAP-NO-ROW）----
   // 【T0 裁决 2026-10-06，team-message-d1d39727 ②】C 行**现在不播种**：
   // 判则 =「扩套餐/播权限的唯一依据是端点真实可达」（G-36b trace 教训同形）。
-  // 这四族端点 BLOCKED-BY-EMBEDDED-REGISTRY（装配未登记），现在播 C 行 =
+  // 这三族端点 BLOCKED-BY-EMBEDDED-REGISTRY（装配未登记），现在播 C 行 =
   // 制造"有权限无端点"的假公开面。处置：页面保留 + blocked 标注，
   // **C 行播种与端点落地绑定同一个批次**（进维护者决策批次 + 下一迭代，
-  // 迁移号届时由 T0 分配）。测试把"4 gap 未播种"如实钉住。
-  {
-    permission: '',
-    rowSource: '（无——ragent 管理面从未播种 sys_menu C 行；T0 裁决：现在也不播种，绑定端点落地批次）',
-    route: '/ai/agents',
-    page: 'Agent 定义 + Prompt 槽位',
-    status: 'pair-gap',
-    gapKind: 'NO-ROW',
-    endpoint: 'BLOCKED-BY-EMBEDDED-REGISTRY',
-    note: 'C 行播种与端点落地同批次（T0 裁决 2026-10-06）；端点未装配，联调 NOT_RUN',
-  },
+  // 迁移号届时由 T0 分配）。测试把"3 gap 未播种"如实钉住。
+  // （/ai/agents 已于 2026-10-07 由 RW-03 移出本清单：端点落地 ⇒ 上表 live 行。）
   {
     permission: '',
     rowSource: '（无；同上裁决）',
