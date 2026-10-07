@@ -67,7 +67,7 @@ def build_sql(projection, retrieval):
                                    "'p2ci-current:same-key'", vector, "10"])
     sql = f"""
 BEGIN;
-SET LOCAL search_path=platform,public;
+SET LOCAL search_path=platform,extensions;
 INSERT INTO ai_knowledge_base
  (id,name,embedding_model,collection_name,created_by,tenant_id,owner_member_id)
  VALUES ('p2ci-a','Synthetic P2 A','ci-model','p2ci-ca','1','P2-CI-A','platform:P2-CI-A:1'),
