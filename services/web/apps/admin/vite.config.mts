@@ -4,7 +4,7 @@ import { defineConfig } from 'vite';
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/',
+  base: process.env.WEB_ADMIN_BASE_PATH || '/',
   plugins: [vue()],
   resolve: {
     alias: {

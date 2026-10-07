@@ -1,8 +1,16 @@
-# P2/P3 运行手册（合成 dev 交付）
+# P2/P3 运行手册（内嵌主线与兼容 dev 交付）
 
 本手册覆盖 P2（可靠 RAG）与 P3（受控 Agent）核心能力的配置、默认边界、同源 dev 启动、回退与运行故障处理。所有配置通过环境变量或受控 env 文件注入；仓库不保存任何真实密钥。
 
-## 1. 默认边界：一切能力默认关闭
+## 0. 当前内嵌主线
+
+主线运行在 platform 单进程，显式选择 `SPRING_PROFILES_ACTIVE=dev,embedded` 或 `prod,embedded`。`application-embedded.yml` 装配 P2/P3，并将身份、数据库和执行器接入保留的平台模块；基础配置的关闭默认不适用于已明确选择的 embedded profile。真实提供方、沙箱、套餐与角色绑定仍由部署方配置，Skills 激活保持关闭。
+
+统一 SQL 位于 `services/platform/docs/script/sql/postgres`，版本以 `scripts/ci/unified-schema-contract.json` 为准（非连续编号）。运行 `bash scripts/ci/verify-unified-migrations.sh` 验证新装和从 platform V6 + AI V12 升级，保留全部冻结迁移。不要把两套 Flyway 历史重放到统一链。
+
+下文 compose 与 V1–V6 / V1–V12 指独立 AI **兼容模式**，不是内嵌部署的一键生产配方。镜像发布与 digest 固定见 [image-release.md](image-release.md)。
+
+## 1. 独立 AI 基础配置：能力默认关闭
 
 - `p2.enabled=false`（缺省等同 false）：不装配 run/Worker/对象存储运行时；`POST /api/ai/v1/runs` 不可用；私有对象读写显式拒绝（`ClosedPrivateObjectStore`），不存在空实现静默成功。
 - `p3.enabled=false`：Agent 运行时不装配。
@@ -48,7 +56,7 @@ EOF
 docker compose up -d --build
 ```
 
-- 浏览器只访问 web 暴露的单一端口（默认 8080）。`/api/`、`/auth/` 是仅有的两个被代理前缀；SSE 响应不缓冲；上传上限 50 MiB；其余路径只服务静态资源。
+- 浏览器只访问 web 暴露的单一端口（默认 8080）。`/api/`、`/auth/`、`/system/`、`/monitor/` 是允许的公开代理前缀；SSE 响应不缓冲；上传上限 50 MiB；其余路径只服务静态资源。
 - 交付镜像：`ghcr.io/wonderchn/ruoyi-ai-agentscope-{platform,ai,web}`，三者共同出现在 release manifest，绑定同一 source commit 与镜像 digest。
 - 所有真实值（数据库口令、服务凭证、外部化 `PROJECT_SERVICES_*` 占位符）通过 env 文件注入；env 文件不进仓库。
 

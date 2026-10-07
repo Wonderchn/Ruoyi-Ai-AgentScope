@@ -126,7 +126,19 @@ class AgentTraceScenarioTest {
         GlobalOpenTelemetry.resetForTest();
         exported = Collections.synchronizedList(new ArrayList<>());
         clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
         tracerProvider = SdkTracerProvider.builder()
+                .setClock(new io.opentelemetry.sdk.common.Clock() {
+                    @Override
+                    public long now() {
+                        return TimeUnit.MILLISECONDS.toNanos(clock.millis());
+                    }
+
+                    @Override
+                    public long nanoTime() {
+                        return now();
+                    }
+                })
                 // SDK 自动结束的批 span 与工具事实必须使用同一可控时钟。
                 .setClock(new io.opentelemetry.sdk.common.Clock() {
                     @Override

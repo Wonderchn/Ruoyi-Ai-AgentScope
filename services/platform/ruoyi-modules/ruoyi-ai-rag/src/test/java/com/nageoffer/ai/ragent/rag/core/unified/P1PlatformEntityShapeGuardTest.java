@@ -95,30 +95,10 @@ class P1PlatformEntityShapeGuardTest {
                     "update_time", "Date",
                     "tenant_id", "String"));
 
-    /**
-     * 已知的"数值 Java 字段 ↔ 字符串 DDL 列"。每一项都是一条待处置的读路径风险，不是许可。
-     */
-    private static final Set<String> NUMERIC_ON_STRING_REGISTERED = Set.of(
-            // WP-026C 实测：写入经 I/O 转换成功；读回 getLong 对 ''/非数值旧值抛错（旧 MySQL 默认 ''）。
-            // Agent#id 已由 WP-026C 修好（改 String + IdType.ASSIGN_ID），所以不在这份清单里。
-            "Agent#create_by", "Agent#update_by",
-            "ChatProvider#create_by", "ChatProvider#update_by",
-            "ChatSession#create_dept",
-            // 知识域三表（WP-027 范围；登记在此以免新增时无感）。
-            "KnowledgeInfo#create_dept", "KnowledgeInfo#create_by", "KnowledgeInfo#id",
-            "KnowledgeAttach#create_dept", "KnowledgeAttach#create_by", "KnowledgeAttach#id",
-            "KnowledgeAttach#status",
-            "KnowledgeFragment#create_dept", "KnowledgeFragment#create_by", "KnowledgeFragment#id");
-
-    /**
-     * 主键类型不相容但<b>已在计划里显式推迟</b>的实体。知识域三表的主键/身份列依赖
-     * WP-027 的两项部署输入（旧 vector collection 前缀、{@code oss_id → sys_oss} 登记来源）；
-     * 只改一半会让知识域看起来"适配了"。清单必须逐条相等，新增一处就失败。
-     */
-    private static final Set<String> PK_TYPE_DEFERRED = Set.of(
-            "KnowledgeInfo -> ai_knowledge_base.id",
-            "KnowledgeAttach -> ai_knowledge_document.id",
-            "KnowledgeFragment -> ai_knowledge_chunk.id");
+    // All registered legacy numeric/string and deferred-PK risks belonged to the retired modules.
+    // Exact equality below still rejects any new mismatch in the retained entity inventory.
+    private static final Set<String> NUMERIC_ON_STRING_REGISTERED = Set.of();
+    private static final Set<String> PK_TYPE_DEFERRED = Set.of();
 
     /** 具名主键类型相容表（Java 简单类型名 → 允许的 DDL 基础类型）。 */
     private static final Map<String, Set<String>> TYPE_COMPAT = Map.of(
@@ -184,16 +164,29 @@ class P1PlatformEntityShapeGuardTest {
         }
         assertThat(mismatches).as("@TableId 类型与冻结 DDL 不一致").isEmpty();
         assertThat(checked)
-                .as("锚点：解析器必须真的读到实体与冻结列，否则本判据是空跑")
-                .containsKeys("Agent", "ChatProvider", "ChatModel", "ShortDramaProject", "Workflow",
-                        "ChatSession", "ChatMessage", "McpTool", "ChatConfig")
-                .hasSizeGreaterThanOrEqualTo(45);
-        assertThat(checked.get("Agent"))
-                .as("WP-026C：ai_agent_profile.id 是 VARCHAR(20)，平台 Agent 实体必须与 AI 侧 AgentProfileDO 同为 String")
+                .as("fixed retained entity inventory after legacy module retirement; no empty or partial scan")
+                .containsOnlyKeys(
+                        "AgentContextCompactionDO", "AgentConversationDO", "AgentMemoryDO",
+                        "AgentMemoryExtractionDO", "AgentMessageDO", "AgentProfileDO",
+                        "AgentPromptDO", "AgentSkillDO", "BizChangeLogDO",
+                        "ChatConfig", "ChatMessage", "ChatModel",
+                        "ConversationDO", "ConversationMessageDO", "ConversationSummaryDO",
+                        "IngestionPipelineDO", "IngestionPipelineNodeDO", "IngestionTaskDO",
+                        "IngestionTaskNodeDO", "IntentNodeDO", "KnowledgeBaseDO",
+                        "KnowledgeChunkDO", "KnowledgeDocumentChunkLogDO", "KnowledgeDocumentDO",
+                        "KnowledgeDocumentScheduleDO", "KnowledgeDocumentScheduleExecDO", "MessageFeedbackDO",
+                        "QueryTermMappingDO", "RagTraceNodeDO", "RagTraceRunDO",
+                        "SampleQuestionDO", "TraceNode", "TraceRun",
+                        "UserDO");
+        assertThat(checked.get("AgentProfileDO"))
+                .as("the retained agent profile keeps the unified varchar primary key")
                 .isEqualTo("ai_agent_profile.id : String / varchar");
-        assertThat(checked.get("ChatProvider"))
-                .as("WP-026C 反例：ai_model_provider.id 是 bigint（V9 由旧 MySQL 转换），不能一起改成 String")
-                .isEqualTo("ai_model_provider.id : Long / bigint");
+        assertThat(checked.get("ChatModel"))
+                .as("the retained model keeps the legacy bigint primary key")
+                .isEqualTo("ai_model.id : Long / bigint");
+        assertThat(shape.get("ai_model_provider").get("id"))
+                .as("retiring ChatProvider does not rewrite its frozen bigint schema")
+                .isEqualTo("bigint");
         assertThat(deferredFound)
                 .as("已登记的推迟项必须仍然命中；修好之后要把它从 PK_TYPE_DEFERRED 删掉，不能留着掩盖回归")
                 .isEqualTo(new TreeSet<>(PK_TYPE_DEFERRED));

@@ -3,6 +3,17 @@ name: Publish GHCR images
 on:
   push:
     branches: [main]
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'infra/docker/**'
+      - 'infra/dev/nginx.conf'
+      - '.dockerignore'
+      - 'services/web/**'
+      - 'scripts/ci/release-manifest.py'
+      - 'scripts/ci/test-release-manifest.py'
+      - 'scripts/ci/verify-release-images.py'
+      - 'docs/release-compatibility.json'
   workflow_dispatch:
 
 permissions:
@@ -14,12 +25,33 @@ concurrency:
 
 jobs:
   verify:
+    if: github.event_name != 'pull_request'
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
 
+  image-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check manifest rejection and compatibility contracts
+        run: python3 scripts/ci/test-release-manifest.py
+      - uses: docker/setup-buildx-action@v3
+      - name: Build both frontend applications
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/ruoyi-web.Dockerfile
+          load: true
+          tags: release-web-test:${{ github.sha }}
+      - name: Verify delivered pages, assets and proxy boundary
+        run: python3 scripts/ci/verify-release-images.py --web release-web-test:${{ github.sha }}
+
   publish:
-    needs: verify
+    needs: [verify, image-contracts]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -67,10 +99,9 @@ jobs:
           IMAGE: ${{ matrix.image }}
           DIGEST: ${{ steps.build.outputs.digest }}
           SHA: ${{ github.sha }}
-          OWNER: wonderchn
         run: |
           mkdir -p release-manifest
-          printf '%s\n' "ghcr.io/${OWNER}/${IMAGE}@${DIGEST}" "source=${SHA}" > "release-manifest/${IMAGE}.txt"
+          printf '%s\n' "ghcr.io/wonderchn/${IMAGE}@${DIGEST}" "source=${SHA}" > "release-manifest/${IMAGE}.txt"
       - uses: actions/upload-artifact@v4
         with:
           name: release-manifest-${{ matrix.image }}
@@ -84,46 +115,19 @@ jobs:
       contents: read
       actions: read
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           pattern: release-manifest-*
           path: image-digests
           merge-multiple: true
-      - name: Bind both image digests to one source commit
-        env:
-          SOURCE_SHA: ${{ github.sha }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          compatibility = json.loads(Path('docs/release-compatibility.json').read_text(encoding='utf-8'))
-          files = sorted(Path('image-digests').glob('*.txt'))
-          if len(files) != 3:
-              raise SystemExit(f'Expected three image digests, got {len(files)}')
-          images = {}
-          for file in files:
-              reference, source = file.read_text(encoding='utf-8').splitlines()
-              if source != 'source=' + os.environ['SOURCE_SHA']:
-                  raise SystemExit(f'Source commit mismatch in {file}')
-              if '@sha256:' not in reference:
-                  raise SystemExit(f'Missing immutable digest in {file}')
-              images[file.stem] = reference
-          manifest = {
-              'sourceRepository': os.environ['REPOSITORY'],
-              'sourceCommit': os.environ['SOURCE_SHA'],
-              'images': images,
-              'schemaCompatibility': compatibility['compatibility']['schemaCompatibility'],
-              'contractCompatibility': compatibility['compatibility']['contractCompatibility'],
-              'verifiedUpgradePaths': compatibility['compatibility']['verifiedUpgradePaths'],
-              'notVerified': compatibility['compatibility']['notVerified'],
-          }
-          Path('release-manifest.json').write_text(
-              json.dumps(manifest, indent=2) + '\n', encoding='utf-8'
-          )
-          PY
+      - name: Bind three digests and compatibility to this checkout
+        run: >-
+          python3 scripts/ci/release-manifest.py create
+          --source '${{ github.sha }}' --repository '${{ github.repository }}'
+          --digests image-digests --output release-manifest.json
       - uses: actions/upload-artifact@v4
         with:
           name: release-manifest
@@ -138,39 +142,54 @@ jobs:
       contents: read
       actions: read
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: release-manifest
-      - name: Pull all three published digests without registry credentials
+      - name: Pull anonymously and verify published contents
         env:
-          SOURCE_SHA: ${{ github.sha }}
-          SOURCE_REPOSITORY: ${{ github.repository }}
           DOCKER_CONFIG: ${{ runner.temp }}/anonymous-docker
         run: |
-          set -euo pipefail
           mkdir -p "$DOCKER_CONFIG"
-          python3 - <<'PY' > image-refs.txt
-          import json
-          import os
-          import re
-          from pathlib import Path
+          python3 scripts/ci/verify-release-images.py --manifest release-manifest.json --source '${{ github.sha }}' --repository '${{ github.repository }}' --output image-verification.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-verification
+          path: image-verification.json
+          if-no-files-found: error
 
-          manifest = json.loads(Path('release-manifest.json').read_text(encoding='utf-8'))
-          if manifest['sourceCommit'] != os.environ['SOURCE_SHA']:
-              raise SystemExit('Release manifest source commit mismatch')
-          if manifest['sourceRepository'] != os.environ['SOURCE_REPOSITORY']:
-              raise SystemExit('Release manifest repository mismatch')
-          expected = {'ruoyi-ai-agentscope-ai', 'ruoyi-ai-agentscope-platform', 'ruoyi-ai-agentscope-web'}
-          if set(manifest['images']) != expected:
-              raise SystemExit('Release manifest does not contain exactly the three expected images')
-          for name in sorted(expected):
-              reference = manifest['images'][name]
-              if not re.fullmatch(rf'ghcr\.io/wonderchn/{name}@sha256:[0-9a-f]{{64}}', reference):
-                  raise SystemExit(f'Invalid immutable image reference for {name}')
-              print(reference)
-          PY
-          while IFS= read -r reference; do
-            docker pull --platform linux/amd64 "$reference"
-            revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$reference")
-            test "$revision" = "$SOURCE_SHA"
-          done < image-refs.txt
+  promote:
+    needs: verify-pull
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-manifest
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote verified digests if this commit is still main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          python3 scripts/ci/verify-release-images.py --manifest release-manifest.json
+          --source '${{ github.sha }}' --repository '${{ github.repository }}'
+          --promote --output image-promotion.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-promotion
+          path: image-promotion.json
+          if-no-files-found: error

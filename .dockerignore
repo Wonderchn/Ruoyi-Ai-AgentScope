@@ -5,8 +5,12 @@
 !services/web
 !infra/dev
 # keep the frontend tree itself lean
-services/web/node_modules
-services/web/apps/workbench/node_modules
-services/web/apps/workbench/dist
-services/web/packages/events/node_modules
-services/web/.git
+services/web/**/node_modules
+services/web/**/dist
+services/web/**/.git
+services/web/**/.env
+services/web/**/.env.*
+!services/web/**/.env.example
+infra/dev/.env
+infra/dev/.env.*
+!infra/dev/.env.example

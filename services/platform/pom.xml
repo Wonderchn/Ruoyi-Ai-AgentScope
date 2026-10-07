@@ -458,29 +458,10 @@
                 <version>${revision}</version>
             </dependency>
 
-            <dependency>
-                <groupId>org.ruoyi</groupId>
-                <artifactId>ruoyi-generator</artifactId>
-                <version>${revision}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.ruoyi</groupId>
-                <artifactId>ruoyi-chat</artifactId>
-                <version>${revision}</version>
-            </dependency>
-
             <!--  工作流模块  -->
             <dependency>
                 <groupId>org.ruoyi</groupId>
                 <artifactId>ruoyi-workflow</artifactId>
-                <version>${revision}</version>
-            </dependency>
-
-            <!--  AI流程编排模块  -->
-            <dependency>
-                <groupId>org.ruoyi</groupId>
-                <artifactId>ruoyi-aiflow</artifactId>
                 <version>${revision}</version>
             </dependency>
 
@@ -625,5 +606,4 @@
     </pluginRepositories>
 
 </project>
-
 
