@@ -69,6 +69,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>登记表本体是 {@code src/test/resources/unified/merged-append-column-registry.json}，
  * 由 WP-028 的机械抽取脚本从冻结迁移 + 旧 MySQL 安装脚本 + 平台实体源码生成。
  * 本类不重复造"实体映射列是否存在"的判据（那在 {@link P1PlatformEntityShapeGuardTest}）。
+ *
+ * <p><b>登记位（D4 修复）。</b>上面的 68 列是 <b>冻结 V9</b> 的口径，结构上不可扩展：
+ * 新迁移在那份清单里没有位置。结果是 V9 之后给这 6 张表加列的迁移只能"绕"——
+ * V13 与 V29 都在自己的 SQL 注释里写明了它们刻意避开 {@code ADD COLUMN IF NOT EXISTS}，
+ * 因为旧判据只在 {@code ifNotExists()} 为真时才把未登记列算作违规。
+ * <b>判定取决于 SQL 写法而不是是否登记</b>，这是口径缺陷，不是迁移的错。
+ *
+ * <p>因此登记表新增 {@code post_v9_append_columns} 分区：<b>V9 之后</b>（含 V13、V29
+ * 及以后任何迁移）给这 6 张表追加的列必须在该分区显式声明
+ * {@code table / column / source_migration / pg_definition / pg_not_null / reason / write_source}。
+ * 该分区判据<b>刻意不接受 {@code ifNotExists} 参数</b>，裸 {@code ADD COLUMN} 与
+ * {@code ADD COLUMN IF NOT EXISTS} 一视同仁，所以"换个写法绕过"不再可行；同时它把新迁移的
+ * 登记位补上了，新迁移不必再绕。冻结的 68 列口径（{@code registered == V9}）保持不变。
  */
 @Tag("dev")
 class P1MergedAppendColumnRegistryGuardTest {
@@ -101,6 +114,39 @@ class P1MergedAppendColumnRegistryGuardTest {
     private static final int EXPECTED_STATEMENTS = 68;
     private static final int EXPECTED_TRULY_NEW = 62;
     private static final int EXPECTED_NOOP = 6;
+
+    /**
+     * 登记表 {@code columns} 分区覆盖的冻结窗口终点：V9。
+     *
+     * <p>V9 之后给合并表加列的迁移<b>不</b>进入该分区（它必须保持 68 列的冻结口径），
+     * 而必须在 {@code post_v9_append_columns} 分区声明。
+     */
+    private static final int FROZEN_REGISTRY_VERSION = 9;
+
+    /**
+     * 冻结扫描窗口：登记表生成时已存在的、会触碰合并表的迁移版本。
+     *
+     * <p>显式限定，取代原来"{@code Files.list} 遍历整个目录、DisplayName 却声称只覆盖
+     * 冻结迁移"的隐式口径——否则以后每加一个迁移都会悄悄进入冻结判据的扫描面。
+     */
+    private static final Set<String> FROZEN_VERSIONS =
+            Set.of("V7", "V8", "V9", "V10", "V11", "V12", "V13");
+
+    /** V9 之后追加列的登记位分区名。 */
+    private static final String POST_V9_PARTITION = "post_v9_append_columns";
+
+    /** 分区每条声明必须给出的字段：少一个就等于没有登记位。 */
+    private static final Set<String> POST_V9_REQUIRED_FIELDS =
+            Set.of("table", "column", "source_migration", "pg_definition", "pg_not_null",
+                    "reason", "write_source");
+
+    /**
+     * 当前已声明的 post-V9 追加列。<b>只做存在性锚点，不做等值断言</b>：
+     * 将来再加列时改登记表即可，不必同时改测试——否则又会变成"结构上不可扩展"。
+     */
+    private static final Set<String> KNOWN_POST_V9_DECLARED = Set.of(
+            "ai_conversation.version",
+            "ai_knowledge_document.version");
 
     /**
      * 原约束必填但<b>没有可执行来源</b>的列，必须<b>恰好</b>是这 5 列。
@@ -178,14 +224,17 @@ class P1MergedAppendColumnRegistryGuardTest {
     }
 
     @Test
-    @DisplayName("冻结迁移给合并表加的每一列都必须在登记表里：未登记列必须响亮失败")
+    @DisplayName("冻结窗口 V7..V13 给合并表加的每一列都必须在登记表里：未登记列必须响亮失败")
     void everyAppendColumnInTheFrozenMigrationsIsRegistered() throws IOException {
         Set<String> registered = registeredKeys();
         assertThat(registered).as("锚点：登记表非空").hasSize(EXPECTED_STATEMENTS);
 
         Set<String> found = new TreeSet<>();
         List<String> offenders = new ArrayList<>();
-        for (Map.Entry<String, Path> e : migrationFiles().entrySet()) {
+        // 扫描面显式限定到冻结窗口：本判据的 {@code ifNotExists} 语义只对 V9 的
+        // "ADD COLUMN IF NOT EXISTS" 有定义（V7 的 10 列是建表期裸加列，不属于登记表口径）。
+        // V9 之后的新迁移由 everyAppendColumnAfterV9IsDeclaredInThePostV9Partition 判定。
+        for (Map.Entry<String, Path> e : frozenMigrationFiles().entrySet()) {
             for (AppendColumn ac : appendColumns(e.getValue(), e.getKey())) {
                 if (!MERGED_TABLES.containsKey(ac.table())) {
                     continue;
@@ -217,6 +266,114 @@ class P1MergedAppendColumnRegistryGuardTest {
         assertThat(found).as("锚点：迁移里确实扫到了合并表加列语句；为空说明解析器读空了")
                 .isNotEmpty()
                 .contains("ai_conversation.create_by", "ai_knowledge_base.retrieve_limit");
+    }
+
+    /**
+     * D4 登记位判据：<b>V9 之后</b>给合并表加列，必须在 {@code post_v9_append_columns} 里声明。
+     *
+     * <p>与上面冻结判据的关键差别：<b>本判据不看 {@code ADD COLUMN IF NOT EXISTS}</b>。
+     * V13 与 V29 都在自己的 SQL 注释里写明它们刻意用裸 {@code ADD COLUMN} 来避开旧判据，
+     * 所以只按写法判定，等于把"对口径有缺陷的护栏的精确规避"固化成通过条件。
+     * 这里改成按<b>登记事实</b>判定，并给新迁移补上登记位。
+     */
+    @Test
+    @DisplayName("V9 之后给合并表加列必须在 post_v9_append_columns 声明：裸 ADD COLUMN 同样要登记")
+    void everyAppendColumnAfterV9IsDeclaredInThePostV9Partition() throws IOException {
+        Set<String> declared = postV9DeclaredKeys();
+        assertThat(declared)
+                .as("锚点：post-V9 登记位非空，否则下面每条判据都是空跑")
+                .isNotEmpty()
+                .containsAll(KNOWN_POST_V9_DECLARED);
+        assertThat(declared)
+                .as("两个分区必须互斥：V9 的 " + EXPECTED_STATEMENTS + " 列是冻结口径，"
+                        + "不得混进 post-V9 分区")
+                .doesNotContainAnyElementsOf(registeredKeys());
+
+        for (Map<String, Object> row : postV9DeclaredRows()) {
+            for (String field : POST_V9_REQUIRED_FIELDS) {
+                assertThat(row)
+                        .as("post-V9 声明缺字段 " + field + "：" + row)
+                        .containsKey(field);
+            }
+            for (String field : List.of("table", "column", "source_migration",
+                    "pg_definition", "reason", "write_source")) {
+                assertThat((String) row.get(field))
+                        .as("post-V9 声明的 " + field + " 不能为空白：" + row)
+                        .isNotBlank();
+            }
+            assertThat(row.get("pg_not_null"))
+                    .as("post-V9 声明必须记下该列的 NOT NULL 事实（可空性不得靠猜）：" + row)
+                    .isInstanceOf(Boolean.class);
+        }
+
+        Map<String, String> offenders = new TreeMap<>();
+        Set<String> found = new TreeSet<>();
+        for (Map.Entry<String, Path> e : postV9MigrationFiles().entrySet()) {
+            for (AppendColumn ac : appendColumns(e.getValue(), e.getKey())) {
+                if (!MERGED_TABLES.containsKey(ac.table())) {
+                    continue;
+                }
+                String key = ac.table() + "." + ac.column();
+                found.add(key);
+                if (!postV9UnregisteredKeys(declared, ac.table(), ac.column()).isEmpty()) {
+                    offenders.put(key, ac.version() + (ac.ifNotExists()
+                            ? " (ADD COLUMN IF NOT EXISTS)" : " (裸 ADD COLUMN)"));
+                }
+            }
+        }
+        assertThat(offenders)
+                .as("V9 之后给合并表加列必须在登记表 post_v9_append_columns 分区显式声明"
+                        + "（table/column/source_migration/pg_definition/pg_not_null/reason/write_source）。"
+                        + "本判据不区分 SQL 写法，所以『改成裸 ADD COLUMN 就绕过去』不再可行")
+                .isEmpty();
+
+        Set<String> stale = new TreeSet<>(declared);
+        stale.removeAll(found);
+        assertThat(stale)
+                .as("post-V9 分区有迁移里已不存在的过期声明（声明了却没加列）")
+                .isEmpty();
+
+        assertThat(found)
+                .as("锚点：post-V9 迁移里确实扫到了合并表加列语句；为空说明解析器读空了")
+                .isNotEmpty()
+                .containsAll(KNOWN_POST_V9_DECLARED);
+    }
+
+    /**
+     * D4 负例实证：post-V9 判定器必须拒绝"新迁移加列但没登记"，且<b>不依赖 SQL 写法</b>。
+     *
+     * <p>没有这一条就无法区分"护栏被修好"与"护栏被绕过"。旧判定器
+     * {@link #unregisteredKeys} 只在 {@code ifNotExists} 为真时命中——这正是 V13/V29 用裸
+     * {@code ADD COLUMN} 逃逸的机制；本负例把两者的行为差别直接钉下来。
+     */
+    @Test
+    @DisplayName("负例实证：post-V9 判定器对裸 ADD COLUMN 同样拒绝，不依赖 SQL 写法")
+    void postV9CheckerRejectsUnregisteredColumnsRegardlessOfSqlForm() {
+        Set<String> declared = Set.of("ai_conversation.version");
+        // 正例
+        assertThat(postV9UnregisteredKeys(declared, "ai_conversation", "version"))
+                .as("已声明的列不该被判为未登记").isEmpty();
+        // 负例：真实存在的 V29 列，登记表没声明
+        assertThat(postV9UnregisteredKeys(declared, "ai_knowledge_document", "version"))
+                .as("未声明的 post-V9 加列必须被拒绝（这是 V29 真实加的列）")
+                .isNotEmpty()
+                .contains("ai_knowledge_document.version");
+        // 负例：构造的新列
+        assertThat(postV9UnregisteredKeys(declared, "ai_message", "brand_new_column"))
+                .as("未声明的 post-V9 加列必须被拒绝（构造用例）")
+                .isNotEmpty();
+        // 范围外不参与
+        assertThat(postV9UnregisteredKeys(declared, "not_a_merged_table", "anything"))
+                .as("不在 6 张合并表范围内的表不参与判定").isEmpty();
+
+        // 对照：同一个未登记列，旧判定器在"裸 ADD COLUMN"下返回空（= 漏判，D4 缺陷本身），
+        // 新判定器不为所动。这一对断言就是"咬合真的生效"的证据。
+        assertThat(unregisteredKeys(declared, "ai_message", "brand_new_column", false))
+                .as("对照：旧判定器在裸 ADD COLUMN 下确实漏判——D4 缺陷的机制")
+                .isEmpty();
+        assertThat(postV9UnregisteredKeys(declared, "ai_message", "brand_new_column"))
+                .as("新判定器不因 SQL 写法而漏判")
+                .isNotEmpty();
     }
 
     @Test
@@ -366,7 +523,7 @@ class P1MergedAppendColumnRegistryGuardTest {
         return out;
     }
 
-    /** V7..V12 的迁移文件，按版本名索引。 */
+    /** 迁移目录里所有 V*.sql，按版本名索引（调用方各自限定扫描面）。 */
     private static Map<String, Path> migrationFiles() throws IOException {
         Path dir = locate(PLATFORM_SQL);
         Map<String, Path> out = new TreeMap<>();
@@ -379,9 +536,43 @@ class P1MergedAppendColumnRegistryGuardTest {
             }
         }
         assertThat(out.keySet())
-                .as("必须读到冻结迁移 V7..V12")
-                .contains("V7", "V8", "V9", "V10", "V11", "V12");
+                .as("必须读到冻结迁移 V7..V13")
+                .contains("V7", "V8", "V9", "V10", "V11", "V12", "V13");
         return out;
+    }
+
+    /**
+     * 冻结窗口 V7..V13 的迁移文件。
+     *
+     * <p>扫描范围<b>显式限定</b>：原来 {@code Files.list} 遍历整个目录、DisplayName 却声称
+     * 只覆盖"冻结迁移 V7..V12"，两者不一致——新迁移会被悄悄卷进冻结判据。
+     */
+    private static Map<String, Path> frozenMigrationFiles() throws IOException {
+        Map<String, Path> out = new TreeMap<>();
+        for (Map.Entry<String, Path> e : migrationFiles().entrySet()) {
+            if (FROZEN_VERSIONS.contains(e.getKey())) {
+                out.put(e.getKey(), e.getValue());
+            }
+        }
+        assertThat(out.keySet())
+                .as("冻结窗口必须完整读到：" + new TreeSet<>(FROZEN_VERSIONS))
+                .containsExactlyInAnyOrderElementsOf(FROZEN_VERSIONS);
+        return out;
+    }
+
+    /** V9 之后（版本号 &gt; 9）的迁移文件；它们加给合并表的列必须在 post-V9 分区声明。 */
+    private static Map<String, Path> postV9MigrationFiles() throws IOException {
+        Map<String, Path> out = new TreeMap<>();
+        for (Map.Entry<String, Path> e : migrationFiles().entrySet()) {
+            if (versionNumber(e.getKey()) > FROZEN_REGISTRY_VERSION) {
+                out.put(e.getKey(), e.getValue());
+            }
+        }
+        return out;
+    }
+
+    private static int versionNumber(String version) {
+        return Integer.parseInt(version.substring(1));
     }
 
     /** 未登记的键：判定器的单一实现，负例实证与正式判据都用它，避免"判据和被证对象不同源"。 */
@@ -396,6 +587,45 @@ class P1MergedAppendColumnRegistryGuardTest {
             out.add(key);
         }
         return out;
+    }
+
+    /**
+     * post-V9 未登记的键：判定器的单一实现。
+     *
+     * <p><b>刻意不接受 {@code ifNotExists} 参数</b>——旧判定器（{@link #unregisteredKeys}）
+     * 的缺陷正是这个参数：裸 {@code ADD COLUMN} 一律不被算作违规，于是"换个写法"就能绕过。
+     * 本分区按登记事实判定，与 SQL 写法无关。
+     */
+    private static Set<String> postV9UnregisteredKeys(Set<String> declared, String table, String column) {
+        Set<String> out = new TreeSet<>();
+        if (!MERGED_TABLES.containsKey(table)) {
+            return out;
+        }
+        String key = table + "." + column;
+        if (!declared.contains(key)) {
+            out.add(key);
+        }
+        return out;
+    }
+
+    /** 登记表 post-V9 分区的原始行。 */
+    private static List<Map<String, Object>> postV9DeclaredRows() throws IOException {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (JsonNode n : registryRoot().path(POST_V9_PARTITION)) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            n.fields().forEachRemaining(e -> row.put(e.getKey(),
+                    e.getValue().isNull() ? null : toJava(e.getValue())));
+            out.add(row);
+        }
+        return out;
+    }
+
+    private static Set<String> postV9DeclaredKeys() throws IOException {
+        Set<String> keys = new TreeSet<>();
+        for (Map<String, Object> c : postV9DeclaredRows()) {
+            keys.add(c.get("table") + "." + c.get("column"));
+        }
+        return keys;
     }
 
     private static Set<String> registeredKeys() throws IOException {
