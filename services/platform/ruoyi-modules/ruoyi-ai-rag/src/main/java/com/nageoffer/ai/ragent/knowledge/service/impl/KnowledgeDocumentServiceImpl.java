@@ -76,6 +76,7 @@ import com.nageoffer.ai.ragent.knowledge.service.KnowledgeChunkService;
 import com.nageoffer.ai.ragent.knowledge.service.KnowledgeDocumentScheduleService;
 import com.nageoffer.ai.ragent.knowledge.service.KnowledgeDocumentService;
 import com.nageoffer.ai.ragent.knowledge.support.IngestionSpecCodec;
+import com.nageoffer.ai.ragent.knowledge.support.KnowledgeErrorCode;
 import com.nageoffer.ai.ragent.knowledge.support.VectorTargetResolver;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorSpaceId;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorStoreService;
@@ -513,6 +514,9 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
             throw new ClientException("文档正在分块中，无法修改");
         }
 
+        // 乐观锁前置检查：任何写入之前拒绝陈旧版本
+        requireExpectedVersion(documentDO, requestParam == null ? null : requestParam.getExpectedVersion());
+
         String docName = requestParam == null ? null : requestParam.getDocName();
         if (!StringUtils.hasText(docName)) {
             throw new ClientException("文档名称不能为空");
@@ -522,7 +526,11 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                 .eq(KnowledgeDocumentDO::getId, documentDO.getId())
                 .apply(TENANT_PREDICATE, requireTenantId())
                 .set(KnowledgeDocumentDO::getDocName, docName.trim())
-                .set(KnowledgeDocumentDO::getUpdatedBy, UserContext.getUsername());
+                .set(KnowledgeDocumentDO::getUpdatedBy, UserContext.getUsername())
+                // 版本令牌必须随每次成功写入前进：wrapper 更新不触发 updateTime 自动填充，
+                // 不显式写回就会出现"改了内容、版本没变"，乐观锁随即失效（旧值永远匹配）
+                .set(KnowledgeDocumentDO::getUpdateTime, new Date());
+        applyExpectedVersion(updateWrapper, requestParam == null ? null : requestParam.getExpectedVersion());
 
         // 如果传了 processMode，校验并更新处理配置
         if (StringUtils.hasText(requestParam.getProcessMode())) {
@@ -594,7 +602,22 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
             }
         }
 
-        documentMapper.update(updateWrapper);
+        int affectedRows = documentMapper.update(updateWrapper);
+
+        // 0 行只有两种成因：版本在窗口里被别处改过，或行已被删除/跨租户。两者都拒绝，
+        // 但错误码不同——把冲突报成"文档不存在"会让前端永远刷新不出正确版本
+        if (affectedRows == 0) {
+            KnowledgeDocumentDO current = selectTenantKnowledgeDocument(docId);
+            Assert.notNull(current, () -> new ClientException("文档不存在"));
+            if (requestParam.getExpectedVersion() == null) {
+                // 不带期望版本时没有"冲突"可言：行还在却更新不到，只可能是并发删除/租户变化
+                throw new ClientException("文档不存在");
+            }
+            throw new ClientException(
+                    "文档已被其他操作修改（期望版本 " + requestParam.getExpectedVersion()
+                            + "，当前版本 " + versionOf(current) + "），请刷新后重试",
+                    KnowledgeErrorCode.DOCUMENT_VERSION_CONFLICT);
+        }
 
         if (scheduleChanged) {
             KnowledgeDocumentDO updated = selectTenantKnowledgeDocument(docId);
@@ -638,7 +661,50 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         if (StringUtils.hasText(documentDO.getIngestionSpec())) {
             vo.setIngestionSpec(ingestionSpecCodec.write(ingestionSpecCodec.read(documentDO.getIngestionSpec())));
         }
+        vo.setVersion(versionOf(documentDO));
         return vo;
+    }
+
+    // ==================== 文档乐观锁（编辑 / 状态） ====================
+
+    /**
+     * 文档版本 = {@code update_time} 的 epoch 毫秒；行上没有时间（本不该发生）时返回 null，
+     * 此时调用方不带 {@code expectedVersion} 编辑，行为回落到无校验。
+     *
+     * <p>只作为"自上次读取以来有没有被改过"的令牌，不承诺恢复历史版本。
+     */
+    private static Long versionOf(KnowledgeDocumentDO documentDO) {
+        Date updateTime = documentDO == null ? null : documentDO.getUpdateTime();
+        return updateTime == null ? null : updateTime.getTime();
+    }
+
+    /**
+     * 写入前的乐观锁前置检查：期望版本与当前行不一致时，<b>在任何副作用之前</b>拒绝。
+     *
+     * <p>真正的判定仍是下面条件更新里的 {@code WHERE update_time = ?}（0 行即冲突）：
+     * 这一层只是让"读-改-写"之间的窗口在无竞争时也尽早失败，不替代 CAS。
+     * 两层都保留是刻意的——把前置检查当唯一判定，等于在并发下退回最后写入覆盖。
+     */
+    private static void requireExpectedVersion(KnowledgeDocumentDO documentDO, Long expectedVersion) {
+        if (expectedVersion == null) {
+            return;
+        }
+        Long current = versionOf(documentDO);
+        if (current == null || !current.equals(expectedVersion)) {
+            throw new ClientException(
+                    "文档已被其他操作修改（期望版本 " + expectedVersion + "，当前版本 " + current + "），请刷新后重试",
+                    KnowledgeErrorCode.DOCUMENT_VERSION_CONFLICT);
+        }
+    }
+
+    /**
+     * 条件更新的版本谓词：只有 {@code update_time} 仍是调用方读到的那个瞬间才允许落库。
+     */
+    private static void applyExpectedVersion(LambdaUpdateWrapper<KnowledgeDocumentDO> updateWrapper,
+                                             Long expectedVersion) {
+        if (expectedVersion != null) {
+            updateWrapper.apply("update_time = {0}", new Date(expectedVersion));
+        }
     }
 
     private Set<String> findEditedDocIds(List<String> docIds) {
@@ -704,6 +770,13 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         return records;
     }
 
+    /**
+     * 不带乐观锁的启停入口：转发到 3 参实现。
+     *
+     * <p>注解必须同样写在这个<b>入口</b>上：这是同一个 bean 的自调用，不经过 Spring AOP 代理，
+     * 3 参方法上的 {@code @LogRecord} 在这里<b>不会</b>生效；反过来，两处各自带注解也不会重复记账
+     * （自调用的那一段永远不被通知）。去掉它等于让"不带 expectedVersion 的启停"静默失去审计记录。
+     */
     @Override
     @LogRecord(
             success = "{{#enabled ? '启用' : '禁用'}}文档：{{#bizChangeName}}",
@@ -715,6 +788,20 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public void enable(String docId, boolean enabled) {
+        enable(docId, enabled, null);
+    }
+
+    @Override
+    @LogRecord(
+            success = "{{#enabled ? '启用' : '禁用'}}文档：{{#bizChangeName}}",
+            fail = "修改文档启用状态失败：{{#_errorMsg}}",
+            type = BizChangeBizType.KNOWLEDGE_DOCUMENT,
+            subType = "{{#enabled ? 'ENABLE' : 'DISABLE'}}",
+            bizNo = "{{#docId}}",
+            extra = BizChangeLogContext.SNAPSHOT_EXPRESSION,
+            condition = BizChangeLogContext.RECORD_CONDITION
+    )
+    public void enable(String docId, boolean enabled, Long expectedVersion) {
         KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
         bizChangeLogContext.putName(documentDO.getDocName());
@@ -724,6 +811,9 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         if (DocumentStatus.RUNNING.getCode().equals(documentDO.getStatus())) {
             throw new ClientException("文档正在分块中，无法修改");
         }
+
+        // 乐观锁前置检查：排在向量重建（耗时）之前——冲突请求既不产生副作用，也不白烧 embedding
+        requireExpectedVersion(documentDO, expectedVersion);
 
         // 如果已经是目标状态，直接返回
         int targetEnabled = enabled ? 1 : 0;
@@ -753,12 +843,22 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         transactionOperations.executeWithoutResult(status -> {
             documentDO.setEnabled(targetEnabled);
             documentDO.setUpdatedBy(UserContext.getUsername());
-            // P1.3a：启用状态更新带租户条件（WHERE id AND tenant_id）
-            documentMapper.update(Wrappers.lambdaUpdate(KnowledgeDocumentDO.class)
+            LambdaUpdateWrapper<KnowledgeDocumentDO> updateWrapper = Wrappers.lambdaUpdate(KnowledgeDocumentDO.class)
                     .eq(KnowledgeDocumentDO::getId, documentDO.getId())
+                    // P1.3a：启用状态更新带租户条件（WHERE id AND tenant_id）
                     .apply(TENANT_PREDICATE, tenantId)
                     .set(KnowledgeDocumentDO::getEnabled, targetEnabled)
-                    .set(KnowledgeDocumentDO::getUpdatedBy, UserContext.getUsername()));
+                    .set(KnowledgeDocumentDO::getUpdatedBy, UserContext.getUsername())
+                    // 版本令牌随写入前进：否则"停用→启用"来回切都不改版本，乐观锁形同虚设
+                    .set(KnowledgeDocumentDO::getUpdateTime, new Date());
+            applyExpectedVersion(updateWrapper, expectedVersion);
+            int updated = documentMapper.update(updateWrapper);
+            if (updated == 0) {
+                // 条件更新 0 行 ⇒ 读到写之间版本变了（或行被并发删除/换租户）：整体回滚，不留半个状态
+                throw new ClientException(
+                        "文档已被其他操作修改（期望版本 " + expectedVersion + "），请刷新后重试",
+                        KnowledgeErrorCode.DOCUMENT_VERSION_CONFLICT);
+            }
             scheduleService.syncScheduleIfExists(documentDO);
             knowledgeChunkService.updateEnabledByDocId(docId, String.valueOf(kbDO.getId()), enabled);
 
@@ -768,7 +868,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                 vectorStoreService.indexDocumentChunks(tenantId, collectionName, docId, finalEmbeddedChunks);
             }
         });
-        bizChangeLogContext.put(docId, before, documentMapper.selectById(docId));
+        bizChangeLogContext.put(docId, before, selectTenantKnowledgeDocument(docId));
     }
 
     @Override

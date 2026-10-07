@@ -128,6 +128,10 @@ public class KnowledgeDocumentController {
 
     /**
      * 更新文档信息
+     *
+     * <p>body 可选携带 {@code expectedVersion}（取自详情/列表行的 {@code version}）：
+     * 版本不符时<b>不写入任何字段</b>，返回信封 {@code {code:"A000409", message:"文档已被其他操作修改…"}}
+     * （HTTP 仍为 200，与本族同一模板）。缺省该字段按无并发校验处理。
      */
     @PutMapping("/knowledge-base/docs/{docId}")
     public Result<Void> update(@PathVariable String docId,
@@ -156,11 +160,15 @@ public class KnowledgeDocumentController {
 
     /**
      * 启用/禁用文档
+     *
+     * <p>{@code expectedVersion} 可选（query 参数，取值同详情行的 {@code version}）：
+     * 带值时版本不符在任何写入（含向量重建）之前拒绝，返回 {@code code="A000409"}。
      */
     @PatchMapping("/knowledge-base/docs/{docId}/enable")
     public Result<Void> enable(@PathVariable String docId,
-                               @RequestParam("value") boolean enabled) {
-        documentService.enable(docId, enabled);
+                               @RequestParam("value") boolean enabled,
+                               @RequestParam(value = "expectedVersion", required = false) Long expectedVersion) {
+        documentService.enable(docId, enabled, expectedVersion);
         return Results.success();
     }
 

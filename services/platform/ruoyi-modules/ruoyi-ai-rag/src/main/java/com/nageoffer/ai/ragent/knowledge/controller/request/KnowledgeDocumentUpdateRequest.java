@@ -58,4 +58,18 @@ public class KnowledgeDocumentUpdateRequest {
      * 定时表达式（cron）
      */
     private String scheduleCron;
+
+    /**
+     * 期望版本（乐观锁）：取自 {@code GET /knowledge-base/docs/{docId}} 或列表行里的
+     * {@code version}（update_time 的 epoch 毫秒）。
+     *
+     * <p><b>可缺省是刻意的兼容语义</b>：为 {@code null}（旧客户端不带该字段）时按
+     * 无并发校验处理，行为与本字段不存在时完全一致；带值时版本不符<b>拒绝</b>
+     * （code 见 {@code KnowledgeErrorCode.DOCUMENT_VERSION_CONFLICT}），
+     * 不做最后写入覆盖。
+     *
+     * <p>用包装类型 {@code Long} 而不是 {@code long}：基本类型会把"缺失"静默变成 0，
+     * 从而把每一次不带该字段的旧客户端编辑判成冲突——那是静默的行为破坏。
+     */
+    private Long expectedVersion;
 }

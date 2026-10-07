@@ -92,6 +92,48 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
                 .apply(TENANT_PREDICATE, requireTenantId()));
     }
 
+    /**
+     * 名称唯一性的比较口径：去掉全部空白后再比。
+     *
+     * <p><b>为什么两边都要归一化。</b>原实现只把<b>入参</b>去空白、却把<b>入参原样</b>入库，
+     * 于是「季度 报告」与「季度报告」在库里是两行、判重却查不到对方——
+     * 唯一性判断可以被空白绕过（同一个名字能建两次）。判重必须在同一口径下进行：
+     * 库里的名字也去空白，再与归一化后的入参比。
+     *
+     * <p>入库值仍然保留调用方给出的原始写法（不改用户数据），只统一<b>判定</b>口径。
+     */
+    private static String normalizeName(String name) {
+        return name == null ? null : name.replaceAll("\\s+", "");
+    }
+
+    /**
+     * 租户内名称唯一校验；{@code excludeKbId} 非空时跳过该行（改名场景排除自己）。
+     *
+     * <p>判定在租户内进行：跨租户同名是允许的，且这里不能读到别的租户的行，
+     * 否则就成了跨租户存在性探测。
+     */
+    private void requireNameAvailable(String normalizedName, String excludeKbId, String rawName) {
+        if (!StringUtils.hasText(normalizedName)) {
+            throw new ClientException("知识库名称不能为空");
+        }
+        List<KnowledgeBaseDO> existing = knowledgeBaseMapper.selectList(
+                Wrappers.lambdaQuery(KnowledgeBaseDO.class)
+                        .select(KnowledgeBaseDO::getId, KnowledgeBaseDO::getName)
+                        .eq(KnowledgeBaseDO::getDeleted, 0)
+                        .apply(TENANT_PREDICATE, requireTenantId()));
+        if (CollUtil.isEmpty(existing)) {
+            return;
+        }
+        for (KnowledgeBaseDO one : existing) {
+            if (excludeKbId != null && excludeKbId.equals(one.getId())) {
+                continue;
+            }
+            if (normalizedName.equals(normalizeName(one.getName()))) {
+                throw new ServiceException("知识库名称已存在：" + rawName);
+            }
+        }
+    }
+
     @Transactional
     @Override
     @LogRecord(
@@ -106,15 +148,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
     public String create(KnowledgeBaseCreateRequest requestParam) {
         // 名称重复校验（租户内唯一：uk_knowledge_base_tenant_collection 与同名判断都按租户圈定）
         String name = requestParam.getName().replaceAll("\\s+", "");
-        Long count = knowledgeBaseMapper.selectCount(
-                new LambdaQueryWrapper<KnowledgeBaseDO>()
-                        .eq(KnowledgeBaseDO::getName, name)
-                        .eq(KnowledgeBaseDO::getDeleted, 0)
-                        .apply(TENANT_PREDICATE, requireTenantId())
-        );
-        if (count > 0) {
-            throw new ServiceException("知识库名称已存在：" + requestParam.getName());
-        }
+        requireNameAvailable(name, null, requestParam.getName());
 
         // Collection 名重复校验（共享 collection 模型下，向量层不再拦截重复，需在此显式校验）
         Long collectionCount = knowledgeBaseMapper.selectCount(
@@ -225,16 +259,7 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
 
         // 名称重复校验（排除当前知识库；租户内判定）
         String name = requestParam.getName().replaceAll("\\s+", "");
-        Long count = knowledgeBaseMapper.selectCount(
-                Wrappers.lambdaQuery(KnowledgeBaseDO.class)
-                        .eq(KnowledgeBaseDO::getName, name)
-                        .ne(KnowledgeBaseDO::getId, kbId)
-                        .eq(KnowledgeBaseDO::getDeleted, 0)
-                        .apply(TENANT_PREDICATE, requireTenantId())
-        );
-        if (count > 0) {
-            throw new ServiceException("知识库名称已存在：" + requestParam.getName());
-        }
+        requireNameAvailable(name, kbId, requestParam.getName());
 
         kb.setName(requestParam.getName());
         kb.setUpdatedBy(UserContext.getUsername());
