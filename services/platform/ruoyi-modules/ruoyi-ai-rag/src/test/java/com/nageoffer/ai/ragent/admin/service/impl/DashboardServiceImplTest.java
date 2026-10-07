@@ -18,15 +18,20 @@
 package com.nageoffer.ai.ragent.admin.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.rag.dao.entity.ConversationMessageDO;
 import com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMessageMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.RagTraceRunMapper;
 import com.nageoffer.ai.ragent.user.dao.mapper.UserMapper;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -42,6 +47,18 @@ class DashboardServiceImplTest {
     private final ConversationMessageMapper messages = mock(ConversationMessageMapper.class);
     private final RagTraceRunMapper traces = mock(RagTraceRunMapper.class);
     private final DashboardServiceImpl service = new DashboardServiceImpl(users, sessions, messages, traces);
+
+    @BeforeEach
+    void setUp() {
+        // RW-23-R1：统计读路径已改为 fail-closed 限域，测试必须提供执行主体（不是削弱断言）
+        PrincipalContext.set(new ExecutionPrincipal("T-A", "7", "platform:T-A:7", 1, 1,
+            Set.of("ai:run:read"), "jti-1", "test", 0L, Long.MAX_VALUE));
+    }
+
+    @AfterEach
+    void tearDown() {
+        PrincipalContext.clear();
+    }
 
     @Test
     void workflowAddsEngineAndActiveSessionsWithoutUsingNewSessionCountAsDepthDenominator() {
