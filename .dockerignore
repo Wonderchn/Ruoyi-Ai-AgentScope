@@ -1,0 +1,10 @@
+# Build context whitelist for the web image build (infra/docker/ruoyi-web.Dockerfile
+# is invoked with the repository root as its context). Everything not listed here is
+# excluded, so the build ships only the frontend sources and the delivery nginx conf.
+*
+!services/ruoyi-web
+!infra/dev
+# keep the frontend tree itself lean
+services/ruoyi-web/node_modules
+services/ruoyi-web/dist
+services/ruoyi-web/.git

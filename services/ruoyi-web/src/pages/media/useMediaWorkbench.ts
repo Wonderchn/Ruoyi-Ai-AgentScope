@@ -5,6 +5,7 @@ import { computed, onBeforeUnmount, readonly, shallowRef, watch } from 'vue';
 import { generateImage, generateSpeech, generateVideo, getPrediction, getVideoResult } from '@/api/media';
 import { readMediaApiResult } from '@/api/media/response';
 import { getModelList } from '@/api/model';
+import { newRequestId } from '@/api/rag';
 import { useUserStore } from '@/stores';
 import { canQueryMedia, classifyResult, createDraft, requestError, supportsMedia, validateDraft } from './utils';
 
@@ -166,7 +167,7 @@ export function useMediaWorkbench() {
   function newTask(state: MediaTask['state'], prompt: string): MediaTask {
     const model = selectedModel.value!;
     const task: MediaTask = {
-      key: crypto.randomUUID(),
+      key: newRequestId(),
       kind: kind.value,
       model: model.modelName,
       modelLabel: model.label,

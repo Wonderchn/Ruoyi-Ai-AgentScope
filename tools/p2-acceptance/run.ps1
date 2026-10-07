@@ -7,7 +7,11 @@ param(
     [string]$RunTag = ('p2c' + (Get-Date -Format 'yyyyMMddHHmmss')),
     [int]$AiPort = 0, [int]$Ai2Port = 0, [int]$PlatformPort = 0,
     [int]$DedicatedPgPort = 0,[int]$DedicatedRedisPort = 0,
-    [switch]$SkipBuild, [switch]$SkipSetup, [switch]$KeepEnvironment, [switch]$ReclaimStale, [switch]$SmokeOnly, [switch]$PhaseAOnly, [switch]$PhaseBOnly, [switch]$PhaseCOnly, [switch]$BrowserOnly, [switch]$AgentCoreOnly, [switch]$AgentRecoveryOnly, [switch]$AgentSecurityOnly, [switch]$AgentReadFaultsOnly, [switch]$ParserRecoveryOnly, [string]$CaseAttempt = '1', [switch]$RealProvidersOnly, [switch]$RealAgentOnly, [string]$RealAgentKb, [string]$ProviderSecretFile, [string]$OwnedDeliveryRecoveryScript, [string]$OwnedMetadataFile
+    [switch]$SkipBuild, [switch]$SkipSetup, [switch]$KeepEnvironment, [switch]$ReclaimStale, [switch]$SmokeOnly, [switch]$PhaseAOnly, [switch]$PhaseBOnly, [switch]$PhaseCOnly, [switch]$BrowserOnly, [switch]$AgentCoreOnly, [switch]$AgentRecoveryOnly, [switch]$AgentSecurityOnly, [switch]$AgentReadFaultsOnly, [switch]$ParserRecoveryOnly, [string]$CaseAttempt = '1', [switch]$RealProvidersOnly, [switch]$RealAgentOnly, [string]$RealAgentKb, [string]$ProviderSecretFile, [string]$OwnedDeliveryRecoveryScript, [string]$OwnedMetadataFile,
+    # R10 portability: machine-local toolchain locations are overridable from the
+    # environment; the previous hardcoded values remain as fallback defaults.
+    [string]$MavenRepo = $(if ($env:MAVEN_REPO) { $env:MAVEN_REPO } else { 'D:\develop\maven_repository' }),
+    [string]$JavaBin = $(if ($env:JAVA_BIN) { $env:JAVA_BIN } elseif ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME 'bin' } else { 'D:\develop\java\jdk-17.0.18.8-hotspot\bin' })
 )
 # P2 专属合成环境验收 runner。
 #
@@ -245,7 +249,7 @@ function New-BCryptHash([string]$Plain) {
         if (-not $entry) { return '' }
         $fileName = Split-Path $entry -Leaf
         $version = ($fileName -replace ('^' + $prefix), '') -replace '\.jar$', ''
-        $candidate = Join-Path 'D:\develop\maven_repository' ('cn\hutool\' + $prefix.TrimEnd('-') + '\' + $version + '\' + $fileName)
+        $candidate = Join-Path $MavenRepo ('cn\hutool\' + $prefix.TrimEnd('-') + '\' + $version + '\' + $fileName)
         if (-not (Test-Path -LiteralPath $candidate)) { return '' }
         $jars += $candidate
     }
@@ -254,7 +258,7 @@ function New-BCryptHash([string]$Plain) {
     $src = Join-Path $dir 'HashGen.java'
     $java = "public class HashGen { public static void main(String[] a) { System.out.println(cn.hutool.crypto.digest.BCrypt.hashpw(a[0])); } }"
     [IO.File]::WriteAllText($src, $java, (New-Object Text.UTF8Encoding($false)))
-    $jdk = 'D:\develop\java\jdk-17.0.18.8-hotspot\bin'
+    $jdk = $JavaBin
     $cp = ($jars -join ';')
     & (Join-Path $jdk 'javac.exe') -cp $cp -d $dir $src 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { return '' }

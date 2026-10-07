@@ -216,7 +216,13 @@ public class RagChatExecutor implements RunExecutor {
             ref.put("chunks", chunkRefs(chunks));
             ref.put("embeddingModel", embeddingGateway.model());
             ref.put("minScore", MIN_SCORE);
-            if(currentCitations(principal,chunks).size()!=chunks.size()) return Outcome.failed("SOURCE_CHANGED");
+            try {
+                if(currentCitations(principal,chunks).size()!=chunks.size()) return Outcome.failed("SOURCE_CHANGED");
+            } catch (SourceCheckUnavailableException e) {
+                log.warn("citation recheck unavailable runId={} stage=retrieve cause={}", execution.runId(),
+                        e.getCause() == null ? e.getMessage() : e.getCause().toString());
+                return Outcome.failed("AUTHORIZATION_UNAVAILABLE");
+            }
             guard.commitStep("retrieve", "retrieve", toJson(ref), null, toJson(embedUsage));
             guard.appendEvent(RunEventAppender.EVENT_STEP_COMPLETED, Map.of(
                     "stepId", "retrieve", "state", "COMPLETED", "ref", ref,
@@ -239,7 +245,13 @@ public class RagChatExecutor implements RunExecutor {
             return Outcome.succeeded(result);
         }
         principal=access.current(execution.run(),Set.of("kb.read"));
-        if(currentCitations(principal,chunks).size()!=chunks.size()) return Outcome.failed("SOURCE_CHANGED");
+        try {
+            if(currentCitations(principal,chunks).size()!=chunks.size()) return Outcome.failed("SOURCE_CHANGED");
+        } catch (SourceCheckUnavailableException e) {
+            log.warn("citation recheck unavailable runId={} stage=pre-model cause={}", execution.runId(),
+                    e.getCause() == null ? e.getMessage() : e.getCause().toString());
+            return Outcome.failed("AUTHORIZATION_UNAVAILABLE");
+        }
 
         // ---------------- step: model（外发白名单 → 流式 → 持久事件） ----------------
         Map<String, Object> modelRef = completedStepRef(guard, "model");
@@ -296,7 +308,14 @@ public class RagChatExecutor implements RunExecutor {
             if(usageLedger.unresolved(execution.tenantId(),execution.runId(),"model")) return new Outcome("NEEDS_RECONCILIATION",Map.of(),"MODEL_USAGE_UNKNOWN");
             if(!"stop".equals(chatResult.finishReason())) return Outcome.failed("MODEL_RESPONSE_INCOMPLETE");
             principal=access.current(execution.run(),Set.of("kb.read"));
-            List<Map<String, Object>> citations = currentCitations(principal, chunks);
+            List<Map<String, Object>> citations;
+            try {
+                citations = currentCitations(principal, chunks);
+            } catch (SourceCheckUnavailableException e) {
+                log.warn("citation recheck unavailable runId={} stage=post-model cause={}", execution.runId(),
+                        e.getCause() == null ? e.getMessage() : e.getCause().toString());
+                return Outcome.failed("AUTHORIZATION_UNAVAILABLE");
+            }
             if(citations.size()!=chunks.size()) return Outcome.failed("SOURCE_CHANGED");
             Map<String, Object> ref = new LinkedHashMap<>();
             ref.put("callId", callId);
@@ -389,8 +408,15 @@ public class RagChatExecutor implements RunExecutor {
     }
 
     /** 引用复核：KB 当前授权 + 版本仍为 published + 未 tombstone；不通过即剔除。 */
-    private List<Map<String, Object>> currentCitations(ExecutionPrincipal principal,
-                                                       List<DocumentDao.RetrievedChunk> chunks) {
+    /** 引用复核时授权/依赖服务瞬时不可用：fail-closed，但不得与真实来源变化混淆成 SOURCE_CHANGED。 */
+    static final class SourceCheckUnavailableException extends RuntimeException {
+        SourceCheckUnavailableException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
+    List<Map<String, Object>> currentCitations(ExecutionPrincipal principal,
+                                               List<DocumentDao.RetrievedChunk> chunks) {
         var resources = authorization.getIfAvailable();
         List<Map<String, Object>> citations = new ArrayList<>();
         for (DocumentDao.RetrievedChunk chunk : chunks) {
@@ -401,16 +427,18 @@ public class RagChatExecutor implements RunExecutor {
             if (!chunk.versionId().equals(document.publishedVersionId())) {
                 continue;
             }
-            if (resources == null) continue;
-            {
-                try {
-                    if (resources.check(com.nageoffer.ai.ragent.runtime.RunAccessService.scoped(principal,Set.of("document.read")), "document.read", "doc:" + document.docId())
-                            != ResourceAuthorizationService.Verdict.GRANT) {
-                        continue;
-                    }
-                } catch (RuntimeException e) {
+            if (resources == null) {
+                throw new SourceCheckUnavailableException("authorization service unavailable during citation recheck", null);
+            }
+            try {
+                if (resources.check(com.nageoffer.ai.ragent.runtime.RunAccessService.scoped(principal,Set.of("document.read")), "document.read", "doc:" + document.docId())
+                        != ResourceAuthorizationService.Verdict.GRANT) {
                     continue;
                 }
+            } catch (SourceCheckUnavailableException e) {
+                throw e;
+            } catch (RuntimeException e) {
+                throw new SourceCheckUnavailableException("citation authorization check failed", e);
             }
             Map<String, Object> citation = new LinkedHashMap<>();
             citation.put("docId", chunk.docId());

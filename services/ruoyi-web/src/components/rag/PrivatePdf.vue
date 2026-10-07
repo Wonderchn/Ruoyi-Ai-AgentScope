@@ -3,6 +3,7 @@ import type { PDFDocumentLoadingTask, PDFDocumentProxy, RenderTask } from 'pdfjs
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { onBeforeUnmount, ref, watch } from 'vue';
+import { useUserStore } from '@/stores';
 
 const props = defineProps<{ sourceUrl: string; initialPage?: number }>();
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -73,7 +74,18 @@ watch(() => props.sourceUrl, async (url) => {
   const epoch = generation;
   loading.value = true;
   try {
-    task = getDocument({ url, isEvalSupported: false, enableXfa: false, useSystemFonts: false });
+    // The private source demands a bearer token; pdf.js's own url fetch carries no
+    // credentials, so the bytes are fetched authorized first and handed over as data.
+    const store = useUserStore();
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${store.token ?? ''}`, ClientID: import.meta.env.VITE_CLIENT_ID as string },
+    });
+    if (!response.ok)
+      throw new Error(`来源不可访问 (${response.status})`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (epoch !== generation)
+      return;
+    task = getDocument({ data: bytes, isEvalSupported: false, enableXfa: false, useSystemFonts: false });
     const loaded = await task.promise;
     if (epoch !== generation) {
       void loaded.destroy();
@@ -84,9 +96,11 @@ watch(() => props.sourceUrl, async (url) => {
     page.value = Math.min(count.value, Math.max(1, Number.isInteger(props.initialPage) ? props.initialPage! : 1));
     await draw();
   }
-  catch {
-    if (epoch === generation)
+  catch (cause) {
+    if (epoch === generation) {
+      console.warn('[private-pdf] load failed', cause);
       error.value = 'PDF 无法显示，请核对文件是否有效';
+    }
   }
   finally {
     if (epoch === generation)

@@ -47,6 +47,29 @@ export function chatRunBody(kbIds: string[], text: string, retryOf?: string): Ru
   };
 }
 
+/**
+ * Idempotency-key UUID that also works outside secure contexts.
+ *
+ * `crypto.randomUUID` is undefined on plain-HTTP origins (including the dev
+ * delivery's http://<host>:8080), where using it made run submission throw and
+ * surface as a misleading permission error. `crypto.getRandomValues` exists in
+ * insecure contexts, so build a RFC 4122 v4 value from it, falling back to
+ * Math.random only if even that is missing.
+ */
+export function newRequestId(): string {
+  const cryptoObj = globalThis.crypto;
+  if (cryptoObj && typeof cryptoObj.randomUUID === 'function')
+    return cryptoObj.randomUUID();
+  if (cryptoObj && typeof cryptoObj.getRandomValues === 'function') {
+    const bytes = cryptoObj.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
 /** 引用去重（同 doc/version/chunk 只保留一次）并保持顺序。 */
 export function dedupeCitations(citations: Citation[]): Citation[] {
   const seen = new Set<string>();
@@ -76,4 +99,20 @@ export function terminalSummary(payload: unknown): { answer: string; citations: 
   const answer = typeof result.answer === 'string' ? result.answer : '';
   const citations = Array.isArray(result.citations) ? (result.citations as Citation[]) : [];
   return { answer, citations: dedupeCitations(citations), evidenceInsufficient: result.evidenceInsufficient === true };
+}
+
+/**
+ * 服务端已验证终态的用户表达（R01）。
+ *
+ * 终态 FAILED/CANCELLED 必须原样给出服务端 errorCode——依赖不可用（AUTHORIZATION_UNAVAILABLE）、
+ * 真实来源变化（SOURCE_CHANGED）等含义不同，不得吞成“流不完整”；只有在流里从未出现终态帧时
+ * （isTerminalFrame=false）才允许表达为流中断，且不携带任何编造的结果。
+ */
+export function terminalFailureNote(status: string, errorCode: string, isTerminalFrame: boolean): string {
+  if (status === 'FAILED' || status === 'CANCELLED') {
+    return errorCode ? `服务端终态失败：${errorCode}` : `服务端终态失败：${status}`;
+  }
+  if (!isTerminalFrame)
+    return '事件流在终态前中断（未收到 run.terminal）';
+  return '';
 }

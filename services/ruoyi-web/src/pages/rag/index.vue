@@ -10,7 +10,9 @@ import {
   getRun,
   listDocuments,
   listKnowledgeBases,
+  newRequestId,
   submitRun,
+  terminalFailureNote,
   terminalSummary,
   uploadDocument,
 } from '@/api/rag';
@@ -199,7 +201,7 @@ async function onFilePicked(event: Event) {
   input.value = '';
   if (!file || !rag.currentKbId)
     return;
-  pendingUpload.value = { file, kbId: rag.currentKbId, key: crypto.randomUUID(), docId: versionTarget.value || undefined };
+  pendingUpload.value = { file, kbId: rag.currentKbId, key: newRequestId(), docId: versionTarget.value || undefined };
   await retryUpload();
 }
 
@@ -292,7 +294,7 @@ async function ask() {
   try {
     const body = chatRunBody([rag.currentKbId], question.value);
     if (!pendingChat || JSON.stringify(pendingChat.body) !== JSON.stringify(body))
-      pendingChat = { body, key: `web-chat-${crypto.randomUUID()}` };
+      pendingChat = { body, key: `web-chat-${newRequestId()}` };
     const created = await submitRun(pendingChat.body, pendingChat.key);
     if (!current(epoch, kbId))
       return;
@@ -356,6 +358,12 @@ function streamChat(runId: string) {
             if (summary.answer)
               rag.answer = summary.answer;
             rag.citations = summary.citations;
+            const errorCode = String(payload?.errorCode ?? '');
+            if (errorCode)
+              rag.errorCode = errorCode;
+            const failureNote = terminalFailureNote(rag.chatStatus, errorCode, true);
+            if (failureNote)
+              rag.streamNote = failureNote;
             if (summary.evidenceInsufficient)
               rag.streamNote = '证据不足，未生成引用';
             break;

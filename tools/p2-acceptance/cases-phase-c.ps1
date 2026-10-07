@@ -80,7 +80,7 @@ $version=($snapshot.Body|ConvertFrom-Json).data.version
 Start-Sleep -Seconds 4
 $afterHeartbeats=Http 'GET' "http://127.0.0.1:$PlatformPort/api/ai/v1/runs/$($cancelRun.Run)" @{'Authorization'="Bearer $t1"} '' 20 'c29-after-heartbeats'
 $leaseVersionStable=(($afterHeartbeats.Body|ConvertFrom-Json).data.version -eq $version)
-Add-Case 'A29-heartbeat-cas' $leaseVersionStable 'lease maintenance keeps lifecycle command version stable' 
+Add-Case 'A29-heartbeat-cas' $leaseVersionStable 'lease maintenance keeps lifecycle command version stable'
 $cancelReply=Http 'POST' "http://127.0.0.1:$PlatformPort/api/ai/v1/runs/$($cancelRun.Run)/cancel" @{'Authorization'="Bearer $t1";'Content-Type'='application/json'} (@{expectedVersion=$version}|ConvertTo-Json -Compress) 20 'c29-cancel'
 $cancelled=Wait-RunStatus $t1 $cancelRun.Run 'CANCELLED' 120
 $cancelledFacts=Sql "SELECT (SELECT count(*) FROM ai_run_event WHERE tenant_id='p2t1' AND run_id='$($cancelRun.Run)' AND event_type='run.terminal'),(SELECT published_version_id FROM ai_document WHERE tenant_id='p2t1' AND doc_id='$($cancelUpload.Doc)') IS NULL;" 'c29-result'

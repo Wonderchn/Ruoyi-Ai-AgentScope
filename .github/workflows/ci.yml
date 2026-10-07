@@ -77,6 +77,48 @@ jobs:
         working-directory: services/ai/frontend
         run: npm run build
 
+  ruoyi-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Pinned runtimes: node 22.23.2 (engines >=22.13.0) and the packageManager-pinned
+      # pnpm 11.0.9. The version is installed explicitly, not via mutable "latest".
+      # setup-node's pnpm cache mode needs the pnpm binary to exist first, so the
+      # cache-enabled setup call comes after the install.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+      - name: Install pinned pnpm
+        run: npm install -g pnpm@11.0.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: pnpm
+          cache-dependency-path: services/ruoyi-web/pnpm-lock.yaml
+      - name: Install locked dependencies
+        working-directory: services/ruoyi-web
+        run: pnpm install --frozen-lockfile
+      # The test loader transpiles without type checking, so the test project's
+      # type check must run on its own or TS errors ship silently.
+      - name: Type-check the test project
+        working-directory: services/ruoyi-web
+        run: pnpm exec tsc -p tsconfig.tests.json --noEmit
+      - name: Run the Node protocol tests
+        working-directory: services/ruoyi-web
+        run: node --import ./tests/ts-loader.mjs --test ./tests/RunStreamClient.test.ts ./tests/SseSyntax.test.ts ./tests/RagApi.test.ts ./tests/RagTransport.test.ts
+      - name: Lint
+        working-directory: services/ruoyi-web
+        run: pnpm lint
+      - name: Build (includes the app type check via vue-tsc -b)
+        working-directory: services/ruoyi-web
+        run: pnpm build
+      - name: Ensure the checks left sources unchanged
+        working-directory: services/ruoyi-web
+        run: git diff --exit-code
+
   db:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -87,6 +129,48 @@ jobs:
       - name: Rebuild the platform domain from the repository PostgreSQL files
         run: bash scripts/ci/verify-platform-migrations.sh
       - name: Ensure the check left the sources unchanged
+        run: git diff --exit-code
+
+  db-ai:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Rebuild both domains from the repository PostgreSQL files (platform V1..V6, AI V1..V12)
+        run: bash scripts/ci/verify-ai-migrations.sh
+      - name: Ensure the check left the sources unchanged
+        run: git diff --exit-code
+
+  native-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: |
+            services/platform/pom.xml
+            services/ai/pom.xml
+      - name: Build both Boot JARs
+        run: |
+          mvn -B -ntp -f services/platform/pom.xml -Pdev -DskipTests package
+          mvn -B -ntp -f services/ai/pom.xml -Pci -DskipTests package
+      # Owner tag is unique per run; the script refuses any resource-name or port
+      # collision instead of reusing or deleting anything.
+      - name: Run the native failure matrix (N1 admission / N2 worker takeover / N3 SSE continuity)
+        env:
+          OWNER: nativerun-${{ github.run_id }}-${{ github.run_attempt }}
+          AI_JAR: ${{ github.workspace }}/services/ai/bootstrap/target/bootstrap-0.0.1-SNAPSHOT.jar
+          PLATFORM_JAR: ${{ github.workspace }}/services/platform/ruoyi-admin/target/ruoyi-admin.jar
+        run: bash scripts/ci/verify-native-runtime.sh
+      - name: Ensure the checks left the sources unchanged
         run: git diff --exit-code
 
   policy:
@@ -101,7 +185,7 @@ jobs:
 
   ci-required:
     if: always()
-    needs: [platform, ai, frontend, policy, db]
+    needs: [platform, ai, frontend, ruoyi-web, policy, db, db-ai, native-runtime]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -110,10 +194,13 @@ jobs:
           PLATFORM: ${{ needs.platform.result }}
           AI: ${{ needs.ai.result }}
           FRONTEND: ${{ needs.frontend.result }}
+          RUOYI_WEB: ${{ needs.ruoyi-web.result }}
           POLICY: ${{ needs.policy.result }}
           DB: ${{ needs.db.result }}
+          DB_AI: ${{ needs.db-ai.result }}
+          NATIVE: ${{ needs.native-runtime.result }}
         run: |
-          for result in "$PLATFORM" "$AI" "$FRONTEND" "$POLICY" "$DB"; do
+          for result in "$PLATFORM" "$AI" "$FRONTEND" "$RUOYI_WEB" "$POLICY" "$DB" "$DB_AI" "$NATIVE"; do
             if [ "$result" != success ]; then
               echo "A required job did not succeed: $result" >&2
               exit 1

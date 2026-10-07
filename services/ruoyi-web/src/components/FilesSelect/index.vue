@@ -3,6 +3,7 @@
 import type { FilesCardProps } from 'vue-element-plus-x/types/FilesCard';
 import { useFileDialog } from '@vueuse/core';
 import { ElMessage } from 'element-plus';
+import { newRequestId } from '@/api/rag';
 import Popover from '@/components/Popover/index.vue';
 import { useFilesStore } from '@/stores/modules/files';
 
@@ -39,7 +40,7 @@ onChange((files) => {
   for (let i = 0; i < files!.length; i++) {
     const file = files![i];
     arr.push({
-      uid: crypto.randomUUID(), // 不写 uid，文件列表展示不出来，elx 1.2.0 bug 待修复
+      uid: newRequestId(), // 不写 uid，文件列表展示不出来，elx 1.2.0 bug 待修复
       name: file.name,
       fileSize: file.size,
       file,
