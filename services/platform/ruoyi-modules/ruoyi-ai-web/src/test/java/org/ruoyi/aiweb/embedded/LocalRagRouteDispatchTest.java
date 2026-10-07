@@ -47,6 +47,10 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 import org.springframework.transaction.support.TransactionOperations;
 import org.springframework.web.context.support.AnnotationConfigWebApplicationContext;
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
@@ -363,6 +367,34 @@ class LocalRagRouteDispatchTest {
         @Bean
         TransactionOperations transactionOperations() {
             return transactions;
+        }
+
+        /**
+         * RW-06 集成（T0）：运行配置目录装配（{@code runtimeCatalogService}）需要
+         * {@code PlatformTransactionManager}，本 fixture 原先只提供 {@code TransactionOperations}，
+         * 导致整个 {@code AnnotationConfigWebApplicationContext} 初始化失败 —— 表现为
+         * **所有**请求 500（而不是本类想验的 200/401/404），属于"路由故障被误报成服务端故障"。
+         *
+         * <p>这里给一个**可执行但不做真实事务**的替身：{@code TransactionTemplate.execute}
+         * 能正常跑回调（返回 {@code SimpleTransactionStatus}）。刻意不用 Mockito mock ——
+         * mock 在 {@code getTransaction} 上返回 null，一旦真被调用会把"没验到"变成 NPE 500。
+         */
+        @Bean
+        PlatformTransactionManager platformTransactionManager() {
+            return new PlatformTransactionManager() {
+                @Override
+                public TransactionStatus getTransaction(TransactionDefinition definition) {
+                    return new SimpleTransactionStatus();
+                }
+
+                @Override
+                public void commit(TransactionStatus status) {
+                }
+
+                @Override
+                public void rollback(TransactionStatus status) {
+                }
+            };
         }
 
         /** 同名覆盖装配内的 DefaultRevocationGuard：持久层用 mock，路由与授权链保持真实。 */
