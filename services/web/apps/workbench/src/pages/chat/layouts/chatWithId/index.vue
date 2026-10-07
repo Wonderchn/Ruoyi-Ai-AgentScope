@@ -5,21 +5,19 @@ import type { BubbleProps } from 'vue-element-plus-x/types/Bubble';
 import type { BubbleListInstance } from 'vue-element-plus-x/types/BubbleList';
 import type { ThinkingStatus } from 'vue-element-plus-x/types/Thinking';
 import type { ToolCallInfo } from './types';
-import type { SendDTO } from '@/api/chat/types';
-import { useHookFetch } from 'hook-fetch/vue';
 import { nextTick } from 'vue';
 import { useRoute } from 'vue-router';
-import { send } from '@/api';
+import { listKnowledgeBases } from '@/api/rag';
 import ChatSender from '@/components/ChatSender/index.vue';
 import { useAgentStore } from '@/stores/modules/agent';
 import { useChatStore } from '@/stores/modules/chat';
-import { useModelStore } from '@/stores/modules/model';
+import { useSessionStore } from '@/stores/modules/session';
 import { useUserStore } from '@/stores/modules/user';
 import { codeXRender } from '@/utils/markdownRenderers';
-import { buildWorkflowInputs, workflowFinalText } from '@/utils/workflow';
 import MessageDetails from './components/MessageDetails.vue';
 import ToolCallCard from './components/ToolCallCard.vue';
 import WorkflowRunStatus from './components/WorkflowRunStatus.vue';
+import { useChatRun } from './useChatRun';
 
 type MessageItem = BubbleProps & {
   key: number;
@@ -30,12 +28,16 @@ type MessageItem = BubbleProps & {
   reasoning_content?: string;
   class?: string;
   workflowRun?: { title: string; status: 'running' | 'success' | 'error' | 'stopped'; nodes: number };
+  // —— 历史/终态回填的完整字段（F03：不能被压平成 role/content）——
+  messageStatus?: string;
+  totalTokens?: number;
+  sources?: unknown;
 };
 
 const route = useRoute();
 const chatStore = useChatStore();
-const modelStore = useModelStore();
 const agentStore = useAgentStore();
+const sessionStore = useSessionStore();
 const userStore = useUserStore();
 
 // 用户头像
@@ -64,29 +66,144 @@ const copyIconMap = ref<Record<number, string>>({}); // 记录每条消息的复
 const editingMessageKeys = ref<number[]>([]); // 跟踪多个编辑中的消息
 const editedContents = ref<Record<number, string>>({}); // 存储每条消息的临时编辑内容
 
-const {
-  stream,
-  loading: isLoading,
-  cancel,
-} = useHookFetch({
-  request: send,
-  onError: (err) => {
-    console.warn('测试错误拦截', err);
+// —— 知识库选择（F03 的 resourceRefs）——
+//
+// `rag.chat` 是**知识库问答**：resourceRefs 为空或全部未授权时服务端终态
+// `FAILED/NO_AUTHORIZED_SCOPE`（0 次 embedding、0 次模型外发）。因此页面必须
+// 1) 用 RW-04 契约加载**有权限的**知识库；2) 让用户显式选择；3) 一个都没选时**照常提交**
+// 并由服务端如实终止——**不**悄悄换成"无检索闲聊"，也**不**扩到全库。
+const kbList = ref<Array<{ kbId: string; name: string }>>([]);
+const kbError = ref('');
+const selectedKbIds = ref<string[]>([]);
+
+async function loadKnowledgeBases() {
+  const epoch = userStore.authEpoch;
+  if (!userStore.token) {
+    kbList.value = [];
+    return;
+  }
+  try {
+    const rows = await listKnowledgeBases();
+    if (epoch !== userStore.authEpoch)
+      return;
+    kbList.value = (Array.isArray(rows) ? rows : [])
+      .filter(row => row && typeof row.kbId === 'string')
+      .map(row => ({ kbId: row.kbId, name: row.name || row.kbId }));
+    kbError.value = '';
+  }
+  catch (error) {
+    if (epoch !== userStore.authEpoch)
+      return;
+    kbList.value = [];
+    selectedKbIds.value = [];
+    kbError.value = error instanceof Error
+      ? `知识库列表不可用：${error.message}`
+      : '知识库列表不可用：无法确认可用授权范围';
+  }
+}
+
+/**
+ * 运行编排（受理 + 事件流 + 取消）。
+ *
+ * 全部协议细节在 `@/api/chat/run-chat`（真实 SSE 帧、seq 连续性、410 快照、终态唯一），
+ * 本页只做：把事件画到气泡上、把失败显示出来、身份变化时清空。
+ */
+const chatRun = useChatRun({
+  baseUrl: import.meta.env.VITE_API_URL,
+  clientId: import.meta.env.VITE_CLIENT_ID,
+  identity: () => ({ token: userStore.token, epoch: userStore.authEpoch }),
+  onAuthExpired: () => userStore.handleAuthExpired(),
+  hooks: {
+    onStep: (update) => {
+      // 工具/步骤过程**保留**（F03 不变量：历史与过程不能被压平成 role/content）。
+      toolCallEvents.value = [
+        ...toolCallEvents.value,
+        {
+          key: ++toolCallKeyCounter,
+          name: update.stepName || update.stepId || 'step',
+          status: update.event === 'run.step_completed' ? 'success' : 'pending',
+          result: update.payload,
+          timestamp: Date.now(),
+        } as ToolCallInfo,
+      ];
+    },
+    onUsage: (payload) => {
+      const total = (payload as AnyObject | null)?.totalTokens;
+      const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
+      if (lastMessage && typeof total === 'number')
+        lastMessage.totalTokens = total;
+    },
+    onDelta: (text, dropped) => {
+      handleContentChunk(text);
+      if (dropped)
+        runNoticeFallback('服务端标记部分增量被丢弃（dropped=true）。');
+    },
+    onEvent: (update) => {
+      // 审批 / 核对 / 运行错误等事件：**不吞**，原样提示（具体交互面属 RW-21）。
+      if (update.type === 'run.error') {
+        const code = (update.payload as AnyObject)?.errorCode;
+        runErrorFallback(`运行错误事件：${typeof code === 'string' ? code : '未知原因'}`);
+      }
+      else {
+        runNoticeFallback(`收到事件 ${update.type}（该交互面属 RW-21，本页仅如实提示）。`);
+      }
+    },
+    onTerminal: (update) => {
+      const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
+      if (!lastMessage)
+        return;
+      lastMessage.messageStatus = update.status;
+      if (update.answer)
+        lastMessage.content = update.answer;
+      if (update.citations?.length)
+        lastMessage.sources = update.citations;
+      if (update.evidenceInsufficient)
+        runNoticeFallback('服务端标记证据不足（evidenceInsufficient），回答可能不完整。');
+      if (update.status === 'FAILED' || update.status === 'CANCELLED') {
+        // **如实显示失败**：不把 NO_AUTHORIZED_SCOPE 当成一次普通回答。
+        lastMessage.content = lastMessage.content
+          || `> 本次运行未完成（${update.status}${update.errorCode ? ` / ${update.errorCode}` : ''}）。`;
+      }
+    },
   },
 });
+
+/** 顶层解构：模板里 `runError` / `runNotice` 是 ref（Vue 模板只解包顶层绑定）。 */
+const {
+  running: runRunning,
+  error: runError,
+  notice: runNotice,
+  runStatus,
+  submit: submitRun,
+  cancel: cancelRun,
+  reset: resetRun,
+} = chatRun;
+
+/** 在没有终态失败时也能显示提示（composable 的 notice 是主流，这里补事件级信息）。 */
+function runNoticeFallback(message: string) {
+  if (!runNotice.value)
+    runNotice.value = message;
+}
+
+function runErrorFallback(message: string) {
+  if (!runError.value)
+    runError.value = message;
+}
 
 // 组件挂载初始化
 onMounted(() => {
   bubbleItems.value.forEach((item) => {
     copyIconMap.value[item.key] = 'CopyDocument';
   });
+  void loadKnowledgeBases();
 });
 
 // 记录进入思考中
 let isThinking = false;
 
 watch(() => userStore.authEpoch, () => {
-  cancel();
+  // 权限失效：中止在飞运行 + 清空页面与运行状态（不留下不属于新身份的运行数据）。
+  resetRun();
   bubbleItems.value = [];
   inputValue.value = '';
   toolCallEvents.value = [];
@@ -94,6 +211,9 @@ watch(() => userStore.authEpoch, () => {
   copyIconMap.value = {};
   editingMessageKeys.value = [];
   editedContents.value = {};
+  kbList.value = [];
+  selectedKbIds.value = [];
+  kbError.value = '';
   isThinking = false;
 }, { flush: 'sync' });
 
@@ -131,355 +251,76 @@ watch(
         }, 350);
       }
 
-      // 如果本地有发送内容 ，则直接发送
-      const v = localStorage.getItem('chatContent');
-      if (v) {
-        // 发送消息
+      // 新建会话后带过来的第一句话：**一次性**状态（不再放 localStorage —— 创建失败时
+      // 旧实现会把那句话留在本地，用户下次进任意会话都会被发出去）。
+      const pending = sessionStore.takePendingFirstMessage();
+      if (pending) {
         setTimeout(() => {
           if (epoch === userStore.authEpoch && _id_ === route.params?.id)
-            startSSE(v);
+            void submitMessage(pending);
         }, 350);
-
-        localStorage.removeItem('chatContent');
       }
     }
   },
   { immediate: true, deep: true },
 );
 
-// 封装错误处理逻辑
-function handleError(err: any) {
-  console.error('Fetch error:', err);
-}
-
-async function startSSE(chatContent: string) {
-  const epoch = userStore.authEpoch;
+/**
+ * 提交一轮普通聊天。
+ *
+ * 协议（受理 + SSE）在 `@/api/chat/run-chat`；这里只负责：
+ * - 把用户输入与助手气泡放上去；
+ * - 三种互斥模式（工作流 / 智能体 / 普通聊天）的**边界**：本卡只接通普通聊天
+ *   （`rag.chat`）。工作流与 Agent 运行是**另外的契约**（RW-17/RW-21），
+ *   在它们落地前这里**如实拒绝**，而不是"带着旧参数去打一个已退场的端点"。
+ */
+async function submitMessage(content: string) {
+  const text = String(content ?? '').trim();
+  if (text === '')
+    return;
   if (!userStore.token) {
     userStore.ensureLogin('/chat', '登录后即可继续当前对话');
     return;
   }
+  if (runRunning.value)
+    return;
 
-  try {
-    // 清空上一次的工具调用事件
-    toolCallEvents.value = [];
-    toolCallKeyCounter = 0;
-    // 添加用户输入的消息
-    inputValue.value = '';
-    addMessage(chatContent, true);
-    addMessage('', false);
-    if (currentBinding.value) {
-      bubbleItems.value[bubbleItems.value.length - 1].workflowRun = { title: currentBinding.value.title, status: 'running', nodes: 0 };
-    }
-
-    // 这里有必要调用一下 BubbleList 组件的滚动到底部 手动触发 自动滚动
-    bubbleListRef.value?.scrollToBottom();
-
-    // 获取最后一条用户消息（后端做了长期记忆缓存，只需发送最新的用户消息）
-    const lastUserMessage = bubbleItems.value.filter((item: any) => item.role === 'user').pop();
-
-    // 标记是否收到第一个有效数据 chunk（用于清除 loading 状态）
-    let hasReceivedFirstContent = false;
-
-    // 构造发送请求体
-    const payload: SendDTO = {
-      model: modelStore.currentModelInfo.modelName ?? '',
-      agentId: agentStore.currentAgentInfo?.id || undefined,
-      content: lastUserMessage?.content ?? '',
-      sessionId: route.params?.id !== 'not_login' ? String(route.params?.id) : undefined,
-    };
-
-    // 绑定了工作流：仅发送工作流参数，三种对话模式保持互斥
-    if (currentBinding.value) {
-      payload.agentId = undefined;
-      payload.enableWorkFlow = true;
-      payload.workFlowRunner = {
-        uuid: currentBinding.value.uuid,
-        inputs: buildWorkflowInputs(currentBinding.value, chatContent),
-      };
-    }
-
-    for await (const chunk of stream(payload)) {
-      if (epoch !== userStore.authEpoch)
-        break;
-      // 处理数据块 - chunk.result 可能是字符串或对象
-      // 返回 true 表示流结束
-      const isStreamEnd = handleDataChunk(chunk.result as AnyObject | string);
-
-      // 在收到第一个有效数据后清除 loading 状态（跳过连接状态事件）
-      if (!hasReceivedFirstContent && chunk.result !== ':connected' && chunk.result !== ':disconnected' && !isStreamEnd) {
-        const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
-        if (lastMessage) {
-          lastMessage.loading = false;
-          bubbleItems.value = [...bubbleItems.value];
-        }
-        hasReceivedFirstContent = true;
-      }
-
-      if (isStreamEnd) {
-        break; // 提前结束流处理
-      }
-      // 等待 Vue 更新 DOM，实现真正的流式渲染
-      await nextTick();
-    }
+  // —— 互斥模式边界（如实告知，不静默降级）——
+  if (currentBinding.value) {
+    runError.value = `已选择工作流「${currentBinding.value.title}」：工作流对话的替代契约尚未交付（旧的聊天发送端点已随退场模块失效），属 RW-17 范围，本次未发送。`;
+    return;
   }
-  catch (err) {
-    if (epoch !== userStore.authEpoch)
-      return;
-    handleError(err);
-    // 出错时也要清除 loading 状态
-    if (epoch === userStore.authEpoch && bubbleItems.value.length) {
-      const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
-      lastMessage.loading = false;
-      bubbleItems.value = [...bubbleItems.value];
-    }
-  }
-  finally {
-    // 停止打字器状态
-    if (epoch === userStore.authEpoch && bubbleItems.value.length) {
-      const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
-      if (lastMessage.workflowRun?.status === 'running') {
-        lastMessage.workflowRun.status = 'error';
-        lastMessage.content += '\n\n> 连接已结束，但未收到流程完成事件，请在管理端确认执行结果。';
-      }
-      lastMessage.typing = false;
-      // 无条件重置 loading（停止打字动画）
-      lastMessage.loading = false;
-      // 重置思考状态：如果还在思考中，标记为已完成
-      if (lastMessage.thinkingStatus === 'thinking') {
-        lastMessage.thinkingStatus = 'end';
-      }
-      // 重置isThinking标志
-      isThinking = false;
-      bubbleItems.value = [...bubbleItems.value];
-    }
-  }
-}
-
-// 封装数据处理逻辑
-function handleDataChunk(chunk: AnyObject | string): boolean {
-  console.log('[SSE] 收到 chunk:', chunk, 'type:', typeof chunk);
-
-  try {
-    let dataObj: AnyObject | null = null;
-    let eventType = '';
-    let rawDataStr = '';
-
-    if (typeof chunk === 'string') {
-      if (chunk === ':connected' || chunk === ':disconnected') {
-        console.log('[SSE] 连接状态:', chunk);
-        return false;
-      }
-
-      const lines = chunk.split('\n');
-      for (const line of lines) {
-        if (line.startsWith('event:')) {
-          eventType = line.substring(6).trim();
-        }
-        else if (line.startsWith('data:')) {
-          rawDataStr = line.substring(5).trim();
-          try {
-            dataObj = JSON.parse(rawDataStr);
-          }
-          catch {
-            console.warn('[SSE] JSON 解析失败:', rawDataStr);
-          }
-        }
-      }
-
-      // 工作流事件优先处理（事件名带方括号，如 [NODE_CHUNK_*] / [START] / [DONE]）
-      if (eventType.startsWith('[')) {
-        return handleWorkflowEvent(eventType, rawDataStr, dataObj);
-      }
-
-      if (eventType === 'done' || dataObj?.done === true) {
-        console.log('[SSE] 流结束');
-        return true;
-      }
-
-      if (eventType === 'mcp' && dataObj) {
-        handleMcpEvent(dataObj);
-        return false;
-      }
-
-      if (dataObj && eventType === 'content') {
-        const content = dataObj.content || '';
-        if (content) {
-          handleContentChunk(content);
-        }
-        const reasoningContent = dataObj.reasoning_content || '';
-        if (reasoningContent) {
-          const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
-          if (lastMessage) {
-            lastMessage.thinkingStatus = 'thinking';
-            lastMessage.loading = true;
-            lastMessage.thinlCollapse = true;
-            lastMessage.reasoning_content += reasoningContent;
-            bubbleItems.value = [...bubbleItems.value];
-          }
-        }
-      }
-    }
-    else if (typeof chunk === 'object' && chunk !== null) {
-      const reasoningChunk = chunk?.choices?.[0]?.delta?.reasoning_content;
-      if (reasoningChunk) {
-        const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
-        if (lastMessage) {
-          lastMessage.thinkingStatus = 'thinking';
-          lastMessage.loading = true;
-          lastMessage.thinlCollapse = true;
-          lastMessage.reasoning_content += reasoningChunk;
-          bubbleItems.value = [...bubbleItems.value];
-        }
-      }
-
-      const parsedChunk = chunk?.choices?.[0]?.delta?.content;
-      if (parsedChunk) {
-        handleContentChunk(parsedChunk);
-      }
-
-      const directContent = chunk?.content;
-      if (directContent) {
-        handleContentChunk(directContent);
-      }
-    }
-  }
-  catch (err) {
-    console.error('解析数据时出错:', err);
+  if (agentStore.currentAgentInfo?.id) {
+    runError.value = '已选择智能体：Agent 运行（action=agent.run，需要 agentVersion 与 P3 执行器）不在本卡范围（RW-17/RW-21），本次未发送。';
+    return;
   }
 
-  return false;
-}
+  const epoch = userStore.authEpoch;
+  // 清空上一次的工具调用事件
+  toolCallEvents.value = [];
+  toolCallKeyCounter = 0;
+  inputValue.value = '';
+  addMessage(text, true);
+  addMessage('', false);
+  // 这里有必要调用一下 BubbleList 组件的滚动到底部 手动触发 自动滚动
+  bubbleListRef.value?.scrollToBottom();
 
-/**
- * 工作流 SSE 事件分发。事件名带方括号，来自后端 WorkflowEngine / AdiConstant.SSEEventName：
- * [START] / [DONE] / [ERROR] / [NODE_RUN_<uuid>] / [NODE_INPUT_<uuid>]
- * / [NODE_OUTPUT_<uuid>] / [NODE_CHUNK_<uuid>]
- * 返回 true 表示流结束。
- */
-function handleWorkflowEvent(
-  eventName: string,
-  rawData: string,
-  dataObj: AnyObject | null,
-): boolean {
-  // [START] 工作流已启动
-  if (eventName === '[START]') {
-    return false;
-  }
+  const conversationId = route.params?.id !== 'not_login' ? String(route.params?.id) : undefined;
+  const resourceRefs = selectedKbIds.value.map(id => ({ type: 'knowledge_base', id }));
 
-  // [DONE] 流结束
-  if (eventName === '[DONE]') {
+  await submitRun({ text, conversationId, resourceRefs });
+
+  // 停止打字器状态（无论成功、失败还是被取消）
+  if (epoch === userStore.authEpoch && bubbleItems.value.length) {
     const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
-    if (lastMessage) {
-      const output = workflowFinalText(dataObj);
-      if (output !== null)
-        lastMessage.content = output || '流程已完成，结束节点未返回内容。';
-      if (lastMessage.workflowRun)
-        lastMessage.workflowRun.status = 'success';
-      bubbleItems.value = [...bubbleItems.value];
-    }
-    return true;
+    lastMessage.typing = false;
+    lastMessage.loading = false;
+    if (lastMessage.thinkingStatus === 'thinking')
+      lastMessage.thinkingStatus = 'end';
+    isThinking = false;
+    bubbleItems.value = [...bubbleItems.value];
   }
-
-  // [ERROR]
-  if (eventName === '[ERROR]') {
-    const errMsg = (dataObj?.msg as string) || rawData || '工作流执行失败';
-    const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
-    if (lastMessage) {
-      lastMessage.loading = false;
-      if (lastMessage.workflowRun)
-        lastMessage.workflowRun.status = 'error';
-      lastMessage.content += `\n\n> ${errMsg}`;
-      bubbleItems.value = [...bubbleItems.value];
-    }
-    ElMessage.error(errMsg);
-    return true;
-  }
-
-  // 节点运行状态不在对话区单独展示，仅保留最终流式回答。
-  if (eventName.startsWith('[NODE_RUN_')) {
-    const run = bubbleItems.value[bubbleItems.value.length - 1]?.workflowRun;
-    if (run)
-      run.nodes++;
-    return false;
-  }
-
-  // [NODE_CHUNK_<uuid>] LLM 流式文本块：追加到当前 assistant 气泡
-  if (eventName.startsWith('[NODE_CHUNK_')) {
-    if (rawData) {
-      // 去掉后端可能加的多行分隔标记
-      const text = rawData.replace(/-_wrap_-/g, '\n');
-      handleContentChunk(text);
-    }
-    return false;
-  }
-
-  // 节点输入属于流程内部明细，对话模式下不弹出节点卡片。
-  if (eventName.startsWith('[NODE_INPUT_')) {
-    return false;
-  }
-
-  // 节点输出属于流程内部明细，对话模式下不弹出节点卡片。
-  if (eventName.startsWith('[NODE_OUTPUT_')) {
-    return false;
-  }
-
-  // 其它未知带方括号事件忽略
-  return false;
-}
-
-function handleMcpEvent(dataObj: AnyObject) {
-  console.log('[SSE] MCP 事件:', dataObj);
-
-  try {
-    const content = typeof dataObj.content === 'string'
-      ? JSON.parse(dataObj.content)
-      : dataObj.content;
-
-    const toolName = content.name || 'Unknown Tool';
-    const toolStatus = content.status || 'pending';
-    const toolResult = content.result || null;
-
-    if (toolStatus === 'pending') {
-      const toolInfo: ToolCallInfo = {
-        key: ++toolCallKeyCounter,
-        name: toolName,
-        status: 'pending',
-        result: null,
-        timestamp: Date.now(),
-      };
-      toolCallEvents.value = [...toolCallEvents.value, toolInfo];
-    }
-    else {
-      const index = toolCallEvents.value.findIndex(
-        t => t.name === toolName && t.status === 'pending',
-      );
-      if (index >= 0) {
-        const updatedEvents = [...toolCallEvents.value];
-        updatedEvents[index] = {
-          ...updatedEvents[index],
-          status: toolStatus,
-          result: toolResult,
-          timestamp: Date.now(),
-        };
-        toolCallEvents.value = updatedEvents;
-      }
-      else {
-        const toolInfo: ToolCallInfo = {
-          key: ++toolCallKeyCounter,
-          name: toolName,
-          status: toolStatus,
-          result: toolResult,
-          timestamp: Date.now(),
-        };
-        toolCallEvents.value = [...toolCallEvents.value, toolInfo];
-      }
-    }
-
-    console.log('[SSE] 工具调用列表:', toolCallEvents.value);
-  }
-  catch (err) {
-    console.error('[SSE] MCP 事件解析失败:', err);
-  }
+  await nextTick();
 }
 
 function handleContentChunk(content: string) {
@@ -529,13 +370,21 @@ function handleContentChunk(content: string) {
   bubbleListRef.value?.scrollToBottom();
 }
 
+/**
+ * 取消本轮运行。
+ *
+ * 先中止本地事件流，再调服务端 `POST /api/ai/v1/runs/{id}/cancel`（`run.cancel` scope）。
+ * 服务端取消失败（无权/版本冲突）**如实显示**，不能只把界面停下来就算"已取消"。
+ */
 async function cancelSSE() {
-  cancel();
+  await cancelRun();
   if (bubbleItems.value.length) {
     const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
     lastMessage.typing = false;
+    lastMessage.loading = false;
     if (lastMessage.workflowRun)
       lastMessage.workflowRun.status = 'stopped';
+    bubbleItems.value = [...bubbleItems.value];
   }
 }
 
@@ -599,7 +448,7 @@ function cancelEditingByKey(key: number) {
 function sendMessageByKey(key: number) {
   const newContent = editedContents.value[key];
   if (newContent) {
-    startSSE(newContent);
+    void submitMessage(newContent);
     cancelEditingByKey(key);
   }
 }
@@ -608,6 +457,58 @@ function sendMessageByKey(key: number) {
 <template>
   <div class="chat-with-id-container">
     <div class="chat-warp">
+      <!--
+        运行状态条：**必须显示**的失败与提示。
+        - 失败（runError）包括 NO_AUTHORIZED_SCOPE、503 授权不可用、410 游标过期等；
+        - 提示（runNotice）包括幂等重放、缺口补齐、增量被丢弃、审批事件等。
+        这里**不做**任何"降级成普通回答"的处理：服务端说失败就显示失败。
+      -->
+      <ElAlert
+        v-if="runError"
+        class="run-alert"
+        type="error"
+        :closable="false"
+        show-icon
+        title="本次运行未完成"
+        :description="runError"
+        data-testid="chat-run-error"
+      />
+      <ElAlert
+        v-if="runNotice"
+        class="run-alert"
+        type="warning"
+        :closable="false"
+        show-icon
+        :description="runNotice"
+        data-testid="chat-run-notice"
+      />
+
+      <!--
+        知识库选择（`rag.chat` 的 resourceRefs）。
+        一个都没选时**照常提交**：服务端会以 FAILED/NO_AUTHORIZED_SCOPE 终止，
+        前端如实显示，不扩到全库、也不悄悄换成无检索闲聊。
+      -->
+      <div class="kb-picker">
+        <el-select
+          v-model="selectedKbIds"
+          multiple
+          collapse-tags
+          collapse-tags-tooltip
+          :disabled="runRunning || !kbList.length"
+          :placeholder="kbList.length ? '选择知识库（不选则服务端将以 NO_AUTHORIZED_SCOPE 终止）' : '没有可用知识库'"
+          data-testid="chat-kb-select"
+        >
+          <el-option
+            v-for="kb in kbList"
+            :key="kb.kbId"
+            :label="kb.name"
+            :value="kb.kbId"
+          />
+        </el-select>
+        <span v-if="kbError" class="kb-error" data-testid="chat-kb-error">{{ kbError }}</span>
+        <span v-if="runStatus" class="run-status" data-testid="chat-run-status">运行状态：{{ runStatus }}</span>
+      </div>
+
       <!-- 工具调用事件区域 -->
       <Transition name="tool-events-fade">
         <div v-if="hasToolCallEvents" class="tool-events-wrapper">
@@ -697,8 +598,8 @@ function sendMessageByKey(key: number) {
         <ChatSender
           ref="chatSenderRef"
           v-model="inputValue"
-          :loading="isLoading"
-          @submit="startSSE"
+          :loading="runRunning"
+          @submit="submitMessage"
           @cancel="cancelSSE"
         />
       </div>
@@ -710,6 +611,27 @@ function sendMessageByKey(key: number) {
 .user-bubble.editing {
   background: transparent !important;
   padding: 0;
+}
+
+.run-alert {
+  margin: 8px 12px 0;
+}
+
+.kb-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 0;
+
+  .kb-error {
+    color: var(--el-color-danger, #f56c6c);
+    font-size: 12px;
+  }
+
+  .run-status {
+    color: var(--el-text-color-secondary, #909399);
+    font-size: 12px;
+  }
 }
 
 :deep(.editing-bubble.el-bubble) {

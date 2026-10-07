@@ -64,10 +64,9 @@ function handleClick(item: AgentVO) {
 async function handleUseModel() {
   chatStore.clearCurrentWorkflow();
   agentStore.clearCurrentAgentInfo();
+  // 模型选择现在是**只读投影**：当前生效模型 = 服务端已发布运行配置绑定的模型（RW-06），
+  // 前端没有"默认选中"可设置（受理体里也没有 model 字段）。
   await modelStore.requestModelList();
-  if (modelStore.modelList.length > 0 && !modelStore.currentModelInfo?.modelName) {
-    modelStore.setCurrentModelInfo(modelStore.modelList[0]);
-  }
   popoverRef.value?.hide?.();
 }
 </script>

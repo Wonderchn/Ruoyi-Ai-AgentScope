@@ -1,26 +1,31 @@
-import type { ChatSessionVo, CreateSessionDTO, GetSessionListParams } from '@/api/session/types';
+import type { ConversationApi } from '@/api/session/conversations';
+import type { ChatSessionVo, CreateSessionInput, GetSessionListParams } from '@/api/session/types';
 import { ChatLineRound } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { defineStore } from 'pinia';
 import { markRaw } from 'vue';
 import { useRouter } from 'vue-router';
-import {
-  create_session,
-  delete_session,
-  get_session,
-  get_session_list,
-} from '@/api';
-import { createConversationWriteApi } from '@/api/ai/conversation-writes';
+import { get_session_list } from '@/api';
+import { classifyWriteFailure, writeFailureMessage } from '@/api/ai/conversation-writes';
 import { createRenameController } from '@/api/ai/session-rename';
+import { createConversationApi } from '@/api/session/conversations';
+import { filterSessionsByTitle, SESSION_SEARCH_SCOPE_NOTE } from '@/api/session/search';
 import { useUserStore } from './user';
+
+/** 一次写操作的结果：调用方（页面）必须按 outcome 决定是否提示/跳转，不再"点了没反应"。 */
+export type SessionActionResult
+  = { ok: true; conversationId?: string }
+    | { ok: false; message: string; errorCode: string; status: number };
 
 export const useSessionStore = defineStore('session', () => {
   const router = useRouter();
   const userStore = useUserStore();
 
-  // C9/D10 会话写入面：身份**每次调用时读取**（不缓存 token），
+  // C9/D10 会话写入面 + RW-02 创建/删除/批量删除面：身份**每次调用时读取**（不缓存 token），
   // 401 交由既有的 `handleAuthExpired`（清身份 + 弹登录 + 记录回跳路径）。
-  const conversationWrites = createConversationWriteApi({
+  //
+  // 全部写路径都是 AI 网关面 `/api/ai/v1/conversations**`；已退场的 `/system/session` 不再出现。
+  const conversationApi: ConversationApi = createConversationApi({
     baseUrl: import.meta.env.VITE_API_URL,
     clientId: import.meta.env.VITE_CLIENT_ID,
     identity: () => ({ token: userStore.token, epoch: userStore.authEpoch }),
@@ -29,7 +34,6 @@ export const useSessionStore = defineStore('session', () => {
 
   // 当前选中的会话信息
   const currentSession = ref<ChatSessionVo | null>(null);
-  // 设置当前会话
   const setCurrentSession = (session: ChatSessionVo | null) => {
     currentSession.value = session;
   };
@@ -41,10 +45,28 @@ export const useSessionStore = defineStore('session', () => {
   const hasMore = ref(true); // 是否还有更多数据
   const isLoading = ref(false); // 全局加载状态（初始加载/刷新）
   const isLoadingMore = ref(false); // 加载更多状态（区分初始加载）
+  // 列表读取失败的原因（**必须显示**，不再只 console.error）
+  const listError = ref('');
 
   // 搜索相关状态
   const searchKeyword = ref(''); // 搜索关键词
   const isSearching = ref(false); // 是否正在搜索
+  const searchScopeNote = SESSION_SEARCH_SCOPE_NOTE;
+
+  /**
+   * 待发送的第一句话（新建会话后由聊天页消费）。
+   *
+   * 旧实现把它塞进 `localStorage['chatContent']`：创建失败时那句话仍留在本地，
+   * 用户下一次进入**任意**会话都会把它发出去。现在它是 store 里的**一次性**状态，
+   * 只在"创建成功 → 跳转 → 聊天页消费"这条链上存在。
+   */
+  const pendingFirstMessage = ref('');
+  const takePendingFirstMessage = () => {
+    const text = pendingFirstMessage.value;
+    pendingFirstMessage.value = '';
+    return text;
+  };
+
   const resetSessions = () => {
     currentSession.value = null;
     sessionList.value = [];
@@ -52,14 +74,15 @@ export const useSessionStore = defineStore('session', () => {
     hasMore.value = true;
     isLoading.value = false;
     isLoadingMore.value = false;
+    listError.value = '';
     searchKeyword.value = '';
     isSearching.value = false;
+    pendingFirstMessage.value = '';
   };
 
-  // 创建新对话（按钮点击）
+  // 创建新对话（按钮点击）—— 只清空并回默认页，真正的创建发生在第一句话提交时（chatDefaul）
   const createSessionBtn = async () => {
     try {
-      // 清空当前选中会话信息
       setCurrentSession(null);
       router.replace({ name: 'chat' });
     }
@@ -68,22 +91,30 @@ export const useSessionStore = defineStore('session', () => {
     }
   };
 
+  /** 把服务端行合并进本地列表（保持服务端排序语义：page 1 最新）。 */
+  const mergePage = (rows: ChatSessionVo[], page: number) => {
+    if (page === 1) {
+      const rest = sessionList.value.filter(item => !rows.some(row => row.id === item.id));
+      sessionList.value = [...rows, ...rest];
+      return;
+    }
+    sessionList.value = [
+      ...sessionList.value.filter(item => !rows.some(row => row.id === item.id)),
+      ...rows,
+    ];
+  };
+
   // 获取会话列表（核心分页方法）
   const requestSessionList = async (page: number = currentPage.value, force: boolean = false) => {
     const epoch = userStore.authEpoch;
     // 如果没有token就直接清空
     if (!userStore.token) {
       sessionList.value = [];
+      listError.value = '';
       return;
     }
 
     if (!force && ((page > 1 && !hasMore.value) || isLoading.value || isLoadingMore.value)) {
-      console.log('[requestSessionList] 满足跳过条件，直接返回', {
-        page,
-        hasMore: hasMore.value,
-        isLoading: isLoading.value,
-        isLoadingMore: isLoadingMore.value,
-      });
       return;
     }
 
@@ -91,51 +122,29 @@ export const useSessionStore = defineStore('session', () => {
     isLoadingMore.value = page > 1; // 非第一页时标记为加载更多
 
     try {
-      const params: GetSessionListParams = {
-        userId: userStore.userInfo?.userId as number,
-        pageNum: page,
-        pageSize: pageSize.value,
-        isAsc: 'desc',
-        orderByColumn: 'createTime',
-        // 搜索关键词
-        sessionTitle: searchKeyword.value || undefined,
-      };
-
+      // 服务端只接受 offset/limit（`GET /conversations`）——不再发送会被忽略的查询条件。
+      const params: GetSessionListParams = { pageNum: page, pageSize: pageSize.value };
       const resArr = await get_session_list(params);
       if (epoch !== userStore.authEpoch)
         return;
 
-      // 预处理会话分组 并添加前缀图标
-      const res = processSessions(resArr.rows);
+      // 关键词过滤只作用于**已加载**的会话（服务端没有标题检索参数，见 `@/api/session/search`）。
+      const res = processSessions(filterSessionsByTitle(resArr.rows, searchKeyword.value));
+      mergePage(res, page);
 
-      const allSessions = new Map(sessionList.value.map(item => [item.id, item])); // 现有所有数据
-      res.forEach(item => allSessions.set(item.id, { ...item })); // 更新/添加数据
-
-      // 按服务端排序重建列表（假设分页数据是按时间倒序，第一页是最新，后续页依次递减）
-      // 此处需根据接口返回的排序规则调整，假设每页数据是递增的（第一页最新，第二页次新，第三页 oldest）
-      if (page === 1) {
-        // 第一页是最新数据，应排在列表前面
-        sessionList.value = [
-          ...res, // 新的第一页数据（最新）
-          ...Array.from(allSessions.values()).filter(item => !res.some(r => r.id === item.id)), // 保留未被第一页覆盖的旧数据
-        ];
-      }
-      else {
-        // 非第一页数据是更旧的数据，追加到列表末尾
-        sessionList.value = [
-          ...sessionList.value.filter(item => !res.some(r => r.id === item.id)), // 保留现有数据（除了被当前页更新的）
-          ...res, // 追加当前页的新数据（更旧的）
-        ];
-      }
-
-      // 判断是否还有更多数据（当前页数据量 < pageSize 则无更多）
+      // 判断是否还有更多数据：**必须用服务端返回的原始行数**，不能用过滤后的行数
+      // （否则一次过滤会让分页提前"到底"）。
       if (!force)
-        hasMore.value = (res?.length || 0) === pageSize.value;
+        hasMore.value = (resArr.rows?.length || 0) === pageSize.value;
       if (!force)
-        currentPage.value = page; // 仅非强制刷新时更新页码
+        currentPage.value = page;
+      listError.value = '';
     }
     catch (error) {
-      console.error('[requestSessionList] 错误详情:', error);
+      if (epoch === userStore.authEpoch) {
+        listError.value = errorTextOf(error, '会话列表加载失败');
+        console.error('[requestSessionList] 错误详情:', error);
+      }
     }
     finally {
       if (epoch === userStore.authEpoch) {
@@ -145,42 +154,42 @@ export const useSessionStore = defineStore('session', () => {
     }
   };
 
-  // 发送消息后创建新会话
-  const createSessionList = async (data: Omit<CreateSessionDTO, 'id'>) => {
+  /**
+   * 提交第一句话 → **创建会话**（F03 真实写入口）。
+   *
+   * 旧实现在这里 `POST /system/session`（已退场 ⇒ 404）并把响应体当成 id 用
+   * （`res.data`）；现在服务端返回 `{conversationId, created}`，且失败必须**如实返回**
+   * （创建会话受 `ai.integration.high-risk.enabled` fail-closed 守卫，未开启时 503）。
+   */
+  const createSessionList = async (input: CreateSessionInput): Promise<SessionActionResult> => {
     if (!userStore.token) {
-      router.replace({
-        name: 'chatWithId',
-        params: {
-          id: 'not_login',
-        },
-      });
-      return;
+      router.replace({ name: 'chatWithId', params: { id: 'not_login' } });
+      return { ok: false, message: '未登录', errorCode: 'AUTH_REQUIRED', status: 401 };
     }
 
+    const epoch = userStore.authEpoch;
     try {
-      const res = await create_session(data);
-      // 创建会话后立刻查询列表会话
-      // 1. 先找到被修改会话在 sessionList 中的索引（假设 sessionList 是按服务端排序的完整列表）
-      const targetIndex = sessionList.value.findIndex(session => session.id === `${res.data}`);
-      // 2. 计算该会话所在的页码（页大小固定为 pageSize.value）
-      const targetPage
-        = targetIndex >= 0
-          ? Math.floor(targetIndex / pageSize.value) + 1 // 索引从0开始，页码从1开始
-          : 1; // 未找到时默认刷新第一页（可能因排序变化导致位置改变）
-      // 3. 刷新目标页数据
-      await requestSessionList(targetPage, true);
-      // 并将当前勾选信息设置为新增的会话信息
-      const newSessionRes = await get_session(`${res.data}`);
-      setCurrentSession(newSessionRes.data);
+      const created = await conversationApi.createConversation(input.title);
+      if (epoch !== userStore.authEpoch)
+        return { ok: false, message: '身份已变化，本次创建结果作废', errorCode: 'AUTH_EXPIRED', status: 401 };
 
-      // 跳转聊天页
-      router.replace({
-        name: 'chatWithId',
-        params: { id: `${res.data}` },
-      });
+      // 服务端确认之后才设置状态与跳转。
+      await requestSessionList(1, true);
+      if (epoch !== userStore.authEpoch)
+        return { ok: false, message: '身份已变化，本次创建结果作废', errorCode: 'AUTH_EXPIRED', status: 401 };
+
+      const id = created.conversationId;
+      setCurrentSession({ id, sessionTitle: input.title, createTime: new Date() });
+      if (input.initialText)
+        pendingFirstMessage.value = input.initialText;
+      await router.replace({ name: 'chatWithId', params: { id } });
+      return { ok: true, conversationId: id };
     }
     catch (error) {
-      console.error('createSessionList错误:', error);
+      const failure = classifyWriteFailure(error);
+      const message = writeFailureMessage(failure);
+      ElMessage.error(message);
+      return { ok: false, message, errorCode: failure.errorCode, status: failure.status };
     }
   };
 
@@ -190,15 +199,13 @@ export const useSessionStore = defineStore('session', () => {
       await requestSessionList(currentPage.value + 1);
   };
 
-  // 搜索会话
+  // 搜索会话：服务端无标题检索参数 ⇒ 重新拉取后**只过滤已加载页**，作用域写进 UI 文案。
   const searchSessions = async (keyword: string) => {
     searchKeyword.value = keyword;
     isSearching.value = !!keyword;
-    // 重置分页状态
     currentPage.value = 1;
     hasMore.value = true;
     sessionList.value = [];
-    // 重新请求
     await requestSessionList(1, true);
   };
 
@@ -206,25 +213,16 @@ export const useSessionStore = defineStore('session', () => {
   const clearSearch = async () => {
     searchKeyword.value = '';
     isSearching.value = false;
-    // 重置分页状态
     currentPage.value = 1;
     hasMore.value = true;
     sessionList.value = [];
-    // 重新请求
     await requestSessionList(1, true);
   };
 
   // 更新会话（供组件调用）—— **改名走 C9/D10 的乐观锁路径**。
   //
-  // 改动前这里调的是 `update_session`（`PUT /system/session`，`ChatSessionBo` 无 version 字段），
-  // 于是 C9 的 409 在 UI 上**永远不可能出现**，且失败被 `catch { console.error }` 吞掉
-  // （用户点了改名、服务端拒绝，页面上什么都不显示）。现在改走
-  // `PUT /api/ai/v1/conversations/{id}`（`AiResourceController.renameConversation`）：
-  // 唯一实现 `{title, expectedVersion}` 与 409 `RESOURCE_VERSION_CONFLICT` 的入口。
-  //
-  // 编排逻辑本身在 `@/api/ai/session-rename`（纯模块、有单测）；这里只做注入与状态落地。
-  // 注意：本方法**刻意不再发送** `sessionContent` —— 改名对话框从不修改正文，
-  // 原先只是把原值回写一次；而 AI 资源面的改名请求体按契约只接受 `{title, expectedVersion}`。
+  // 唯一实现 `{title, expectedVersion}` 与 409 `RESOURCE_VERSION_CONFLICT` 的入口是
+  // `PUT /api/ai/v1/conversations/{id}`；编排逻辑在 `@/api/ai/session-rename`（纯模块、有单测）。
   const applyTitle = (id: string, title: string) => {
     sessionList.value = sessionList.value.map(session =>
       session.id === id ? { ...session, sessionTitle: title } : session,
@@ -234,7 +232,7 @@ export const useSessionStore = defineStore('session', () => {
   };
 
   const renameController = createRenameController({
-    rename: (id, title, expectedVersion) => conversationWrites.renameConversation(id, title, expectedVersion),
+    rename: (id, title, expectedVersion) => conversationApi.renameConversation(id, title, expectedVersion),
     applyTitle,
     refresh: () => requestSessionList(1, true),
     notify: (message, kind) => {
@@ -256,37 +254,45 @@ export const useSessionStore = defineStore('session', () => {
     return renameSession(String(item.id), String(item.sessionTitle ?? ''));
   };
 
-  // 删除会话（供组件调用）
-  const deleteSessions = async (ids: string[]) => {
+  /**
+   * 删除会话（供组件调用）。
+   *
+   * - 恰好 1 条 → `DELETE /api/ai/v1/conversations/{id}`（单资源软删）；
+   * - >1 条 → `POST /api/ai/v1/conversations/batch-delete`（D05：≤100、整体授权/事务）。
+   *
+   * **不做** N 次单删的循环（那是部分成功 + 逐资源 permit 覆盖集合）。
+   * **不做**乐观本地删除：服务端确认之前不改列表，失败时列表与服务端保持一致。
+   */
+  const deleteSessions = async (ids: string[]): Promise<SessionActionResult> => {
+    const epoch = userStore.authEpoch;
     try {
-      // 1. 先从本地列表中删除 (立即响应，不等待服务端)
-      sessionList.value = sessionList.value.filter(
-        session => !ids.includes(session.id!),
-      );
+      const outcome = await conversationApi.deleteConversations(ids);
+      if (epoch !== userStore.authEpoch)
+        return { ok: false, message: '身份已变化，本次删除结果作废', errorCode: 'AUTH_EXPIRED', status: 401 };
 
-      // 2. 调用删除接口
-      await delete_session(ids);
+      const removed = new Set(ids.map(id => String(id)));
+      sessionList.value = sessionList.value.filter(session => !removed.has(String(session.id)));
+      if (currentSession.value?.id && removed.has(String(currentSession.value.id)))
+        setCurrentSession(null);
 
-      // 3. 重置分页状态，从头开始加载
-      // 这确保整个列表与服务端数据一致
       currentPage.value = 1;
       hasMore.value = true;
-
-      // 4. 异步刷新第1页数据进行同步
-      // 不使用 await，避免阻塞 UI 响应
-      setTimeout(() => {
-        requestSessionList(1, true);
-      }, 100);
+      await requestSessionList(1, true);
+      if (outcome.mode === 'batch')
+        ElMessage.success(`已删除 ${outcome.deletedCount} 个会话`);
+      return { ok: true };
     }
     catch (error) {
-      console.error('deleteSessions错误:', error);
-      // 如果删除失败，回滚本地删除的数据
-      // 可通过 requestSessionList(currentPage.value, true) 重新加载
-      await requestSessionList(currentPage.value, true);
+      const failure = classifyWriteFailure(error);
+      const message = writeFailureMessage(failure);
+      ElMessage.error(message);
+      // 失败后必须让列表与服务端一致（可能已有一条被删掉？没有：批量是整体事务）。
+      await requestSessionList(1, true);
+      return { ok: false, message, errorCode: failure.errorCode, status: failure.status };
     }
   };
 
-  // 在获取会话列表后添加预处理逻辑（示例）
+  // 在获取会话列表后添加预处理逻辑
   function processSessions(sessions: ChatSessionVo[]) {
     return sessions.map((session) => {
       return {
@@ -310,9 +316,11 @@ export const useSessionStore = defineStore('session', () => {
     hasMore,
     isLoading,
     isLoadingMore,
+    listError,
     // 搜索状态
     searchKeyword,
     isSearching,
+    searchScopeNote,
     // 列表方法
     createSessionBtn,
     createSessionList,
@@ -326,5 +334,15 @@ export const useSessionStore = defineStore('session', () => {
     // 搜索方法
     searchSessions,
     clearSearch,
+    // 新建会话后的第一句话（一次性）
+    pendingFirstMessage,
+    takePendingFirstMessage,
   };
 });
+
+/** 从任意错误里取用户可读原因（网络层错误也要有话说）。 */
+function errorTextOf(error: unknown, fallback: string): string {
+  const record = (error ?? {}) as { message?: unknown };
+  const message = typeof record.message === 'string' ? record.message : '';
+  return message || fallback;
+}
