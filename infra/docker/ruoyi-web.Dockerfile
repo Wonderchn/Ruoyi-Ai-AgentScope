@@ -11,7 +11,7 @@ FROM node:22.23.2-alpine AS build
 ARG VITE_CLIENT_ID=dev-client
 ENV VITE_CLIENT_ID=${VITE_CLIENT_ID}
 ENV WEB_ADMIN_BASE_PATH=/admin/
-WORKDIR /src
+WORKDIR /src/services/web
 RUN corepack enable && corepack prepare pnpm@11.0.9 --activate
 COPY services/web/package.json services/web/pnpm-lock.yaml services/web/pnpm-workspace.yaml ./
 COPY services/web/packages/events/package.json ./packages/events/
@@ -24,12 +24,15 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     --mount=type=cache,target=/tmp/pnpm-cache \
     pnpm config set cache-dir /tmp/pnpm-cache && pnpm install --frozen-lockfile
 COPY services/web/ ./
+# Permission/page tests read the real migration contract at its repository path.
+# Keep the checkout layout and copy only these public SQL inputs into the build stage.
+COPY services/platform/docs/script/sql/postgres/ /src/services/platform/docs/script/sql/postgres/
 # The test loader transpiles without checking types; run the separate workspace check.
 RUN pnpm test && pnpm typecheck && pnpm lint && pnpm build
 
 FROM nginx:1.27-alpine
-COPY --from=build /src/apps/workbench/dist /usr/share/nginx/html
-COPY --from=build /src/apps/admin/dist /usr/share/nginx/html/admin
+COPY --from=build /src/services/web/apps/workbench/dist /usr/share/nginx/html
+COPY --from=build /src/services/web/apps/admin/dist /usr/share/nginx/html/admin
 # Restricted same-origin delivery: static assets plus a bounded proxy to the
 # platform public gateway only (see infra/dev/nginx.conf).
 COPY infra/dev/nginx.conf /etc/nginx/conf.d/default.conf
