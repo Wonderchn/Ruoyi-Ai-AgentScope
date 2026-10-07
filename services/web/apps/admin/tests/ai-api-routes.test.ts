@@ -2,10 +2,13 @@
  * AI 管理域 API 层的**请求形状**测试（与 api-routes.test.ts 同一纪律）。
  *
  * 证明：调用工厂方法会发出 method/URL/body **逐字**等于分母的请求：
- * - 模型/提供方/MCP：02-api-map.json 的 platform_api_kept 路径（BLOCKED-BY-G-22，
+ * - MCP：02-api-map.json 的 platform_api_kept 路径（BLOCKED-BY-G-22，
  *   路径本身仍是分母——G-22 关闭后这些形状必须原样生效）；
  * - 知识库族：AiGatewayController 白名单 8 条逐字（本形态活）；
- * - ragent 管理面：02-api-map.json 的 ai_reference_only 路径（BLOCKED-BY-EMBEDDED-REGISTRY）。
+ * - ragent 管理面：02-api-map.json 的 ai_reference_only 路径（BLOCKED-BY-EMBEDDED-REGISTRY）；
+ * - **已迁移族不在此文件**：Agent 目录（RW-03）见 `agents-admin.test.ts`，
+ *   运行配置权威（RW-07，承接旧 `/system/model|provider` 与 `/rag/settings`）见
+ *   `runtime-config-admin.test.ts`。
  *
  * 另钉两个契约差异（防"照模板写"回归）：
  * - `agentSkills.setEnabled` 是 **POST** `/agent-skills/{id}/enabled`（不是 PUT）；
@@ -103,40 +106,9 @@ describe('知识库族：8 条白名单路由逐字（本形态活端点）', ()
   });
 });
 
-describe('模型与提供方：分母路径（BLOCKED-BY-G-22，形状先行）', () => {
-  it('ChatModelController 九条中的核心形状：list/modelList/providerOptions/batchKeyByProvider', async () => {
-    const { calls, client } = harness();
-    const api = createAiApi(client);
-
-    await api.models.list({ pageNum: 1, pageSize: 10, name: 'gpt' });
-    assert.equal(last(calls).method, 'GET');
-    assert.equal(last(calls).url, '/system/model/list?pageNum=1&pageSize=10&name=gpt');
-
-    await api.models.options();
-    assert.equal(last(calls).method, 'GET');
-    assert.equal(last(calls).url, '/system/model/modelList');
-
-    await api.models.providers();
-    assert.equal(last(calls).method, 'GET');
-    assert.equal(last(calls).url, '/system/model/providerOptions');
-
-    await api.models.batchKeyByProvider({ providerId: 'p1', apiKey: '***' });
-    assert.equal(last(calls).method, 'PUT');
-    assert.equal(last(calls).url, '/system/model/batchKeyByProvider');
-  });
-
-  it('ChatProviderController：list 与导出 URL（导出返回 xlsx 二进制，不走 JSON 解包）', async () => {
-    const { calls, client } = harness();
-    const api = createAiApi(client);
-
-    await api.providers.list({ pageNum: 1, pageSize: 10 });
-    assert.equal(last(calls).method, 'GET');
-    assert.equal(last(calls).url, '/system/provider/list?pageNum=1&pageSize=10');
-
-    assert.equal(api.providers.exportUrl(), '/system/provider/export');
-    assert.equal(api.models.exportUrl(), '/system/model/export');
-  });
-});
+// RW-07（2026-10-07）：`models` / `providers` 子域（旧 `/system/model|provider`，G-22 未打包）
+// 已从工厂**移除**——模型/提供方的页面上限由 RW-06 的运行配置权威面承接
+// （`/api/ai/v1/runtime-config/**`，路径与信封断言见 `runtime-config-admin.test.ts`）。
 
 describe('MCP 目录：分母路径（BLOCKED-BY-G-22，形状先行）', () => {
   it('工具/市场列表与连接测试/市场刷新的动词与路径', async () => {
@@ -181,16 +153,11 @@ describe('ragent 管理面（未装配族）：分母路径与信封差异（BLO
     await api.ingestion.taskNodes('tk1');
     assert.equal(last(calls).method, 'GET');
     assert.equal(last(calls).url, '/ingestion/tasks/tk1/nodes');
-
-    await aiSettingsGet(api);
-    assert.equal(last(calls).method, 'GET');
-    assert.equal(last(calls).url, '/rag/settings');
   });
 
-  /** 小助手：让上面用例保持一行可读。 */
-  async function aiSettingsGet(api: ReturnType<typeof createAiApi>): Promise<void> {
-    await api.ragSettings.get();
-  }
+  // RW-07（2026-10-07）：`ragSettings` 子域（旧 `/rag/settings`，ragent 内层未进内嵌装配
+  // 且不在网关白名单）已从工厂**移除**——设置面由 `/runtime-config/settings` 承接
+  // （见 `runtime-config-admin.test.ts`）。
 
   it('⚠️ 启停契约是 POST /agent-skills/{id}/enabled + {enabled}（不是 PUT changeStatus）', async () => {
     const { calls, client } = harness();

@@ -11,10 +11,13 @@
  *
  * 1. **ruoyi-chat 没有打进 admin 应用**（`ruoyi-admin/pom.xml:88` 刻意不声明，
  *    G-22：IWorkFlowStarterService 缺保留侧实现，打进去启动失败）。
- *    ⇒ `/system/model/**`、`/system/provider/**`、`/mcp/**`、`/coding/**`、
- *    `/system/info/**`、`/system/session/**` 本形态 **404**。此处照分母登记路径，
- *    页面把可达状态如实标为 BLOCKED-BY-G-22，不假装成功。
- * 2. **ragent 旧控制器（/agents、/agent-skills、/ingestion、/knowledge-base 旧路径）
+ *    ⇒ `/mcp/**`、`/coding/**`、`/system/info/**`、`/system/session/**` 本形态 **404**。
+ *    此处照分母登记路径，页面把可达状态如实标为 BLOCKED-BY-G-22，不假装成功。
+ *    ⚠️ **更正（2026-10-07，RW-07）**：`/system/model/**`、`/system/provider/**` 与
+ *    `/rag/settings` 的客户端方法**已移除**——它们的页面上限由 RW-06 交付的
+ *    运行配置权威面（`/api/ai/v1/runtime-config/**`，见 `./runtimeConfig.ts`）承接，
+ *    继续保留旧路径只会制造"两套模型权威"的假象。
+ * 2. **ragent 旧控制器（/agent-skills、/ingestion、/knowledge-base 旧路径）
  *    未进内嵌装配**：`AiEmbedded*Configuration` 是显式登记制
  *    （AiResource/Upload/Run/AgentAction/引擎面），没有登记这些 rag 控制器 ⇒ 本形态 404。
  *    路径照分母登记，页面标 BLOCKED-BY-EMBEDDED-REGISTRY。
@@ -25,15 +28,20 @@
  *    `AiGatewayController.ROUTES` 逐条登记 8 条 `/agent-catalog/agents/**`，
  *    权限行由 `V27` 播种。该族契约见 `./agentProfiles.ts`（**独立子域，不用 ragent 信封**），
  *    旧 `/agents` 路径与 `code:"0"` 判别对**这一族**已作废。
+ *
+ *    ⚠️ **第二处例外（RW-07）**：运行配置权威 8 条 `/runtime-config/**` 已由
+ *    `RuntimeCatalogController`（RW-06）+ `AiResourceController` 四条既有路由承载，
+ *    权限行由 V28 播种；契约见 `./runtimeConfig.ts`。
  * 3. **知识库族 8 条白名单路由活着**（`AiGatewayController` ROUTES，M19/M20 实测
- *    200/400/404 分布健康）——经 `/api/ai/v1` 前缀。这是本波唯一可真实联调的族。
+ *    200/400/404 分布健康）——经 `/api/ai/v1` 前缀。
  *
  * ## 信封差异（不是同一个模板）
  *
  * - 知识库族走 `platform` `ApiEnvelope`：`{code:200,...}` —— 直接用共享 client。
- * - `/system/model|provider`（ruoyi-chat）也是平台 `R`（code=200）。
  * - **Agent 目录族（`/api/ai/v1/agent-catalog/agents`）同样是 `ApiEnvelope`（整数 code=200）**，
  *   由 `./agentProfiles.ts` 独立持有（RW-03 起）。
+ * - **运行配置权威族（`/api/ai/v1/runtime-config/**`）同样是 `ApiEnvelope`（整数 code=200）**，
+ *   由 `./runtimeConfig.ts` 独立持有（RW-07 起）。
  * - ragent 旧控制器返回**自己的 `Result`**：`{code:"0", message, data}`（字符串码）。
  *   若将来装配了这批控制器，`classifyResponse` 会把 `"0"` 当 business-error（code=0≠200），
  *   **届时需要专用解包**，不能直接用 `client.get`——本工厂刻意为它们留独立方法，
@@ -48,8 +56,10 @@
 import type { PlatformClient } from '@ruoyi/platform-client/http';
 import type { PageParams } from '../../utils/list';
 import { createAgentProfilesApi } from './agentProfiles';
+import { createRuntimeConfigApi } from './runtimeConfig';
 
 export * from './agentProfiles';
+export * from './runtimeConfig';
 
 /** ragent 旧信封形状（`framework/convention/Result`：code 是**字符串**）。 */
 export interface RagResultEnvelope<T> {
@@ -74,46 +84,13 @@ export function ragResultEnvelopeOf<T>(envelope: RagResultEnvelope<T> | null | u
 }
 
 // ---------------------------------------------------------------------------
-// 模型与提供方（ruoyi-chat：本形态 404，BLOCKED-BY-G-22）
+// 运行配置权威（RW-06 交付 / RW-07 接页面）——**本形态真实可达**
+//
+// 旧分母 `/system/model/**`、`/system/provider/**`（ruoyi-chat，G-22 未打包）与
+// `/rag/settings`（ragent 内层未进内嵌装配、且未进网关白名单）**已在此移除**：
+// 它们的页面上限（模型/提供方/设置的读写）由 `./runtimeConfig.ts` 的
+// `/api/ai/v1/runtime-config/**` 承接（RW-06 报告 §2.7 的旧→新映射）。
 // ---------------------------------------------------------------------------
-
-/** `ChatModelController`（base `/system/model`）的查询对象分母。 */
-export interface ChatModelQuery extends PageParams {
-  name?: string;
-  providerId?: string;
-  modelType?: string;
-  status?: string;
-}
-
-/** `ChatModelVo` 管理端展示字段。`apiKey` 服务端已掩码；前端不得当明文用。 */
-export interface ChatModelVo {
-  id?: string;
-  name?: string;
-  modelType?: string;
-  providerId?: string;
-  providerName?: string;
-  /** 服务端响应边界掩码（密钥纪律 K3 同族）；**不得回传给任何编辑框当明文**。 */
-  apiKey?: string;
-  baseUrl?: string;
-  status?: string;
-  remark?: string;
-  createTime?: string;
-}
-
-/** `ChatProviderController`（base `/system/provider`）的查询对象分母。 */
-export interface ChatProviderQuery extends PageParams {
-  name?: string;
-  status?: string;
-}
-
-export interface ChatProviderVo {
-  id?: string;
-  name?: string;
-  baseUrl?: string;
-  status?: string;
-  remark?: string;
-  createTime?: string;
-}
 
 // ---------------------------------------------------------------------------
 // 知识库族（8 条白名单路由，本形态活着；经 /api/ai/v1）
@@ -206,36 +183,12 @@ export interface McpMarketRow {
 export function createAiApi(client: PlatformClient) {
   return {
     /**
-     * 模型/提供方（`/system/model`、`/system/provider`）。
-     * ⚠️ BLOCKED-BY-G-22：本形态 ruoyi-chat 未打包，以下调用会 404——路径本身
-     * 就是分母（02-api-map.json ChatModelController/ChatProviderController），
-     * 页面用它做「契约先行」的请求形状展示，不把 404 谎报成成功。
+     * 运行配置权威（F02）—— **本形态真实可达**（见 `./runtimeConfig.ts` 的契约表）。
+     * 8 条 `/api/ai/v1/runtime-config/**`：目录/设置/版本序列（config.read）+
+     * 发布（config.publish）/撤销（config.revoke）/回滚（config.publish）+
+     * 档位附加（config.publish）。发布 = 追加不可变版本，不是改行或改 YAML。
      */
-    models: {
-      list: (query: ChatModelQuery) => client.getRows<ChatModelVo>('/system/model/list', { query: { ...query } }),
-      options: () => client.get<ChatModelVo[]>('/system/model/modelList'),
-      providers: () => client.get<ChatProviderVo[]>('/system/model/providerOptions'),
-      get: (id: string) => client.get<ChatModelVo>(`/system/model/${encodeURIComponent(id)}`),
-      create: (body: Record<string, unknown>) => client.post<unknown>('/system/model', { body }),
-      update: (body: Record<string, unknown>) => client.put<unknown>('/system/model', { body }),
-      /** 批量按提供方配密钥：body 形状按后端 `batchKeyByProvider`（提供方维度）。 */
-      batchKeyByProvider: (body: Record<string, unknown>) =>
-        client.put<unknown>('/system/model/batchKeyByProvider', { body }),
-      remove: (ids: readonly string[]) =>
-        client.del<unknown>(`/system/model/${ids.map(encodeURIComponent).join(',')}`),
-      exportUrl: () => '/system/model/export',
-    },
-
-    providers: {
-      list: (query: ChatProviderQuery) =>
-        client.getRows<ChatProviderVo>('/system/provider/list', { query: { ...query } }),
-      get: (id: string) => client.get<ChatProviderVo>(`/system/provider/${encodeURIComponent(id)}`),
-      create: (body: Record<string, unknown>) => client.post<unknown>('/system/provider', { body }),
-      update: (body: Record<string, unknown>) => client.put<unknown>('/system/provider', { body }),
-      remove: (ids: readonly string[]) =>
-        client.del<unknown>(`/system/provider/${ids.map(encodeURIComponent).join(',')}`),
-      exportUrl: () => '/system/provider/export',
-    },
+    runtimeConfig: createRuntimeConfigApi(client),
 
     /**
      * 知识库族 —— **本形态唯一活着的一族**（M19/M20：200/400/404 分布健康）。
@@ -345,14 +298,6 @@ export function createAiApi(client: PlatformClient) {
       /** 工具加载：权限行 2016 `mcp:market:load`。 */
       marketLoad: (body: Record<string, unknown>) => client.post<unknown>('/mcp/market/load', { body }),
       marketExportUrl: () => '/mcp/market/export',
-    },
-
-    /**
-     * 系统设置（RAGSettingsController `GET /rag/settings`）。
-     * ⚠️ 同样未进内嵌装配（BLOCKED-BY-EMBEDDED-REGISTRY），分母登记照旧。
-     */
-    ragSettings: {
-      get: () => client.get<RagResultEnvelope<Record<string, unknown>>>('/rag/settings'),
     },
   };
 }
