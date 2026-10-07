@@ -15,7 +15,7 @@
 import type { MemoryRow } from '@/api/ai/memories';
 import type { MemoryViewState } from '@/api/ai/memory-view';
 import { computed, onMounted, ref, watch } from 'vue';
-import { createMemoryApi, MEMORY_LIMIT_DEFAULT, MEMORY_LIMIT_MAX } from '@/api/ai/memories';
+import { createMemoryApi, MEMORY_CLEAR_NOT_RUN_NOTE, MEMORY_LIMIT_DEFAULT, MEMORY_LIMIT_MAX } from '@/api/ai/memories';
 import { canRetry, toMemoryViewState } from '@/api/ai/memory-view';
 import { useUserStore } from '@/stores';
 
@@ -142,16 +142,7 @@ watch(() => user.authEpoch, (now, before) => {
           </p>
           <p class="text-12px c-gray-500 break-all">
             id={{ row.id }}
-            <span v-if="row.sourcePolicyVersion !== null"> · 策略版本 {{ row.sourcePolicyVersion }}</span>
-            <span v-if="row.sourceAclVersion !== null"> · ACL 版本 {{ row.sourceAclVersion }}</span>
           </p>
-          <details v-if="row.sourceRefs.length || row.sourceRefsRaw" class="mt-2">
-            <summary>来源引用（{{ row.sourceRefs.length }}）</summary>
-            <pre v-if="row.sourceRefs.length" class="whitespace-pre-wrap break-all">{{ JSON.stringify(row.sourceRefs, null, 2) }}</pre>
-            <p v-if="row.sourceRefsRaw" class="c-orange-6">
-              未能解析为 JSON，保留原文：{{ row.sourceRefsRaw }}
-            </p>
-          </details>
         </ElCard>
 
         <div class="flex items-center gap-2">
@@ -163,6 +154,29 @@ watch(() => user.authEpoch, (now, before) => {
             下一页
           </ElButton>
         </div>
+
+        <!--
+          两条**必须写明**的服务端事实（RW-20 §4.7）：
+          1. 条目会因来源撤权而"消失"（服务端逐条复核来源，不合格即不返回）—— 这是设计行为；
+             响应里没有 sourceRefs/版本，因此本页**无法解释**"为什么少了某条"。
+          2. 记忆清空/范围删除本轮**不做**（D-RW20-1，需新 canonical 动作 + 权限 + 迁移号）。
+        -->
+        <ElAlert
+          type="info"
+          :closable="false"
+          class="mt-4"
+          data-testid="memory-scope-note"
+          title="关于条目数量"
+          description="服务端逐条复核来源：来源被撤权后该条**不再返回**（设计行为）。响应不含来源引用，因此本页无法解释为什么少了某条。"
+        />
+        <ElAlert
+          type="warning"
+          :closable="false"
+          class="mt-2"
+          data-testid="memory-clear-not-run"
+          title="一键清空/范围删除：本轮未提供"
+          :description="MEMORY_CLEAR_NOT_RUN_NOTE"
+        />
       </template>
     </template>
 
