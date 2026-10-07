@@ -32,6 +32,7 @@ import com.nageoffer.ai.ragent.rag.dao.entity.RagTraceRunDO;
 import com.nageoffer.ai.ragent.rag.dao.mapper.RagTraceNodeMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.RagTraceRunMapper;
 import com.nageoffer.ai.ragent.rag.service.RagTraceQueryService;
+import com.nageoffer.ai.ragent.rag.trace.RagTraceReadScope;
 import com.nageoffer.ai.ragent.user.dao.entity.UserDO;
 import com.nageoffer.ai.ragent.user.dao.mapper.UserMapper;
 import lombok.RequiredArgsConstructor;
@@ -45,7 +46,11 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * RAG Trace 查询服务实现
+ * RAG Trace 查询服务实现。
+ *
+ * <p>F18/RW-23：每个查询都先落"限域"（{@link RagTraceReadScope}）—— tenant 恒等过滤，
+ * 非 tenant-wide 时再加 member 过滤。跨租户/跨成员的 traceId 与"不存在"同外显
+ * （与 {@code TenantRunReadRepository} 的 {@code (tenant_id, run_id)} 口径一致）。
  */
 @Service
 @RequiredArgsConstructor
@@ -56,9 +61,11 @@ public class RagTraceQueryServiceImpl implements RagTraceQueryService {
     private final UserMapper userMapper;
 
     @Override
-    public IPage<RagTraceRunVO> pageRuns(RagTraceRunPageRequest request) {
+    public IPage<RagTraceRunVO> pageRuns(RagTraceRunPageRequest request, RagTraceReadScope scope) {
         LambdaQueryWrapper<RagTraceRunDO> wrapper = Wrappers.lambdaQuery(RagTraceRunDO.class)
                 .orderByDesc(RagTraceRunDO::getStartTime);
+
+        applyScope(wrapper, scope);
 
         if (StrUtil.isNotBlank(request.getTraceId())) {
             wrapper.eq(RagTraceRunDO::getTraceId, request.getTraceId());
@@ -72,6 +79,12 @@ public class RagTraceQueryServiceImpl implements RagTraceQueryService {
         if (StrUtil.isNotBlank(request.getStatus())) {
             wrapper.eq(RagTraceRunDO::getStatus, request.getStatus());
         }
+        if (request.getBeginTime() != null) {
+            wrapper.ge(RagTraceRunDO::getStartTime, request.getBeginTime());
+        }
+        if (request.getEndTime() != null) {
+            wrapper.le(RagTraceRunDO::getStartTime, request.getEndTime());
+        }
 
         IPage<RagTraceRunDO> pageResult = runMapper.selectPage(request, wrapper);
         Map<String, String> usernameMap = loadUsernameMap(pageResult.getRecords());
@@ -80,23 +93,57 @@ public class RagTraceQueryServiceImpl implements RagTraceQueryService {
     }
 
     @Override
-    public RagTraceDetailVO detail(String traceId) {
-        RagTraceRunDO run = runMapper.selectOne(Wrappers.lambdaQuery(RagTraceRunDO.class)
-                .eq(RagTraceRunDO::getTraceId, traceId)
-                .last("limit 1"));
+    public RagTraceDetailVO detail(String traceId, RagTraceReadScope scope) {
+        RagTraceRunDO run = selectRunInScope(traceId, scope);
         if (run == null) {
+            // 跨租户/跨成员与不存在同外显
             return null;
         }
         Map<String, String> usernameMap = loadUsernameMap(List.of(run));
         Map<String, Long> ttftMap = loadTtftMap(List.of(run));
         return RagTraceDetailVO.builder()
                 .run(toRunVO(run, usernameMap, ttftMap))
-                .nodes(listNodes(traceId))
+                .nodes(listNodesOfScopedRun(traceId))
                 .build();
     }
 
     @Override
-    public List<RagTraceNodeVO> listNodes(String traceId) {
+    public List<RagTraceNodeVO> listNodes(String traceId, RagTraceReadScope scope) {
+        if (selectRunInScope(traceId, scope) == null) {
+            // 节点表无租户列：没有限域内的父 run 就不返回任何节点
+            return List.of();
+        }
+        return listNodesOfScopedRun(traceId);
+    }
+
+    /**
+     * 限域过滤：tenant 恒等；非 tenant-wide 时再收窄到 member。
+     */
+    private void applyScope(LambdaQueryWrapper<RagTraceRunDO> wrapper, RagTraceReadScope scope) {
+        if (scope == null) {
+            throw new IllegalArgumentException("trace read scope is required");
+        }
+        wrapper.eq(RagTraceRunDO::getTenantId, scope.tenantId());
+        if (!scope.tenantWide()) {
+            wrapper.eq(RagTraceRunDO::getMemberId, scope.memberId());
+        }
+    }
+
+    /**
+     * 在限域内按 traceId 取一行；不在限域内返回 {@code null}（与不存在同形）。
+     */
+    private RagTraceRunDO selectRunInScope(String traceId, RagTraceReadScope scope) {
+        if (StrUtil.isBlank(traceId)) {
+            return null;
+        }
+        LambdaQueryWrapper<RagTraceRunDO> wrapper = Wrappers.lambdaQuery(RagTraceRunDO.class)
+                .eq(RagTraceRunDO::getTraceId, traceId)
+                .last("limit 1");
+        applyScope(wrapper, scope);
+        return runMapper.selectOne(wrapper);
+    }
+
+    private List<RagTraceNodeVO> listNodesOfScopedRun(String traceId) {
         List<RagTraceNodeDO> nodes = nodeMapper.selectList(Wrappers.lambdaQuery(RagTraceNodeDO.class)
                 .eq(RagTraceNodeDO::getTraceId, traceId)
                 .orderByAsc(RagTraceNodeDO::getStartTime)

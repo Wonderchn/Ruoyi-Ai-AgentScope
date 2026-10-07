@@ -20,10 +20,20 @@ package com.nageoffer.ai.ragent.audit.service;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.nageoffer.ai.ragent.audit.controller.request.BizChangeLogPageRequest;
 import com.nageoffer.ai.ragent.audit.controller.vo.BizChangeLogVO;
+import com.nageoffer.ai.ragent.audit.support.BizChangeLogReadScope;
 
+/**
+ * 业务变更日志查询（F18 op3）。
+ *
+ * <p>RW-23：读方法都要求显式 {@link BizChangeLogReadScope} —— 限域是调用点的决定，
+ * 缺主体/缺 tenant 的构造 fail-closed，服务内部不再有"不过滤"的路径。
+ */
 public interface BizChangeLogService {
 
-    IPage<BizChangeLogVO> page(BizChangeLogPageRequest requestParam);
+    IPage<BizChangeLogVO> page(BizChangeLogPageRequest requestParam, BizChangeLogReadScope scope);
 
-    BizChangeLogVO get(String id);
+    /**
+     * 详情；不在限域内（含跨租户 id）与不存在同外显。
+     */
+    BizChangeLogVO get(String id, BizChangeLogReadScope scope);
 }

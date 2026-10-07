@@ -27,11 +27,19 @@ import com.nageoffer.ai.ragent.audit.controller.vo.BizChangeLogVO;
 import com.nageoffer.ai.ragent.audit.dao.entity.BizChangeLogDO;
 import com.nageoffer.ai.ragent.audit.dao.mapper.BizChangeLogMapper;
 import com.nageoffer.ai.ragent.audit.service.BizChangeLogService;
+import com.nageoffer.ai.ragent.audit.support.BizChangeLogReadScope;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+/**
+ * 业务变更日志查询实现（F18 op3）。
+ *
+ * <p>RW-23：{@code ai_biz_change_log.tenant_id}/{@code member_id} 是 V7 的 NOT NULL 平台侧列，
+ * 但此前 page/get <b>没有任何过滤</b>（分页按业务键筛全库、详情直接 selectById）→ 跨租户可读。
+ * 现在 tenant 恒等过滤，非 tenant-wide 再收窄到 member；跨租户 id 与不存在同外显。
+ */
 @Service
 @RequiredArgsConstructor
 public class BizChangeLogServiceImpl implements BizChangeLogService {
@@ -39,7 +47,7 @@ public class BizChangeLogServiceImpl implements BizChangeLogService {
     private final BizChangeLogMapper bizChangeLogMapper;
 
     @Override
-    public IPage<BizChangeLogVO> page(BizChangeLogPageRequest requestParam) {
+    public IPage<BizChangeLogVO> page(BizChangeLogPageRequest requestParam, BizChangeLogReadScope scope) {
         Page<BizChangeLogDO> page = new Page<>(requestParam.getCurrent(), requestParam.getSize());
         LambdaQueryWrapper<BizChangeLogDO> queryWrapper = Wrappers.lambdaQuery(BizChangeLogDO.class)
                 .eq(StringUtils.hasText(requestParam.getBizType()), BizChangeLogDO::getBizType, requestParam.getBizType())
@@ -51,16 +59,38 @@ public class BizChangeLogServiceImpl implements BizChangeLogService {
                 .ge(requestParam.getBeginTime() != null, BizChangeLogDO::getCreateTime, requestParam.getBeginTime())
                 .le(requestParam.getEndTime() != null, BizChangeLogDO::getCreateTime, requestParam.getEndTime())
                 .orderByDesc(BizChangeLogDO::getCreateTime);
+        applyScope(queryWrapper, scope);
         return bizChangeLogMapper.selectPage(page, queryWrapper)
                 .convert(each -> BeanUtil.toBean(each, BizChangeLogVO.class));
     }
 
     @Override
-    public BizChangeLogVO get(String id) {
-        BizChangeLogDO record = bizChangeLogMapper.selectById(id);
+    public BizChangeLogVO get(String id, BizChangeLogReadScope scope) {
+        if (!StringUtils.hasText(id)) {
+            throw new ClientException("变更审计日志不存在");
+        }
+        LambdaQueryWrapper<BizChangeLogDO> queryWrapper = Wrappers.lambdaQuery(BizChangeLogDO.class)
+                .eq(BizChangeLogDO::getId, id)
+                .last("limit 1");
+        applyScope(queryWrapper, scope);
+        BizChangeLogDO record = bizChangeLogMapper.selectOne(queryWrapper);
         if (record == null) {
+            // 跨租户/跨成员与本租户内不存在同外显
             throw new ClientException("变更审计日志不存在");
         }
         return BeanUtil.toBean(record, BizChangeLogVO.class);
+    }
+
+    /**
+     * 限域过滤：tenant 恒等；非 tenant-wide 时再收窄到 member。
+     */
+    private void applyScope(LambdaQueryWrapper<BizChangeLogDO> wrapper, BizChangeLogReadScope scope) {
+        if (scope == null) {
+            throw new IllegalArgumentException("change log read scope is required");
+        }
+        wrapper.eq(BizChangeLogDO::getTenantId, scope.tenantId());
+        if (!scope.tenantWide()) {
+            wrapper.eq(BizChangeLogDO::getMemberId, scope.memberId());
+        }
     }
 }

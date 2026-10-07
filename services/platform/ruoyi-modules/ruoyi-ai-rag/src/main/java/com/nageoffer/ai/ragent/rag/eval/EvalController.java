@@ -24,6 +24,8 @@ import com.nageoffer.ai.ragent.knowledge.dao.entity.KnowledgeChunkDO;
 import com.nageoffer.ai.ragent.knowledge.dao.entity.KnowledgeDocumentDO;
 import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeChunkMapper;
 import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeDocumentMapper;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
+import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
 import com.nageoffer.ai.ragent.rag.core.intent.IntentResolver;
 import com.nageoffer.ai.ragent.rag.core.retrieval.RetrievalEngine;
 import com.nageoffer.ai.ragent.rag.core.rewrite.QueryRewriteService;
@@ -32,8 +34,7 @@ import com.nageoffer.ai.ragent.rag.dto.RetrievalContext;
 import com.nageoffer.ai.ragent.rag.dto.SubQuestionIntent;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import com.nageoffer.ai.ragent.framework.convention.Result;
-import com.nageoffer.ai.ragent.framework.web.Results;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -46,7 +47,15 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * 效果评测接口
+ * 效果评测接口（F18 op4）。
+ *
+ * <p><b>信封（RW-23）</b>：经 AI 网关的内层 handler 必须返回整数 code 信封
+ * （{@code LocalAiGatewayClient.requireSingleJsonObject} 要求 {@code code} 为整数且与 HTTP
+ * 状态一致；AI 旧 {@code Result} 的 code 是字符串 {@code "0"}，经网关必然 503）。
+ * 因此从 {@code Result} 改为 {@link ApiEnvelope}，载荷 {@link EvalResponse} 不变。</p>
+ *
+ * <p><b>授权范围（RW-23）</b>：评测会真实触发检索，必须先有执行主体（tenant/member），
+ * 缺主体直接拒绝（{@code ClientException} → 403/整数码信封），不降级为"匿名检索"。</p>
  */
 @RestController
 @RequiredArgsConstructor
@@ -60,14 +69,18 @@ public class EvalController {
     private final KnowledgeDocumentMapper knowledgeDocumentMapper;
 
     @GetMapping("/rag/eval")
-    public Result<EvalResponse> chat(@RequestParam String question) {
+    public ResponseEntity<ApiEnvelope<EvalResponse>> chat(@RequestParam String question) {
+        // fail-closed：评测面不接受无主体调用
+        PrincipalContext.require();
         long start = System.currentTimeMillis();
 
         RewriteResult rewriteResult = queryRewriteService.rewriteWithSplit(question, List.of());
         List<SubQuestionIntent> subIntents = intentResolver.resolve(rewriteResult);
         RetrievalContext rc = retrievalEngine.retrieve(subIntents);
 
-        return Results.success(buildResponse(rc, subIntents, System.currentTimeMillis() - start));
+        return ResponseEntity.ok()
+                .header("Cache-Control", "no-store")
+                .body(ApiEnvelope.ok(buildResponse(rc, subIntents, System.currentTimeMillis() - start)));
     }
 
     private EvalResponse buildResponse(RetrievalContext rc, List<SubQuestionIntent> subIntents, long latencyMs) {
