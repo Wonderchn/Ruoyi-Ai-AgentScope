@@ -103,17 +103,19 @@ jobs:
         run: pnpm install --frozen-lockfile
       # The test loader transpiles without type checking, so the protocol package's type
       # check must run on its own or TS errors ship silently.
-      - name: Type-check the shared protocol package
-        working-directory: services/web/packages/events
-        run: pnpm exec tsc -p tsconfig.json --noEmit
-      - name: Run the Node protocol tests
-        working-directory: services/web/packages/events
-        run: node --import ./tests/ts-loader.mjs --test ./tests/RunStreamClient.test.ts ./tests/SseSyntax.test.ts ./tests/RagApi.test.ts ./tests/RagTransport.test.ts
+      - name: Type-check protocol packages and both applications
+        working-directory: services/web
+        run: pnpm typecheck
+      - name: Run all protocol and application tests
+        working-directory: services/web
+        run: |
+          pnpm test
+          node --test ../../scripts/ci/read-path-observation.test.mjs
       - name: Lint
-        working-directory: services/web/apps/workbench
+        working-directory: services/web
         run: pnpm lint
-      - name: Build (includes the app type check via vue-tsc -b)
-        working-directory: services/web/apps/workbench
+      - name: Build both applications (includes vue-tsc)
+        working-directory: services/web
         run: pnpm build
       - name: Ensure the checks left sources unchanged
         working-directory: services/web
@@ -141,6 +143,21 @@ jobs:
       - name: Rebuild both domains from the repository PostgreSQL files (platform V1..V6, AI V1..V12)
         run: bash scripts/ci/verify-ai-migrations.sh
       - name: Ensure the check left the sources unchanged
+        run: git diff --exit-code
+
+  db-unified:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify the unified chain from fresh and legacy databases
+        env:
+          PG_OWNER: unified-${{ github.run_id }}-${{ github.run_attempt }}
+          PG_CONTAINER: unified-pg-${{ github.run_id }}-${{ github.run_attempt }}
+        run: bash scripts/ci/verify-unified-migrations.sh
+      - name: Ensure the check left sources unchanged
         run: git diff --exit-code
 
   native-runtime:
@@ -182,10 +199,14 @@ jobs:
           persist-credentials: false
       - name: Validate source metadata and public configuration
         run: python3 scripts/ci/check-public-source.py
+      - name: Check independent unified migration expectations and negative controls
+        run: |
+          python3 scripts/ci/check-unified-contract.py
+          python3 scripts/ci/test-unified-contract.py
 
   ci-required:
     if: always()
-    needs: [platform, ai, frontend, ruoyi-web, policy, db, db-ai, native-runtime]
+    needs: [platform, ai, frontend, ruoyi-web, policy, db, db-ai, db-unified, native-runtime]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -198,9 +219,10 @@ jobs:
           POLICY: ${{ needs.policy.result }}
           DB: ${{ needs.db.result }}
           DB_AI: ${{ needs.db-ai.result }}
+          DB_UNIFIED: ${{ needs.db-unified.result }}
           NATIVE: ${{ needs.native-runtime.result }}
         run: |
-          for result in "$PLATFORM" "$AI" "$FRONTEND" "$RUOYI_WEB" "$POLICY" "$DB" "$DB_AI" "$NATIVE"; do
+          for result in "$PLATFORM" "$AI" "$FRONTEND" "$RUOYI_WEB" "$POLICY" "$DB" "$DB_AI" "$DB_UNIFIED" "$NATIVE"; do
             if [ "$result" != success ]; then
               echo "A required job did not succeed: $result" >&2
               exit 1

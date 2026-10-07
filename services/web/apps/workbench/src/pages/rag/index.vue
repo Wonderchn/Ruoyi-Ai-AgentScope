@@ -34,6 +34,7 @@ const versionTarget = ref('');
 const sourceUrl = ref('');
 const sourcePage = ref(1);
 let sourceController: AbortController | null = null;
+let kbController: AbortController | null = null;
 function closeSource() {
   sourceController?.abort();
   if (sourceUrl.value)
@@ -67,6 +68,7 @@ function current(epoch: number, kbId?: string) {
 }
 watch(() => rag.epoch, () => {
   viewEpoch++;
+  kbController?.abort();
   closeSource();
   versionTarget.value = '';
   streamController?.abort();
@@ -119,10 +121,13 @@ const ingestStepActive = computed(() => (rag.ingestRun?.steps || []).filter(step
 
 async function loadKbs() {
   const epoch = viewEpoch;
+  kbController?.abort();
+  const controller = new AbortController();
+  kbController = controller;
   loadingKbs.value = true;
   try {
-    const kbs = await listKnowledgeBases();
-    if (!current(epoch))
+    const kbs = await listKnowledgeBases(controller.signal);
+    if (!current(epoch) || kbController !== controller)
       return;
     rag.knowledgeBases = kbs;
     if (!rag.currentKbId && rag.knowledgeBases.length) {
@@ -131,13 +136,13 @@ async function loadKbs() {
     }
   }
   catch (error) {
-    if (!(current(epoch)))
+    if (!current(epoch) || kbController !== controller || controller.signal.aborted)
       return;
     console.warn('[rag] operation failed', error);
-    ElMessage.error('加载知识库失败（需要 ai:kb:list 权限）');
+    ElMessage.error(error instanceof Error ? error.message : '加载知识库失败');
   }
   finally {
-    if (current(epoch))
+    if (current(epoch) && kbController === controller)
       loadingKbs.value = false;
   }
 }
@@ -451,6 +456,7 @@ onMounted(loadKbs);
 onBeforeUnmount(() => {
   closeSource();
   mounted = false;
+  kbController?.abort();
   streamController?.abort();
   uploadController?.abort();
 });

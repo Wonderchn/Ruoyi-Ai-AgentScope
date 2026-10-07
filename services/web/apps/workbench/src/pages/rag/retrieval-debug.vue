@@ -15,7 +15,7 @@
 <script setup lang="ts">
 import type { RetrievalDebugState } from '@/api/ai/retrieval-debug';
 import type { KnowledgeBaseView } from '@/api/rag';
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { createRetrievalApi, RETRIEVAL_TOP_K_MAX, RETRIEVAL_TOP_K_MIN, toRetrievalDebugState } from '@/api/ai/retrieval-debug';
 import { listKnowledgeBases } from '@/api/rag';
 import { useUserStore } from '@/stores';
@@ -39,14 +39,18 @@ const running = ref(false);
 
 /** 迟到响应隔离（同 /memory 页）。 */
 let viewEpoch = 0;
+let kbController: AbortController | null = null;
 
 async function loadKbs() {
   const captured = ++viewEpoch;
   const currentEpoch = user.authEpoch;
   const valid = () => captured === viewEpoch && currentEpoch === user.authEpoch;
+  kbController?.abort();
+  const controller = new AbortController();
+  kbController = controller;
   kbsNote.value = '';
   try {
-    const kbs = await listKnowledgeBases();
+    const kbs = await listKnowledgeBases(controller.signal);
     if (!valid())
       return;
     knowledgeBases.value = kbs;
@@ -54,7 +58,7 @@ async function loadKbs() {
       selectedKbIds.value = kbs.slice(0, 1).map(kb => kb.kbId);
   }
   catch (error) {
-    if (!valid())
+    if (!valid() || controller.signal.aborted)
       return;
     kbsNote.value = error instanceof Error ? `知识库列表不可访问：${error.message}` : '知识库列表不可访问';
   }
@@ -102,6 +106,11 @@ watch(() => user.authEpoch, () => {
   viewEpoch++;
   state.value = { kind: 'loading' };
   void loadKbs();
+});
+
+onBeforeUnmount(() => {
+  viewEpoch++;
+  kbController?.abort();
 });
 </script>
 

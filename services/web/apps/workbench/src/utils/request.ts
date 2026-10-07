@@ -27,7 +27,7 @@ function jwtPlugin(): HookFetchPlugin<BaseResponse> {
       const userStore = useUserStore();
       config.headers = new Headers(config.headers);
       config.headers.set('authorization', `Bearer ${userStore.token}`);
-      config.headers.set('ClientID', import.meta.env.VITE_CLIENT_ID);
+      config.headers.set('ClientID', import.meta.env.VITE_CLIENT_ID ?? '');
       return config;
     },
     afterResponse: async (response) => {

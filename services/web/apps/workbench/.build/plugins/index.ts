@@ -5,20 +5,13 @@ import UnoCSS from 'unocss/vite';
 import AutoImport from 'unplugin-auto-import/vite';
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers';
 import Components from 'unplugin-vue-components/vite';
-import envTyped from 'vite-plugin-env-typed';
 import createSvgIcon from './svg-icon';
 
 const root = path.resolve(__dirname, '../../');
 
-function plugins({ mode, command }: ConfigEnv): PluginOption[] {
+function plugins({ command }: ConfigEnv): PluginOption[] {
   return [
     UnoCSS(),
-    envTyped({
-      mode,
-      envDir: root,
-      envPrefix: 'VITE_',
-      filePath: path.join(root, 'types', 'import_meta.d.ts'),
-    }),
     vue(),
     AutoImport({
       imports: ['vue'],

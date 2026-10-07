@@ -78,7 +78,7 @@ watch(() => props.sourceUrl, async (url) => {
     // credentials, so the bytes are fetched authorized first and handed over as data.
     const store = useUserStore();
     const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${store.token ?? ''}`, ClientID: import.meta.env.VITE_CLIENT_ID as string },
+      headers: { Authorization: `Bearer ${store.token ?? ''}`, ClientID: import.meta.env.VITE_CLIENT_ID ?? '' },
     });
     if (!response.ok)
       throw new Error(`来源不可访问 (${response.status})`);

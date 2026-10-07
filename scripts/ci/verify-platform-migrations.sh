@@ -46,7 +46,8 @@ done
 
 umask 077
 rm -rf $WORK; mkdir -p $WORK/sql $WORK/bootstrap
-cp "$SQL_SRC"/V*.sql $WORK/sql/                                  # only V*.sql may live in the Flyway location
+source "$(dirname "${BASH_SOURCE[0]}")/stage-legacy-platform.sh"
+stage_legacy_platform "$SQL_SRC" "$WORK/sql" || exit 2
 cp "$SQL_SRC"/bootstrap/00-platform-identity.sql $WORK/bootstrap/
 cp "$SQL_SRC"/bootstrap/01-platform-casts.sql $WORK/bootstrap/
 

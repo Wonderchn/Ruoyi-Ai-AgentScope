@@ -53,7 +53,8 @@ done
 
 umask 077
 rm -rf "$WORK"; mkdir -p "$WORK"/sql/ai "$WORK"/sql/platform "$WORK"/bootstrap
-cp "$PLATFORM_SQL"/V*.sql "$WORK/sql/platform/"
+source "$(dirname "${BASH_SOURCE[0]}")/stage-legacy-platform.sh"
+stage_legacy_platform "$PLATFORM_SQL" "$WORK/sql/platform" || exit 2
 cp "$AI_SQL"/V*.sql "$WORK/sql/ai/"
 cp "$PLATFORM_SQL"/bootstrap/*.sql "$WORK/bootstrap/"
 cp "$AI_BOOTSTRAP"/*.sql "$WORK/bootstrap/"

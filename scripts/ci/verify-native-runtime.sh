@@ -122,7 +122,9 @@ apply_dir() { local dir=$1 schema=$2
     echo "$schema/$(basename "$f")=$(sha256sum "$f" | cut -d' ' -f1)" >> "$EVIDENCE/migrations-applied.txt"
     APPLIED=$((APPLIED+1))
   done; }
-apply_dir "$REPO_ROOT/services/platform/docs/script/sql/postgres" platform
+source "$REPO_ROOT/scripts/ci/stage-legacy-platform.sh"
+stage_legacy_platform "$REPO_ROOT/services/platform/docs/script/sql/postgres" "$WORK/platform-frozen" || die 'frozen platform chain'
+apply_dir "$WORK/platform-frozen" platform
 apply_dir "$REPO_ROOT/services/ai/resources/database/postgres/migrations" ai
 [ "$APPLIED" -eq 18 ] || die "expected 18 migrations (platform 6 + AI 12), applied $APPLIED"
 ok 'ENV-migrations' "$APPLIED migrations applied byte-identical (platform 6 + AI 12)"

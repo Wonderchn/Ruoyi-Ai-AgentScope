@@ -7,7 +7,7 @@
 #   B. upgrade from two schemas: platform V1..V6 + AI V1..V(latest), then platform V7..V(latest),
 #      which must move the AI domain into `platform` without losing rows
 #
-# Assertions encode what the E0 table map and release-compatibility.json promise:
+# Assertions encode the reviewed unified-schema-contract.json:
 #   * the frozen chains stay byte-identical and are never replayed into the unified chain
 #   * every AI-domain table from the map exists in `platform` after V7
 #   * the legacy `ai` tables are still readable (archive, not deletion)
@@ -31,7 +31,6 @@ PG_OWNER=${PG_OWNER:-unified-$$}
 REPO_ROOT=${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 PLATFORM_SQL=$REPO_ROOT/services/platform/docs/script/sql/postgres
 AI_SQL=$REPO_ROOT/services/ai/resources/database/postgres/migrations
-TABLE_MAP=${TABLE_MAP:-$REPO_ROOT/../mydocs/platform-embedded/03-table-map.json}
 
 FAILS=0
 ok()  { echo "  [ok]   $1"; }
@@ -52,37 +51,18 @@ STAGING_SQL=${STAGING_SQL:-$REPO_ROOT/services/platform/docs/script/sql/legacy-m
 [ -f "$STAGING_SQL/10-legacy-ai-domain-staging.sql" ] || { echo "missing legacy MySQL staging DDL"; exit 2; }
 [ -f "$STAGING_SQL/20-legacy-ai-domain-adaptation.sql" ] || { echo "missing legacy MySQL landing-zone adaptation"; exit 2; }
 
-# Validate coverage before starting a database. A failed parser or an empty map
-# must never turn into a successful check of zero tables.
-EXPECTED=$("$PYTHON_BIN" - "$TABLE_MAP" <<'PY'
-import json,sys
-d=json.load(open(sys.argv[1],encoding="utf-8"))
-names={e["target"]["table"] for e in d["tables"]
-       if e.get("source",{}).get("schema")=="ai" and e.get("target")}
-# V9 authors the legacy MySQL-only AI domain; those entries carry a non-ai source schema
-names |= {e["target"]["table"] for e in d["tables"]
-          if e.get("status")=="needs_pg_ddl" and e.get("target")}
-print(" ".join(sorted(names)))
-PY
-) || { bad 'table map could not be read; refusing empty coverage'; exit 2; }
-[ -n "$EXPECTED" ] || { bad 'table map has no expected AI tables'; exit 2; }
+# Expectations are independent of the migration files under test. Missing or
+# extra versions fail before a database starts; new migrations require review
+# of this public contract rather than silently updating their own oracle.
+CONTRACT=$("$PYTHON_BIN" "$REPO_ROOT/scripts/ci/check-unified-contract.py" --repo "$REPO_ROOT" --shell) \
+  || { bad 'unified migration contract failed'; exit 2; }
+eval "$CONTRACT"
 
 umask 077
 rm -rf $WORK; mkdir -p "$WORK/platform" "$WORK/ai" "$WORK/bootstrap"
 cp "$PLATFORM_SQL"/V*.sql "$WORK/platform/"
 cp "$AI_SQL"/V*.sql "$WORK/ai/"
 
-# WP-034A: 期望的 Flyway 版本清单从暂存目录**推导**，避免再次出现"加了迁移、断言没跟着改"
-# 的陈旧期望（历史问题：这里曾写死到 V8，而链已经是 V11，脚本在本机 NOT_RUN 所以没人发现）。
-versions_of() { ls "$1" 2>/dev/null | sed -n 's/^V\([0-9][0-9]*\)__.*/\1/p' | sort -n | paste -sd, -; }
-PLATFORM_VERSIONS=$(versions_of "$WORK/platform")
-AI_VERSIONS=$(versions_of "$WORK/ai")
-PLATFORM_TOP=$(versions_of "$WORK/platform" | tr ',' '\n' | tail -1)
-AI_TOP=$(versions_of "$WORK/ai" | tr ',' '\n' | tail -1)
-# 旧双 schema 的入口 B 先只上到 V6，再一次性升级到最新；目标版本与断言用同一个变量。
-LEGACY_TARGET=${LEGACY_TARGET:-6}
-[ -n "$PLATFORM_VERSIONS" ] || { echo "no platform migrations staged"; exit 2; }
-[ -n "$AI_VERSIONS" ] || { echo "no AI migrations staged"; exit 2; }
 cp "$PLATFORM_SQL"/bootstrap/00-platform-identity.sql "$WORK/bootstrap/"
 cp "$PLATFORM_SQL"/bootstrap/01-platform-casts.sql "$WORK/bootstrap/"
 cp "$STAGING_SQL"/10-legacy-ai-domain-staging.sql "$WORK/bootstrap/"
@@ -266,9 +246,7 @@ psql_super_file /bootstrap/platform-existing-fixture.sql > "$WORK/platform-exist
 assert_eq 'pre-existing unified row fixture loaded before V11' 0 $?
 flyway_platform migrate > "$WORK/b3.txt" 2>&1
 assert_eq 'unified migrate exit' 0 $?
-# WP-034A: 期望的版本清单从**暂存的 SQL 文件**推导，不再硬编码。
-# 原来这里写死 '1,2,3,4,5,6,7,8'——V9/V10/V11 加进来之后它就已经不可能通过了，
-# 而脚本在本机是 NOT_RUN（无 Docker），所以这个陈旧断言一直没被发现。
+# Compare the applied history with the reviewed version contract.
 assert_eq 'platform history now' "$PLATFORM_VERSIONS" \
   "$(q "select string_agg(version, ',' order by installed_rank) from platform.flyway_schema_history_platform where version is not null")"
 assert_eq 'no failed platform rows' 0 "$(q "select count(*) from platform.flyway_schema_history_platform where not success")"
@@ -360,37 +338,37 @@ assert_eq 'AI history still archived' 1 \
   "$(q "select count(*) from information_schema.tables where table_schema='ai' and table_name='flyway_schema_history_ai_legacy'")"
 
 echo "### 7. entry point A: fresh install reaches the same unified schema"
-q "CREATE DATABASE ci_unified_fresh" >/dev/null 2>&1
-FLYWAY_URL="jdbc:postgresql://$DB_HOST:$DB_PORT/ci_unified_fresh" \
-docker run --rm --net host \
-  -e FLYWAY_URL -e FLYWAY_SCHEMAS=platform -e FLYWAY_DEFAULT_SCHEMA=platform \
-  -e FLYWAY_TABLE=flyway_schema_history_platform \
-  -e FLYWAY_LOCATIONS=filesystem:/flyway/sql -e FLYWAY_VALIDATE_MIGRATION_NAMING=true \
-  -e FLYWAY_USER=migrate_platform -e FLYWAY_PASSWORD=$MIGRATE_PW \
-  -e PLATFORM_MIGRATE_PASSWORD -e PLATFORM_APP_PASSWORD \
-  -v "$WORK/platform":/flyway/sql:ro -v "$WORK/bootstrap":/bootstrap:ro $FLYWAY_IMAGE migrate > "$WORK/a1.txt" 2>&1
+q "CREATE DATABASE ci_unified_fresh" > "$WORK/a0.txt" 2>&1
+assert_eq 'fresh database creation exit' 0 $?
 # the freshly created database needs its own identities and extensions
 PGPASSWORD=$PG_SUPER docker run --rm --net host -e PGPASSWORD -e PLATFORM_MIGRATE_PASSWORD -e PLATFORM_APP_PASSWORD \
   -v "$WORK/bootstrap":/bootstrap:ro $PG_IMAGE \
   psql "host=$DB_HOST port=$DB_PORT dbname=ci_unified_fresh user=postgres" -X -q -v ON_ERROR_STOP=1 \
-  -f /bootstrap/01-platform-casts.sql >/dev/null 2>&1
+  -f /bootstrap/01-platform-casts.sql > "$WORK/a-casts.txt" 2>&1
+assert_eq 'fresh casts bootstrap exit' 0 $?
 PGPASSWORD=$PG_SUPER docker run --rm --net host -e PGPASSWORD -e PLATFORM_MIGRATE_PASSWORD -e PLATFORM_APP_PASSWORD \
   -v "$WORK/bootstrap":/bootstrap:ro $PG_IMAGE \
   psql "host=$DB_HOST port=$DB_PORT dbname=ci_unified_fresh user=postgres" -X -q -v ON_ERROR_STOP=1 \
-  -f /bootstrap/00-platform-identity.sql >/dev/null 2>&1
+  -f /bootstrap/00-platform-identity.sql > "$WORK/a-identities.txt" 2>&1
+assert_eq 'fresh identity bootstrap exit' 0 $?
 FRESH_URL="jdbc:postgresql://$DB_HOST:$DB_PORT/ci_unified_fresh"
 docker run --rm --net host -e FLYWAY_URL="$FRESH_URL" -e FLYWAY_SCHEMAS=platform -e FLYWAY_DEFAULT_SCHEMA=platform \
   -e FLYWAY_TABLE=flyway_schema_history_platform -e FLYWAY_LOCATIONS=filesystem:/flyway/sql \
   -e FLYWAY_VALIDATE_MIGRATION_NAMING=true -e FLYWAY_USER=migrate_platform -e FLYWAY_PASSWORD=$MIGRATE_PW \
   -v "$WORK/platform":/flyway/sql:ro $FLYWAY_IMAGE migrate > "$WORK/a2.txt" 2>&1
 FRESH_RC=$?
-# count the shipped migrations instead of hardcoding: V9 and later must not break this check
-EXPECTED_MIGRATIONS=$(ls "$WORK/platform"/V*.sql 2>/dev/null | wc -l | tr -d '[:space:]')
-if [ "$FRESH_RC" -eq 0 ] && grep -Eq "Successfully applied $EXPECTED_MIGRATIONS migrations|Schema \"platform\" is up to date" "$WORK/a2.txt"; then
+EXPECTED_MIGRATIONS=$(echo "$PLATFORM_VERSIONS" | tr ',' '\n' | wc -l | tr -d '[:space:]')
+if [ "$FRESH_RC" -eq 0 ] && grep -Eq "Successfully applied $EXPECTED_MIGRATIONS migrations" "$WORK/a2.txt"; then
   ok "fresh install applied all $EXPECTED_MIGRATIONS migrations"
 else
   bad "fresh install failed: $(tail -3 "$WORK/a2.txt")"
 fi
+q_fresh() { PGPASSWORD=$PG_SUPER docker run --rm --net host -e PGPASSWORD "$PG_IMAGE" \
+  psql "host=$DB_HOST port=$DB_PORT dbname=ci_unified_fresh user=postgres" -X -q -tAc "$1"; }
+assert_eq 'fresh install exact history' "$PLATFORM_VERSIONS" \
+  "$(q_fresh "select string_agg(version, ',' order by installed_rank) from platform.flyway_schema_history_platform where version is not null")"
+assert_eq 'fresh install has no failed migration rows' 0 \
+  "$(q_fresh "select count(*) from platform.flyway_schema_history_platform where not success")"
 FRESH_MISSING=""
 for t in $EXPECTED; do
   n=$(PGPASSWORD=$PG_SUPER docker run --rm --net host -e PGPASSWORD $PG_IMAGE \
@@ -457,6 +435,16 @@ if [ "$(q "select to_regclass('ai.flyway_schema_history_ai_legacy') is not null"
 else
   ok 'archived AI history table absent in this path; (d) live probe skipped by design'
 fi
+
+echo "### 9. agent catalog permissions are present and unassigned by default"
+for query in q q_fresh; do
+  assert_eq "$query catalog action permissions" 'ai:agent:activate,ai:agent:delete,ai:agent:list,ai:agent:read,ai:agent:write' \
+    "$("$query" "select string_agg(perms, ',' order by perms) from platform.sys_menu where menu_id between 7132 and 7136 and status='0' and menu_type='F'")"
+  assert_eq "$query catalog page paired with actions" 1 \
+    "$("$query" "select count(*) from platform.sys_menu where menu_id=7141 and menu_type='C' and path='agents' and component='ai/agents/index'")"
+  assert_eq "$query catalog has no implicit role grant" 0 \
+    "$("$query" "select count(*) from platform.sys_role_menu where menu_id in (7132,7133,7134,7135,7136,7141)")"
+done
 
 echo
 if [ "$FAILS" -eq 0 ]; then echo "UNIFIED MIGRATION CHECK PASSED"; exit 0; fi

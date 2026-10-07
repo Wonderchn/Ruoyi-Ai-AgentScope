@@ -3,10 +3,10 @@ import { useUserStore } from '@/stores';
 /** Binary responses do not use the JSON-envelope request plugin. */
 export async function getMediaContent(params: { model: string; predictionId: string }, signal: AbortSignal) {
   const query = new URLSearchParams(params);
-  const response = await fetch(`${import.meta.env.VITE_API_URL.replace(/\/$/, '')}/media/content?${query}`, {
+  const response = await fetch(`${(import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')}/media/content?${query}`, {
     headers: {
       Authorization: `Bearer ${useUserStore().token}`,
-      ClientID: import.meta.env.VITE_CLIENT_ID,
+      ClientID: import.meta.env.VITE_CLIENT_ID ?? '',
     },
     signal,
   });

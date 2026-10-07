@@ -26,6 +26,8 @@ export interface RagApiDeps {
   onAuthExpired: () => void;
   /** Injectable fetch for tests. */
   fetcher?: typeof fetch;
+  /** JSON deadline including response-body decoding; defaults to 30 seconds. */
+  timeoutMs?: number;
   /** Injectable browser upload channel for protocol tests. */
   xhrFactory?: () => XMLHttpRequest;
 }
@@ -140,7 +142,7 @@ export function validatePdfUpload(file: Pick<File, 'size' | 'type'>): void {
 export function createRagApi(deps: RagApiDeps) {
   const base = deps.baseUrl ?? '';
 
-  function json<T>(path: string, body?: unknown, extra?: Record<string, string>): Promise<T> {
+  function json<T>(path: string, body?: unknown, extra?: Record<string, string>, signal?: AbortSignal): Promise<T> {
     const identity = deps.identity();
     return identityJson<T>(`${base}${path}`, {
       method: body === undefined ? 'GET' : 'POST',
@@ -151,11 +153,12 @@ export function createRagApi(deps: RagApiDeps) {
         ...extra,
       },
       body: body === undefined ? undefined : JSON.stringify(body),
-    }, identity, deps.identity, deps.onAuthExpired, deps.fetcher);
+      signal,
+    }, identity, deps.identity, deps.onAuthExpired, deps.fetcher, deps.timeoutMs);
   }
 
-  function listKnowledgeBases() {
-    return json<KnowledgeBaseView[]>('/api/ai/v1/knowledge-bases');
+  function listKnowledgeBases(signal?: AbortSignal) {
+    return json<KnowledgeBaseView[]>('/api/ai/v1/knowledge-bases', undefined, undefined, signal);
   }
 
   function createKnowledgeBase(name: string, embeddingModel?: string, collectionName?: string) {

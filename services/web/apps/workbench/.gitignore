@@ -29,18 +29,8 @@ dist-ssr
 # Claude Code
 .claude
 
-# 本应用的 **入库** 环境文件（T6 2026-10-06，T0 裁决 ①）
-#
-# 为什么必须入库：`vite-plugin-env-typed`（`.build/plugins/index.ts:16-21`，
-# `envPrefix: 'VITE_'`）会按**运行命令者当时的环境**重写 `types/import_meta.d.ts`；
-# 仓库此前没有提交任何 `.env*` ⇒ 谁的环境里少一个 `VITE_*`，生成物就少一行
-# （实测：跑 dev 时 shell 只带 `VITE_CLIENT_ID` ⇒ `VITE_API_URL` 那行被删）。
-# 把变量放进**入库**的 `.env` 后，"环境"对所有人都一样，生成物才是确定的。
-#
-# 仓库根 `.gitignore` 有 `**/.env` 与 `**/.env.*`（只放行 `.env.example`），
-# 因此这里用**同目录更深的规则**把它放行（git：更深的 .gitignore 对同路径优先）。
-# 用 `.env` 而不是 `.env.development`：Vite 的 `.env` 在**所有模式**都加载，
-# 而 `.env.development` 只在 dev 模式加载（`pnpm build` 是 production 模式）——
-# 实测见报告 §1.4.1。
-!.env
+# Environment values are local configuration; stable ImportMetaEnv declarations
+# live in types/import_meta.d.ts and do not depend on generating a tracked .env.
+.env
+.env.*
 !.env.example
