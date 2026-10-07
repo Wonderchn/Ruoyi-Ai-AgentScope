@@ -161,26 +161,10 @@ describe('MCP 目录：分母路径（BLOCKED-BY-G-22，形状先行）', () => 
   });
 });
 
-describe('ragent 管理面：分母路径与信封差异（BLOCKED-BY-EMBEDDED-REGISTRY）', () => {
-  it('agents/skills/ingestion/rag-settings 路径逐字', async () => {
+describe('ragent 管理面（未装配族）：分母路径与信封差异（BLOCKED-BY-EMBEDDED-REGISTRY）', () => {
+  it('skills/ingestion/rag-settings 路径逐字', async () => {
     const { calls, client } = harness();
     const api = createAiApi(client);
-
-    await api.agentProfiles.list();
-    assert.equal(last(calls).method, 'GET');
-    assert.equal(last(calls).url, '/agents');
-
-    await api.agentProfiles.prompts('a1');
-    assert.equal(last(calls).method, 'GET');
-    assert.equal(last(calls).url, '/agents/a1/prompts');
-
-    await api.agentProfiles.savePrompt('a1', 'system', { template: 't' });
-    assert.equal(last(calls).method, 'PUT');
-    assert.equal(last(calls).url, '/agents/a1/prompts/system');
-
-    await api.agentProfiles.promptDefault('system');
-    assert.equal(last(calls).method, 'GET');
-    assert.equal(last(calls).url, '/agents/prompt-slots/system/default');
 
     await api.agentSkills.list();
     assert.equal(last(calls).method, 'GET');
