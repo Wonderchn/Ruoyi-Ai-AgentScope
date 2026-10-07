@@ -100,7 +100,7 @@ public class AiEmbeddedAgentConversationConfiguration {
 
     /** 本地传输下的 Agent 会话面装配。 */
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnProperty(name = "ai.integration.transport", havingValue = "local")
+    @ConditionalOnEmbeddedLocal
     public static class LocalTransport {
 
         /**
@@ -110,6 +110,7 @@ public class AiEmbeddedAgentConversationConfiguration {
          * 而引擎需要 Redisson/SDK/真实模型。关闭时不注册任何会话 bean。
          */
         @Configuration(proxyBeanMethods = false)
+        @ConditionalOnEmbeddedLocal
         @ConditionalOnProperty(name = "agent.conversation.enabled", havingValue = "true")
         @EnableConfigurationProperties(com.nageoffer.ai.ragent.agent.config.AgentProperties.class)
         public static class ConversationEnabled {
@@ -215,16 +216,13 @@ public class AiEmbeddedAgentConversationConfiguration {
              * <p>身份：从 {@link PrincipalContext} 取执行主体。无主体时
              * <b>拒绝而不是退化成"无用户限定"</b>——那是跨用户读写的直接成因。
              *
-             * <p><b>为什么把控制器嵌在门控配置类内部，而不是放在顶层。</b>
-             * {@code @RestController} 的 {@code @Target} 只有 {@code TYPE}，不能标在
-             * {@code @Bean} 方法上；而把它标在顶层类型上会让它成为一个<b>组件</b>——
-             * 只要 {@code ruoyi-ai-web} 进入组件扫描（本模块的容器测试就会），
-             * 无论门控开关是否打开它都会被注册，于是上下文因为拿不到
-             * {@code AgentConversationService} 而启动失败，门控等价于失效。
-             * 嵌在带 {@code @ConditionalOnProperty} 的 {@code @Configuration} 内部，
-             * 就只有在门控成立时才会被发现。
+             * <p>静态嵌套控制器仍会被平台组件扫描独立发现；本类自身必须声明
+             * 集成、local 传输和会话开关三个条件。外层配置条件不会自动
+             * 应用于被独立扫描的组件，词法嵌套不构成装配门控。
              */
             @RestController
+            @ConditionalOnEmbeddedLocal
+            @ConditionalOnProperty(name = "agent.conversation.enabled", havingValue = "true")
             public static class ConversationSurface {
 
                 /**

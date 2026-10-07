@@ -93,7 +93,7 @@ public class AiEmbeddedWorkerConfiguration {
 
     /** 本地传输下的 worker 链装配。 */
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnProperty(name = "ai.integration.transport", havingValue = "local")
+    @ConditionalOnEmbeddedLocal
     public static class LocalTransport {
 
         /**
@@ -103,6 +103,7 @@ public class AiEmbeddedWorkerConfiguration {
          * 不改变 platform 其它模块的既有调度姿态（{@code snail-job} 仍是它自己的开关）。
          */
         @Configuration(proxyBeanMethods = false)
+        @ConditionalOnEmbeddedLocal
         @ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
         @ConditionalOnProperty(name = "p2.worker.enabled", havingValue = "true")
         @EnableConfigurationProperties({P2RuntimeProperties.class, LocalMinerUProperties.class})
@@ -345,6 +346,8 @@ public class AiEmbeddedWorkerConfiguration {
              * {@code AGENT_CHECKPOINT_INCOMPATIBLE}，不做旧检查点的静默降级。
              */
             @Configuration(proxyBeanMethods = false)
+            @ConditionalOnEmbeddedLocal
+            @ConditionalOnProperty(name = {"p2.enabled", "p2.worker.enabled"}, havingValue = "true")
             @ConditionalOnProperty(name = "p3.enabled", havingValue = "true")
             @EnableConfigurationProperties(com.nageoffer.ai.ragent.agent.runtime.P3Properties.class)
             public static class AgentRunEnabled {

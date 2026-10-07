@@ -67,7 +67,7 @@ public class AiEmbeddedKnowledgeConfiguration {
 
     /** 本地传输下的知识/向量链装配。 */
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnProperty(name = "ai.integration.transport", havingValue = "local")
+    @ConditionalOnEmbeddedLocal
     public static class LocalTransport {
 
         /**
@@ -78,6 +78,7 @@ public class AiEmbeddedKnowledgeConfiguration {
          * 调用方以缺 bean 明确失败，不做静默回退。
          */
         @Configuration(proxyBeanMethods = false)
+        @ConditionalOnEmbeddedLocal
         @ConditionalOnProperty(name = "rag.vector.type", havingValue = "pg")
         public static class PgVectorEnabled {
 

@@ -241,17 +241,16 @@ class AiEmbeddedWorkerConfigurationTest {
     }
 
     @Test
-    @DisplayName("agent.run 组与 P3 动作组的门控必须一致（否则依赖会缺 bean）")
+    @DisplayName("agent.run 组满足 P3 动作依赖门控，并额外满足 P2 worker 开关")
     void agentRunGroupSharesTheSameGatesAsTheP3ActionGroup() {
         Set<String> mine = conditionProperties(AiEmbeddedWorkerConfiguration.LocalTransport.WorkerEnabled
                 .AgentRunEnabled.class);
         Set<String> theirs = conditionProperties(AiEmbeddedAgentActionConfiguration.LocalTransport
                 .P3Enabled.class);
         assertThat(mine)
-                .as("AgentRunEnabled 依赖 P3 动作组提供的 AgentLedger/SandboxTicketClient，"
-                        + "门控不一致时其中一边会以缺 bean 启动失败")
-                .isEqualTo(theirs);
-        assertThat(mine).contains("p3.enabled=true");
+                .as("AgentRunEnabled 依赖 P3 动作组；worker 的条件必须包含其依赖条件")
+                .containsAll(theirs);
+        assertThat(mine).contains("p3.enabled=true", "p2.enabled,p2.worker.enabled=true");
     }
 
     /**

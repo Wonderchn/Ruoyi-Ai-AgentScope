@@ -60,11 +60,12 @@ public class AiEmbeddedAgentActionConfiguration {
 
     /** 本地传输下的 P3 动作装配。 */
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnProperty(name = "ai.integration.transport", havingValue = "local")
+    @ConditionalOnEmbeddedLocal
     public static class LocalTransport {
 
         /** P3 受控动作门控（与独立 AI 应用 {@code p3.enabled} 同一开关）。 */
         @Configuration(proxyBeanMethods = false)
+        @ConditionalOnEmbeddedLocal
         @ConditionalOnProperty(name = "p3.enabled", havingValue = "true")
         @EnableConfigurationProperties(P3Properties.class)
         public static class P3Enabled {

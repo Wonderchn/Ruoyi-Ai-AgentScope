@@ -66,11 +66,12 @@ public class AiEmbeddedRunConfiguration {
 
     /** 本地传输下的 runs 装配。 */
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnProperty(name = "ai.integration.transport", havingValue = "local")
+    @ConditionalOnEmbeddedLocal
     public static class LocalTransport {
 
         /** P2 正式运行路径门控（与独立 AI 应用 {@code p2.enabled} 同一开关）。 */
         @Configuration(proxyBeanMethods = false)
+        @ConditionalOnEmbeddedLocal
         @ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
         @EnableConfigurationProperties(P2RuntimeProperties.class)
         public static class P2Enabled {

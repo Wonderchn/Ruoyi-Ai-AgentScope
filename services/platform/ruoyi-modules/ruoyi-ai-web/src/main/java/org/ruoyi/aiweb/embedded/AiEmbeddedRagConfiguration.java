@@ -92,7 +92,7 @@ public class AiEmbeddedRagConfiguration {
 
     /** 本地传输下的装配（{@code transport=local} 才生效；http 传输不注册任何 AI 侧 bean）。 */
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnProperty(name = "ai.integration.transport", havingValue = "local")
+    @ConditionalOnEmbeddedLocal
     public static class LocalTransportAssembly {
 
         // ------------------------------------------------------------------ DAO（JdbcTemplate 原生 SQL，无 MyBatis）

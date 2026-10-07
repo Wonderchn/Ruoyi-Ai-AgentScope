@@ -72,7 +72,7 @@ public class AiEmbeddedFeedbackConfiguration {
 
     /** 本地传输下的装配（http 传输不注册任何 AI 侧 bean，与 {@code AiEmbeddedRagConfiguration} 同边界）。 */
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnProperty(name = "ai.integration.transport", havingValue = "local")
+    @ConditionalOnEmbeddedLocal
     public static class LocalTransportAssembly {
 
         /**
@@ -113,14 +113,11 @@ public class AiEmbeddedFeedbackConfiguration {
          * {@code conversation.rename}，复用已播种的 {@code ai:conversation:write}，
          * 不新增规范动作/权限行/迁移 —— 与 C13.4 引擎两条同口径）。
          *
-         * <p><b>嵌套在 {@code LocalTransportAssembly} 内部，理由与 {@code ConversationSurface}
-         * 逐字同源，外加一层：</b>{@code @RestController} 是 {@code @Component}——作为
-         * {@code @AutoConfiguration} 的直接成员类会在门控成立时（无论 transport 形态）
-         * 被注册，而它依赖的 {@code MessageFeedbackService} 只在 local 装配里存在 ⇒
-         * http 形态会因缺 bean 启动失败。嵌在带 {@code @ConditionalOnProperty(transport=local)}
-         * 的配置内部，才与它的依赖同门控、同生命周期。
+         * <p>静态嵌套控制器仍会被平台组件扫描独立发现；本类自身必须声明
+         * 集成开启与 local 传输条件，不能依靠外层配置继承门控。
          */
         @RestController
+        @ConditionalOnEmbeddedLocal
         public static class FeedbackSurface {
 
             /**
@@ -205,6 +202,7 @@ public class AiEmbeddedFeedbackConfiguration {
      * （C12.5-5：验证通过后由 T0 决定开启），不在本装配里静默补齐。
      */
     @Configuration(proxyBeanMethods = false)
+    @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
     @ConditionalOnProperty(name = "ai.integration.legacy-listeners-enabled", havingValue = "true")
     public static class LegacyFeedbackConsumerAssembly {
 
@@ -218,6 +216,7 @@ public class AiEmbeddedFeedbackConfiguration {
 
     /** 生产者链的内嵌登记门（缺省不装配，见类注释）。 */
     @Configuration(proxyBeanMethods = false)
+    @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
     @ConditionalOnProperty(name = "ai.integration.legacy-listeners-enabled", havingValue = "true")
     public static class LegacyFeedbackProducerAssembly {
 

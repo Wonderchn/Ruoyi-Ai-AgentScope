@@ -96,7 +96,7 @@ public class AiEmbeddedModelConfiguration {
 
     /** 本地传输下的模型路由链装配。 */
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnProperty(name = "ai.integration.transport", havingValue = "local")
+    @ConditionalOnEmbeddedLocal
     public static class LocalTransport {
 
         /**
@@ -107,6 +107,7 @@ public class AiEmbeddedModelConfiguration {
          * 关闭时不注册任何模型 bean——调用方以缺 bean 明确失败，不做静默降级。
          */
         @Configuration(proxyBeanMethods = false)
+        @ConditionalOnEmbeddedLocal
         @ConditionalOnProperty(name = "ai.model.enabled", havingValue = "true")
         @EnableConfigurationProperties(AIModelProperties.class)
         public static class ModelEnabled {

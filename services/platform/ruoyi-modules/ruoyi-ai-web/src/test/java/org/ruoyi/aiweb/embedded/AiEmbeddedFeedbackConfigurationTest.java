@@ -214,7 +214,7 @@ class AiEmbeddedFeedbackConfigurationTest {
         // 必要前提（T0 第二/三轮实测定案）：PlatformTransactionManager 用替身；
         // ObjectMapper 用**真实实例**（回查路径真的要反序列化 MessageWrapper，mock 会把它藏掉；
         // 干净 ApplicationContextRunner 不导入 JacksonAutoConfiguration，必须显式提供）。
-        legacyOnly.withPropertyValues("ai.integration.legacy-listeners-enabled=true")
+        legacyOnly.withPropertyValues("ai.integration.enabled=true", "ai.integration.legacy-listeners-enabled=true")
                 .withBean(MessageFeedbackService.class, () -> mock(MessageFeedbackService.class))
                 .withBean(org.apache.rocketmq.spring.core.RocketMQTemplate.class,
                         () -> mock(org.apache.rocketmq.spring.core.RocketMQTemplate.class))

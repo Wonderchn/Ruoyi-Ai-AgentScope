@@ -62,11 +62,12 @@ public class AiEmbeddedDocumentConfiguration {
 
     /** 本地传输下的 documents 装配。 */
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnProperty(name = "ai.integration.transport", havingValue = "local")
+    @ConditionalOnEmbeddedLocal
     public static class LocalTransport {
 
         /** P2 运行面门控（上传/摄取/私有对象存储只在 p2 运行时存在）。 */
         @Configuration(proxyBeanMethods = false)
+        @ConditionalOnEmbeddedLocal
         @ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
         @EnableConfigurationProperties(P2RuntimeProperties.class)
         public static class P2Enabled {

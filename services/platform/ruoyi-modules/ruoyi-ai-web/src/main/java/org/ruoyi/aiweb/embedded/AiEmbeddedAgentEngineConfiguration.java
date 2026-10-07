@@ -107,7 +107,7 @@ public class AiEmbeddedAgentEngineConfiguration {
 
     /** 本地传输下的引擎面装配。 */
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnProperty(name = "ai.integration.transport", havingValue = "local")
+    @ConditionalOnEmbeddedLocal
     public static class LocalTransport {
 
         /**
@@ -121,6 +121,7 @@ public class AiEmbeddedAgentEngineConfiguration {
          * 与 {@code AiEmbeddedModelConfiguration:116-123} 登记过的坑同源。
          */
         @Configuration(proxyBeanMethods = false)
+        @ConditionalOnEmbeddedLocal
         @ConditionalOnProperty(name = "ragent.engine.type", havingValue = "agent")
         @EnableConfigurationProperties({AgentProperties.class, AgentMemoryProperties.class,
                 AgentMcpProperties.class})
