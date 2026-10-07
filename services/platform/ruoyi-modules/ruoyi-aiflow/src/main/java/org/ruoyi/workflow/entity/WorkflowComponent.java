@@ -11,7 +11,7 @@ import java.io.Serial;
 
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName(value = "t_workflow_component", autoResultMap = true)
+@TableName(value = "ai_flow_component", autoResultMap = true)
 @Schema(title = "工作流组件")
 public class WorkflowComponent extends BaseEntity {
 

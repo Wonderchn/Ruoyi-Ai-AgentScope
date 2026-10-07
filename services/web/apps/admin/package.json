@@ -1,0 +1,40 @@
+{
+  "name": "@ruoyi/admin",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "description": "Platform admin console of the services/web workspace: tenant/user/menu management on the shared @ruoyi/platform-client identity and permission layer",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "test": "node --import ./tests/ts-loader.mjs --test \"tests/*.test.ts\"",
+    "typecheck": "vue-tsc -b",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "fix": "eslint . --fix"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "2.3.1",
+    "@ruoyi/platform-client": "workspace:*",
+    "element-plus": "2.10.4",
+    "pinia": "3.0.3",
+    "pinia-plugin-persistedstate": "4.4.1",
+    "vue": "3.5.17",
+    "vue-router": "4.5.1"
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "4.16.2",
+    "@types/node": "24.0.13",
+    "@vitejs/plugin-vue": "6.0.0",
+    "@vue/compiler-sfc": "3.5.17",
+    "@vue/tsconfig": "0.7.0",
+    "eslint": "9.31.0",
+    "typescript": "5.8.3",
+    "vite": "6.0.0",
+    "vue-tsc": "3.0.1"
+  }
+}

@@ -8,14 +8,14 @@ import org.ruoyi.common.mybatis.core.domain.BaseEntity;
 import java.io.Serial;
 
 /**
- * 知识库附件对象 knowledge_attach
+ * 知识库附件对象 ai_knowledge_document
  *
  * @author ageerle
  * @date 2025-12-17
  */
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("knowledge_attach")
+@TableName("ai_knowledge_document")
 public class KnowledgeAttach extends BaseEntity {
 
     @Serial

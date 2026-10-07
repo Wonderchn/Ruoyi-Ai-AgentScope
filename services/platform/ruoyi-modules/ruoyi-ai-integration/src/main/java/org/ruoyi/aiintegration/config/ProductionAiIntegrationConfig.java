@@ -104,7 +104,14 @@ public class ProductionAiIntegrationConfig {
         return Clock.systemUTC();
     }
 
+    /**
+     * 委托签名密钥。仅 {@code transport=http}（默认）需要——跨进程形态由网关铸造委托凭证；
+     * {@code transport=local}（E3/C3 内嵌）不铸造任何凭证（身份经 {@code AiIdentityPort}
+     * 桥接进同进程上下文），因此本 bean 与 {@code productionAiGatewayClient} 同条件，
+     * 避免内嵌形态因缺少私钥材料而启动失败。
+     */
     @Bean
+    @ConditionalOnProperty(name = "ai.integration.transport", havingValue = "http", matchIfMissing = true)
     public ProductionSigningKeySource productionSigningKeySource(
             @Value("${ai.integration.delegation.private-key-path:}") String privateKeyPath,
             Clock clock) {
@@ -112,7 +119,13 @@ public class ProductionAiIntegrationConfig {
         return new ProductionSigningKeySource(privateKeyPath, clock);
     }
 
+    /**
+     * 跨进程 HTTP 转发客户端。仅 {@code transport=http}（默认）装配；
+     * {@code transport=local}（E3/C3 内嵌同进程转送）时由 ruoyi-ai-web 的
+     * {@code LocalAiGatewayClient} 取代（同进程 servlet 转送，不经 localhost HTTP）。
+     */
     @Bean
+    @ConditionalOnProperty(name = "ai.integration.transport", havingValue = "http", matchIfMissing = true)
     public AiGatewayClient productionAiGatewayClient(AiIntegrationProperties properties) {
         if (properties.getAiBaseUrl() == null || properties.getAiBaseUrl().isBlank()) {
             throw new IllegalStateException("ai.integration.ai-base-url is required when enabled=true");

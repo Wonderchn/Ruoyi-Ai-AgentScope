@@ -54,7 +54,7 @@ import java.util.Set;
 /**
  * 当前成员事实服务：按 (tenantId, userId) 从<b>真实表</b>回答成员身份事实。
  *
- * <p>口径（U04/P1.2b）：全部事实即时查库——租户启用与期限（sys_tenant）、
+ * <p>口径（U04/P1.2b）：事实来自真实表；同一读请求内复用，事务与写请求即时查库——租户启用与期限（sys_tenant）、
  * 用户启用/删除/归属租户（sys_user 的 status/del_flag/tenant_id）、当前启用角色
  * （sys_user_role → sys_role，status='0'；sys_role 在本库无过期列，期限由
  * sys_tenant.expire_time 承担）、菜单功能权限（启用角色 → sys_role_menu →
@@ -111,6 +111,11 @@ public class CurrentAiMembershipService {
         if (StringUtils.isBlank(tenantId) || ObjectUtil.isNull(userId)) {
             return null;
         }
+        return RequestScopedAiFacts.read(this, new MembershipKey(tenantId, userId),
+            () -> describeFresh(tenantId, userId));
+    }
+
+    private CurrentAiMembership describeFresh(String tenantId, Long userId) {
         return TenantHelper.ignore(() -> {
             SysTenant tenant = tenantMapper.selectOne(new LambdaQueryWrapper<SysTenant>()
                 .eq(SysTenant::getTenantId, tenantId));
@@ -197,6 +202,11 @@ public class CurrentAiMembershipService {
         if (StringUtils.isBlank(tenantId) || ObjectUtil.isNull(userId)) {
             return Optional.empty();
         }
+        return RequestScopedAiFacts.read(this, new OrganizationKey(tenantId, userId),
+            () -> describeOrgFactsFresh(tenantId, userId));
+    }
+
+    private Optional<SubjectOrgFacts> describeOrgFactsFresh(String tenantId, Long userId) {
         return TenantHelper.ignore(() -> {
             SysUser user = userMapper.selectById(userId);
             if (ObjectUtil.isNull(user) || !tenantId.equals(user.getTenantId()) || !SystemConstants.NORMAL.equals(user.getStatus()) || ObjectUtil.isNull(user.getDeptId())) {
@@ -222,5 +232,8 @@ public class CurrentAiMembershipService {
      */
     public record SubjectOrgFacts(Long deptId, List<Long> ancestorDeptIds) {
     }
+
+    private record MembershipKey(String tenantId, Long userId) { }
+    private record OrganizationKey(String tenantId, Long userId) { }
 
 }

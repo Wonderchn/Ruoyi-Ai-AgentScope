@@ -1,0 +1,315 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.nageoffer.ai.ragent.runtime;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.runtime.dao.RunLedgerDao;
+import com.nageoffer.ai.ragent.runtime.dto.AdmissionRequest;
+import com.nageoffer.ai.ragent.runtime.model.RunRecord;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import java.util.regex.Pattern;
+
+/**
+ * 原子受理（P0.3 §2.2；P2 计划 U01）。
+ *
+ * <p>顺序即契约：调用方（委托过滤器 + 控制器）已完成身份与当前授权判定，本服务在
+ * <b>当前鉴权之后</b>查幂等；同事务写入 run + accepted(seq=1) + 引用 eventId 的
+ * outbox + 一笔真实 budget reserve；提交成功才返回 202。
+ *
+ * <p>幂等唯一约束 {@code uk_ai_run_idempotency} 裁决并发；同键同体返回原 runId
+ * （replayed=true），异体 409。查找/插入都不依赖"先查后插"的乐观假设。
+ */
+@Service
+public class RunAdmissionService {
+
+    /** P2 首期开放动作；agent.run 由 P3 激活后加入。 */
+    private static final Set<String> P2_ACTIONS = Set.of("rag.chat", "document.ingest");
+
+    private static final Pattern IDEMPOTENCY_KEY = Pattern.compile("[\\x21-\\x7E]{1,128}");
+
+    /**
+     * §6.1-11：fail-closed 的拒绝路径必须留**可归因的服务端日志**，否则"拒绝"与"崩了"
+     * 在证据面不可分（W3-T0-11 立案、W4-7 ⑤-D 核验确证本类原先连 logger 都没有）。
+     * 文案只含 tenant/action/reason 常量与 authority 侧本就回传客户端的 message，不新增泄漏面。
+     */
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(RunAdmissionService.class);
+
+    private final RunLedgerDao dao;
+    private final RunEventAppender events;
+    private final P2RuntimeProperties properties;
+    private final TransactionTemplate transactionTemplate;
+    private final org.springframework.beans.factory.ObjectProvider<P2FaultInjector> faultInjector;
+    @org.springframework.beans.factory.annotation.Autowired
+    private RunAccessService access;
+
+    public RunAdmissionService(RunLedgerDao dao, RunEventAppender events, P2RuntimeProperties properties,
+                               PlatformTransactionManager transactionManager,
+                               org.springframework.beans.factory.ObjectProvider<P2FaultInjector> faultInjector) {
+        this.dao = dao;
+        this.events = events;
+        this.properties = properties;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.faultInjector = faultInjector;
+    }
+
+    private java.util.List<RuntimeActionContract> contracts=java.util.List.of();
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void configureActions(java.util.List<RuntimeActionContract> contracts) {this.contracts=java.util.List.copyOf(contracts);}
+
+    /**
+     * 发布权威（D02/C1.2）。用 {@code required=false} + 使用点 fail-closed：
+     * 让"权威没装配"表现为**拒绝新受理**，而不是启动期把整个应用拦下（受理面之外的功能
+     * —— 读、会话、审计 —— 在权威缺席时仍应可用）。判据见 {@link #requirePublishedModel}。
+     */
+    private com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority modelAuthority;
+
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void configureModelAuthority(com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority authority) {
+        this.modelAuthority = authority;
+    }
+
+    /**
+     * 新端口读端（WP-040 A2，同族 fail-closed 语义）。与 {@link #modelAuthority} 并存：
+     * 两者读**同一张** {@code ai_runtime_config_revision} 表的同一行，唯一差别是
+     * 新端口额外带回 {@code dimension}（维度门需要它，V15 冻结契约的
+     * {@link com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority.PublishedModel} 不含该字段）。
+     * 端口缺席（旧装配）时维度门自动跳过 —— 维度不是 V15 受理契约的一部分，
+     * 允许权威存在而维度门缺席，不允许反过来。
+     */
+    private com.nageoffer.ai.ragent.runtime.config.PublishedModelFactsPort publishedModelFactsPort;
+
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void configurePublishedModelFacts(
+            com.nageoffer.ai.ragent.runtime.config.PublishedModelFactsPort port) {
+        this.publishedModelFactsPort = port;
+    }
+
+    /**
+     * 受理时刻解析**当前 PUBLISHED 版本**（C1.2 第 1 行：新受理的 run 绑**新**版本）。
+     *
+     * <p><b>读不到即拒绝受理</b>（C1.1：数据库读取失败 → 拒绝新受理，禁止静默回退 YAML）。
+     * 没有这一步，run 上的 {@code config_revision_id} 永远为 NULL，执行期的
+     * {@code RunConfigBindingPort} 会对**每一个** run 拒绝 —— 契约从受理侧就是空的。
+     */
+    private com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority.PublishedModel
+    requirePublishedModel(String tenantId, String action) {
+        var authority = modelAuthority;
+        if (authority == null) {
+            log.warn("config authority read failed reason=AuthorityReadFailed tenant={} action={} cause={}",
+                    tenantId, action, "authority-bean-absent");
+            throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE,
+                    "config authority unavailable: refusing admission (no published config authority)");
+        }
+        try {
+            return authority.requirePublished(action);
+        } catch (com.nageoffer.ai.ragent.runtime.config.ConfigAuthorityUnavailable unavailable) {
+            log.warn("config authority read failed reason=AuthorityReadFailed tenant={} action={} cause={}",
+                    tenantId, action, unavailable.getMessage());
+            throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE,
+                    "config authority unavailable: refusing admission (" + unavailable.getMessage() + ")");
+        }
+    }
+
+    /** 把受理时刻的发布事实装成 run 的绑定（C1.3 必须可追溯的字段）。 */
+    private static com.nageoffer.ai.ragent.runtime.config.RunConfigBinding bindingOf(
+            String tenantId, String runId, String action,
+            com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority.PublishedModel published) {
+        return new com.nageoffer.ai.ragent.runtime.config.RunConfigBinding(
+                tenantId, runId, action, published.revisionId(), published.revisionNo(),
+                published.providerId(), published.modelId(), published.catalogVersion(),
+                published.paramsHash(), published.credentialRef(), published.operatorId(),
+                published.publishedAt());
+    }
+
+    /**
+     * WP-040 A2 维度门：受理侧确认当前 PUBLISHED 版本声明的 embedding 维度必须等于
+     * 统一向量列物理维度（1536）。失败 ⇒ **响亮拒绝受理**，本轮受理对 DB 的写入为零
+     * （判据用"前后行数增量"采集，不用绝对计数 —— §6.1-10）。
+     *
+     * <p>权威端口缺席（旧装配/纯单测形态）时跳过：维度不是 V15 冻结受理契约的一部分；
+     * 权威存在而新端口缺席的形态下拒绝反而会打断可受理路径。
+     */
+    private void requireSupportedDimension(String tenantId, String action) {
+        var port = publishedModelFactsPort;
+        if (port == null) {
+            return;
+        }
+        var facts = port.currentPublishedFacts();
+        if (facts == null) {
+            log.warn("config authority read failed reason=PublishedFactsUnreadable tenant={} action={}",
+                    tenantId, action);
+            throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE,
+                    "config authority unavailable: refusing admission (published facts unreadable)");
+        }
+        if (facts.dimension() != com.nageoffer.ai.ragent.runtime.config.PublishedModelFactsPort.REQUIRED_DIMENSION) {
+            log.warn("config authority read failed reason=DimensionGateRejected tenant={} action={} dimension={} required={}",
+                    tenantId, action, facts.dimension(),
+                    com.nageoffer.ai.ragent.runtime.config.PublishedModelFactsPort.REQUIRED_DIMENSION);
+            throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE,
+                    "embedding dimension " + facts.dimension() + " != required "
+                            + com.nageoffer.ai.ragent.runtime.config.PublishedModelFactsPort.REQUIRED_DIMENSION
+                            + "; refusing admission for action=" + action);
+        }
+    }
+    private RuntimeActionContract contract(String action) {return contracts.stream().filter(c->c.action().equals(action)).findFirst().orElse(null);}
+
+    private void fault(String hook) {
+        P2FaultInjector injector = faultInjector.getIfAvailable();
+        if (injector != null) {
+            injector.checkpoint(hook);
+        }
+    }
+
+    public record AdmissionResult(String runId, String status, Instant createdAt, boolean replayed) {
+    }
+
+    public AdmissionResult admit(ExecutionPrincipal principal, String idempotencyKey, AdmissionRequest request) {
+        validate(principal, idempotencyKey, request);
+        String sources=access.capture(principal,request.resourceRefs());
+        String requestHash = CanonicalJson.requestHash(request);
+        Optional<RunRecord> fastPath = dao.findByIdempotency(
+                principal.tenantId(), principal.userId(), request.action(), idempotencyKey);
+        if (fastPath.isPresent()) {
+            access.visibleWithCaptured(principal,fastPath.get(),sources);
+            return replayOrConflict(fastPath.get(), requestHash);
+        }
+        try {
+            String ownerDept=access.resources().currentOwnerDept(principal,"run.submit");
+            return transactionTemplate.execute(status -> doAdmit(principal, idempotencyKey, request, requestHash,sources,ownerDept));
+        } catch (DuplicateKeyException e) {
+            Optional<RunRecord> existing = dao.findByIdempotency(
+                    principal.tenantId(), principal.userId(), request.action(), idempotencyKey);
+            if (existing.isEmpty()) {
+                throw new RunApiException(RunErrorCode.INTERNAL_ERROR, "admission conflict without persisted run");
+            }
+            access.visibleWithCaptured(principal,existing.get(),sources);
+            return replayOrConflict(existing.get(), requestHash);
+        }
+    }
+
+    private AdmissionResult replayOrConflict(RunRecord existing, String requestHash) {
+        if (!requestHash.equals(existing.requestHash())) {
+            throw new RunApiException(RunErrorCode.IDEMPOTENCY_KEY_REUSED);
+        }
+        return new AdmissionResult(existing.runId(), existing.status(), existing.createdAt(), true);
+    }
+
+    private AdmissionResult doAdmit(ExecutionPrincipal principal, String idempotencyKey,
+                                    AdmissionRequest request, String requestHash,String sources,String ownerDept) {
+        String tenantId = principal.tenantId();
+        // 0) 配置权威：受理是**唯一**能固定版本的时刻（C1.2 第 1 行）。读不到权威即拒绝受理，
+        //    不写 NULL 让执行期去猜，也不回退 YAML/默认模型（C1.1）。放在任何写入之前。
+        var published = requirePublishedModel(tenantId, request.action());
+        // 0b) 维度门（WP-040 A2）：当前 PUBLISHED 版本的 embedding 维度必须等于
+        //     统一向量列物理维度（1536）；失败 ⇒ 响亮拒绝，本轮受理对 DB 零写入。
+        requireSupportedDimension(tenantId, request.action());
+        // 1) 预算：锁租户行 → 叠加预占不超上限（并发失败方 BUDGET_EXCEEDED）
+        long limit = dao.lockTenantBudget(tenantId, properties.getBudget().getDefaultTenantUnits());
+        long units = unitsOf(request.budget());
+        if (dao.sumReserved(tenantId) + units > limit) {
+            throw new RunApiException(RunErrorCode.BUDGET_EXCEEDED);
+        }
+        // 2) run
+        String runId = RunEventAppender.newRunId();
+        dao.insertRun(tenantId, runId, principal.membershipId(), principal.userId(), request.action(),
+                idempotencyKey, requestHash, toJson(request.input()), toJson(request.budget()),
+                (contract(request.action())==null?"p2-v1":contract(request.action()).executionVersion()), principal.policyVersion(), principal.aclVersion(), sources,
+                request.retryOf(), bindingOf(tenantId, runId, request.action(), published));
+        dao.registerRun(tenantId,runId,principal.membershipId(),ownerDept);
+        if(contract(request.action())!=null) contract(request.action()).onAdmitted(principal,runId,request);
+        fault(P2FaultInjector.ADMISSION_AFTER_RUN);
+        // 3) 受理事件 seq=1 + outbox（引用已持久化 eventId）
+        Map<String, Object> accepted = new LinkedHashMap<>();
+        accepted.put("status", "QUEUED");
+        accepted.put("action", request.action());
+        accepted.put("budget", request.budget());
+        accepted.put("policyVersion", principal.policyVersion());
+        accepted.put("aclVersion", principal.aclVersion());
+        events.appendWithinAdmission(tenantId, runId, RunEventAppender.EVENT_ACCEPTED, accepted, true);
+        fault(P2FaultInjector.ADMISSION_AFTER_EVENT);
+        // 4) 真实预占
+        dao.insertReservation(tenantId, "res-" + UUID.randomUUID().toString().replace("-", ""),
+                runId, principal.membershipId(), units);
+        fault(P2FaultInjector.ADMISSION_AFTER_RESERVE);
+        fault(P2FaultInjector.ADMISSION_AFTER_OUTBOX);
+        fault(P2FaultInjector.ADMISSION_BEFORE_COMMIT);
+        RunRecord created = dao.findRun(tenantId, runId)
+                .orElseThrow(() -> new RunApiException(RunErrorCode.INTERNAL_ERROR, "run readback failed"));
+        return new AdmissionResult(runId, created.status(), created.createdAt(), false);
+    }
+
+    private long unitsOf(JsonNode budget) {
+        if (budget != null && budget.hasNonNull("maxTokens")) {
+            long tokens = Math.max(0, budget.path("maxTokens").asLong());
+            long k = Math.max(1, (tokens + 999) / 1000);
+            return k * Math.max(1, properties.getBudget().getUnitsPerKTok());
+        }
+        return Math.max(1, properties.getBudget().getDefaultRunUnits());
+    }
+
+    private void validate(ExecutionPrincipal principal, String idempotencyKey, AdmissionRequest request) {
+        if (principal == null) {
+            throw new RunApiException(RunErrorCode.AUTH_REQUIRED);
+        }
+        if (idempotencyKey == null || !IDEMPOTENCY_KEY.matcher(idempotencyKey).matches()) {
+            throw new RunApiException(RunErrorCode.BAD_REQUEST, "Idempotency-Key is required (1..128 visible ASCII)");
+        }
+        if (request == null || request.schemaVersion() == null || request.schemaVersion() != 1) {
+            throw new RunApiException(RunErrorCode.BAD_REQUEST, "schemaVersion 1 is required");
+        }
+        if (request.action() == null || !P2_ACTIONS.contains(request.action()) && contract(request.action())==null) {
+            throw new RunApiException(RunErrorCode.BAD_REQUEST, "action is not enabled in P2 core");
+        }
+        if(contract(request.action())!=null) contract(request.action()).validate(principal,request);
+        JsonNode budget=request.budget();
+        if(budget!=null && !budget.isNull()) {
+            if(!budget.isObject()) throw new RunApiException(RunErrorCode.BAD_REQUEST,"budget must be an object");
+            budget.fieldNames().forEachRemaining(name->{
+                if(!(Set.of("maxTokens","maxWallClockSeconds").contains(name) || contract(request.action())!=null && Set.of("maxSteps","maxToolCalls").contains(name))) throw new RunApiException(RunErrorCode.BAD_REQUEST,"unknown budget field");
+                JsonNode value=budget.get(name);
+                int limit="maxTokens".equals(name)?8192:"maxWallClockSeconds".equals(name)?600:12;
+                if(!value.isIntegralNumber() || !value.canConvertToInt() || value.intValue()<1 || value.intValue()>limit) throw new RunApiException(RunErrorCode.BAD_REQUEST,"invalid budget limit");
+            });
+        }
+        if (request.resourceRefs() != null && request.resourceRefs().size() > 32) {
+            throw new RunApiException(RunErrorCode.BAD_REQUEST, "too many resource refs");
+        }
+        if(request.retryOf()!=null) {
+            var parent=dao.findRun(principal.tenantId(),request.retryOf()).orElseThrow(()->new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
+            access.visible(principal,parent);
+            if(!parent.action().equals(request.action())) throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
+            boolean inherited=contract(request.action())!=null && request.input()!=null && request.input().hasNonNull("inheritActionId");
+            if(!parent.isTerminal() && !inherited) throw new RunApiException(RunErrorCode.RUN_STATE_CONFLICT,"ordinary retry requires a terminal source; unknown actions require explicit reconciliation/inheritance");
+        }
+    }
+
+    private String toJson(Object value) {
+        return value == null ? null : events.toJson(value);
+    }
+}

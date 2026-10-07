@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <groupId>org.ruoyi</groupId>
+        <artifactId>ruoyi-modules</artifactId>
+        <version>${revision}</version>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+
+    <artifactId>ruoyi-ai-rag</artifactId>
+
+    <description>
+        AI 检索增强业务面（E3 单元二第三块）：原 services/ai/rag 的整体搬迁。
+        知识库/文档/分块、摄取流水线（ingestion）、检索漏斗（向量/关键词/图谱通道）、
+        会话与问答编排、意图与改写、管理端（admin）与资源授权（authorization，
+        其中 run/worker/ACL 的 runtime 部分后续并入 ruoyi-ai-runtime）。
+
+        装配纪律（specs/E3-boundary-and-collisions.md C2/C3/C4）：
+        本模块保留原包名 com.nageoffer.ai.ragent.*（V2 §3），平台不做根包扫描；
+        其中 @RocketMQMessageListener 等遗留监听器在独立应用受
+        ai.integration.legacy-listeners-enabled=false 门控，内嵌装配同样不得注册。
+        META-INF/spring.factories 的 RetrievalConfigEnvironmentPostProcessor 保留：
+        无 rag.* 配置时校验为 no-op（通道 enabled 缺省 false）。
+        类保留原包名以缩小搬迁差异；版本钉版取 services/ai 父 POM 的解析结果。
+    </description>
+
+    <properties>
+        <!-- platform 根 POM 不管理以下版本；取 services/ai 父 POM 的解析结果，保持搬迁零偏差 -->
+        <okhttp.version>5.3.2</okhttp.version>
+        <milvus-sdk.version>2.6.6</milvus-sdk.version>
+        <tika.version>3.2.3</tika.version>
+        <s3.version>2.40.2</s3.version>
+        <aliyun-oss.version>3.18.5</aliyun-oss.version>
+        <commonmark.version>0.22.0</commonmark.version>
+        <batik.version>1.18</batik.version>
+        <bizlog-sdk.version>3.0.6</bizlog-sdk.version>
+        <rocketmq-spring-boot-starter.version>2.3.6</rocketmq-spring-boot-starter.version>
+        <javax-validation-api.version>2.0.1.Final</javax-validation-api.version>
+    </properties>
+
+    <!-- services/ai 侧由 okhttp-bom 统一管理 com.squareup.okhttp3:*；
+         没有 BOM 时 milvus 传递的 okhttp 4.x 会与 mockwebserver3 5.3.2 冲突
+         （TaskRunner NoSuchMethodError），故在本模块复刻同一条 BOM 约束 -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.squareup.okhttp3</groupId>
+                <artifactId>okhttp-bom</artifactId>
+                <version>${okhttp.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>ruoyi-ai-runtime</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>ruoyi-ai-infra</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.milvus</groupId>
+            <artifactId>milvus-sdk-java</artifactId>
+            <version>${milvus-sdk.version}</version>
+        </dependency>
+
+        <!-- 关键词检索（可选）：仅 rag.keyword.type=es 时使用；版本由 Spring Boot BOM 管理 -->
+        <dependency>
+            <groupId>co.elastic.clients</groupId>
+            <artifactId>elasticsearch-java</artifactId>
+        </dependency>
+
+        <!-- 解析 PDF / DOC / DOCX / Markdown 等 -->
+        <dependency>
+            <groupId>org.apache.tika</groupId>
+            <artifactId>tika-parsers-standard-package</artifactId>
+            <version>${tika.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.tika</groupId>
+            <artifactId>tika-core</artifactId>
+            <version>${tika.version}</version>
+        </dependency>
+
+        <!-- Markdown 结构化解析（AST 输出 HeadingBlock / ParagraphBlock 等） -->
+        <dependency>
+            <groupId>org.commonmark</groupId>
+            <artifactId>commonmark</artifactId>
+            <version>${commonmark.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.commonmark</groupId>
+            <artifactId>commonmark-ext-gfm-tables</artifactId>
+            <version>${commonmark.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.xmlgraphics</groupId>
+            <artifactId>batik-transcoder</artifactId>
+            <version>${batik.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.xmlgraphics</groupId>
+            <artifactId>batik-codec</artifactId>
+            <version>${batik.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.pgvector</groupId>
+            <artifactId>pgvector</artifactId>
+            <version>0.1.6</version>
+        </dependency>
+
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+            <version>${s3.version}</version>
+        </dependency>
+
+        <!-- 阿里云 OSS SDK：rag.storage.type=oss 时启用；含 jdom2/commons 传递依赖，如与 Spring BOM 冲突再按需 exclude -->
+        <dependency>
+            <groupId>com.aliyun.oss</groupId>
+            <artifactId>aliyun-sdk-oss</artifactId>
+            <version>${aliyun-oss.version}</version>
+        </dependency>
+
+        <!-- LightRAG / 图谱同步客户端的 HTTP 层 -->
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>okhttp-jvm</artifactId>
+            <version>${okhttp.version}</version>
+        </dependency>
+
+        <!-- 遗留监听器（legacy-listeners-enabled 门控，内嵌不装配）需要编译期注解与类型 -->
+        <dependency>
+            <groupId>org.apache.rocketmq</groupId>
+            <artifactId>rocketmq-spring-boot-starter</artifactId>
+            <version>${rocketmq-spring-boot-starter.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>io.github.mouzt</groupId>
+            <artifactId>bizlog-sdk</artifactId>
+            <version>${bizlog-sdk.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-starter</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.hibernate.validator</groupId>
+                    <artifactId>hibernate-validator</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.projectlombok</groupId>
+                    <artifactId>lombok</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <dependency>
+            <groupId>javax.validation</groupId>
+            <artifactId>validation-api</artifactId>
+            <version>${javax-validation-api.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- LightRAG 客户端归属/删除谓词的 HTTP 桩测试 -->
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>mockwebserver3</artifactId>
+            <version>${okhttp.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+        </dependency>
+    </dependencies>
+</project>

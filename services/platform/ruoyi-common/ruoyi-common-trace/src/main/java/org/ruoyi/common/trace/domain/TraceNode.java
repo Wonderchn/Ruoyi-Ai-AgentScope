@@ -11,11 +11,11 @@ import java.io.Serial;
 import java.util.Date;
 
 /**
- * 链路追踪节点记录 trace_node。
+ * 链路追踪节点记录 ai_flow_trace_node。
  */
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("trace_node")
+@TableName("ai_flow_trace_node")
 public class TraceNode extends BaseEntity {
 
     @Serial

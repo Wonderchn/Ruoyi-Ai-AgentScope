@@ -13,7 +13,7 @@ import java.util.Date;
 
 
 /**
- * 知识库附件视图对象 knowledge_attach
+ * 知识库附件视图对象 ai_knowledge_document
  *
  * @author ageerle
  * @date 2025-12-17

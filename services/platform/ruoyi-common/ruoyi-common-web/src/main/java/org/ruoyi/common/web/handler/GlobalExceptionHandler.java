@@ -55,7 +55,10 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(ServiceException.class)
     public R<Void> handleServiceException(ServiceException e, HttpServletRequest request) {
-        log.error("request_failure category=SERVICE_EXCEPTION errorType={}", e.getClass().getName());
+        // WP-039（T4）发现 C：业务异常统一返回 500 + 泛化文案，客户端无法区分"被拒"与"服务坏了"。
+        // 这里**服务端**记录真实 message/code/栈（客户端仍只拿安全文案），否则连排查都无从下手。
+        log.error("request_failure category=SERVICE_EXCEPTION errorType={} code={} message={}",
+            e.getClass().getName(), e.getCode(), e.getMessage(), e);
         Integer code = e.getCode();
         return ObjectUtil.isNotNull(code)
             ? R.fail(code, SAFE_SERVICE_ERROR_MESSAGE)
@@ -154,6 +157,9 @@ public class GlobalExceptionHandler {
 
     /**
      * 拦截未知的运行时异常
+     *
+     * <p>WP-039（T4）G-21：原实现只记录异常简名，栈被吞掉 —— 现场（登录 CCE）因此无法从日志定位。
+     * 现在把异常对象作为最后一个参数传入，SLF4J 会输出完整栈；简名保留，便于既有日志检索不失效。</p>
      */
     @ExceptionHandler(RuntimeException.class)
     public R<Void> handleRuntimeException(RuntimeException e, HttpServletRequest request) {
@@ -162,10 +168,10 @@ public class GlobalExceptionHandler {
         Throwable cause = e.getCause();
         if (requestURI.contains("/export") || requestURI.contains("/download")) {
             log.error("请求地址'{}',文件导出/下载异常: {}", requestURI,
-                cause == null ? e.getClass().getSimpleName() : cause.getClass().getSimpleName());
+                cause == null ? e.getClass().getSimpleName() : cause.getClass().getSimpleName(), e);
             return internalError();
         }
-        log.error("请求地址'{}',发生未知异常: {}", requestURI, e.getClass().getSimpleName());
+        log.error("请求地址'{}',发生未知异常: {}", requestURI, e.getClass().getSimpleName(), e);
         return internalError();
     }
 
@@ -175,7 +181,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     public R<Void> handleException(Exception e, HttpServletRequest request) {
         String requestURI = safeUri(request);
-        log.error("请求地址'{}',发生系统异常: {}", requestURI, e.getClass().getSimpleName());
+        log.error("请求地址'{}',发生系统异常: {}", requestURI, e.getClass().getSimpleName(), e);
         return internalError();
     }
 

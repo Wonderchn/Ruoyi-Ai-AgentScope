@@ -88,7 +88,7 @@ public class CodingServiceImpl implements ICodingService {
                 ChatModelVo modelVo = chatModelService.selectModelByName(bo.getModel());
                 if (modelVo == null) {
                     throw new IllegalStateException("模型未找到: " + bo.getModel()
-                        + "，请在 chat_model 表配置该模型名称");
+                        + "，请在 ai_model 表配置该模型名称");
                 }
                 AbstractChatService chatService = chatServiceFactory.getOriginalService(modelVo.getProviderCode());
                 ChatModel chatModel = chatService.buildChatModel(modelVo);

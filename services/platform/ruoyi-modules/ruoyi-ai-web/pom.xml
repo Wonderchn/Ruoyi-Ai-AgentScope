@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <groupId>org.ruoyi</groupId>
+        <artifactId>ruoyi-modules</artifactId>
+        <version>${revision}</version>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+
+    <artifactId>ruoyi-ai-web</artifactId>
+
+    <description>
+        AI 公开面与内嵌胶水（E3/C3+C9）：网关的本地传输、身份桥与内部路径边界。
+
+        首块交付（transport=local 内嵌传输）：
+        - LocalAiGatewayClient：AiGatewayClient 的同进程实现——把白名单转发改为
+          servlet forward（不经 localhost HTTP），转发前由 AiIdentityPort 把执行事实
+          桥接进 AI 侧 PrincipalContext（不铸造委托凭证、不伪造 JWT）；
+        - AiInternalAccessBoundaryFilter：C3 语义在内嵌下的重新表达——
+          /internal/ai/v1/** 对外一律 404（与 SaasEntryFilter 关闭形状一致），
+          内部 FORWARD 分派不受影响；
+        - AiWebEmbeddedConfiguration：AutoConfiguration.imports 显式列举。
+
+        AI 侧内部控制器（ruoyi-ai-rag/agent 中的 /internal/ai/v1 控制器）随后续单元
+        逐组装配进 platform 上下文；SSE/上传/私有 PDF 的流式本地传输属后续单元
+        （当前 local 模式下 fail-closed 503，不走 HTTP 降级）。
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>ruoyi-ai-integration</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>ruoyi-ai-api</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>ruoyi-ai-runtime</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
+        <!-- 首组装配对象：rag 授权域控制器与依赖图（AiResourceController 等） -->
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>ruoyi-ai-rag</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
+        <!-- P3 受控动作路由组装配对象（AgentActionController 等） -->
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>ruoyi-ai-agent</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+        </dependency>
+    </dependencies>
+</project>

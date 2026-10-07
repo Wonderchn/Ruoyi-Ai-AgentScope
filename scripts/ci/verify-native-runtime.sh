@@ -29,7 +29,7 @@
 set -u
 
 die() { echo "FATAL: $*" >&2; exit 2; }
-for tool in docker openssl curl unzip javac java ss; do command -v "$tool" >/dev/null || die "missing required tool: $tool"; done
+for tool in docker openssl curl unzip javac java ss git sha256sum python3; do command -v "$tool" >/dev/null || die "missing required tool: $tool"; done
 
 OWNER=${OWNER:?set OWNER to a unique run tag}
 WORK=${WORK:-/tmp/native-runtime-$OWNER}
@@ -64,12 +64,20 @@ SERVICE_CREDENTIAL=$(openssl rand -hex 24)
 FIXTURE_PASSWORD="NrtSynth-$(openssl rand -hex 10)"
 mkdir -p "$WORK"/{objects,keys,bcrypt} "$EVIDENCE"
 umask 077
+# Bind runtime results to the products actually launched and their source tree.
+CHECKOUT_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD) || die 'source revision unavailable'
+PR_HEAD_SHA=${PR_HEAD_SHA:-$CHECKOUT_SHA}
+[[ "$CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ && "$PR_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || die 'invalid source SHA'
+printf 'checkout=%s\npr_head=%s\n' "$CHECKOUT_SHA" "$PR_HEAD_SHA" > "$EVIDENCE/source-revision.txt"
+sha256sum "$PLATFORM_JAR" "$AI_JAR" > "$EVIDENCE/artifacts.sha256" || die 'product hashing failed'
+cat "$EVIDENCE/source-revision.txt" "$EVIDENCE/artifacts.sha256"
 PASS=0; FAIL=0
 PIDS=""
 note() { echo "[native] $*"; }
-ok() { echo "  [ok]   $1"; PASS=$((PASS+1)); printf '{"case":"%s","pass":true,"detail":"%s"}\n' "$1" "$2" >> "$EVIDENCE/results.jsonl"; }
-fail() { echo "  [FAIL] $1"; FAIL=$((FAIL+1)); printf '{"case":"%s","pass":false,"detail":"%s"}\n' "$1" "$2" >> "$EVIDENCE/results.jsonl"; }
-not_run() { echo "  [NOT_RUN] $1 ($2)"; printf '{"case":"%s","pass":null,"reason":"%s"}\n' "$1" "$2" >> "$EVIDENCE/results.jsonl"; }
+record_result() { python3 "$REPO_ROOT/scripts/ci/native-runtime-results.py" record "$EVIDENCE/results.jsonl" "$1" "$2" "$3" || die 'cannot record runtime verdict'; }
+ok() { record_result true "$1" "$2"; echo "  [ok]   $1"; PASS=$((PASS+1)); }
+fail() { record_result false "$1" "$2"; echo "  [FAIL] $1"; FAIL=$((FAIL+1)); }
+not_run() { record_result null "$1" "$2"; echo "  [NOT_RUN] $1 ($2)"; }
 jsonstr() { grep -oE "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]+\"" "$1" 2>/dev/null | head -1 | sed -E "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"([^\"]+)\".*/\1/"; }
 cleanup() {
   for pid in $PIDS; do
@@ -122,7 +130,9 @@ apply_dir() { local dir=$1 schema=$2
     echo "$schema/$(basename "$f")=$(sha256sum "$f" | cut -d' ' -f1)" >> "$EVIDENCE/migrations-applied.txt"
     APPLIED=$((APPLIED+1))
   done; }
-apply_dir "$REPO_ROOT/services/platform/docs/script/sql/postgres" platform
+source "$REPO_ROOT/scripts/ci/stage-legacy-platform.sh"
+stage_legacy_platform "$REPO_ROOT/services/platform/docs/script/sql/postgres" "$WORK/platform-frozen" || die 'frozen platform chain'
+apply_dir "$WORK/platform-frozen" platform
 apply_dir "$REPO_ROOT/services/ai/resources/database/postgres/migrations" ai
 [ "$APPLIED" -eq 18 ] || die "expected 18 migrations (platform 6 + AI 12), applied $APPLIED"
 ok 'ENV-migrations' "$APPLIED migrations applied byte-identical (platform 6 + AI 12)"
@@ -381,5 +391,7 @@ fi
 note "### 10. teardown (owned JVMs verified by cmdline, containers by owner label)"
 NOTRUN=$(grep -c '"pass":null' "$EVIDENCE/results.jsonl" || true)
 note "summary: PASS=$PASS FAIL=$FAIL NOT_RUN=$NOTRUN"
+python3 "$REPO_ROOT/scripts/ci/native-runtime-results.py" verify "$EVIDENCE/results.jsonl" "$PASS" "$FAIL" "$NOTRUN" \
+  || die 'runtime evidence is invalid or mandatory verdicts are absent'
 if [ "$FAIL" -gt 0 ]; then echo "NATIVE RUNTIME CHECK FAILED ($FAIL failed case(s))"; exit 1; fi
 echo "NATIVE RUNTIME CHECK PASSED (mandatory groups; gated groups recorded as NOT_RUN with reasons)"

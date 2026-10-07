@@ -11,7 +11,7 @@ import java.io.Serial;
 
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName(value = "t_workflow_runtime", autoResultMap = true)
+@TableName(value = "ai_flow_runtime", autoResultMap = true)
 @Schema(title = "工作流运行时 | Workflow runtime")
 public class WorkflowRuntime extends BaseEntity {
 

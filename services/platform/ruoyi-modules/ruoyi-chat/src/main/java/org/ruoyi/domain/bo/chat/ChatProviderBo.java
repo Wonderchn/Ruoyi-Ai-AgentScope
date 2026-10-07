@@ -10,7 +10,7 @@ import lombok.EqualsAndHashCode;
 import jakarta.validation.constraints.*;
 
 /**
- * 厂商管理业务对象 chat_provider
+ * 厂商管理业务对象 ai_model_provider
  *
  * @author ageerle
  * @date 2025-12-14

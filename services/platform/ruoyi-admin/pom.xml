@@ -71,11 +71,34 @@
             <artifactId>ruoyi-ai-integration</artifactId>
         </dependency>
 
+        <!-- E3 内嵌装配：AI 公开面本地传输（transport=local）+ AI 侧控制器分组装配。
+             transport=http（默认）时不注册任何 AI 侧 bean，行为与迁移前一致。 -->
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>ruoyi-ai-web</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
         <!--  工作流模块  -->
         <dependency>
             <groupId>org.ruoyi</groupId>
             <artifactId>ruoyi-workflow</artifactId>
         </dependency>
+
+        <!-- T0 2026-10-06：**刻意不声明 `ruoyi-chat`**（此前的"未声明"经核实是**有依据的**，不是遗漏）。
+             事实链：`ruoyi-chat` 在 reactor 里且能编译，但把它打进 admin 会让应用**启动失败**：
+               chatController → chatServiceFacade → 构造参数 7 →
+               `org.ruoyi.common.chat.service.workFlow.IWorkFlowStarterService` 缺失
+             （T8 实测 `APPLICATION FAILED TO START`；同一配方用不含 ruoyi-chat 的 jar 可 READY）。
+             该接口的**唯一实现**在 `ruoyi-modules/ruoyi-aiflow/.../WorkflowStarter.java:26`，
+             而 `ruoyi-aiflow` 是**已退场的旧 AI 模块** —— 见 `ruoyi-common-core/.../ThreadPoolConfig.java:85`：
+             「此前由 ruoyi-aiflow 的 BeanConfig 以 @Primary 提供，旧 AI 模块退场后必须在保留侧落地」。
+             且 `ruoyi-chat/pom.xml` **自己也没声明**对 aiflow 的依赖。
+             ⇒ 结论：`ruoyi-chat` 在当前装配下**尚不完整**，缺的是**保留侧实现**（照 mainExecutor 的先例），
+               不是"补一行 dependency"。补齐前 `ruoyi-chat` 的端点（/system/info/**、/coding/**）
+               保持 404，登记为 **G-22 已登记缺口**，不得当作通过。
+             关闭条件：在保留侧提供 IWorkFlowStarterService 的实现（或改为显式 fail-closed 的可选注入并
+               定义降级语义），然后重新评估打包。 -->
 
         <dependency>
             <groupId>de.codecentric</groupId>

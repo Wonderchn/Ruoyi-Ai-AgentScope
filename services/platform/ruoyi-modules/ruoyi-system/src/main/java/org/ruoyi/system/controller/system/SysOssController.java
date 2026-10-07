@@ -84,8 +84,16 @@ public class SysOssController extends BaseController {
     /**
      * 上传文件（千问百炼版）
      *
+     * <p>WP-039（T4）补权限复核：本端点此前只有 {@code @Log}、没有任何 {@code @SaCheckPermission}，
+     * 而同文件的 {@code /upload} 要求 {@code system:oss:upload} —— 即"任何已登录用户都能写对象存储"，
+     * 违反 D04「无映射拒绝」与"缺身份/空 ACL/未知动作/撤权/停用一律拒绝"。上游参考
+     * （ruoyi-ai SysOssController:90）同样是裸端点，属继承缺口，不是本仓引入。
+     * 已核：全仓（含 services/web 两个前端应用与 T7 的 admin）**无任何调用点**，因此与兄弟端点对齐、
+     * 复用同一条 {@code system:oss:upload} 权限串（不新增规范动作、不新增权限行）。</p>
+     *
      * @param file 文件
      */
+    @SaCheckPermission("system:oss:upload")
     @Log(title = "上传文件（千问百炼版）", businessType = BusinessType.INSERT)
     @PostMapping(value = "/fileUpload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public R<SysOssUploadVo> fileUpload(@RequestPart("file") MultipartFile file) {

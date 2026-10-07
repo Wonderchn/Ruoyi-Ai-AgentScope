@@ -6,6 +6,7 @@ import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
 import org.ruoyi.common.core.domain.R;
+import org.ruoyi.common.core.utils.StringUtils;
 import org.ruoyi.common.core.validate.AddGroup;
 import org.ruoyi.common.core.validate.EditGroup;
 import org.ruoyi.common.excel.utils.ExcelUtil;
@@ -21,6 +22,7 @@ import org.ruoyi.system.service.ISysClientService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -38,12 +40,37 @@ public class SysClientController extends BaseController {
     private final ISysClientService sysClientService;
 
     /**
+     * C1.3：密钥只存引用/掩码，**永不明文返回**。
+     * <p>WP-039（T4）发现 B：`sys_client` 是全局表（无 `tenant_id` 列），而本控制器只要求
+     * `system:client:*` 权限、没有超管角色闸，`SysClientVo` 又直接带 `clientSecret` ⇒
+     * 任意被授予 `system:client:list` 的角色都能读到全部客户端明文密钥（已运行期实证）。
+     * <p>掩码放在**响应边界**而不是 VO：`export` 走 EasyExcel（不看 Jackson 注解），
+     * 只有在这一层统一改写才能同时覆盖 JSON 列表/详情与 Excel 导出；`queryByClientId`
+     * 的内部登录路径不经本控制器，因此仍能拿到真实值（实测无任何运行期代码读取
+     * `SysClientVo#getClientSecret()`）。
+     */
+    private static final String SECRET_MASK = "******";
+
+    private static void maskSecrets(Collection<SysClientVo> rows) {
+        if (rows == null) {
+            return;
+        }
+        for (SysClientVo vo : rows) {
+            if (vo != null && StringUtils.isNotBlank(vo.getClientSecret())) {
+                vo.setClientSecret(SECRET_MASK);
+            }
+        }
+    }
+
+    /**
      * 查询客户端管理列表
      */
     @SaCheckPermission("system:client:list")
     @GetMapping("/list")
     public TableDataInfo<SysClientVo> list(SysClientBo bo, PageQuery pageQuery) {
-        return sysClientService.queryPageList(bo, pageQuery);
+        TableDataInfo<SysClientVo> page = sysClientService.queryPageList(bo, pageQuery);
+        maskSecrets(page.getRows());
+        return page;
     }
 
     /**
@@ -54,6 +81,7 @@ public class SysClientController extends BaseController {
     @PostMapping("/export")
     public void export(SysClientBo bo, HttpServletResponse response) {
         List<SysClientVo> list = sysClientService.queryList(bo);
+        maskSecrets(list);
         ExcelUtil.exportExcel(list, "客户端管理", SysClientVo.class, response);
     }
 
@@ -66,7 +94,9 @@ public class SysClientController extends BaseController {
     @GetMapping("/{id}")
     public R<SysClientVo> getInfo(@NotNull(message = "主键不能为空")
                                   @PathVariable Long id) {
-        return R.ok(sysClientService.queryById(id));
+        SysClientVo vo = sysClientService.queryById(id);
+        maskSecrets(vo == null ? null : List.of(vo));
+        return R.ok(vo);
     }
 
     /**

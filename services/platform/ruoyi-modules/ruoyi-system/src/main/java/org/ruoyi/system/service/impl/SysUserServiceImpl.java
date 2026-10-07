@@ -14,6 +14,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.ruoyi.common.core.constant.CacheNames;
+import org.ruoyi.common.core.constant.HttpStatus;
 import org.ruoyi.common.core.constant.SystemConstants;
 import org.ruoyi.common.core.domain.dto.UserDTO;
 import org.ruoyi.common.core.exception.ServiceException;
@@ -299,7 +300,7 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
     @Override
     public void checkUserAllowed(Long userId) {
         if (ObjectUtil.isNotNull(userId) && LoginHelper.isSuperAdmin(userId)) {
-            throw new ServiceException("不允许操作超级管理员用户");
+            throw new ServiceException("不允许操作超级管理员用户", HttpStatus.FORBIDDEN);
         }
     }
 
@@ -317,7 +318,7 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
             return;
         }
         if (baseMapper.countUserById(userId) == 0) {
-            throw new ServiceException("没有权限访问用户数据！");
+            throw new ServiceException("没有权限访问用户数据！", HttpStatus.FORBIDDEN);
         }
     }
 
@@ -505,7 +506,7 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
 
         // 校验是否有权限操作这些岗位（含数据权限控制）
         if (postMapper.selectPostCount(postIds) != postIds.size()) {
-            throw new ServiceException("没有权限访问岗位的数据");
+            throw new ServiceException("没有权限访问岗位的数据", HttpStatus.FORBIDDEN);
         }
 
         // 是否清除旧的用户岗位绑定
@@ -545,7 +546,7 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
 
         // 校验是否有权限访问这些角色（含数据权限控制）
         if (roleMapper.selectRoleCount(roleList) != roleList.size()) {
-            throw new ServiceException("没有权限访问角色的数据");
+            throw new ServiceException("没有权限访问角色的数据", HttpStatus.FORBIDDEN);
         }
 
         // 是否清除原有绑定

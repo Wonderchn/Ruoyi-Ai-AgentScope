@@ -11,7 +11,7 @@ import java.io.Serializable;
 
 
 /**
- * 知识片段视图对象 knowledge_fragment
+ * 知识片段视图对象 ai_knowledge_chunk
  *
  * @author ageerle
  * @date 2025-12-17

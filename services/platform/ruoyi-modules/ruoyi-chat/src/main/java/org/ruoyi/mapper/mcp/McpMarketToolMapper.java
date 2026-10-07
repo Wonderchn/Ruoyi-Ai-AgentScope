@@ -26,8 +26,8 @@ public interface McpMarketToolMapper extends BaseMapperPlus<McpMarketTool, Void>
         SELECT t.id, t.market_id, t.tool_name, t.tool_description, t.tool_version,
                t.tool_metadata, t.is_loaded, t.local_tool_id, t.tenant_id,
                t.create_dept, t.create_by, t.create_time, t.update_by, t.update_time
-        FROM mcp_market_tool t
-        INNER JOIN mcp_market_info m ON m.id = t.market_id
+        FROM ai_mcp_market_tool t
+        INNER JOIN ai_mcp_market m ON m.id = t.market_id
         WHERE t.id = #{toolId}
           AND t.tenant_id = #{tenantId}
           AND m.tenant_id = #{tenantId}
@@ -46,8 +46,8 @@ public interface McpMarketToolMapper extends BaseMapperPlus<McpMarketTool, Void>
     @Select("""
         SELECT t.id, t.market_id, t.tool_name, t.tool_description, t.tool_version,
                t.is_loaded, t.local_tool_id, t.create_time, t.update_time
-        FROM mcp_market_tool t
-        INNER JOIN mcp_market_info m ON m.id = t.market_id
+        FROM ai_mcp_market_tool t
+        INNER JOIN ai_mcp_market m ON m.id = t.market_id
         WHERE t.market_id = #{marketId}
           AND t.tenant_id = #{tenantId}
           AND m.tenant_id = #{tenantId}

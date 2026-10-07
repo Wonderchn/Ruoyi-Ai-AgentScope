@@ -18,8 +18,6 @@ package org.ruoyi.common.redis.manager;
 import org.ruoyi.common.redis.utils.RedisUtils;
 import org.redisson.api.RMap;
 import org.redisson.api.RMapCache;
-import org.redisson.spring.cache.CacheConfig;
-import org.redisson.spring.cache.RedissonCache;
 import org.springframework.boot.convert.DurationStyle;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
@@ -51,7 +49,7 @@ public class PlusSpringCacheManager implements CacheManager {
 
     private boolean transactionAware = true;
 
-    Map<String, CacheConfig> configMap = new ConcurrentHashMap<>();
+    Map<String, RedissonCachePolicy> configMap = new ConcurrentHashMap<>();
     ConcurrentMap<String, Cache> instanceMap = new ConcurrentHashMap<>();
 
     /**
@@ -108,12 +106,12 @@ public class PlusSpringCacheManager implements CacheManager {
      *
      * @param config object
      */
-    public void setConfig(Map<String, ? extends CacheConfig> config) {
-        this.configMap = (Map<String, CacheConfig>) config;
+    public void setConfig(Map<String, ? extends RedissonCachePolicy> config) {
+        this.configMap = (Map<String, RedissonCachePolicy>) config;
     }
 
-    protected CacheConfig createDefaultConfig() {
-        return new CacheConfig();
+    protected RedissonCachePolicy createDefaultConfig() {
+        return new RedissonCachePolicy();
     }
 
     @Override
@@ -130,7 +128,7 @@ public class PlusSpringCacheManager implements CacheManager {
             return cache;
         }
 
-        CacheConfig config = configMap.get(name);
+        RedissonCachePolicy config = configMap.get(name);
         if (config == null) {
             config = createDefaultConfig();
             configMap.put(name, config);
@@ -157,10 +155,10 @@ public class PlusSpringCacheManager implements CacheManager {
         return createMapCache(name, config, local);
     }
 
-    private Cache createMap(String name, CacheConfig config, int local) {
+    private Cache createMap(String name, RedissonCachePolicy config, int local) {
         RMap<Object, Object> map = RedisUtils.getClient().getMap(name);
 
-        Cache cache = new RedissonCache(map, allowNullValues);
+        Cache cache = new PlusRedissonCache(name, map, allowNullValues);
         if (local == 1) {
             cache = new CaffeineCacheDecorator(name, cache);
         }
@@ -174,10 +172,13 @@ public class PlusSpringCacheManager implements CacheManager {
         return cache;
     }
 
-    private Cache createMapCache(String name, CacheConfig config, int local) {
+    private Cache createMapCache(String name, RedissonCachePolicy config, int local) {
         RMapCache<Object, Object> map = RedisUtils.getClient().getMapCache(name);
 
-        Cache cache = new RedissonCache(map, config, allowNullValues);
+        // 容量上限在创建时按策略套用（原实现于首次创建后调用 map.setMaxSize）
+        PlusRedissonCache delegate = new PlusRedissonCache(name, map, config, allowNullValues);
+        delegate.setMaxSize(config.getMaxSize());
+        Cache cache = delegate;
         if (local == 1) {
             cache = new CaffeineCacheDecorator(name, cache);
         }
@@ -187,8 +188,6 @@ public class PlusSpringCacheManager implements CacheManager {
         Cache oldCache = instanceMap.putIfAbsent(name, cache);
         if (oldCache != null) {
             cache = oldCache;
-        } else {
-            map.setMaxSize(config.getMaxSize());
         }
         return cache;
     }

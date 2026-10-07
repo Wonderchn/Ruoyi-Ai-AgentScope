@@ -31,6 +31,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
@@ -69,6 +72,8 @@ import java.util.Set;
 @RequestMapping("/api/ai/v1")
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
 public class AiGatewayController {
+
+    private static final Logger log = LoggerFactory.getLogger(AiGatewayController.class);
 
     /** 登录证据头：与 platform {@code sa-token.token-name: Authorization} 一致。 */
     static final String LOGIN_EVIDENCE_HEADER = "Authorization";
@@ -111,6 +116,58 @@ public class AiGatewayController {
             new Route("GET", "/conversations/{id}", "conversation.read"),
             new Route("GET", "/conversations/{id}/messages", "conversation.read"),
             new Route("GET", "/conversations/{id}/export", "conversation.export"),
+            // WP-034B：F03 会话写入。服务端由**已装配**的 AiResourceController
+            // （/internal/ai/v1/conversations/{id}）承接：先功能级 requireFunction 再资源级 requireGrant，
+            // 写服务内部再取一次 PrincipalContext 并做 tenant+member 限定，0 行按"不存在"拒绝。
+            // G-52：F03「新建会话」原本**没有任何可达端点** —— 会话行只能在聊天时由 touchConversation
+            // 副作用创建，而聊天需引擎（门控关）⇒ 一条会话行都造不出来；旧路径 POST /system/session
+            // 在未打包的 ruoyi-chat（G-22）⇒ 404。此处放行显式创建。
+            // **动作复用 `conversation.rename`（→ 已播种的 `ai:conversation:write`）**，不新增动作/权限行，
+            // 与 C13.4 处置引擎四条同形：不新增权限行、不动「26 个规范动作」护栏、零迁移。
+            // 创建会话本质就是"会话写"，与改名同属对该聚合的写。
+            new Route("POST", "/conversations", "conversation.rename"),
+            new Route("PUT", "/conversations/{id}", "conversation.rename"),
+            new Route("DELETE", "/conversations/{id}", "conversation.delete"),
+            // W3-5-BE-1（T0 登记，2026-10-06；t3-ingest 交付 AiEmbeddedFeedbackConfiguration 后）：
+            // 消息反馈面（T6 workbench 历史页赞/踩）。此前 MessageFeedbackController 内层存在
+            // 但不在白名单 ⇒ 网关必然 404（T6 判据钉死的缺口）。动作复用 conversation.rename
+            //（= ai:conversation:write，会话消息是同一聚合的写面），不新增动作/权限行/迁移。
+            new Route("POST", "/conversations/messages/{messageId}/feedback", "conversation.rename"),
+            new Route("DELETE", "/conversations/messages/{messageId}/feedback", "conversation.rename"),
+            // WP-034：F10 Agent 会话面。此前 `/agent/v1/**` 完全没有白名单路由，
+            // 所以客户端**无法**经 `/api/ai/v1` 到达 WP-033B 交付的会话面——
+            // 那是"服务端可装配"与"客户端可访问"之间的缺口。
+            //
+            // 逐条登记（**不用通配 `/agent/v1/**`**，也不做根 Controller 扫描）：
+            // 通配会把同一前缀下任何将来新增的控制器一起放行，等于取消白名单。
+            //
+            // 动作复用会话读/写，不新增权限行：Agent 会话与普通会话是同一
+            // "用户自己的会话"语义（`ai:conversation:read/write/delete`），
+            // 且 AgentConversationServiceImpl 自身按 tenant+user 限定作用域。
+            // 有意**不**放行 `POST /agent/v1/conversations/batch-delete`：
+            // 批量多资源授权是计划 §13 的待决定项。
+            new Route("GET", "/agent/v1/conversations", "conversation.read"),
+            new Route("GET", "/agent/v1/conversations/{id}/messages", "conversation.read"),
+            new Route("PUT", "/agent/v1/conversations/{id}/title", "conversation.rename"),
+            new Route("DELETE", "/agent/v1/conversations/{id}", "conversation.delete"),
+            // WP-033 / C13.4（T0 登记，2026-10-06）：Agent **引擎**面。经源码核实四条真实端点
+            // 早已存在（AgentChatController:94/112/129、AgentMetaController:85），但此前
+            // 一条都不在白名单里 —— 与本文件上一段记录的会话面缺口同类：
+            // "服务端可装配"不等于"客户端可访问"。C13 已把它们接到内层可达前缀之下
+            // （类级 @RequestMapping("/internal/ai/v1")，与 RunController/AiResourceController/
+            // UploadController/AgentActionController 同形），故内层 handler 现在真实存在。
+            //
+            // 只有**两条 JSON** 在此登记：
+            new Route("POST", "/agent/v1/stop", "run.cancel"),
+            new Route("GET", "/agent/v1/meta", "agent.execute"),
+            // 另两条是 text/event-stream（GET /agent/v1/chat、POST /agent/v1/chat/confirm），
+            // **刻意不在此登记**：本通用转发有 2s/2MiB 上限且不做 SSE，登记了只会超时或缓冲失败。
+            // 它们由 AiGatewayStreamController 逐条精确映射（专用流式受限传输，先于 catch-all 生效）。
+            //
+            // 动作与权限全部**复用既有已播种行**，不新增 canonical 动作、不新增迁移：
+            //   run.cancel    -> ai:run:cancel     (V5)
+            //   agent.execute -> ai:agent:execute  (V6)
+            // `P1CurrentAuthorizationTest` 断言 knownActions().size()==26，故不得新增动作。
             new Route("GET", "/memories", "memory.read"),
             new Route("GET", "/runs/{id}", "run.get"),
             new Route("GET", "/runs/{id}/event-records", "run.events"),
@@ -128,17 +185,36 @@ public class AiGatewayController {
             new Route("POST", "/documents/{id}/tombstone", "kb.delete"),
             new Route("GET", "/documents/{id}/meta", "document.read"),
             new Route("GET", "/documents/{id}/source", "document.download"),
-            new Route("GET", "/knowledge-bases/{id}/documents", "document.list"));
+            new Route("GET", "/knowledge-bases/{id}/documents", "document.list"),
+            // W4-9：F09 Agent 目录（8 handler）。内层 handler 落在
+            // /internal/ai/v1/agent-catalog/**（由 AiEmbeddedAgentCatalogConfiguration 装配）。
+            // 逐条登记、不用通配，与本文件上文"不登记 /agent/v1/**"的纪律一致；全部为 JSON。
+            // 每个 action 的权限串见 AiCanonicalAction，权限行由 V27__agent_catalog_permissions.sql 播种。
+            // F11（Skills）本批**未装**：其闭包经 IntentNodeRegistry → DefaultIntentClassifier →
+            // LLMService/PromptTemplateLoader/IntentTreeCacheManager 均未装配（task-13 / W4-T0-46），
+            // 故此处不登记 /agent-catalog/agent-skills 的任何路径。
+            new Route("GET", "/agent-catalog/agents", "agent.list"),
+            new Route("POST", "/agent-catalog/agents", "agent.write"),
+            new Route("PUT", "/agent-catalog/agents/{id}", "agent.write"),
+            new Route("DELETE", "/agent-catalog/agents/{id}", "agent.delete"),
+            new Route("POST", "/agent-catalog/agents/{id}/activate", "agent.activate"),
+            new Route("GET", "/agent-catalog/agents/{id}/prompts", "agent.read"),
+            new Route("PUT", "/agent-catalog/agents/{id}/prompts/{slotKey}", "agent.write"),
+            new Route("GET", "/agent-catalog/agents/prompt-slots/{slotKey}/default", "agent.read"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;
-    private final ProductionSigningKeySource signingKeys;
+    /**
+     * 委托签名密钥。仅 {@code transport=http} 需要存在（生产装配 fail-fast 保证）；
+     * {@code transport=local}（E3/C3 内嵌同进程转送）下不铸造委托凭证，本依赖可为空。
+     */
+    private final ObjectProvider<ProductionSigningKeySource> signingKeys;
     private final AiGatewayClient client;
     private final AiIntegrationProperties properties;
 
     public AiGatewayController(CurrentPrincipalResolver principalResolver,
                                ObjectProvider<PlatformIdentitySource> identitySource,
-                               ProductionSigningKeySource signingKeys,
+                               ObjectProvider<ProductionSigningKeySource> signingKeys,
                                AiGatewayClient client,
                                AiIntegrationProperties properties) {
         this.principalResolver = principalResolver;
@@ -160,7 +236,13 @@ public class AiGatewayController {
             return fail(ex.errorCode());
         } catch (AiGatewayClient.UpstreamUnavailableException ex) {
             if(response!=null && response.isCommitted()){return null;}
-            // 上游不可用/恶意响应：不放行也不泄露原因
+            // 上游不可用/恶意响应：不放行也不泄露原因。
+            // 但**服务端必须留下原因** —— 客户端只拿泛化文案，诊断信息只进日志。
+            // 没有这一行时，三种截然不同的内部失败（执行事实不可用 / 内层路由未命中 /
+            // 内层派发抛异常）在外部完全同形（都是 503 + "授权服务不可用"），
+            // 导致对同一现象做出三次互相矛盾的归因（G-34）。
+            log.warn("ai-gateway upstream-unavailable: method={} path={} reason={}",
+                    request.getMethod(), request.getRequestURI(), ex.getMessage(), ex);
             return fail(P04ErrorCode.AUTHORIZATION_UNAVAILABLE);
         }
     }
@@ -209,12 +291,31 @@ public class AiGatewayController {
             throw new P04Exception(P04ErrorCode.FORBIDDEN);
         }
 
-        // 5. 签发委托（只带本路由所需 scope）并转发
-        ProductionSigningKeySource.Issued issued = signingKeys.issue(
-                member.tenantId(), member.userId(), member.membershipId(),
-                List.of(route.action()), identity.policyVersion(), null);
+        // 4b. 平台管理身份（维护者裁决 A2-ter）：Agent 目录是<b>平台级</b>资源
+        //     （ai_agent_* 三表没有 tenant_id、uk_agent_name 全局唯一），因此这些动作
+        //     要求"scope + 平台管理身份"两个<b>独立</b>条件同时成立。
+        //     只持有 scope 的租户管理员/成员在这里被拒 —— 即使它被误授了该 scope。
+        //     resolver 的默认实现返回 false（fail-closed）：漏实现只会更严。
+        if (AiActionRegistry.requiresPlatformAdmin(route.action())
+                && !principalResolver.isPlatformAdmin()) {
+            throw new P04Exception(P04ErrorCode.FORBIDDEN);
+        }
 
-        return forward(request,response,member,route.action(), method, subPath, issued.token(), body);
+        // 5. 签发委托（只带本路由所需 scope）并转发。
+        //    transport=local（E3/C3）：同进程转送，不铸造委托凭证；本地执行事实
+        //    由 LocalAiGatewayClient 经 AiIdentityPort 桥接进 AI 侧上下文。
+        String delegationToken = null;
+        if (!properties.isLocalTransport()) {
+            ProductionSigningKeySource keys = signingKeys.getIfAvailable();
+            if (keys == null) {
+                throw new P04Exception(P04ErrorCode.AUTHORIZATION_UNAVAILABLE);
+            }
+            delegationToken = keys.issue(
+                    member.tenantId(), member.userId(), member.membershipId(),
+                    List.of(route.action()), identity.policyVersion(), null).token();
+        }
+
+        return forward(request,response,member,route.action(), method, subPath, delegationToken, body);
     }
 
     /** 组装转发请求并透传 AI 状态码。 */
@@ -231,7 +332,10 @@ public class AiGatewayController {
         }
 
         String query = request.getQueryString();
-        String target = properties.getAiBaseUrl() + AI_INTERNAL_PREFIX + subPath
+        // transport=local（E3/C3）：基地址是本进程，转送只用路径与 query，
+        // 用占位主机保持 URI 绝对形状；跨进程 HTTP 传输仍取真实 ai-base-url。
+        String base = properties.isLocalTransport() ? "http://local" : properties.getAiBaseUrl();
+        String target = base + AI_INTERNAL_PREFIX + subPath
                 + (query == null || query.isBlank() ? "" : "?" + query);
         URI uri;
         try {
@@ -241,12 +345,18 @@ public class AiGatewayController {
         }
 
         Map<String, String> headers = sanitizedHeaders(request);
-        if (properties.getServiceCredential() == null || properties.getServiceCredential().isBlank()) {
+        if (!properties.isLocalTransport()
+                && (properties.getServiceCredential() == null || properties.getServiceCredential().isBlank())) {
             throw new P04Exception(P04ErrorCode.AUTHORIZATION_UNAVAILABLE);
         }
-        // 委托凭证是唯一身份载体；浏览器凭证已在黑名单中剥除
-        headers.put("Authorization", "Bearer " + delegationToken);
-        headers.put("X-P04-Service-Credential", properties.getServiceCredential());
+        // 委托凭证是唯一身份载体（http 传输）；浏览器凭证已在黑名单中剥除。
+        // transport=local 时身份不经头传递：LocalAiGatewayClient 从 AiIdentityPort 桥接。
+        if (delegationToken != null) {
+            headers.put("Authorization", "Bearer " + delegationToken);
+        }
+        if (!properties.isLocalTransport()) {
+            headers.put("X-P04-Service-Credential", properties.getServiceCredential());
+        }
         headers.put(RequestId.HEADER, RequestId.currentOrEmpty());
 
         if(action.equals("document.download") || action.equals("conversation.export")
@@ -265,7 +375,7 @@ public class AiGatewayController {
                 servletResponse.setHeader("Accept-Ranges","bytes");
                 servletResponse.setHeader(RequestId.HEADER,RequestId.currentOrEmpty());
                 if(!transfer.contentRange().isBlank()){servletResponse.setHeader("Content-Range",transfer.contentRange());}
-                servletResponse.setContentLength(transfer.bytes().length);
+                    servletResponse.setContentLength(transfer.bytes().length);
                 var out=servletResponse.getOutputStream();
                 for(int offset=0;offset<transfer.bytes().length;offset+=8192){
                     out.write(transfer.bytes(),offset,Math.min(8192,transfer.bytes().length-offset));
@@ -282,9 +392,14 @@ public class AiGatewayController {
                 try{acknowledgement=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsBytes(Map.of(
                         "tenantId",member.tenantId(),"memberId",member.membershipId(),"permitId",transfer.permitId(),"operationId",transfer.operationId()));
                 }catch(Exception e){throw new AiGatewayClient.UpstreamUnavailableException("delivery acknowledgement invalid");}
+                var ackHeaders = new java.util.LinkedHashMap<String,String>();
+                ackHeaders.put("Content-Type","application/json");
+                if (!properties.isLocalTransport()) {
+                    ackHeaders.put("X-P04-Service-Credential", properties.getServiceCredential());
+                }
                 var released=client.forward(new AiGatewayClient.ForwardRequest("POST",
-                        URI.create(properties.getAiBaseUrl()+AI_INTERNAL_PREFIX+"/authorization/deliveries/release"),
-                        Map.of("Content-Type","application/json","X-P04-Service-Credential",properties.getServiceCredential()),acknowledgement));
+                        URI.create(base+AI_INTERNAL_PREFIX+"/authorization/deliveries/release"),
+                        ackHeaders,acknowledgement));
                 if(released.status()!=204 || !released.body().isBlank()){throw new AiGatewayClient.UpstreamUnavailableException("delivery release unconfirmed");}
             }
         }

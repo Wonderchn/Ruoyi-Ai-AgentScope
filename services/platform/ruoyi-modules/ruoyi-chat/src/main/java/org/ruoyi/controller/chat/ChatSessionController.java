@@ -48,7 +48,7 @@ public class ChatSessionController extends BaseController {
             return TableDataInfo.build();
         }
         // 默认查询当前用户会话
-        bo.setUserId(LoginHelper.getUserId());
+        bo.setUserId(String.valueOf(LoginHelper.getUserId()));
         return chatSessionService.queryPageList(bo, pageQuery);
     }
 
@@ -83,7 +83,7 @@ public class ChatSessionController extends BaseController {
     @RepeatSubmit()
     @PostMapping()
     public R<Long> add(@Validated(AddGroup.class) @RequestBody ChatSessionBo bo) {
-        bo.setUserId(LoginHelper.getUserId());
+        bo.setUserId(String.valueOf(LoginHelper.getUserId()));
         chatSessionService.insertByBo(bo);
         // 返回会话id
         return R.ok(bo.getId());

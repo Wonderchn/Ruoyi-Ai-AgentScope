@@ -13,7 +13,7 @@ import org.ruoyi.common.core.validate.EditGroup;
 import org.ruoyi.common.mybatis.core.domain.BaseEntity;
 
 /**
- * 模型管理业务对象 chat_model
+ * 模型管理业务对象 ai_model
  *
  * @author ageerle
  * @date 2025-12-14

@@ -1,0 +1,27 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# Build scripts stay off unless a package really needs them (moved here from the app's own
+# workspace file when ruoyi-web became apps/workbench).
+allowBuilds:
+  esbuild: false
+  vue-demi: false
+
+# Pin Vue to one version across the workspace.
+#
+# Why this is needed (measured, not theoretical): adding `apps/admin` makes pnpm re-resolve
+# peer dependencies workspace-wide. `vue-element-plus-x` (a workbench dependency) has an
+# open `vue` peer, and pnpm's `autoInstallPeers` then picks the newest matching release for
+# that peer (3.5.43) while the apps keep their locked 3.5.17. Two Vue copies in one graph
+# means two distinct Vue type identities, and `apps/workbench`'s typecheck fails on
+# `app.use(ElementPlusX)`:
+#
+#   src/main.ts(19,9): error TS2345: Argument of type 'Plugin' is not assignable to
+#   parameter of type 'Plugin<any[], any[]>'
+#
+# Pinning here restores the single-Vue graph the repo already had (its lockfile contained
+# zero references to 3.5.43 before this change). Remove only when every app is upgraded to
+# the same Vue release in the same commit.
+overrides:
+  vue: 3.5.17

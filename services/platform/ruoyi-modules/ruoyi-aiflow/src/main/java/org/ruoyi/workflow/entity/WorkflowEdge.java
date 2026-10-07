@@ -11,7 +11,7 @@ import java.io.Serial;
 
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("t_workflow_edge")
+@TableName("ai_flow_edge")
 @Schema(title = "工作流定义-边 | workflow definition edge")
 public class WorkflowEdge extends BaseEntity {
 

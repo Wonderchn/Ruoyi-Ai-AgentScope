@@ -17,12 +17,10 @@
 
 package org.ruoyi.aiintegration.authorization;
 
+import org.ruoyi.ai.api.action.AiCanonicalAction;
 import org.ruoyi.aiintegration.web.P04ErrorCode;
 import org.ruoyi.aiintegration.web.P04Exception;
 
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -42,51 +40,16 @@ import java.util.Set;
 public final class AiActionRegistry {
 
     /**
-     * 动作 → 平台权限。固定映射，运行期不可扩展。
+     * 动作 → 平台权限。表体已移到 {@code ruoyi-ai-api} 的 {@code AiCanonicalAction}：
+     * 内嵌后网关与 AI 运行模块在同一进程内对"该动作需要什么权限"必须给出一致答案，
+     * 两份拷贝迟早会漂移。本类只保留原有门面，保持既有调用点不变。
      */
-    private static final Map<String, String> ACTIONS = buildActions();
-
-    private AiActionRegistry() {
-    }
-
-    private static Map<String, String> buildActions() {
-        Map<String, String> actions = new LinkedHashMap<>();
-        actions.put("kb.list", "ai:kb:list");
-        actions.put("kb.read", "ai:kb:read");
-        actions.put("kb.write", "ai:kb:write");
-        actions.put("kb.delete", "ai:kb:delete");
-        actions.put("kb.acl.manage", "ai:kb:acl");
-        actions.put("kb.retrieve", "ai:kb:retrieve");
-        actions.put("document.read", "ai:document:read");
-        actions.put("document.download", "ai:document:download");
-        actions.put("conversation.read", "ai:conversation:read");
-        actions.put("conversation.export", "ai:conversation:export");
-        actions.put("memory.read", "ai:memory:read");
-        actions.put("run.get", "ai:run:read");
-        actions.put("run.events", "ai:run:event:read");
-        actions.put("run.submit", "ai:run:submit");
-        actions.put("run.cancel", "ai:run:cancel");
-        actions.put("run.resume", "ai:run:resume");
-        actions.put("run.stream", "ai:run:stream");
-        actions.put("document.upload", "ai:document:upload");
-        actions.put("document.ingest", "ai:document:ingest");
-        actions.put("document.list", "ai:document:read");
-        actions.put("agent.execute", "ai:agent:execute");
-        actions.put("run.approve", "ai:run:approve");
-        actions.put("run.reconcile", "ai:run:reconcile");
-        actions.put("tool.sandbox.write", "ai:tool:sandbox:write");
-        return Collections.unmodifiableMap(actions);
-    }
-
     /**
      * @param action AI canonical 动作标识
      * @return 对应的平台权限；未知动作返回 empty（调用方必须拒绝）
      */
     public static Optional<String> permissionOf(String action) {
-        if (action == null || action.isBlank()) {
-            return Optional.empty();
-        }
-        return Optional.ofNullable(ACTIONS.get(action));
+        return AiCanonicalAction.permissionOf(action);
     }
 
     /**
@@ -97,14 +60,30 @@ public final class AiActionRegistry {
      * @throws P04Exception 未知/缺失动作 → {@link P04ErrorCode#FORBIDDEN}
      */
     public static String requirePermission(String action) {
-        return permissionOf(action).orElseThrow(() -> new P04Exception(P04ErrorCode.FORBIDDEN));
+        return AiCanonicalAction.permissionOf(action)
+            .orElseThrow(() -> new P04Exception(P04ErrorCode.FORBIDDEN));
     }
 
     /**
      * @return 全部已知动作（只读）
      */
     public static Set<String> knownActions() {
-        return ACTIONS.keySet();
+        return AiCanonicalAction.knownActions();
+    }
+
+    /**
+     * 该动作是否<b>额外</b>要求平台管理身份（维护者裁决 A2-ter）。
+     *
+     * <p>与 {@link #requirePermission(String)} 是<b>两个独立条件</b>：对返回
+     * {@code true} 的动作，网关既要求身份显式持有对应 scope，也要求调用方是平台
+     * 管理身份；<b>只满足其一必须拒绝</b>。判定表与动作→权限表同源
+     * （{@code AiCanonicalAction}），避免两处漂移。
+     *
+     * @param action AI canonical 动作标识
+     * @return 是否额外要求平台管理身份
+     */
+    public static boolean requiresPlatformAdmin(String action) {
+        return AiCanonicalAction.requiresPlatformAdmin(action);
     }
 
 }

@@ -1,0 +1,224 @@
+# 内嵌 AI 运行形态（E3 单元二收尾起）：AI 能力以模块形式在 platform 进程内执行。
+#
+# 启用方式：--spring.profiles.active=embedded（与默认 dev/prod 组合使用，
+# 例如 --spring.profiles.active=dev,embedded）。
+#
+# 形态语义：
+# - 不启动独立 AI 应用；/api/ai/v1/** 白名单路由经 MVC 基础设施直调内嵌 AI 控制器
+#   （LocalAiGatewayClient），不产生任何 localhost HTTP 转发；
+# - AI → platform 的三处回调（授权复核、组织事实匹配、许可登记）全部替换为同进程
+#   本地接口（LocalPlatformAuthorizationChecker / LocalPlatformFacts / LocalPlatformPermits）；
+# - /internal/ai/v1/** 对外一律 404（AiInternalAccessBoundaryFilter，C3 负例语义）；
+# - 流式路由（SSE/上传/私有 PDF）在专用本地流传输落地前 fail-closed 503，不静默降级。
+#
+# 数据库：统一主库（platform schema），无 AI 专用数据源；许可表为
+# sys_ai_execution_permit（platform 层）与 ai_execution_permit（AI 运行时层）。
+#
+# 注意：ai.* 在 YAML 里只能有一个顶层 `ai:` 块。重复的键在严格解析下是错误
+# （SnakeYAML allowDuplicateKeys=false 直接拒绝），而 Spring 的宽松解析会让后写的块
+# 静默覆盖前一个块——"集成开关被模型目录覆盖掉"这类问题因此只在运行期暴露。
+# 所以集成开关与 WP-030 模型目录合并在同一个块内。
+ai:
+  integration:
+    enabled: true
+    # local = 内嵌同进程转送；http = 转发到独立 AI 应用（迁移前形态，默认）
+    transport: local
+    # 高危写路径（KB 创建/ACL 授予等）仍按既有开关门控，按需显式开启：
+    # high-risk:
+    #   enabled: true
+
+  # ---------------------------------------------------------------------------------
+  # WP-030：模型路由与提供方配置
+  #
+  # 内嵌形态下"实际用哪个模型"由本文件的 ai.* 块决定：
+  #   - 独立 AI 服务（services/ai）的 application.yaml 不参与本进程启动，平台也不读
+  #     它的目录，因此不存在"两套目录各自决定实际模型"；
+  #   - 密钥一律走环境变量解引用，本文件不含任何明文密钥，也不为缺失密钥提供默认值。
+  #
+  # 迁移完整性说明（已登记，不冒充已迁移）：独立 AI 侧的 ai.* 块仍带有部分本机部署
+  # 环境的绑定（例如 MinerU 的密钥占位符），那些占位符引用的是另一份文件的路径，在
+  # 内嵌进程中无法解析；因此本文件按"环境变量名"重新表达提供方契约，而不是整块搬运。
+  # F02（WP-040）的配置权威与管理 API 在本块之上建立，届时以数据库为准。
+  # ---------------------------------------------------------------------------------
+  model:
+    # 模型路由链门控：关闭时不注册任何模型 bean，LLMService 调用方以缺 bean 明确失败。
+    enabled: true
+
+  providers:
+    # 本地 Ollama（无密钥）
+    ollama:
+      url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      endpoints:
+        chat: /v1/chat/completions
+        embedding: /v1/embeddings
+    # 阿里云百炼（DashScope 兼容模式）
+    bailian:
+      url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com}
+      api-key: ${DASHSCOPE_API_KEY:}
+      endpoints:
+        chat: /compatible-mode/v1/chat/completions
+        rerank: /api/v1/services/rerank/text-rerank/text-rerank
+        embedding: /compatible-mode/v1/embeddings
+    # AIHubMix 聚合网关
+    aihubmix:
+      url: ${AIHUBMIX_BASE_URL:https://aihubmix.com}
+      api-key: ${AIHUBMIX_API_KEY:}
+      endpoints:
+        chat: /v1/chat/completions
+        embedding: /v1/embeddings
+    # DeepSeek 官方开放平台
+    deepseek:
+      url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:}
+      endpoints:
+        chat: /v1/chat/completions
+    # 硅基流动
+    siliconflow:
+      url: ${SILICONFLOW_BASE_URL:https://api.siliconflow.cn}
+      api-key: ${SILICONFLOW_API_KEY:}
+      endpoints:
+        chat: /v1/chat/completions
+        embedding: /v1/embeddings
+
+  selection:
+    # 连续失败达到阈值即打开熔断，open-duration-ms 之后进入半开探测（只放一个名额）。
+    failure-threshold: 2
+    open-duration-ms: 30000
+
+  stream:
+    message-chunk-size: 1
+
+  chat:
+    # candidates 是物理模型注册表（id → provider/model）；顺序由 tiers 决定，不看 priority。
+    candidates:
+      - id: qwen-plus
+        provider: bailian
+        model: qwen-plus-latest
+      - id: qwen-flash
+        provider: bailian
+        model: qwen-flash
+      - id: qwen3-local
+        provider: ollama
+        model: qwen3:8b-fp16
+      - id: qwen3-max
+        provider: bailian
+        model: qwen3-max
+        supports-thinking: true
+      - id: gpt-5.4
+        provider: aihubmix
+        model: gpt-5.4
+      - id: deepseek-flash
+        provider: deepseek
+        model: deepseek-flash
+        supports-thinking: true
+
+    default-tier: standard
+    deep-thinking-tier: deep
+
+    # 每个档位的候选顺序与超时预算都是必填：流式下 timeout-ms 是首包（TTFT）预算，
+    # 同步下是整段调用上限。Tier 枚举（fast/standard/deep）必须各有档位，否则启动失败。
+    tiers:
+      fast:
+        candidates: [ qwen-flash, qwen-plus, qwen3-local ]
+        timeout-ms: 5000
+      standard:
+        candidates: [ qwen3-max, qwen-plus, deepseek-flash, qwen3-local, gpt-5.4 ]
+        timeout-ms: 120000
+      deep:
+        candidates: [ qwen3-max, deepseek-flash ]
+        timeout-ms: 180000
+
+  embedding:
+    default-model: qwen-emb-8b
+    candidates:
+      - id: qwen-emb-8b
+        provider: bailian
+        model: text-embedding-v4
+        dimension: ${rag.default.dimension}
+        priority: 1
+      - id: qwen-emb-local
+        provider: ollama
+        model: qwen3-embedding:8b-fp16
+        dimension: ${rag.default.dimension}
+        priority: 2
+      - id: text-embedding-3-large
+        provider: aihubmix
+        model: text-embedding-3-large
+        dimension: ${rag.default.dimension}
+        priority: 3
+
+  rerank:
+    default-model: qwen3-rerank
+    candidates:
+      - id: qwen3-rerank
+        provider: bailian
+        model: qwen3-rerank
+        priority: 1
+      # 显式登记的"不重排"候选，不是静默降级：没有重排后端时按此档位语义直通。
+      - id: rerank-noop
+        provider: noop
+        model: noop
+        priority: 100
+
+  vlm:
+    default-model: qwen-vl-max
+    candidates:
+      - id: qwen-vl-max
+        provider: bailian
+        model: qwen-vl-max
+
+# P2 正式运行路径（受理/生命周期/上传摄取/私有对象/事件流）——与独立 AI 应用同一开关；
+# P0.4 实验路径保持关闭（p04.enabled 缺省 false，与 P2 互斥）。
+p2:
+  enabled: true
+  object-store:
+    # 私有对象存储只认 fs（专属目录）；s3/minio 未实现即启动失败，不静默回退。
+    type: fs
+    root: ${P2_OBJECT_STORE_ROOT:./data/private-objects}
+  # WP-031：worker 与 outbox 投递此前从未在内嵌形态打开（代码默认 false），
+  # 受理后的 run 因此永久停在 QUEUED。这两项是"受理 → 认领 → 执行 → 终态"的必要条件；
+  # 执行器/提供方缺失时 run 会收成显式终态（FAILED/ACTION_NOT_ENABLED），不会静默留队。
+  worker:
+    enabled: true
+  outbox:
+    relay-enabled: true
+
+# Agent 会话面必须在实际 embedded profile 中启用；需要 Redis 保护在途会话删除。
+# 与 ReAct 引擎开关独立，缺 Redis 时明确启动失败，不绕过运行闸门。
+agent:
+  conversation:
+    enabled: true
+
+# P3 受控动作面（动作账本/审批/对账）——与独立 AI 应用同一开关。
+# 沙箱票据客户端指向独立沙箱进程（有界回环端点）；未启用时以 SANDBOX_CLOSED fail-closed。
+p3:
+  enabled: true
+
+# WP-032：知识/向量链。`rag.vector.type` 决定装配哪套向量后端。
+#
+# 内嵌形态只装配 PG——`PgVectorStoreService`/`PgVectorRetrieverService`/`PgVectorStoreAdmin`
+# 自身就带 `@ConditionalOnProperty(rag.vector.type=pg)`；这里显式写出，让"内嵌态用哪套后端"
+# 在配置里可读，不依赖条件注解潜在的 matchIfMissing 语义。
+# milvus / es / lightrag 是可选技术后端（WP-053）：本轮不装配，也不冒充已启用。
+rag:
+  vector:
+    type: pg
+  keyword:
+    type: none
+  default:
+    collection-name: rag_default_store
+    # 必须与冻结迁移里向量列的物理维度一致（1536）；缺配置时检索/索引 fail-closed 拒绝。
+    dimension: ${RAG_EMBEDDING_DIMENSION:1536}
+    metric-type: COSINE
+    sse-timeout-ms: 300000
+
+# W3-3（T0 落，2026-10-06）：MinerU 本地解析客户端在内嵌形态的装配开关。
+# shipped 默认 false = fail-closed（关闭时 DocumentIngestExecutor 的 parse 步骤
+# 以 MINERU_NOT_CONFIGURED 显式终态拒绝，不会静默回退或假成功）；
+# 真实启用需注入 base-url 与 token（环境变量，G-40 同纪律：开关默认关、值不进 shipped 配置）。
+# 其余键（tier/ocr-mode/poll-interval-ms/deadline-seconds/max-bytes/超时）留代码默认。
+mineru:
+  local:
+    enabled: false
+    base-url: ${MINERU_BASE_URL:}
+    token: ${MINERU_MINERU_TOKEN:}

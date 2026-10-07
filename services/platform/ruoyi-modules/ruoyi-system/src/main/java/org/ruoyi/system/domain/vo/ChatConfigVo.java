@@ -11,7 +11,7 @@ import java.io.Serializable;
 
 
 /**
- * 配置信息视图对象 chat_config
+ * 配置信息视图对象（统一库 {@code platform.ai_model_config}）
  *
  * @author ageerle
  * @date 2025-12-14

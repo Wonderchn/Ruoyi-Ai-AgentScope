@@ -33,7 +33,7 @@ public class KnowledgeGraphInstance extends BaseEntity {
     private String graphUuid;
 
     /**
-     * 关联knowledge_info.kid
+     * 关联ai_knowledge_base.kid
      */
     private String knowledgeId;
 

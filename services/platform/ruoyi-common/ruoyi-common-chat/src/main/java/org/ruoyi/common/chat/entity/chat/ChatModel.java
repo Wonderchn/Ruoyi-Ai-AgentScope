@@ -10,14 +10,14 @@ import org.ruoyi.common.tenant.core.TenantEntity;
 import java.io.Serial;
 
 /**
- * 模型管理对象 chat_model
+ * 模型管理对象 ai_model
  *
  * @author ageerle
  * @date 2025-12-14
  */
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("chat_model")
+@TableName("ai_model")
 public class ChatModel extends TenantEntity {
 
     @Serial

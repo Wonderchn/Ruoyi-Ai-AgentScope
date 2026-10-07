@@ -12,7 +12,7 @@ import java.util.Date;
 
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("short_drama_project")
+@TableName("ai_short_drama_project")
 public class ShortDramaProject extends BaseEntity {
 
     @Serial

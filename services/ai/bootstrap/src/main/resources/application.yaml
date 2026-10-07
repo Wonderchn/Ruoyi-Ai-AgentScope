@@ -12,6 +12,10 @@ spring:
       max-file-size: 50MB
       max-request-size: 100MB
 
+  # E3/C7：本数据源只服务独立运行的 ragent 应用（过渡期），AI 模块本身不携带任何
+  # DataSource/TransactionManager 配置。内嵌进 platform 后唯一主数据源是 platform 的
+  # dynamic-datasource master（currentSchema=platform,extensions，E2 已合并 schema）。
+  # 本配置随 services/ai 退役（E8）删除。
   datasource:
     driver-class-name: org.postgresql.Driver
     type: com.zaxxer.hikari.HikariDataSource
@@ -343,6 +347,8 @@ sa-token:
   is-log: false
   is-print: false
 
+# E3/C6：RocketMQ 仅独立运行的 ragent 应用装配（platform 无 RocketMQ）。
+# 内嵌后 AI 域消息的处置（本地 outbox 替代或同进程声明 broker）在模块搬迁时确定。
 rocketmq:
   name-server: 127.0.0.1:9876
   producer:

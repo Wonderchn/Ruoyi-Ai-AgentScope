@@ -29,7 +29,7 @@ public interface IAgentService {
     /**
      * 根据ID查询智能体（展开 JSON 数组字段为 List，关联填充模型/工具/知识库名称）
      */
-    AgentVo queryById(Long id);
+    AgentVo queryById(String id);
 
     /**
      * 新增智能体
@@ -44,7 +44,7 @@ public interface IAgentService {
     /**
      * 批量删除智能体
      */
-    Boolean deleteByIds(Collection<Long> ids);
+    Boolean deleteByIds(Collection<String> ids);
 
     /**
      * 查询启用的智能体下拉选项（用户端聊天页选择用，status=0）

@@ -10,7 +10,7 @@ import jakarta.validation.constraints.*;
 import org.ruoyi.domain.entity.knowledge.KnowledgeAttach;
 
 /**
- * 知识库附件业务对象 knowledge_attach
+ * 知识库附件业务对象 ai_knowledge_document
  *
  * @author ageerle
  * @date 2025-12-17

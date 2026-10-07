@@ -11,7 +11,7 @@ import org.ruoyi.common.mybatis.core.domain.BaseEntity;
 import org.ruoyi.system.domain.ChatConfig;
 
 /**
- * 配置信息业务对象 chat_config
+ * 配置信息业务对象（统一库 {@code platform.ai_model_config}）
  *
  * @author ageerle
  * @date 2025-12-14

@@ -11,7 +11,7 @@ import java.io.Serializable;
 
 
 /**
- * 会话管理视图对象 chat_session
+ * 会话管理视图对象 ai_conversation
  *
  * @author ageerle
  * @date 2025-12-30
@@ -28,13 +28,13 @@ public class ChatSessionVo implements Serializable {
      * 主键
      */
     @ExcelProperty(value = "主键")
-    private Long id;
+    private String id;
 
     /**
      * 用户id
      */
     @ExcelProperty(value = "用户id")
-    private Long userId;
+    private String userId;
 
     /**
      * 会话标题

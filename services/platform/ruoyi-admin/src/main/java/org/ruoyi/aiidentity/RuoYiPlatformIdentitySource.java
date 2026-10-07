@@ -27,6 +27,7 @@ import org.ruoyi.common.core.constant.SystemConstants;
 import org.ruoyi.common.core.utils.StringUtils;
 import org.ruoyi.common.tenant.helper.TenantHelper;
 import org.ruoyi.system.aiidentity.CurrentAiMembershipService;
+import org.ruoyi.system.aiidentity.RequestScopedAiFacts;
 import org.ruoyi.system.domain.SysDept;
 import org.ruoyi.system.domain.SysTenant;
 import org.ruoyi.system.domain.SysUser;
@@ -171,6 +172,10 @@ public class RuoYiPlatformIdentitySource implements PlatformIdentitySource, Orga
         if (StringUtils.isBlank(tenantId)) {
             return TenantState.UNKNOWN;
         }
+        return RequestScopedAiFacts.read(this, new TenantKey(tenantId), () -> tenantStateFresh(tenantId));
+    }
+
+    private TenantState tenantStateFresh(String tenantId) {
         SysTenant tenant = TenantHelper.ignore(() -> tenantMapper.selectOne(
             new LambdaQueryWrapper<SysTenant>().eq(SysTenant::getTenantId, tenantId)));
         if (ObjectUtil.isNull(tenant)) {
@@ -257,6 +262,11 @@ public class RuoYiPlatformIdentitySource implements PlatformIdentitySource, Orga
     }
 
     private List<ActionRole> actionRoles(String tenant,String subject,String action) {
+        return RequestScopedAiFacts.read(this, new ActionRolesKey(tenant, subject, action),
+                () -> actionRolesFresh(tenant, subject, action));
+    }
+
+    private List<ActionRole> actionRolesFresh(String tenant,String subject,String action) {
         if(permitJdbc==null){throw permitUnavailable();}
         Long user=parseUserId(subject);
         var facts=user==null?null:membershipService.describe(tenant,user);
@@ -296,8 +306,9 @@ public class RuoYiPlatformIdentitySource implements PlatformIdentitySource, Orga
             if(owner==null || !owner.userEnabled()){return false;}
         }
         Long dept=ownerDept==null?null:parseUserId(ownerDept);
-        List<String> ancestors=dept==null?List.of():permitJdbc.query("SELECT ancestors FROM sys_dept WHERE tenant_id=?"
-                +" AND dept_id=? AND status='0' AND del_flag='0'",(rs,n)->rs.getString(1),tenant,dept);
+        List<String> ancestors=dept==null?List.of():RequestScopedAiFacts.read(this, new OwnerDepartmentKey(tenant, dept),
+                () -> permitJdbc.query("SELECT ancestors FROM sys_dept WHERE tenant_id=?"
+                +" AND dept_id=? AND status='0' AND del_flag='0'",(rs,n)->rs.getString(1),tenant,dept));
         if(ownerDept!=null && ancestors.isEmpty()){return false;}
         boolean same=org!=null && dept!=null && dept.equals(org.deptId());
         boolean subtree=same || org!=null && !ancestors.isEmpty()
@@ -306,9 +317,10 @@ public class RuoYiPlatformIdentitySource implements PlatformIdentitySource, Orga
             switch(role.dataScope()){
                 case "1": return true;
                 case "2":
-                    if(dept!=null && Boolean.TRUE.equals(permitJdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM sys_role_dept rd"
+                    if(dept!=null && RequestScopedAiFacts.read(this, new CustomDepartmentKey(tenant, role.id(), dept),
+                            () -> Boolean.TRUE.equals(permitJdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM sys_role_dept rd"
                             +" JOIN sys_role r ON r.role_id=rd.role_id WHERE r.tenant_id=? AND rd.role_id=? AND rd.dept_id=?)",
-                            Boolean.class,tenant,role.id(),dept))){return true;}break;
+                            Boolean.class,tenant,role.id(),dept)))){return true;}break;
                 case "3": if(same){return true;}break;
                 case "4": if(subtree){return true;}break;
                 case "5": if(self){return true;}break;
@@ -344,5 +356,10 @@ public class RuoYiPlatformIdentitySource implements PlatformIdentitySource, Orga
     private static String canonicalMembershipId(String tenantId, Long userId) {
         return "platform:" + tenantId + ":" + userId;
     }
+
+    private record TenantKey(String tenantId) { }
+    private record ActionRolesKey(String tenantId, String subject, String action) { }
+    private record OwnerDepartmentKey(String tenantId, Long departmentId) { }
+    private record CustomDepartmentKey(String tenantId, long roleId, Long departmentId) { }
 
 }

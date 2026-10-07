@@ -9,6 +9,8 @@ import org.ruoyi.common.core.domain.model.LoginUser;
 import org.ruoyi.common.core.exception.ServiceException;
 import org.ruoyi.common.core.utils.ObjectUtils;
 import org.ruoyi.common.mybatis.core.domain.BaseEntity;
+import org.ruoyi.common.mybatis.core.identity.PlatformMembershipId;
+import org.ruoyi.common.mybatis.core.identity.PlatformMergedRow;
 import org.ruoyi.common.satoken.utils.LoginHelper;
 
 import java.util.Date;
@@ -35,6 +37,7 @@ public class InjectionMetaObjectHandler implements MetaObjectHandler {
     @Override
     public void insertFill(MetaObject metaObject) {
         try {
+            fillMergedTableIdentity(metaObject);
             if (ObjectUtil.isNotNull(metaObject) && metaObject.getOriginalObject() instanceof BaseEntity baseEntity) {
                 // 获取当前时间作为创建时间和更新时间，如果创建时间不为空，则使用创建时间，否则使用当前时间
                 Date current = ObjectUtils.notNull(baseEntity.getCreateTime(), new Date());
@@ -65,6 +68,26 @@ public class InjectionMetaObjectHandler implements MetaObjectHandler {
         } catch (Exception e) {
             throw new ServiceException("自动注入异常 => " + e.getMessage(), HttpStatus.HTTP_UNAUTHORIZED);
         }
+    }
+
+    /**
+     * 统一库合并表的平台身份列填充（E5/WP-026）。
+     *
+     * <p>与创建人/创建部门不同，身份列<b>没有匿名兜底</b>：{@code ai_conversation.member_id}
+     * 等是 {@code NOT NULL} 且无列默认值的成员列，用 {@code -1} 之类的默认值会静默把行归到
+     * 一个人造成员名下。因此这里缺主体就抛异常，让写路径显式失败。
+     *
+     * <p>只对实现 {@link PlatformMergedRow} 的实体生效：集合是编译期可见的，漏标一个实体会让
+     * 它继续走老路（插入被数据库 NOT NULL 拒绝），而不是被悄悄跳过。
+     */
+    private void fillMergedTableIdentity(MetaObject metaObject) {
+        if (ObjectUtil.isNull(metaObject)
+                || !(metaObject.getOriginalObject() instanceof PlatformMergedRow row)) {
+            return;
+        }
+        // 身份没有匿名兜底：缺登录主体就抛，让写路径显式失败
+        row.setTenantId(PlatformMembershipId.requireCurrentTenantId());
+        row.setMemberId(PlatformMembershipId.requireCurrentMembershipId());
     }
 
     /**

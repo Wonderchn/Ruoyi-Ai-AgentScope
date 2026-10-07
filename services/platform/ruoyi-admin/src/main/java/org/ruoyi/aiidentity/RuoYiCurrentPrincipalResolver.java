@@ -19,12 +19,15 @@ package org.ruoyi.aiidentity;
 
 import lombok.RequiredArgsConstructor;
 import org.ruoyi.aiintegration.identity.CurrentPrincipalResolver;
+import org.ruoyi.common.core.constant.TenantConstants;
+import org.ruoyi.common.core.domain.model.LoginUser;
 import org.ruoyi.common.core.utils.StringUtils;
 import org.ruoyi.common.satoken.utils.LoginHelper;
 import org.ruoyi.system.aiidentity.CurrentAiMembershipService;
 import org.springframework.stereotype.Component;
 
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * 当前登录账号 → canonical 成员身份的生产实现（U06/P1.2c SPI 的 U04/P1.2b 接线）。
@@ -62,5 +65,50 @@ public class RuoYiCurrentPrincipalResolver implements CurrentPrincipalResolver {
         String membershipId = "platform:" + tenantId + ":" + userIdStr;
         return Optional.of(new CurrentMember(tenantId, userIdStr, membershipId));
     }
+
+    /**
+     * 平台管理身份判定（维护者裁决 A2-ter）。
+     *
+     * <p>口径取平台既有词汇，三者之一成立即算平台管理身份：
+     * <ul>
+     *   <li>内置超级管理员：{@code LoginHelper.isSuperAdmin()}（{@code userId == 1}）；</li>
+     *   <li>持有超级管理员角色标识：登录会话的 {@code rolePermission} 含
+     *       {@code TenantConstants.SUPER_ADMIN_ROLE_KEY}（{@code "superadmin"}）——
+     *       与仓库既有 {@code @SaCheckRole(TenantConstants.SUPER_ADMIN_ROLE_KEY)}
+     *       同源；</li>
+     *   <li><b>专用平台目录管理角色</b> {@link #PLATFORM_CATALOG_ADMIN_ROLE_KEY}
+     *       —— 维护者裁决要求的"仅授予专用平台目录管理角色"：只发这一个角色、
+     *       不给整套超管权限，即可管理平台级 Agent 目录。</li>
+     * </ul>
+     *
+     * <p><b>租户管理员（{@code "admin"}）与普通租户成员一律为 false</b>：它们拿到
+     * 再多 scope 也不能通过"平台管理身份专属动作"的第二道门。会话不存在或读不到
+     * 角色时返回 false（fail-closed）。
+     */
+    @Override
+    public boolean isPlatformAdmin() {
+        if (LoginHelper.isSuperAdmin()) {
+            return true;
+        }
+        LoginUser loginUser = LoginHelper.getLoginUser();
+        if (loginUser == null) {
+            return false;
+        }
+        Set<String> rolePermission = loginUser.getRolePermission();
+        if (rolePermission == null) {
+            return false;
+        }
+        return rolePermission.contains(TenantConstants.SUPER_ADMIN_ROLE_KEY)
+                || rolePermission.contains(PLATFORM_CATALOG_ADMIN_ROLE_KEY);
+    }
+
+    /**
+     * 专用平台目录管理角色标识（A2-ter）。
+     *
+     * <p>刻意<b>不</b>复用 {@code superadmin}：按维护者裁决，平台级 Agent 目录只应
+     * 授予这一个<b>专用</b>角色，而不是把整套超管权限发出去。部署方在
+     * {@code sys_role} 建同名 {@code role_key} 并绑定到平台管理账号即可。
+     */
+    public static final String PLATFORM_CATALOG_ADMIN_ROLE_KEY = "ai_catalog_admin";
 
 }

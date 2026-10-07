@@ -14,7 +14,7 @@ import java.io.Serializable;
 
 
 /**
- * 知识库视图对象 knowledge_info
+ * 知识库视图对象 ai_knowledge_base
  *
  * @author ageerle
  * @date 2025-12-17

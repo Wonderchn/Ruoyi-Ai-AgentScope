@@ -1,0 +1,16 @@
+org.ruoyi.aiweb.AiWebEmbeddedConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedRagConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedRunConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedDocumentConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedAgentActionConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedWorkerConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedModelConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedKnowledgeConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedAgentConversationConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedMapperConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedAgentEngineConfiguration
+com.nageoffer.ai.ragent.framework.mq.transport.RocketMQOutboxTransportAutoConfiguration
+com.nageoffer.ai.ragent.authorization.AiDeliveryPermitConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedFeedbackConfiguration
+com.nageoffer.ai.ragent.mcp.config.McpEmbeddedServerConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedAgentCatalogConfiguration

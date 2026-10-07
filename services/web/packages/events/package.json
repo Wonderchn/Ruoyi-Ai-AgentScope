@@ -1,0 +1,22 @@
+{
+  "name": "@ruoyi/events",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared AI protocol assets: SSE frame syntax, run stream client, RAG transport and API client factory",
+  "exports": {
+    ".": "./src/index.ts",
+    "./sse": "./src/sse/index.ts",
+    "./rag": "./src/rag/index.ts"
+  },
+  "types": "./src/index.ts",
+  "scripts": {
+    "test": "node --import ./tests/ts-loader.mjs --test \"tests/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "echo \"@ruoyi/events has no ESLint config of its own; typecheck + node:test cover it (see services/web/README.md)\""
+  },
+  "devDependencies": {
+    "@types/node": "24.0.13",
+    "typescript": "~5.8.3"
+  }
+}

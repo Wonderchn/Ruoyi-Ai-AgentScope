@@ -14,7 +14,7 @@ import java.io.Serializable;
 
 
 /**
- * 厂商管理视图对象 chat_provider
+ * 厂商管理视图对象 ai_model_provider
  *
  * @author ageerle
  * @date 2025-12-14

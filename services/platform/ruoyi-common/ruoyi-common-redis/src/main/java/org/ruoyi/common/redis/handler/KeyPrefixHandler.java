@@ -1,7 +1,7 @@
 package org.ruoyi.common.redis.handler;
 
 import org.ruoyi.common.core.utils.StringUtils;
-import org.redisson.api.NameMapper;
+import org.redisson.config.NameMapper;
 
 /**
  * redis缓存key前缀处理

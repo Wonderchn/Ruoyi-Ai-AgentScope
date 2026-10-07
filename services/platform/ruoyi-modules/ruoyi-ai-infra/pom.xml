@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <groupId>org.ruoyi</groupId>
+        <artifactId>ruoyi-modules</artifactId>
+        <version>${revision}</version>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+
+    <artifactId>ruoyi-ai-infra</artifactId>
+
+    <description>
+        AI 基础设施适配器（E3 单元二第二块）：原 services/ai/infra-ai 的整体搬迁。
+        聊天/嵌入/重排/多模态客户端、令牌计数、供应商路由与首包探针。
+
+        依赖说明：framework 共享内核改由 org.ruoyi:ruoyi-ai-runtime 提供（逐字节同源，
+        原包名不变）；okhttp 版本与 services/ai 的 okhttp-bom 解析结果一致（5.3.2）。
+        本模块无 Controller、无宿主装配类，内嵌装配由消费方（ruoyi-ai-rag/web）显式列举，
+        不做根包扫描。类保留原包名 com.nageoffer.ai.ragent.infra 以缩小搬迁差异（V2 §3）。
+    </description>
+
+    <properties>
+        <!-- services/ai 父 POM okhttp-bom 的解析版本；platform 根 POM 不管理 okhttp -->
+        <okhttp.version>5.3.2</okhttp.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>ruoyi-ai-runtime</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>okhttp-jvm</artifactId>
+            <version>${okhttp.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+        </dependency>
+    </dependencies>
+</project>

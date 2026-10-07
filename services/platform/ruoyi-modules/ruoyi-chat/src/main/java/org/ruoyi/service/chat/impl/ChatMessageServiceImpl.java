@@ -203,7 +203,7 @@ public class ChatMessageServiceImpl implements IChatMessageService {
             }
 
             ChatMessageBo messageBo = new ChatMessageBo();
-            messageBo.setUserId(userId);
+            messageBo.setUserId(String.valueOf(userId));
             messageBo.setSessionId(sessionId);
             messageBo.setContent(content);
             messageBo.setRole(role);

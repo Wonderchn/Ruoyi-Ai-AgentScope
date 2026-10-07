@@ -10,7 +10,7 @@ import java.io.Serial;
 
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("short_drama_location")
+@TableName("ai_short_drama_location")
 public class ShortDramaLocation extends BaseEntity {
 
     @Serial

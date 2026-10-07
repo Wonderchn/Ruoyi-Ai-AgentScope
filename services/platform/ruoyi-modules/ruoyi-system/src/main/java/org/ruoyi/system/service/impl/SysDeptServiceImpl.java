@@ -11,6 +11,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import org.ruoyi.common.core.constant.CacheNames;
+import org.ruoyi.common.core.constant.HttpStatus;
 import org.ruoyi.common.core.constant.SystemConstants;
 import org.ruoyi.common.core.domain.dto.DeptDTO;
 import org.ruoyi.common.core.exception.ServiceException;
@@ -288,7 +289,7 @@ public class SysDeptServiceImpl implements ISysDeptService, DeptService {
             return;
         }
         if (baseMapper.countDeptById(deptId) == 0) {
-            throw new ServiceException("没有权限访问部门数据！");
+            throw new ServiceException("没有权限访问部门数据！", HttpStatus.FORBIDDEN);
         }
     }
 

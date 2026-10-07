@@ -8,7 +8,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
 import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
+import org.springframework.boot.jackson2.autoconfigure.Jackson2AutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
@@ -20,11 +20,14 @@ import java.time.format.DateTimeFormatter;
  * platform 侧权威 ObjectMapper。此前该 bean 由 ruoyi-aiflow 的 BeanConfig 以 @Primary 提供，
  * 旧 AI 模块退场后必须在保留侧落地，否则 Long 精度保护与 null 省略策略会静默消失。
  * <p>
- * 必须在 JacksonAutoConfiguration 之前注册：其 jacksonObjectMapper 同时带 @Primary 与
+ * 必须在 Jackson2AutoConfiguration 之前注册：其 jacksonObjectMapper 同时带 @Primary 与
  * {@code @ConditionalOnMissingBean}，若让它先注册就会出现两个 @Primary 的 ObjectMapper，
  * 上下文以 "more than one 'primary' bean found" 启动失败。
+ * <p>
+ * Boot 4 下应用面统一使用 Jackson 2（Jackson 3 已从 web starter 传递路径摘除），
+ * 因此对齐 Jackson2AutoConfiguration 而不是 JacksonAutoConfiguration。
  */
-@AutoConfiguration(before = JacksonAutoConfiguration.class)
+@AutoConfiguration(before = Jackson2AutoConfiguration.class)
 public class PlatformObjectMapperConfig {
 
     public static final String DATE_TIME_PATTERN = "yyyy-MM-dd HH:mm:ss";
