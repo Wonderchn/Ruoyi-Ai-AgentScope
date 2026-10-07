@@ -132,6 +132,17 @@ public class AiGatewayController {
             new Route("POST", "/conversations", "conversation.rename"),
             new Route("PUT", "/conversations/{id}", "conversation.rename"),
             new Route("DELETE", "/conversations/{id}", "conversation.delete"),
+            // RW-01（T0 集成；t2r-runtime 交付 ConversationBatchDeleteService/Controller）：
+            // F03 普通会话批量删除。内层 handler = /internal/ai/v1/conversations/batch-delete
+            // （与 GET/POST/PUT/DELETE /conversations 同一前缀形状，网关转送目标恒为
+            //  base + "/internal/ai/v1" + subPath，故内层逐字可命中）。
+            // 动作复用 conversation.delete（→ V12 已播种的 ai:conversation:delete），
+            // **不新增 canonical 动作、不新增权限行、不新增迁移**（P1CurrentAuthorizationTest
+            //  的动作条数护栏不变）。D05 的服务端契约与负例已交付（见 RW-01 报告 §5），
+            // 故原"批量多资源授权是计划 §13 待决定项"的前置条件已由 D05 满足。
+            // 段级匹配无冲突：本行 2 段，POST /conversations 1 段，
+            // POST /conversations/messages/{messageId}/feedback 4 段。
+            new Route("POST", "/conversations/batch-delete", "conversation.delete"),
             // W3-5-BE-1（T0 登记，2026-10-06；t3-ingest 交付 AiEmbeddedFeedbackConfiguration 后）：
             // 消息反馈面（T6 workbench 历史页赞/踩）。此前 MessageFeedbackController 内层存在
             // 但不在白名单 ⇒ 网关必然 404（T6 判据钉死的缺口）。动作复用 conversation.rename

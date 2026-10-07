@@ -202,6 +202,31 @@ public class AiEmbeddedRagConfiguration {
             return new AiResourceController(authorization, writeService);
         }
 
+        // RW-01（T0 集成；t2r-runtime 交付）：F03 普通会话批量删除（D05）。
+        // AI 类都在 com.nageoffer.ai.ragent.**，不在 platform 组件扫描路径内，必须在此显式登记
+        // （与本组其余 bean 同规矩）。与 AiGatewayController.ROUTES 的
+        // POST /conversations/batch-delete 行**成对**：只加白名单会让
+        // LocalWhitelistHandlerCoverageTest 的"放行了但没人接"护栏变红；只加 bean 则客户端仍 404。
+        @Bean
+        @ConditionalOnMissingBean
+        public com.nageoffer.ai.ragent.runtime.web.ConversationBatchDeleteService conversationBatchDeleteService(
+                AiResourceAuthorizationService authorization,
+                TenantConversationReadRepository conversations,
+                ObjectProvider<RevocationGuard> revocations,
+                NamedParameterJdbcTemplate jdbc,
+                TransactionOperations transactionOperations) {
+            return new com.nageoffer.ai.ragent.runtime.web.ConversationBatchDeleteService(
+                    authorization, conversations, revocations, jdbc, transactionOperations);
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        public com.nageoffer.ai.ragent.runtime.web.ConversationBatchDeleteController conversationBatchDeleteController(
+                com.nageoffer.ai.ragent.runtime.web.ConversationBatchDeleteService conversationBatchDeleteService) {
+            return new com.nageoffer.ai.ragent.runtime.web.ConversationBatchDeleteController(
+                    conversationBatchDeleteService);
+        }
+
         // ------------------------------------------------------------------ 本地端口（HTTP → 本地接口替换点）
 
         @Bean
