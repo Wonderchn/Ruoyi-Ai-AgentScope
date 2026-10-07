@@ -182,7 +182,10 @@ public class AiGatewayController {
             // 动作与权限全部**复用既有已播种行**，不新增 canonical 动作、不新增迁移：
             //   run.cancel    -> ai:run:cancel     (V5)
             //   agent.execute -> ai:agent:execute  (V6)
-            // `P1CurrentAuthorizationTest` 断言 knownActions().size()==26，故不得新增动作。
+            // `P1CurrentAuthorizationTest` 断言 knownActions().size()==34，故不得新增动作。
+            // （注：本条注释曾长期写作"26"，是过期数字；权威值以 P1CurrentAuthorizationTest:209
+            //   的 assertEquals(34, AiActionRegistry.knownActions().size()) 为准。R/RW-29 已两次
+            //   因该过期数字产生误导，故此处更正并保留说明。）
             new Route("GET", "/memories", "memory.read"),
             new Route("GET", "/runs/{id}", "run.get"),
             new Route("GET", "/runs/{id}/event-records", "run.events"),
