@@ -1,7 +1,7 @@
 {
   "registry_version": 1,
   "generated_by": "WP-028 ExtractRegistry.py（只读冻结迁移 + 旧 MySQL 脚本 + 平台实体源码）",
-  "scope": "冻结 V9 中 6 张合并表的平台侧追加列（ALTER TABLE platform.<ai_table> ADD COLUMN IF NOT EXISTS ...）",
+  "scope": "冻结 V9 中 6 张合并表的平台侧追加列（ALTER TABLE platform.<ai_table> ADD COLUMN IF NOT EXISTS ...）；V9 之后（含 V13、V29 及以后任何迁移）给这 6 张表追加的列不进入 columns 冻结口径，必须在 post_v9_append_columns 分区显式声明——该分区不区分 SQL 写法，裸 ADD COLUMN 与 ADD COLUMN IF NOT EXISTS 一视同仁",
   "scope_tables": {
     "ai_agent_profile": "agent_info",
     "ai_conversation": "chat_session",
@@ -31,6 +31,31 @@
     "legacy_not_null": 13
   },
   "problems": [],
+  "post_v9_append_columns": [
+    {
+      "table": "ai_conversation",
+      "column": "version",
+      "source_migration": "V13",
+      "pg_definition": "bigint NOT NULL DEFAULT 0",
+      "pg_not_null": true,
+      "reason": "D10 会话改名乐观锁令牌：用行内 bigint 计数器取代 update_time 毫秒令牌，消除同一毫秒内 lost update 与 JVM 时钟回拨导致的令牌不前进。",
+      "write_source": "conversation_rename_cas"
+    },
+    {
+      "table": "ai_knowledge_document",
+      "column": "version",
+      "source_migration": "V29",
+      "pg_definition": "bigint NOT NULL DEFAULT 0",
+      "pg_not_null": true,
+      "reason": "RW-04 11.8 文档乐观锁令牌：与 D10 同类缺陷——update_time 毫秒令牌不保证前进，读-改-写会静默互相覆盖。改用行内计数器，API 形状不变（version/expectedVersion 仍是 Long），只改数值含义。",
+      "write_source": "knowledge_document_version_cas"
+    }
+  ],
+  "post_v9_append_column_counts": {
+    "declared": 2,
+    "covered_tables": 2
+  },
+
   "decision_rules": {
     "required": "旧 MySQL DDL 该列 NOT NULL，或统一表该列 NOT NULL（原约束强制）；否则 optional",
     "supplied": "write_source ∈ {v7_ai_shape, v11_legacy_copy}",
