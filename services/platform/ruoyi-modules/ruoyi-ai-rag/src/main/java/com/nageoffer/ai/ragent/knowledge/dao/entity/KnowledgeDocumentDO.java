@@ -140,6 +140,16 @@ public class KnowledgeDocumentDO {
     private String status;
 
     /**
+     * 乐观锁版本计数器（V29 迁移新增）
+     *
+     * <p>0 起，每次成功写入 {@code version = version + 1}；条件更新用
+     * {@code WHERE version = ?}。取代此前的 {@code update_time} 毫秒令牌——
+     * 毫秒令牌在"同一毫秒内两次提交"时不会前进，会让持旧令牌的第三个写入者
+     * 仍然命中，造成静默的 lost update（详见 RW-04 §11.8 与 V29 迁移注释）。
+     */
+    private Long version;
+
+    /**
      * 创建人
      */
     private String createdBy;
