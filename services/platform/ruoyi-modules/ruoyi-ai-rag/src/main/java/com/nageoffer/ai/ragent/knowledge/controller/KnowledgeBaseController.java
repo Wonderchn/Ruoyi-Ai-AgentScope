@@ -32,13 +32,32 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
  * 知识库控制器
  * 提供知识库的增删改查等基础操作接口
+ *
+ * <p><b>路径面（RW-04-R1）</b>：类级前缀 {@code /internal/ai/v1} 是<b>内层</b>前缀，
+ * 直接访问由 {@code AiInternalAccessBoundaryFilter} 关成 404。公开面必须经
+ * {@code AiGatewayController} 白名单转发，即 {@code /api/ai/v1/knowledge-base/**}
+ * （单数 = admin 管理面；复数 {@code /knowledge-bases/**} 是 AI 资源面
+ * {@code AiResourceController}，两者不同面、不冲突）。
+ *
+ * <p>前置条件：本控制器要成为 bean，必须由内嵌装配显式登记
+ * （platform 扫描根是 {@code org.ruoyi}，{@code com.nageoffer.ai.ragent.*} 不在扫描范围）。
+ *
+ * <p><b>授权不在本层</b>：与 {@code AiResourceController}/{@code AgentChatController} 同形，
+ * 内层 controller <b>不加</b> {@code @SaCheckPermission}——能力级权限由网关按
+ * {@code AiCanonicalAction} 判定，资源级判定在 AI 侧授权域。这里只做"缺执行主体即拒绝"
+ * （{@code PrincipalContext.require()}）与租户条件读写。
+ *
+ * <p>信封：本族仍返回 platform {@code Result}（{@code code} 是字符串 {@code "0"}，
+ * HTTP 恒 200），<b>不要</b>改成 {@code /api/ai/v1} 的整数 code。
  */
 @RestController
+@RequestMapping("/internal/ai/v1")
 @RequiredArgsConstructor
 public class KnowledgeBaseController {
 

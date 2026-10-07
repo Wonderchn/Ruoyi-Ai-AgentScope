@@ -35,13 +35,24 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
  * 知识库 Chunk 管理接口
+ *
+ * <p><b>路径面（RW-04-R1）</b>：类级前缀 {@code /internal/ai/v1} 是内层前缀，直接访问被
+ * {@code AiInternalAccessBoundaryFilter} 关成 404；公开面经网关白名单为
+ * {@code /api/ai/v1/knowledge-base/docs/{docId}/chunks*}——这正是
+ * {@code 04-page-map.json:56}「文档分块」页登记的 API 分母。
+ *
+ * <p>前置条件：必须由内嵌装配显式登记（platform 扫描根 {@code org.ruoyi} 不含本模块）。
+ * 授权不在本层：不加 {@code @SaCheckPermission}，能力级权限由网关判定。
+ * 信封仍是 platform {@code Result}（字符串 code {@code "0"}，HTTP 恒 200）。
  */
 @RestController
+@RequestMapping("/internal/ai/v1")
 @RequiredArgsConstructor
 @Validated
 public class KnowledgeChunkController {

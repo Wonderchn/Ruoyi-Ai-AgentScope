@@ -45,6 +45,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
@@ -58,8 +59,20 @@ import java.util.Map;
 /**
  * 知识库文档管理控制器
  * 提供文档的上传、分块、删除、查询、启用/禁用等功能
+ *
+ * <p><b>路径面（RW-04-R1）</b>：类级前缀 {@code /internal/ai/v1} 是内层前缀，直接访问被
+ * {@code AiInternalAccessBoundaryFilter} 关成 404；公开面经网关白名单为
+ * {@code /api/ai/v1/knowledge-base/docs/**}。注意与 P2 文档面
+ * （{@code /api/ai/v1/documents/**}，{@code UploadController}）是<b>两条不同的面</b>：
+ * 后者是"上传意图→版本→发布指针"的 AI 资源面，本控制器是 ragent 管理面。
+ *
+ * <p>前置条件：必须由内嵌装配显式登记（platform 扫描根 {@code org.ruoyi} 不含本模块）。
+ * 授权不在本层：不加 {@code @SaCheckPermission}，能力级权限由网关判定。
+ * 信封仍是 platform {@code Result}（字符串 code {@code "0"}，HTTP 恒 200）；
+ * 例外是 {@code GET .../file}：它直接写原始字节，不是 JSON。
  */
 @RestController
+@RequestMapping("/internal/ai/v1")
 @RequiredArgsConstructor
 @Validated
 public class KnowledgeDocumentController {
