@@ -36,12 +36,27 @@ import java.util.List;
 public class ChatConfigController extends BaseController {
 
     private final IChatConfigService chatConfigService;
-    private static final String AUTHORITY_NOTICE = "旧配置操作完成；不影响运行权威，请使用 /api/ai/v1/runtime-config/revisions";
+
+    /**
+     * 旧配置面的权威声明（RW-06 复核后保持同一语义）。
+     *
+     * <p>本控制器的读写只落到旧 {@code chat_config} 键值表，<b>不影响运行权威</b>：
+     * 决定 run 使用哪个模型/参数/维度/限额的是 {@code platform.ai_runtime_config_revision}
+     * 的不可变已发布版本。用户模型选择的读取契约是
+     * {@code GET /api/ai/v1/runtime-config/catalog}，发布/撤销/回滚是
+     * {@code /api/ai/v1/runtime-config/revisions}。这里的文案刻意指向它们，
+     * 避免调用方从旧响应推断"当前模型已被改动"。
+     */
+    private static final String AUTHORITY_NOTICE =
+            "旧配置操作完成；不影响运行权威，请使用 /api/ai/v1/runtime-config/revisions（发布/撤销/回滚）"
+                    + " 或 /api/ai/v1/runtime-config/catalog（模型选择读取）";
 
     @org.springframework.web.bind.annotation.ModelAttribute
     public void runtimeAuthorityNotice(HttpServletResponse response) {
         response.setHeader("X-AI-Affects-Runtime-Authority", "false");
-        response.setHeader("Link", "</api/ai/v1/runtime-config/revisions>; rel=\"runtime-config\"");
+        response.setHeader("X-AI-Runtime-Authority", "platform.ai_runtime_config_revision");
+        response.setHeader("Link", "</api/ai/v1/runtime-config/revisions>; rel=\"runtime-config\", "
+                + "</api/ai/v1/runtime-config/catalog>; rel=\"runtime-config-catalog\"");
     }
 
     private R<Void> legacyResult(boolean success) {
