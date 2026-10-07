@@ -70,8 +70,9 @@ public class PgVectorRetrieverService implements VectorRetrieverService,
         var principal=com.nageoffer.ai.ragent.framework.context.PrincipalContext.require();
         scope.requireStillValid(principal,principal.policyVersion(),authorization.currentAclVersion(principal.tenantId()));
         var refs=new java.util.LinkedHashSet<String>(scope.authorizedKbRefs());refs.addAll(scope.authorizedDocRefs());
+        var verdicts=authorization.checkBatch(principal,scope.action(),refs);
         for(String ref:refs){
-            var verdict=authorization.check(principal,scope.action(),ref);
+            var verdict=verdicts.getOrDefault(ref,com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict.DENY);
             if(verdict==com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict.UNKNOWN){throw new com.nageoffer.ai.ragent.framework.exception.ServiceException("retrieval authorization unavailable");}
             if(verdict!=com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict.GRANT){throw new com.nageoffer.ai.ragent.framework.security.StaleVersionException("retrieval scope no longer authorized");}
         }

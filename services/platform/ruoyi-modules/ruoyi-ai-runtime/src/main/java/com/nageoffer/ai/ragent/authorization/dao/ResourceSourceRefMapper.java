@@ -65,4 +65,14 @@ public class ResourceSourceRefMapper {
                 rs.getString("status"),
                 rs.getLong("resource_version")));
     }
+
+    public List<SourceRefRow> findChildrenByIds(String tenantId, String parentType, java.util.Collection<String> parentIds) {
+        com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal.requireTenantId(tenantId);
+        if (parentIds == null || parentIds.isEmpty()) { return List.of(); }
+        return jdbc.query("SELECT resource_type, resource_id, status, resource_version FROM ai_resource"
+                        + " WHERE tenant_id = :tenantId AND parent_type = :parentType AND parent_id IN (:parentIds)",
+                Map.of("tenantId", tenantId, "parentType", parentType, "parentIds", parentIds),
+                (rs, rowNum) -> new SourceRefRow(rs.getString("resource_type"), rs.getString("resource_id"),
+                        rs.getString("status"), rs.getLong("resource_version")));
+    }
 }

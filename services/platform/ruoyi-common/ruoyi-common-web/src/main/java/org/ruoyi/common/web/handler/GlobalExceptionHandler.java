@@ -36,6 +36,13 @@ import java.io.IOException;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    @ExceptionHandler({org.springframework.dao.DataAccessException.class, org.springframework.transaction.TransactionException.class})
+    public org.springframework.http.ResponseEntity<java.util.Map<String, Object>> handleDependencyUnavailable(Exception e) {
+        log.warn("dependency unavailable type={}", e.getClass().getSimpleName());
+        return org.springframework.http.ResponseEntity.status(503).body(java.util.Map.of(
+            "code", 503, "msg", "依赖不可用，请稍后重试", "data", java.util.Map.of("errorCode", "DEPENDENCY_UNAVAILABLE")));
+    }
+
     private static final String SAFE_SERVICE_ERROR_MESSAGE = "请求处理失败";
     private static final String SAFE_VALIDATION_ERROR_MESSAGE = "请求参数校验失败";
 

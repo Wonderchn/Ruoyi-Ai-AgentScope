@@ -132,6 +132,25 @@ class LocalAiGatewayClientBridgeTest {
     }
 
     @Test
+    void innerContentLengthDoesNotMutateTheOuterResponse() {
+        requestWithWebContext();
+        var outer = ((ServletRequestAttributes) RequestContextHolder.currentRequestAttributes()).getResponse();
+        client(fixedFacts()).forward(forwardRequest());
+        assertThat(outer.getHeader("Content-Length")).isNull();
+    }
+
+    @Test
+    void writerBodyIsFlushedAndCapturedStatusIsReadableByInnerCode() {
+        requestWithWebContext();
+        var response = client(fixedFacts()).forward(new AiGatewayClient.ForwardRequest("GET",
+                URI.create("http://local/internal/ai/v1/writer"), Map.of(), null));
+        assertThat(response.status()).isEqualTo(403);
+        assertThat(response.body()).isEqualTo("{\"code\":403,\"data\":{}}");
+        var outer = ((ServletRequestAttributes) RequestContextHolder.currentRequestAttributes()).getResponse();
+        assertThat(outer.getHeader("Content-Length")).isNull();
+    }
+
+    @Test
     void rejectsNonObjectBody() {
         requestWithWebContext();
         stubBody.set("[1,2,3]");
@@ -188,6 +207,14 @@ class LocalAiGatewayClientBridgeTest {
     @RestController
     @RequestMapping("/internal/ai/v1")
     static class BridgeFixtureController {
+
+        @GetMapping("/writer")
+        public void writer(jakarta.servlet.http.HttpServletResponse response) throws java.io.IOException {
+            response.setStatus(403);
+            response.setContentType("application/json");
+            response.setContentLength(99);
+            response.getWriter().print("{\"code\":" + response.getStatus() + ",\"data\":{}}");
+        }
 
         @GetMapping("/knowledge-bases")
         public ResponseEntity<String> listKnowledgeBases() {

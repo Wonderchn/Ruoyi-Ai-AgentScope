@@ -18,6 +18,24 @@
 # （SnakeYAML allowDuplicateKeys=false 直接拒绝），而 Spring 的宽松解析会让后写的块
 # 静默覆盖前一个块——"集成开关被模型目录覆盖掉"这类问题因此只在运行期暴露。
 # 所以集成开关与 WP-030 模型目录合并在同一个块内。
+# Bounded DB failure detection; PostgreSQL socket/connect settings are seconds.
+spring:
+  datasource:
+    dynamic:
+      hikari:
+        connectionTimeout: ${AI_DB_CONNECTION_TIMEOUT_MS:3000}
+        validationTimeout: ${AI_DB_VALIDATION_TIMEOUT_MS:1000}
+      datasource:
+        master:
+          driverClassName: org.postgresql.Driver
+          url: jdbc:postgresql://${PLATFORM_DB_HOST:127.0.0.1}:${PLATFORM_DB_PORT:5432}/${PLATFORM_DB_NAME:ruoyi_agent}?currentSchema=${PLATFORM_DB_SCHEMA:platform,extensions}&reWriteBatchedInserts=true&charSet=UTF-8
+          username: ${PLATFORM_DB_USERNAME:migrate_platform}
+          password: ${PLATFORM_DB_PASSWORD}
+          hikari:
+            dataSourceProperties:
+              connectTimeout: ${AI_DB_CONNECT_TIMEOUT_SECONDS:3}
+              socketTimeout: ${AI_DB_SOCKET_TIMEOUT_SECONDS:5}
+
 ai:
   integration:
     enabled: true

@@ -62,6 +62,9 @@ public final class AiCanonicalAction {
         actions.put("agent.write", "ai:agent:write");
         actions.put("agent.delete", "ai:agent:delete");
         actions.put("agent.activate", "ai:agent:activate");
+        actions.put("config.read", "ai:config:read");
+        actions.put("config.publish", "ai:config:publish");
+        actions.put("config.revoke", "ai:config:revoke");
         actions.put("tool.sandbox.write", "ai:tool:sandbox:write");
         return Collections.unmodifiableMap(actions);
     }

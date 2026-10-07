@@ -205,7 +205,11 @@ class P1CurrentAuthorizationTest {
         // W4-9 added the five F09 agent-catalog actions (agent.list/read/write/delete/activate),
         // so the frozen table is now 31. F11 (skill.*) is deliberately not landed in this batch
         // (its runtime closure is not assembled yet — task-13 / W4-T0-46).
-        assertEquals(31, AiActionRegistry.knownActions().size());
+        // Runtime authority administration adds three separately permissioned actions.
+        assertEquals(34, AiActionRegistry.knownActions().size());
+        assertEquals(Optional.of("ai:config:read"), AiActionRegistry.permissionOf("config.read"));
+        assertEquals(Optional.of("ai:config:publish"), AiActionRegistry.permissionOf("config.publish"));
+        assertEquals(Optional.of("ai:config:revoke"), AiActionRegistry.permissionOf("config.revoke"));
         assertEquals(Optional.of("ai:conversation:write"), AiActionRegistry.permissionOf("conversation.rename"));
         assertEquals(Optional.of("ai:conversation:delete"), AiActionRegistry.permissionOf("conversation.delete"));
         assertEquals(Optional.of("ai:kb:acl"), AiActionRegistry.permissionOf("kb.acl.manage"));

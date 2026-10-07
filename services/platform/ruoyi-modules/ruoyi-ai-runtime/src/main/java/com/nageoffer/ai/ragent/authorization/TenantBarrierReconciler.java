@@ -105,7 +105,8 @@ public class TenantBarrierReconciler {
 
     /** 回收语句（**唯一一份**）：只把 PENDING 收回 OPEN。 */
     static final String SQL_REOPEN_IF_PENDING =
-            "UPDATE ai_tenant_barrier SET status='OPEN', updated_at=now()"
+            "UPDATE ai_tenant_barrier SET status='OPEN', updated_at=now(),"
+                    + " reconciled_at=now(), reconciled_by='write-reconciler'"
                     + " WHERE tenant_id=:tenant AND barrier_id=:barrier AND status='PENDING'";
 
     /**
@@ -224,7 +225,7 @@ public class TenantBarrierReconciler {
         Map<String, Object> parameters = Map.of("tenant", tenantId);
         int healed = jdbc.update(SQL_SELF_HEAL_IF_LEASE_EXPIRED, parameters);
         if (healed == 1) {
-            log.warn("屏障租约过期自愈：PENDING 收回 OPEN, tenant={}, leaseSeconds={}",
+            log.warn("barrier_reconcile_cas source=lease-reconciler tenant={} from=PENDING_OR_CLOSED to=OPEN affected=1 leaseSeconds={}",
                     tenantId, BARRIER_LEASE_SECONDS);
             return LeaseSelfHeal.SELF_HEALED;
         }
@@ -279,7 +280,7 @@ public class TenantBarrierReconciler {
             if (remaining == 0L) {
                 int reopened = jdbc.update(SQL_REOPEN_IF_PENDING, parameters);
                 if (reopened == 1) {
-                    log.warn("屏障由 PENDING 收回 OPEN：无未过期活跃 permit, tenant={}, barrier={}",
+                    log.warn("barrier_reconcile_cas source=write-reconciler tenant={} barrier={} from=PENDING to=OPEN affected=1",
                             tenantId, barrierId);
                     return new ReclaimResult(Outcome.RECLAIMED, 0L);
                 }

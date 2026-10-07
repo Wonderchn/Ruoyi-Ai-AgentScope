@@ -32,7 +32,7 @@ import java.net.URI;
  * {@link RunConfigBindingPort} 定死 providerId 之后，把该 providerId 的传输地址与凭据取出来。
  * 因此它不构成第二权威。
  *
- * <p><b>实现（{@code ProviderConnections}）从 {@code p2.providers.connections.*} 读引导值</b>，
+ * <p><b>实现（{@code ProviderConnections}）从 {@code p2.providers.connections.entries.*} 读引导值</b>，
  * 该属性没有 shipped 默认值：未注入 ⇒ 任何真实提供方调用都以
  * {@link ConfigAuthorityUnavailable} 失败（响亮、可诊断），而不是静默打到一个公共端点。
  */

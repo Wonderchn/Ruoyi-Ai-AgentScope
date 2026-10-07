@@ -20,6 +20,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useRoute } from 'vue-router';
+import BlockedBy from '@/components/BlockedBy.vue';
 
 const route = useRoute();
 const kbId = computed(() => String(route.params.kbId ?? ''));

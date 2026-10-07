@@ -31,7 +31,7 @@
 -->
 <script setup lang="ts">
 import type { KnowledgeBaseRow } from '@/api';
-import { computed, onMounted, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { aiApi } from '@/api';
 import { usePermission } from '@/composables/usePermission';
@@ -53,6 +53,7 @@ const rows = ref<KnowledgeBaseRow[]>([]);
 const loading = ref(false);
 const error = ref('');
 const loaded = ref(false);
+let loadGeneration = 0;
 
 const phase = computed(() => {
   if (error.value)
@@ -67,32 +68,39 @@ function testId(name: 'error' | 'empty' | 'rows' | 'loading' | 'idle'): string {
 }
 
 async function load() {
+  const generation = ++loadGeneration;
   const capturedAuth = identity.snapshotEpoch();
+  const current = () => generation === loadGeneration && identity.isCurrent(capturedAuth) && can(PERMISSION_LIST);
   loading.value = true;
   error.value = '';
   try {
     const list = await aiApi.knowledgeBases.list();
-    if (!identity.isCurrent(capturedAuth))
+    if (!current())
       return;
     rows.value = Array.isArray(list) ? list : [];
     loaded.value = true;
   }
   catch (e) {
-    if (identity.isCurrent(capturedAuth)) {
+    if (current()) {
       error.value = errorMessageOf(e);
       loaded.value = false;
     }
   }
   finally {
-    if (identity.isCurrent(capturedAuth))
+    if (current())
       loading.value = false;
   }
 }
 
-onMounted(() => {
-  if (can(PERMISSION_LIST))
+watch([() => can(PERMISSION_LIST), () => identity.authEpoch], ([allowed]) => {
+  ++loadGeneration;
+  rows.value = [];
+  loaded.value = false;
+  error.value = '';
+  loading.value = false;
+  if (allowed)
     void load();
-});
+}, { immediate: true });
 
 /** 新增对话框（kb.write）。 */
 const createVisible = ref(false);

@@ -102,15 +102,23 @@ public class AiResourceAuthorizationService
         var principal = com.nageoffer.ai.ragent.framework.context.PrincipalContext.require();
         scope.requireStillValid(principal, principal.policyVersion(), currentAclVersion(principal.tenantId()));
         Set<String> kbs = new LinkedHashSet<>(), docs = new LinkedHashSet<>(), chunks = new LinkedHashSet<>(), collections = new LinkedHashSet<>();
-        for (String ref : scope.authorizedRefs()) {
-            if (ref.startsWith("kb:") && check(principal, scope.action(), ref) == Verdict.GRANT) { kbs.add(ref); }
-        }
+        var kbRefs = scope.authorizedRefs().stream().filter(ref -> ref.startsWith("kb:")).toList();
+        var kbVerdicts = checkBatch(principal, scope.action(), kbRefs);
+        for (String ref : kbRefs) { if (kbVerdicts.get(ref) == Verdict.GRANT) { kbs.add(ref); } }
         if (kbs.isEmpty()) { return com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope.of(scope,kbs,docs,chunks,collections); }
-        for (String kb : kbs) {
-            for (String doc : childResourceRefs(principal.tenantId(),kb)) {
-                if (doc.startsWith("doc:") && check(principal,scope.action(),doc)==Verdict.GRANT) { docs.add(doc); }
+        var docRefs = new LinkedHashSet<String>();
+        if (kbs.size() == 1) { docRefs.addAll(childResourceRefs(principal.tenantId(), kbs.iterator().next())); }
+        else {
+            for (var row : sourceRefMapper.findChildrenByIds(principal.tenantId(), "KB",
+                    kbs.stream().map(ref -> ref.substring(3)).toList())) {
+                if ("DOCUMENT".equals(row.resourceType()) && "ACTIVE".equals(row.status())) {
+                    docRefs.add(resourceRef(row.resourceType(), row.resourceId()));
+                }
             }
         }
+        docRefs.removeIf(ref -> !ref.startsWith("doc:"));
+        var docVerdicts = checkBatch(principal, scope.action(), docRefs);
+        for (String doc : docRefs) { if (docVerdicts.get(doc) == Verdict.GRANT) { docs.add(doc); } }
         if (!docs.isEmpty()) {
             if (projectionJdbc == null) { throw new ServiceException("retrieval projection unavailable"); }
             var parameters = Map.of("tenant",principal.tenantId(),"kbs",kbs.stream().map(ref->ref.substring(3)).toList(),
@@ -302,7 +310,7 @@ public class AiResourceAuthorizationService
                                                 Collection<String> requested) {
         requirePlatform(principal, action, requested == null || requested.isEmpty() ? "tenant:resources" : requested.iterator().next());
         var resolved=delegate.resolveScope(principal, action, requested);
-        var refs=resolved.authorizedRefs().stream().filter(ref->dataScopeAllows(principal,action,ref)).toList();
+        var refs=filterDataScope(principal, action, resolved.authorizedRefs());
         return AuthorizedResourceScope.granted(principal,action,refs,clock.millis());
     }
 
@@ -316,9 +324,63 @@ public class AiResourceAuthorizationService
     @Override
     public Map<String, Verdict> checkBatch(ExecutionPrincipal principal, String action,
                                            Collection<String> resourceRefs) {
-        Map<String,Verdict> result=new LinkedHashMap<>();
-        for (String ref : resourceRefs) { result.put(ref,check(principal,action,ref)); }
+        if (resourceRefs == null || resourceRefs.isEmpty()) { return Map.of(); }
+        if (resourceRefs.size() == 1) {
+            String ref = resourceRefs.iterator().next();
+            return Map.of(ref, check(principal, action, ref));
+        }
+        requirePlatform(principal, action, "tenant:resources");
+        Map<String,Verdict> result = new LinkedHashMap<>(delegate.checkBatch(principal, action, resourceRefs));
+        var granted = result.entrySet().stream().filter(entry -> entry.getValue() == Verdict.GRANT)
+                .map(Map.Entry::getKey).toList();
+        var allowed = new LinkedHashSet<>(filterDataScope(principal, action, granted));
+        for (String ref : granted) { if (!allowed.contains(ref)) { result.put(ref, Verdict.DENY); } }
         return result;
+    }
+
+    private List<String> filterDataScope(ExecutionPrincipal principal, String action, Collection<String> refs) {
+        if (platformFacts == null || refs.isEmpty()) { return List.copyOf(refs); }
+        if (refs.size() == 1) { return refs.stream().filter(ref -> dataScopeAllows(principal, action, ref)).toList(); }
+        // Fresh facts per check: no allow decision is cached across calls or authorization epochs.
+        var all = new LinkedHashMap<>(facts(principal.tenantId(), refs));
+        var frontier = new LinkedHashSet<>(refs);
+        for (int depth = 0; depth < 32 && !frontier.isEmpty(); depth++) {
+            var parents = new LinkedHashSet<String>();
+            for (String ref : frontier) {
+                var fact = all.get(ref);
+                if (fact != null && fact.parentRef() != null && !all.containsKey(fact.parentRef())) {
+                    parents.add(fact.parentRef());
+                }
+            }
+            if (parents.isEmpty()) { break; }
+            all.putAll(facts(principal.tenantId(), parents));
+            frontier = parents;
+        }
+        var candidates = new ArrayList<com.nageoffer.ai.ragent.framework.security.PlatformFactsPort.Candidate>();
+        var owners = new ArrayList<String>();
+        var allowed = new LinkedHashSet<>(refs);
+        for (String ref : refs) {
+            var visited = new LinkedHashSet<String>();
+            String current = ref;
+            while (current != null) {
+                var fact = all.get(current);
+                if (!visited.add(current) || visited.size() > 32 || fact == null || !"ACTIVE".equals(fact.status())) {
+                    allowed.remove(ref); break;
+                }
+                candidates.add(com.nageoffer.ai.ragent.framework.security.PlatformFactsPort.Candidate
+                        .dataScope(fact.ownerMemberId(), fact.ownerDeptId()));
+                owners.add(ref);
+                current = fact.parentRef();
+            }
+        }
+        for (int offset = 0; offset < candidates.size(); offset += 200) {
+            var batch = candidates.subList(offset, Math.min(offset + 200, candidates.size()));
+            var matches = queryFacts(principal, action, batch).matches();
+            for (int i = 0; i < matches.size(); i++) {
+                if (!matches.get(i)) { allowed.remove(owners.get(offset + i)); }
+            }
+        }
+        return refs.stream().filter(allowed::contains).toList();
     }
 
     @Override
@@ -336,6 +398,7 @@ public class AiResourceAuthorizationService
 
     @Override
     public Map<String, ResourceFact> facts(String tenantId, Collection<String> resourceRefs) {
+        ExecutionPrincipal.requireTenantId(tenantId);
         Map<String, ResourceFact> result = new LinkedHashMap<>();
         List<AiResourceRow> rows = new ArrayList<>();
         if (resourceRefs == null || resourceRefs.isEmpty()) {
@@ -343,28 +406,45 @@ public class AiResourceAuthorizationService
             // 后续每行仍走完整判定（tombstone / ACL 交集），这里不是放行清单。
             rows.addAll(resourceMapper.listActive(tenantId));
         } else {
-            Set<String> seen = new LinkedHashSet<>();
-            for (String ref : resourceRefs) {
-                if (ref == null || ref.isBlank() || !seen.add(ref)) {
-                    continue;
-                }
-                ParsedRef parsed = parseResourceRef(ref);
-                resourceMapper.findByPk(tenantId, parsed.resourceType(), parsed.resourceId())
-                        .ifPresent(rows::add);
+            var seen = resourceRefs.stream().filter(ref -> ref != null && !ref.isBlank()).distinct().toList();
+            if (seen.size() == 1) {
+                var parsed = parseResourceRef(seen.get(0));
+                resourceMapper.findByPk(tenantId, parsed.resourceType(), parsed.resourceId()).ifPresent(rows::add);
+            } else if (!seen.isEmpty()) {
+                rows.addAll(resourceMapper.findByIds(tenantId, idsByType(seen)));
+            }
+        }
+        rows.removeIf(row -> !Set.of(AiResourceMapper.TYPE_KB, AiResourceMapper.TYPE_DOCUMENT, "CONVERSATION", "RUN")
+                .contains(row.resourceType()));
+        Map<String, List<AclRow>> rulesByRef = new LinkedHashMap<>();
+        if (rows.size() > 1) {
+            var refs = rows.stream().map(row -> resourceRef(row.resourceType(), row.resourceId())).toList();
+            for (var acl : aclMapper.findByIds(tenantId, idsByType(refs))) {
+                rulesByRef.computeIfAbsent(resourceRef(acl.resourceType(), acl.resourceId()), ignored -> new ArrayList<>()).add(acl);
             }
         }
         for (AiResourceRow row : rows) {
-            if (!Set.of(AiResourceMapper.TYPE_KB, AiResourceMapper.TYPE_DOCUMENT, "CONVERSATION", "RUN").contains(row.resourceType())) { continue; }
             String ref = resourceRef(row.resourceType(), row.resourceId());
-            result.put(ref, toFact(ref, tenantId, row));
+            var rules = rows.size() > 1 ? rulesByRef.getOrDefault(ref, List.of())
+                    : aclMapper.findByResource(tenantId, row.resourceType(), row.resourceId());
+            result.put(ref, toFact(ref, tenantId, row, rules));
         }
         return result;
     }
 
     /** 组装单条资源事实：规则行（含已过期，过期由判定本体按时钟处理）+ 父引用。 */
-    private ResourceFact toFact(String ref, String tenantId, AiResourceRow row) {
+    private static Map<String, List<String>> idsByType(Collection<String> refs) {
+        var ids = new LinkedHashMap<String, List<String>>();
+        for (String ref : refs) {
+            var parsed = parseResourceRef(ref);
+            ids.computeIfAbsent(parsed.resourceType(), ignored -> new ArrayList<>()).add(parsed.resourceId());
+        }
+        return ids;
+    }
+
+    private ResourceFact toFact(String ref, String tenantId, AiResourceRow row, List<AclRow> aclRows) {
         List<AclRule> rules = new ArrayList<>();
-        for (AclRow aclRow : aclMapper.findByResource(tenantId, row.resourceType(), row.resourceId())) {
+        for (AclRow aclRow : aclRows) {
             rules.add(new AclRule(ref,
                     subjectTypeCode(aclRow.subjectType()),
                     aclRow.subjectType().equals(DB_SUBJECT_TENANT_ALL) ? tenantId : aclRow.subjectId(),

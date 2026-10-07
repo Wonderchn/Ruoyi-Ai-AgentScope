@@ -36,6 +36,17 @@ import java.util.List;
 public class ChatConfigController extends BaseController {
 
     private final IChatConfigService chatConfigService;
+    private static final String AUTHORITY_NOTICE = "旧配置操作完成；不影响运行权威，请使用 /api/ai/v1/runtime-config/revisions";
+
+    @org.springframework.web.bind.annotation.ModelAttribute
+    public void runtimeAuthorityNotice(HttpServletResponse response) {
+        response.setHeader("X-AI-Affects-Runtime-Authority", "false");
+        response.setHeader("Link", "</api/ai/v1/runtime-config/revisions>; rel=\"runtime-config\"");
+    }
+
+    private R<Void> legacyResult(boolean success) {
+        return success ? R.ok(AUTHORITY_NOTICE) : R.fail("旧配置操作失败；不影响运行权威");
+    }
 
     /**
      * 查询配置信息列表
@@ -77,7 +88,7 @@ public class ChatConfigController extends BaseController {
     @RepeatSubmit()
     @PostMapping()
     public R<Void> add(@Validated(AddGroup.class) @RequestBody ChatConfigBo bo) {
-        return toAjax(chatConfigService.insertByBo(bo));
+        return legacyResult(chatConfigService.insertByBo(bo));
     }
 
     /**
@@ -95,7 +106,7 @@ public class ChatConfigController extends BaseController {
                 chatConfigService.updateByBo(chatConfigBo);
             }
         }
-        return toAjax(true);
+        return legacyResult(true);
     }
 
 
@@ -107,7 +118,7 @@ public class ChatConfigController extends BaseController {
     @RepeatSubmit()
     @PutMapping()
     public R<Void> edit(@Validated(EditGroup.class) @RequestBody ChatConfigBo bo) {
-        return toAjax(chatConfigService.updateByBo(bo));
+        return legacyResult(chatConfigService.updateByBo(bo));
     }
 
     /**
@@ -120,6 +131,6 @@ public class ChatConfigController extends BaseController {
     @DeleteMapping("/{ids}")
     public R<Void> remove(@NotEmpty(message = "主键不能为空")
                           @PathVariable Long[] ids) {
-        return toAjax(chatConfigService.deleteWithValidByIds(List.of(ids), true));
+        return legacyResult(chatConfigService.deleteWithValidByIds(List.of(ids), true));
     }
 }

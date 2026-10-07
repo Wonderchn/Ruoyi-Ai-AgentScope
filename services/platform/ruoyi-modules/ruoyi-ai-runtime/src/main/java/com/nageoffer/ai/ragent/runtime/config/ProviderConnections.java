@@ -24,17 +24,18 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * {@link ProviderConnectionPort} 的连接引导实现：`p2.providers.connections.<providerId>.{endpoint,api-key,credential-ref}`。
+ * {@link ProviderConnectionPort} 的连接引导实现：`p2.providers.connections.entries.<providerId>.{endpoint,api-key,credential-ref}`。
  *
  * <p><b>刻意没有 shipped 默认值，也没有"已知公共端点"兜底。</b>C1.5 判据 3 的同类要求是
  * "断 DB 时不得返回 YAML 成功路径"；这条的同构要求是"**连接引导缺失时不得打到某个猜测的端点**"。
  * 因此查不到即抛 {@link ConfigAuthorityUnavailable}，由调用方按失败处理；部署侧用
- * {@code P2_PROVIDERS_CONNECTIONS_<PROVIDER>_ENDPOINT} / {@code ..._API_KEY} 这类环境变量注入
+ * {@code P2_PROVIDERS_CONNECTIONS_ENTRIES_<PROVIDER>_ENDPOINT} / {@code ..._API_KEY} 这类环境变量注入
  * （D16 凭据外注入），而**不是**把它写进 shipped yml。
  *
  * <p><b>为什么 api-key 可以为空。</b>存在合法的无密钥提供方（例如本机 Ollama）。凭据是否必需
  * 由提供方调用路径裁决（`RealChatGateway` 对空密钥显式拒绝），连接引导只负责"**端点必须真实存在**"，
  * 不在这一层替提供方做密钥策略，避免把两件事混成一个开关。
+ * endpoint 必须是完整调用地址（例如 /chat/completions），传输层不会追加路径。
  */
 @ConfigurationProperties(prefix = "p2.providers.connections")
 public class ProviderConnections implements ProviderConnectionPort {

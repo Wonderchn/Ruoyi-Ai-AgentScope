@@ -49,8 +49,8 @@ class P2RetrievalProjectionTest {
         doReturn(7).when(service).currentAclVersion("T1");
         doReturn(Verdict.GRANT).when(service).check(principal, "kb.retrieve", "kb:kb1");
         doReturn(List.of("doc:doc1", "doc:denied")).when(service).childResourceRefs("T1", "kb:kb1");
-        doReturn(Verdict.GRANT).when(service).check(principal, "kb.retrieve", "doc:doc1");
-        doReturn(Verdict.DENY).when(service).check(principal, "kb.retrieve", "doc:denied");
+        doReturn(Map.of("doc:doc1", Verdict.GRANT, "doc:denied", Verdict.DENY)).when(service)
+                .checkBatch(principal, "kb.retrieve", Set.of("doc:doc1", "doc:denied"));
     }
 
     @Test
@@ -87,7 +87,8 @@ class P2RetrievalProjectionTest {
     @Test
     void deniedDocumentsNeverBecomeAChunkScope() {
         grantKbAndOneDocument();
-        doReturn(Verdict.DENY).when(service).check(principal, "kb.retrieve", "doc:doc1");
+        doReturn(Map.of("doc:doc1", Verdict.DENY, "doc:denied", Verdict.DENY)).when(service)
+                .checkBatch(principal, "kb.retrieve", Set.of("doc:doc1", "doc:denied"));
         var scope = service.toRetrievalScope(AuthorizedResourceScope.granted(
                 principal, "kb.retrieve", List.of("kb:kb1"), 0));
         assertThat(scope.publishedChunkRefs()).isEmpty();
