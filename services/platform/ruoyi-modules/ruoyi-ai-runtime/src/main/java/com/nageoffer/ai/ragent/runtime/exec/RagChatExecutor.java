@@ -20,6 +20,7 @@ package com.nageoffer.ai.ragent.runtime.exec;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.convention.ChatMessage;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService;
 import com.nageoffer.ai.ragent.runtime.config.ConfigAuthorityUnavailable;
@@ -74,6 +75,26 @@ public class RagChatExecutor implements RunExecutor {
     private final ObjectProvider<PlatformFactsClient> platformFacts;
     private final ObjectProvider<com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService> authorization;
     private final ObjectProvider<P2FaultInjector> faultInjector;
+    /**
+     * 会话历史（{@code platform.ai_message}）写入口 —— **读路径读的就是这张表**。
+     *
+     * <p>RW-01-CHATHIST：本执行器原本只写 {@code ai_chat_message}（run 作用域，供恢复时
+     * 回读答案），而历史读取（{@code GET /api/ai/v1/conversations/{id}/messages}）读的是
+     * {@code ai_message}（会话作用域）——两张表不是同一张，于是"发送成功但刷新看不到该轮"。
+     * 修法按"写路径写入读路径所读的表"：**保留** {@code ai_chat_message}（它是恢复用的
+     * run 账本，不是历史真源），**新增** 向 {@code ai_message} 落历史。
+     *
+     * <p>与 {@link #runConfigBindingPort} 同构：{@code required=false} + <b>使用点
+     * fail-closed</b>。受理载荷带了 {@code conversationId} 而这里没接线时报失败
+     * （而不是静默不落历史——那正是本卡要修的缺陷类型）。用字段注入而非构造参数，
+     * 是为了不改构造签名（两个既有测试与内嵌装配点都按位置传参）。
+     *
+     * <p>类型是 <b>ai-runtime 自己的端口</b>而不是会话消息服务：{@code ruoyi-ai-rag}
+     * 依赖 {@code ruoyi-ai-runtime}，直接引用会成环（实测编译失败）。实现见
+     * {@code com.nageoffer.ai.ragent.rag.service.impl.ConversationHistoryAdapter}。
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.nageoffer.ai.ragent.runtime.port.ConversationHistoryPort conversationHistory;
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
     @org.springframework.beans.factory.annotation.Autowired
@@ -104,7 +125,8 @@ public class RagChatExecutor implements RunExecutor {
                            EgressPolicy egressPolicy, UsageLedgerService usageLedger,
                            ObjectProvider<PlatformFactsClient> platformFacts,
                            ObjectProvider<com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService> authorization,
-                           ObjectProvider<P2FaultInjector> faultInjector, JdbcTemplate jdbc, ObjectMapper objectMapper) {
+                           ObjectProvider<P2FaultInjector> faultInjector,
+                           JdbcTemplate jdbc, ObjectMapper objectMapper) {
         this.documentDao = documentDao;
         this.embeddingGateway = embeddingGateway;
         this.chatGateway = chatGateway;
@@ -260,9 +282,11 @@ public class RagChatExecutor implements RunExecutor {
             result.put("evidenceInsufficient", true);
             result.put("providerCalls", 0);
             access.current(execution.run(),Set.of("kb.read"));
+            final ExecutionPrincipal historyPrincipal = principal;
             guard.commitAtomic(()->{
                 usageLedger.finalizeReservation(execution.tenantId(), execution.runId());
                 persistMessage(execution, result.get("answer").toString(), List.of(), 1);
+                persistConversationHistory(execution, guard, historyPrincipal, input, question, result.get("answer").toString());
                 return null;
             });
             return Outcome.succeeded(result);
@@ -370,8 +394,10 @@ public class RagChatExecutor implements RunExecutor {
             ref.put("answer",answer.toString());
             ref.put("provider", binding.providerId());
             ref.put("model", binding.modelId());
+            final ExecutionPrincipal historyPrincipal = principal;
             guard.commitAtomic(()->{
                 persistMessage(execution,answer.toString(),citations,1);
+                persistConversationHistory(execution, guard, historyPrincipal, input, question, answer.toString());
                 return guard.commitStep("model", "model", toJson(ref), null, toJson(Map.of("calls", 1)));
             });
             guard.appendEvent(RunEventAppender.EVENT_STEP_COMPLETED, Map.of(
@@ -545,6 +571,56 @@ public class RagChatExecutor implements RunExecutor {
             }
         }
         return chunks;
+    }
+
+    /**
+     * 把本轮问答落进<b>历史读取所读的那张表</b>（{@code platform.ai_message}）。RW-01-CHATHIST。
+     *
+     * <p><b>为什么必须这一步。</b>{@link #persistMessage} 写的是 {@code ai_chat_message}
+     * （run 作用域：{@code (tenant_id, run_id, sequence)} 唯一，供恢复时回读答案），
+     * 而 {@code GET /api/ai/v1/conversations/{id}/messages} 读的是 {@code ai_message}
+     * （会话作用域，按 {@code conversation_id + user_id} 过滤）。两张表形状不同、键不同，
+     * 只写前者 ⇒ <b>受理成功但刷新历史看不到该轮</b>。这里按"写路径写入读路径所读的表"
+     * 补齐，而不是让读路径去 union 两张表（后者要背双写与一致性）。
+     *
+     * <p><b>身份。</b>本方法在工作线程里跑，{@code RunWorker} <b>不</b>绑定
+     * {@code PrincipalContext}；而 {@code ConversationMessageService.addMessage} 与
+     * {@code AiDomainWriteIdentity} 都要求主体（V7 的 {@code tenant_id}/{@code member_id}
+     * 是 NOT NULL 且刻意不提供"外部传参"重载，防止把请求体里的值写进身份列）。
+     * 所以这里绑定的是执行器早已从 <b>run 行</b>权威事实推出的 {@code principal}
+     * （{@code execution.run().subject()/memberId()} + {@code execution.tenantId()}），
+     * 不是请求体里的任何值；用完 {@code restore} 回原值。
+     *
+     * <p><b>不做"静默不写"。</b>受理载荷带了 {@code conversationId} 就必须落下：
+     * 历史服务没接线时抛异常（run 失败可见），而不是安静地少写一行——那正是本卡要修的
+     * 缺陷类型。载荷没带 {@code conversationId} 时本方法不写（没有会话可归属），
+     * 这是唯一的合法跳过。
+     *
+     * <p><b>重复投递。</b>以 run 步骤 {@code conversation-history} 做幂等栅栏：
+     * 恢复/重试时该步已提交则跳过。顺序是"先写、后提交步骤"，因此极端情况下
+     * （写入成功但提交步骤前进程死掉）重试可能重复写一轮历史——选择偏向"至多可见重复"
+     * 而不是"静默丢历史"。
+     */
+    private void persistConversationHistory(RunExecution execution, RunExecutionGuard guard,
+                                            ExecutionPrincipal principal, JsonNode input,
+                                            String question, String answer) {
+        String conversationId = input == null ? "" : input.path("conversationId").asText("");
+        if (conversationId.isBlank()) {
+            return;
+        }
+        if (completedStepRef(guard, "conversation-history") != null) {
+            return;
+        }
+        com.nageoffer.ai.ragent.runtime.port.ConversationHistoryPort history = conversationHistory;
+        if (history == null) {
+            throw new IllegalStateException(
+                    "conversation history port is not wired but the accepted payload carries conversationId="
+                            + conversationId + " (runId=" + execution.runId() + ")");
+        }
+        history.appendTurn(execution.tenantId(), principal.membershipId(), principal.userId(),
+                conversationId, question, answer);
+        guard.commitStep("conversation-history", "conversation-history",
+                toJson(Map.of("conversationId", conversationId)), null, toJson(Map.of("calls", 0)));
     }
 
     private void persistMessage(RunExecution execution, String answer, List<Map<String, Object>> citations, int sequence) {
