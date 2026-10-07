@@ -71,4 +71,19 @@ public final class AiActionRegistry {
         return AiCanonicalAction.knownActions();
     }
 
+    /**
+     * 该动作是否<b>额外</b>要求平台管理身份（维护者裁决 A2-ter）。
+     *
+     * <p>与 {@link #requirePermission(String)} 是<b>两个独立条件</b>：对返回
+     * {@code true} 的动作，网关既要求身份显式持有对应 scope，也要求调用方是平台
+     * 管理身份；<b>只满足其一必须拒绝</b>。判定表与动作→权限表同源
+     * （{@code AiCanonicalAction}），避免两处漂移。
+     *
+     * @param action AI canonical 动作标识
+     * @return 是否额外要求平台管理身份
+     */
+    public static boolean requiresPlatformAdmin(String action) {
+        return AiCanonicalAction.requiresPlatformAdmin(action);
+    }
+
 }

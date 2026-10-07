@@ -291,6 +291,16 @@ public class AiGatewayController {
             throw new P04Exception(P04ErrorCode.FORBIDDEN);
         }
 
+        // 4b. 平台管理身份（维护者裁决 A2-ter）：Agent 目录是<b>平台级</b>资源
+        //     （ai_agent_* 三表没有 tenant_id、uk_agent_name 全局唯一），因此这些动作
+        //     要求"scope + 平台管理身份"两个<b>独立</b>条件同时成立。
+        //     只持有 scope 的租户管理员/成员在这里被拒 —— 即使它被误授了该 scope。
+        //     resolver 的默认实现返回 false（fail-closed）：漏实现只会更严。
+        if (AiActionRegistry.requiresPlatformAdmin(route.action())
+                && !principalResolver.isPlatformAdmin()) {
+            throw new P04Exception(P04ErrorCode.FORBIDDEN);
+        }
+
         // 5. 签发委托（只带本路由所需 scope）并转发。
         //    transport=local（E3/C3）：同进程转送，不铸造委托凭证；本地执行事实
         //    由 LocalAiGatewayClient 经 AiIdentityPort 桥接进 AI 侧上下文。

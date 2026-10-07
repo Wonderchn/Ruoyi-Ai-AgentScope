@@ -83,4 +83,31 @@ public final class AiCanonicalAction {
     public static Set<String> knownActions() {
         return PERMISSIONS.keySet();
     }
+
+    /**
+     * <b>平台管理身份专属动作</b>：除"身份持有该动作对应的 scope"之外，
+     * 还要求调用方是<b>平台管理身份</b>。
+     *
+     * <p>为什么需要第二道条件（维护者裁决 A2-ter）：Agent 目录表
+     * （{@code ai_agent_profile}/{@code ai_agent_prompt}/{@code ai_agent_skill}）
+     * <b>没有 {@code tenant_id} 列</b>，{@code uk_agent_name} 还是<b>全局唯一</b>
+     * —— 也就是说目录是<b>平台级</b>资源，不是租户级资源。若只按 scope 放行，
+     * 任何被误授予 {@code ai:agent:write} 的租户成员都能改到所有租户共用的目录，
+     * 违反 AGENTS.md「缺少租户或主体时必须拒绝」。
+     *
+     * <p>因此本集合里的动作要求<b>两个独立条件同时成立</b>：
+     * ① 身份显式持有该 scope；② 调用方是平台管理身份。
+     * <b>本集合以外的动作行为不变</b>（仍只按 scope 判定），避免扩大改动面。
+     */
+    private static final Set<String> PLATFORM_ADMIN_ACTIONS = Set.of(
+            "agent.list", "agent.read", "agent.write", "agent.delete", "agent.activate");
+
+    /**
+     * @param action 规范动作标识
+     * @return 该动作是否额外要求平台管理身份（未知/空动作返回 {@code false}；
+     *         未知动作在网关注册表处已被拒绝，这里不重复承担拒绝职责）
+     */
+    public static boolean requiresPlatformAdmin(String action) {
+        return action != null && PLATFORM_ADMIN_ACTIONS.contains(action);
+    }
 }
