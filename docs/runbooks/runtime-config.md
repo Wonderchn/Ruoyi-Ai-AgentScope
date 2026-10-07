@@ -55,4 +55,20 @@ WHERE n.nspname = 'platform'
   AND r.relname = 'ai_runtime_config_revision';
 ```
 
+四条纪律（依据 RW-27 隔离演练实测新增；违反任一条都会得到"看起来对、其实读错 schema"的结论）：
+
+1. **先证采集方式**：统计前先用一个"已知应返回多行"的查询证明自己确实看得见多个 schema。
+   例：同一个约束名在两个 schema 各有一行时，只按 `conname` 必须返回 2 行，限定 `conrelid` 后必须返回 1 行。
+   采集方式本身没有证据时，查得 0 行**不等于**"不存在"。
+2. **结构类问题限定 `schema` + `relation`**：一律带 `pg_namespace.nspname`（或 `information_schema.table_schema`）与 `pg_class.relname`；
+   约束/索引问题必须带 `conrelid`/`relnamespace`，不得只按 `conname` 查。
+3. **依赖盘点必须 rewrite-aware**：视图/物化视图的依赖记在 `pg_rewrite` 上（`rule _RETURN on view …`），
+   只按 `pg_class`/`pg_namespace` 关联会**漏检**；也不得把解析不出归属的行当作"外部"。
+4. **副作用用对象集合差分测、不靠推断**：变更/回收前后各登记一次对象集合（`pg_class` × `pg_namespace`）再做差集。
+   注意：非空 schema 的 `DROP SCHEMA … RESTRICT` 必然 `2BP01`（schema 内对象依赖 schema）⇒ 只能用 CASCADE，
+   而 CASCADE 会**静默**删除跨 schema 依赖对象，所以必须先算出附带损伤集合再删。
+
+依据：`mydocs/platform-embedded/team/remaining-agent-handoff-20261007/reports/T1/RW-27.md` §3.4 / §4
+（合成数据隔离演练 61 条语句 EXIT=0；实测 CASCADE 附带损伤 = 恰好 1 个外部视图，权威 schema 指纹未变）。
+
 本流程不删除历史 schema。备份、依赖盘点与隔离库演练完成后，才由维护者另行安排清理。
