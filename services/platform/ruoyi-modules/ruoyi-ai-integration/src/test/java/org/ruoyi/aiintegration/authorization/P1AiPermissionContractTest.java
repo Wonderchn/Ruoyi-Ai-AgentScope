@@ -169,9 +169,16 @@ class P1AiPermissionContractTest {
                 .as("禁止开放通配 /agent/v1/**：那会把同前缀下任何新增控制器一起放行")
                 .noneMatch(pattern -> pattern.contains("/agent/v1/**")
                         || pattern.endsWith("/agent/**") || pattern.contains("**"));
+        // RW-01（T0 集成，2026-10-07）：原口径"批量删除的多资源授权是计划 §13 待决定项"。
+        // D05 已作出决定（上限 100、整体授权、整体事务；服务端契约与负例已交付），
+        // 故 F03 的 POST /conversations/batch-delete 必须**逐条**放行；仍然禁止用通配替代。
         assertThat(patterns)
-                .as("批量删除的多资源授权是计划 §13 待决定项，必须保持未放行")
-                .noneMatch(pattern -> pattern.contains("batch-delete"));
+                .as("F03 批量删除逐条放行（D05 已决定），且不得用通配替代")
+                .contains("POST /conversations/batch-delete")
+                .noneMatch(pattern -> pattern.contains("/conversations/**"));
+        assertThat(patterns)
+                .as("Agent 侧批量删除仍不放行：F10 的批量面本轮不改可达性，避免一次开口两处")
+                .noneMatch(pattern -> pattern.contains("/agent/v1/conversations/batch-delete"));
         // 动作必须是已有规范动作：不新增权限行（Agent 会话与普通会话是同一"用户自己的会话"语义）
         assertThat(whitelistedActions())
                 .as("四条路由分别绑定会话读/改名/删除动作")

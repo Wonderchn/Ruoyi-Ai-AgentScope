@@ -471,8 +471,8 @@ class AiEmbeddedAgentConversationConfigurationTest {
      * 于是"有人提前放行"会立刻失败，而"交付内层契约"不会误报。
      */
     @Test
-    @DisplayName("C4/D05：batch-delete 仍不在网关白名单里 ⇒ 经公开路径依然 404")
-    void batchDeleteStaysUnreachableThroughThePublicGatewayUntilC4IsSigned() throws Exception {
+    @DisplayName("C4/D05：F03 批量删除已按 D05 逐条放行；Agent 侧仍保持未放行")
+    void batchDeleteReachabilityMatchesTheD05Decision() throws Exception {
         java.lang.reflect.Field field = org.ruoyi.aiintegration.web.AiGatewayController.class
                 .getDeclaredField("ROUTES");
         field.setAccessible(true);
@@ -489,9 +489,18 @@ class AiEmbeddedAgentConversationConfigurationTest {
                 .as("锚点：必须真的读到网关白名单，否则本判据会退化成恒真")
                 .isNotEmpty()
                 .contains("/agent/v1/conversations");
+        // RW-01（T0 集成，2026-10-07）：C4 的前置"先完成服务端契约和负例"已由 RW-01 交付，
+        // D05 已作出批量授权决定，故 F03 的普通会话批量删除必须已逐条放行。
         assertThat(patterns)
-                .as("batch-delete 的公开路径在 C4 完成评估前不得放行；内层有契约 ≠ 公开可达")
-                .noneMatch(pattern -> pattern.contains("batch-delete"));
+                .as("F03 批量删除必须已逐条放行（D05 已决定，服务端契约与负例已交付）")
+                .contains("/conversations/batch-delete");
+        assertThat(patterns)
+                .as("F03 批量删除不得用通配替代逐条登记")
+                .noneMatch(pattern -> pattern.contains("/conversations/**"));
+        // Agent 侧维持不放行：F10 的批量面本轮不改可达性（RW-01 有意未申请）。
+        assertThat(patterns)
+                .as("Agent 侧批量删除仍不放行：内层有契约 ≠ 公开可达，F10 另卡决定")
+                .noneMatch(pattern -> pattern.contains("/agent/v1/conversations/batch-delete"));
     }
 
     /** 从控制器方法注解里抽出 `METHOD path` 形式的集合。 */
