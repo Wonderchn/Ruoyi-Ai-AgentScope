@@ -126,6 +126,13 @@ public class RunController {
             return RunApiResponses.ok(org.springframework.http.HttpStatus.OK, runView(run), requestId);
         } catch (RunApiException e) {
             return RunApiResponses.fail(e.errorCode(), e.getMessage(), requestId);
+        } catch (com.nageoffer.ai.ragent.framework.security.P04AiException e) {
+            // 平台功能级判定（requireFunction）的拒绝必须按**它自己的**符号码外显。
+            // 此前这里被下面的 catch(RuntimeException) 收成 500 INTERNAL_ERROR，
+            // 于是"有 scope 但功能/资源级不通过"（应为 403 FORBIDDEN）与"服务端崩了"
+            // 在客户端完全同形 —— 与 submit 分支（显式 rethrow 给全局映射器）不一致，
+            // 也与 AiResourceController 的同一判定口径不一致。
+            throw e;
         } catch (RuntimeException e) {
             return RunApiResponses.fail(RunErrorCode.INTERNAL_ERROR, requestId);
         }
@@ -145,6 +152,9 @@ public class RunController {
             return RunApiResponses.ok(org.springframework.http.HttpStatus.OK, runView(run), requestId);
         } catch (RunApiException e) {
             return RunApiResponses.fail(e.errorCode(), e.getMessage(), requestId);
+        } catch (com.nageoffer.ai.ragent.framework.security.P04AiException e) {
+            // 同 cancel：平台功能级拒绝按原符号码外显（403），不得收敛成 500。
+            throw e;
         } catch (RuntimeException e) {
             return RunApiResponses.fail(RunErrorCode.INTERNAL_ERROR, requestId);
         }
