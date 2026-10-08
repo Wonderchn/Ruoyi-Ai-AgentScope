@@ -25,6 +25,7 @@ import com.nageoffer.ai.ragent.admin.controller.vo.DashboardTrendSeriesVO;
 import com.nageoffer.ai.ragent.admin.controller.vo.DashboardTrendsVO;
 import com.nageoffer.ai.ragent.admin.service.DashboardService;
 import com.nageoffer.ai.ragent.agent.config.ConditionalOnAgentEngine;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -43,7 +44,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 独立于 Agent 执行链路的统计适配器，最多缓存 3 个窗口 × 2 个粒度，无后台任务
+ * 独立于 Agent 执行链路的统计适配器，每个租户最多缓存 3 个窗口 × 2 个粒度，无后台任务
  */
 @Service
 @ConditionalOnAgentEngine
@@ -88,9 +89,10 @@ public class AgentDashboardService implements DashboardService {
     }
 
     private Snapshot snapshot(String window, String granularity, String fallback) {
+        String tenantId = PrincipalContext.require().tenantId();
         String label = AgentDashboardWindow.normalize(window, fallback);
         String grain = AgentDashboardWindow.granularity(granularity, label);
-        return cache.compute(label + ":" + grain, (key, cached) -> {
+        return cache.compute(tenantId + ":" + label + ":" + grain, (key, cached) -> {
             long now = clock.millis();
             if (cached != null && now >= cached.updatedAt() && now - cached.updatedAt() < CACHE_TTL_MS) {
                 return cached;

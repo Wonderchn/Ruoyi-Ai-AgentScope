@@ -17,6 +17,11 @@
 
 package com.nageoffer.ai.ragent.agent.admin;
 
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
+import com.nageoffer.ai.ragent.framework.exception.ClientException;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -27,14 +32,70 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+import org.junit.jupiter.api.Tag;
 
 /**
  * 可选 PostgreSQL 集成测试：仅创建当前连接的临时表，最后回滚，不接触持久业务表
  */
+@Tag("dev")
 class AgentDashboardReaderTest {
+
+    @BeforeEach
+    void setPrincipal() {
+        PrincipalContext.set(principal("T-A"));
+    }
+
+    @AfterEach
+    void clearPrincipal() {
+        PrincipalContext.clear();
+    }
+
+    @Test
+    void allFiveIssuedQueriesBindOnlyTheCurrentTenant() {
+        var jdbc = mock(NamedParameterJdbcTemplate.class);
+        var issued = new ArrayList<Map<String, Object>>();
+        when(jdbc.queryForMap(anyString(), anyMap())).thenAnswer(invocation -> {
+            issued.add(invocation.getArgument(1));
+            return Map.of();
+        });
+        when(jdbc.queryForList(anyString(), anyMap())).thenAnswer(invocation -> {
+            issued.add(invocation.getArgument(1));
+            return List.of();
+        });
+        var reader = new AgentDashboardReader(jdbc);
+        var window = AgentDashboardWindow.at("24h", "hour",
+                Clock.fixed(Instant.parse("2026-09-04T04:00:00Z"), ZoneId.of("Asia/Shanghai")));
+        for (String tenant : List.of("T-A", "T-B")) {
+            PrincipalContext.set(principal(tenant));
+            issued.clear();
+            reader.read(window);
+            assertThat(issued).hasSize(5).allSatisfy(params -> {
+                assertThat(params).containsEntry("tenantId", tenant);
+                assertThat(params.values()).doesNotContain(tenant.equals("T-A") ? "T-B" : "T-A");
+            });
+        }
+    }
+
+    @Test
+    void missingPrincipalFailsBeforeAnyJdbcQuery() {
+        var jdbc = mock(NamedParameterJdbcTemplate.class);
+        PrincipalContext.clear();
+        assertThatThrownBy(() -> new AgentDashboardReader(jdbc).read(null)).isInstanceOf(ClientException.class);
+        verifyNoInteractions(jdbc);
+    }
 
     @Test
     void realPostgresAggregationHandlesBoundariesDeletedRowsMissingBlocksAndPartialCoverage() throws Exception {
@@ -45,10 +106,10 @@ class AgentDashboardReaderTest {
             try {
                 JdbcTemplate jdbc = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
                 jdbc.execute("CREATE TEMP TABLE t_user (id text, create_time timestamp, deleted smallint)");
-                jdbc.execute("CREATE TEMP TABLE t_agent_conversation (id text, user_id text, conversation_id text, create_time timestamp, deleted smallint)");
-                jdbc.execute("CREATE TEMP TABLE t_agent_message (id text, user_id text, conversation_id text, role text, message_status text, blocks jsonb, create_time timestamp, deleted smallint)");
-                jdbc.execute("CREATE TEMP TABLE t_agent_context_compaction (create_time timestamp, context_chars_before int, context_chars_after int)");
-                jdbc.execute("CREATE TEMP TABLE t_agent_memory (create_time timestamp, invalid_at timestamp)");
+                jdbc.execute("CREATE TEMP TABLE t_agent_conversation (id text, user_id text, conversation_id text, create_time timestamp, deleted smallint, tenant_id text NOT NULL DEFAULT 'T-A')");
+                jdbc.execute("CREATE TEMP TABLE t_agent_message (id text, user_id text, conversation_id text, role text, message_status text, blocks jsonb, create_time timestamp, deleted smallint, tenant_id text NOT NULL DEFAULT 'T-A')");
+                jdbc.execute("CREATE TEMP TABLE t_agent_context_compaction (create_time timestamp, context_chars_before int, context_chars_after int, tenant_id text NOT NULL DEFAULT 'T-A')");
+                jdbc.execute("CREATE TEMP TABLE t_agent_memory (create_time timestamp, invalid_at timestamp, tenant_id text NOT NULL DEFAULT 'T-A')");
                 jdbc.update("INSERT INTO t_user VALUES ('u1', '2026-09-01', 0), ('u2', '2026-09-04', 0), ('deleted', '2026-09-04', 1)");
                 jdbc.update("INSERT INTO t_agent_conversation VALUES ('1', 'u1', 'c1', '2026-09-04', 0), ('2', 'u2', 'old', '2026-09-01', 0), ('3', 'u1', 'gone', '2026-09-04', 1)");
                 jdbc.update("""
@@ -66,6 +127,15 @@ class AgentDashboardReaderTest {
                         """);
                 jdbc.update("INSERT INTO t_agent_context_compaction VALUES ('2026-09-04', 1000, 300), ('2026-09-04', 3000, 1500), ('2026-09-04', 0, 0), ('2026-09-01', 100, 10)");
                 jdbc.update("INSERT INTO t_agent_memory VALUES ('2026-09-01', NULL), ('2026-09-04', NULL), ('2026-09-01', '2026-09-04'), ('2026-09-01', '2026-09-02')");
+                // 对方租户使用相同 user/conversation/id，确保 tenant 过滤而不是碰巧靠 ID 分开。
+                jdbc.update("INSERT INTO t_agent_conversation VALUES ('1','u1','c1','2026-09-04',0,'T-B')");
+                jdbc.update("""
+                        INSERT INTO t_agent_message VALUES
+                          ('1','u1','c1','assistant','NORMAL','[{"kind":"tool","name":"tenant_b_tool","status":"done"},{"kind":"confirm","status":"denied","calls":[{"name":"tenant_b_tool"}]}]','2026-09-04 09:00',0,'T-B'),
+                          ('2','u1','c1','assistant','NORMAL',NULL,'2026-09-03 11:59',0,'T-B')
+                        """);
+                jdbc.update("INSERT INTO t_agent_context_compaction VALUES ('2026-09-04',9000,900,'T-B')");
+                jdbc.update("INSERT INTO t_agent_memory VALUES ('2026-09-04',NULL,'T-B')");
 
                 var reader = new AgentDashboardReader(new NamedParameterJdbcTemplate(jdbc));
                 var clock = Clock.fixed(Instant.parse("2026-09-04T04:00:00Z"), ZoneId.of("Asia/Shanghai"));
@@ -121,6 +191,24 @@ class AgentDashboardReaderTest {
                         .stream().mapToDouble(point -> point.getValue()).sum();
                 assertThat(toolTrendTotal).isEqualTo(3.0);
                 assertThat(service.loadTrends("messages", "7d", "day").getSeries().get(0).getData()).hasSize(8);
+                PrincipalContext.set(principal("T-B"));
+                var tenantB = service.loadOverview("24h");
+                assertThat(tenantB.getKpis().getTotalUsers().getValue()).isEqualTo(1);
+                assertThat(tenantB.getKpis().getTotalMessages().getValue()).isEqualTo(2);
+                assertThat(tenantB.getKpis().getMessages24h().getValue()).isEqualTo(1);
+                assertThat(tenantB.getKpis().getSessions24h().getValue()).isEqualTo(1);
+                var performanceB = service.loadPerformance("24h");
+                assertThat(performanceB.replies().total()).isEqualTo(1);
+                assertThat(performanceB.replies().previousTotal()).isEqualTo(1);
+                assertThat(performanceB.tools().topTools()).extracting("name").containsExactly("tenant_b_tool");
+                assertThat(performanceB.confirmations().topTools()).extracting("name").containsExactly("tenant_b_tool");
+                assertThat(performanceB.memory()).isEqualTo(new AgentDashboardPerformance.Memory(1,1,90.0,9000,900,1,1,0));
+                assertThat(service.loadTrends("messages", "24h", "hour").getSeries().get(0).getData()
+                        .stream().mapToDouble(point -> point.getValue()).sum()).isEqualTo(1.0);
+                assertThat(service.loadTrends("messages", "24h", "hour").getSeries().get(1).getData()
+                        .stream().mapToDouble(point -> point.getValue()).sum()).isEqualTo(1.0);
+                PrincipalContext.set(principal("T-A"));
+                assertThat(service.loadOverview("24h")).isSameAs(overview);
             } finally {
                 connection.rollback();
             }
@@ -129,5 +217,10 @@ class AgentDashboardReaderTest {
 
     private static long epochMillis(String localDateTime, ZoneId zone) {
         return LocalDateTime.parse(localDateTime).atZone(zone).toInstant().toEpochMilli();
+    }
+
+    private static ExecutionPrincipal principal(String tenantId) {
+        return new ExecutionPrincipal(tenantId, "1", "platform:" + tenantId + ":1", 1, 1,
+                Set.of("monitor.read"), "dashboard-reader-test", "test", 1, Long.MAX_VALUE);
     }
 }
