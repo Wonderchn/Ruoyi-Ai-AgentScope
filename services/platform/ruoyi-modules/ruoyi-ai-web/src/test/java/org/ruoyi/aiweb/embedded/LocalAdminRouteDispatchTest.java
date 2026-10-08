@@ -22,8 +22,10 @@ import com.nageoffer.ai.ragent.rag.core.intent.IntentResolver;
 import com.nageoffer.ai.ragent.rag.core.retrieval.RetrievalEngine;
 import com.nageoffer.ai.ragent.rag.core.rewrite.QueryRewriteService;
 import com.nageoffer.ai.ragent.rag.dto.RetrievalContext;
+import com.nageoffer.ai.ragent.rag.dto.RecommendedQuestionsPayload;
 import com.nageoffer.ai.ragent.rag.eval.EvalController;
 import com.nageoffer.ai.ragent.rag.service.QueryTermMappingAdminService;
+import com.nageoffer.ai.ragent.rag.service.RecommendedQuestionService;
 import com.nageoffer.ai.ragent.rag.service.RagTraceQueryService;
 import com.nageoffer.ai.ragent.runtime.web.DeliveryPermits;
 import com.nageoffer.ai.ragent.sample.controller.SampleQuestionController;
@@ -64,12 +66,14 @@ class LocalAdminRouteDispatchTest {
     private final RetrievalEngine retrieval = mock(RetrievalEngine.class);
     private final RevocationGuard guard = mock(RevocationGuard.class);
     private final KnowledgeChunkService chunks = mock(KnowledgeChunkService.class);
+    private final RecommendedQuestionService recommended = mock(RecommendedQuestionService.class);
     private final List<String> acknowledgements = new ArrayList<>();
     private AnnotationConfigWebApplicationContext context;
     private MockServletContext servlet;
     private AiGatewayController gateway;
     private Set<String> permissions = Set.of("ai:config:read", "ai:config:publish", "ai:kb:read",
-            "ai:kb:retrieve", "ai:run:read", "ai:run:event:read", "ai:document:read");
+            "ai:kb:retrieve", "ai:run:read", "ai:run:event:read", "ai:document:read",
+            "ai:conversation:read");
 
     @BeforeEach void setup() {
         when(intents.getFullTree()).thenReturn(List.of(IntentNodeTreeVO.builder().id("r6-intent").build()));
@@ -117,6 +121,7 @@ class LocalAdminRouteDispatchTest {
             var permits = new DeliveryPermits(provider);
             factory.registerSingleton("deliveryPermits", permits);
             factory.registerSingleton("chunks", new KnowledgeChunkController(chunks, permits));
+            factory.registerSingleton("recommended", new RecommendedQuestionController(recommended));
         });
         servlet = new MockServletContext();
         context.setServletContext(servlet);
@@ -215,6 +220,37 @@ class LocalAdminRouteDispatchTest {
         verify(rewrite).rewriteWithSplit(eq("synthetic-r6"), anyList());
         verify(guard).enter(any(), eq("kb.retrieve"), anyString());
         assertThat(acknowledgements).hasSize(1);
+    }
+
+    /**
+     * RW-22-R1-R7：推荐追问面（F17）的公开可达性正腿。
+     *
+     * <p>判据刻意选<b>只有该控制器能产生</b>的响应特征：服务替身返回的独有标记，
+     * 以及"服务收到的 userId 必须是规范主体 2101"——内嵌态下旧的
+     * {@code UserContext.getUserId()} 恒为 {@code null}，会把 null 一路送进
+     * {@code user_id} 作用域谓词（静默作用域失效）。
+     * 不能退化成"路由匹配到了"判据：后者源码级护栏本就能证，而 403 被当通过时正是那种退化。
+     */
+    @Test void recommendationRouteReachesItsOwnControllerWithCanonicalIdentityAndNoReceipt() throws Exception {
+        when(recommended.generate(eq("message-1"), eq("2101")))
+                .thenReturn(RecommendedQuestionsPayload.success(List.of("r6-recommended-probe")));
+        var response = dispatch("POST", "/conversations/messages/message-1/recommended-questions", "{}");
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(response.getContentAsString())
+                .contains("\"code\":200", "r6-recommended-probe")
+                .doesNotContain("\"code\":\"0\"");
+        verify(recommended).generate("message-1", "2101");
+        // 写面：不铸 GET 交付回执（网关只在字节分支释放许可）
+        verifyNoInteractions(guard);
+        assertThat(acknowledgements).isEmpty();
+        assertThat(PrincipalContext.hasPrincipal()).isFalse();
+    }
+
+    @Test void recommendationRouteWithoutItsScopeStopsBeforeTheHandler() throws Exception {
+        permissions = Set.of();
+        assertThat(dispatch("POST", "/conversations/messages/message-1/recommended-questions", "{}").getStatus())
+                .isEqualTo(403);
+        verifyNoInteractions(recommended, guard);
     }
 
     @Test void missingScopeStopsBeforeTheHandlerAndNeighboringPathsStayClosed() throws Exception {

@@ -67,15 +67,18 @@ import org.springframework.context.annotation.Import;
  * （"需要 Redis 保护在途会话删除 … 缺 Redis 时明确启动失败"）。因此本组<b>不新增</b>部署前置，
  * 但真机是否可用仍以 T8 的实例窗口为准（本卡记 NOT_RUN）。
  *
- * <p><b>刻意未装 {@code RecommendedQuestionController}（F17 的推荐追问）。</b>
- * 其服务闭包为 {@code RecommendedQuestionServiceImpl} ← {@code RecommendedQuestionGenerator}
+ * <p><b>{@code RecommendedQuestionController}（F17 的推荐追问）已由独立配置装配，不在本组。</b>
+ * 它<b>曾经</b>刻意不装：其服务闭包为 {@code RecommendedQuestionServiceImpl} ← {@code RecommendedQuestionGenerator}
  * ← {@code AgentPromptResolver} + {@code LLMService} —— 落在<b>模型/提供方路由闭包</b>上
- * （与 RW-08 的 {@code IntentNodeRegistry} 闭包共用 {@code LLMService} 这一环）。
- * 闭包未确认前装配会以"no qualifying bean"让<b>整个应用启动失败</b>（fail-closed，
- * 与 {@code AiEmbeddedKnowledgeAdminConfiguration} 对 KB/文档面的处置同形）。
- * 该控制器的类级前缀归位已在 RW-22-R1 完成（源码正确），但**不登记 bean、不放行路由**，
- * 待模型闭包确认后另开一张卡。这与 V27 迁移注释"7137-7140/7142 留给 F11 卡接管"同一纪律：
- * <b>不制造"有权限无端点"或"有端点无实现"的假公开面。</b>
+ * （与 RW-08 的 {@code IntentNodeRegistry} 闭包共用 {@code LLMService} 这一环），
+ * 闭包未确认前装配会以"no qualifying bean"让<b>整个应用启动失败</b>。
+ * 该前置已由只读核清闭合（{@code reports/T3/RW-08-CLOSURE-R6.md}），
+ * 于是 RW-22-R1-R7（T0）另开 {@code AiEmbeddedRecommendationConfiguration} 装配它 ——
+ * <b>刻意不放进本组</b>：本组只依赖 {@code StringRedisTemplate}，
+ * 而推荐面还要 {@code ai.model.enabled}，混在一起会让"关掉模型"连带关掉不依赖模型的
+ * 意图/词映射/示例问题三面。两组的门控条件因此各自独立。
+ * 这与 V27 迁移注释"7137-7140/7142 留给 F11 卡接管"同一纪律：<b>不制造"有权限无端点"
+ * 或"有端点无实现"的假公开面，也不让彼此无关的门控互相绑定。</b>
  *
  * <p><b>授权不在本层</b>：不加 {@code @SaCheckPermission}；公开面必须过网关白名单 +
  * {@code AiCanonicalAction} 的精确 scope 比较（动作复用 {@code config.read}/{@code config.publish}/
