@@ -160,12 +160,21 @@ public class AiGatewayController {
             // ApiEnvelope、身份已改用 PrincipalContext.require()（原 UserContext.getUserId()
             // 在内嵌态恒为 null，会让 user_id 谓词静默失效）。本行是第三件。
             //
-            // 动作复用 conversation.read：推荐追问是**用户本来就能读的**那条 assistant 消息的
-            // 派生内容，LLM 调用无外部副作用，落库只是该派生结果的缓存；本卡由此**不新增
-            // canonical 动作、不新增权限行、不新增迁移**（动作总数护栏不变，权威值以
+            // 动作 = `conversation.rename`（→ 已播种的 `ai:conversation:write`），**不是 `conversation.read`**。
+            // R6 局部规格原写"复用 conversation.read"，其产品理由（派生自可读消息、落库只是缓存）
+            // 回答的是"为什么可以复用"，**没有回答"读权限是否应允许写"**。
+            // R（RW-29-R7）判定为 **REVIEW_FAIL**：该 POST 在缓存未命中时
+            // **①调用真实 LLM generator（计费外呼）②UPDATE 落库**；若只凭 `ai:conversation:read`
+            // 即可触发，等于**用读权限做写、并用读权限触发外呼**。
+            // T0 据此重裁为既有写动作，与本文件上方
+            // `POST /conversations/messages/{messageId}/feedback`（同样是"对会话消息的写"）**同一口径**：
+            // **不新增 canonical 动作、不新增权限行、不新增迁移**（权威值以
             // P1CurrentAuthorizationTest:209 的 assertEquals(34, ...) 为准）。
+            // 判据两侧都钉住：持 `ai:conversation:write` 才 200；**只持 `ai:conversation:read` 必须 403**。
+            // 未采用"读权限时只读缓存、不落库"的折中：那会让同一端点出现两种成功形状，
+            // 与 RW-22-R1"同一控制器不分裂成两种成功形状"的既定纪律冲突。
             // 写面：**不铸** GET 交付回执（网关只在字节分支释放许可，JSON 分支铸造 = 许可泄漏）。
-            new Route("POST", "/conversations/messages/{messageId}/recommended-questions", "conversation.read"),
+            new Route("POST", "/conversations/messages/{messageId}/recommended-questions", "conversation.rename"),
             // WP-034：F10 Agent 会话面。此前 `/agent/v1/**` 完全没有白名单路由，
             // 所以客户端**无法**经 `/api/ai/v1` 到达 WP-033B 交付的会话面——
             // 那是"服务端可装配"与"客户端可访问"之间的缺口。
