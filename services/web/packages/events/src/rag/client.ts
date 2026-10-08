@@ -222,7 +222,15 @@ export function createRagApi(deps: RagApiDeps) {
       check();
       if (response.status === 401 || envelope?.code === 401)
         deps.onAuthExpired();
-      throw new AiApiError(response.status, envelope?.data?.errorCode ?? envelope?.msg ?? `当前资源不可访问 (${response.status})`);
+      // `data.errorCode` 与 `msg` **分别保留**（符号原因常在 msg 里，见 transport.ts 的说明）。
+      const symbol = envelope?.data?.errorCode;
+      const serverMsg = typeof envelope?.msg === 'string' ? envelope.msg : '';
+      throw new AiApiError(
+        response.status,
+        (typeof symbol === 'string' && symbol.trim() !== '' ? symbol : serverMsg) || `当前资源不可访问 (${response.status})`,
+        undefined,
+        serverMsg,
+      );
     }
     if (response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() !== mime)
       throw new AiApiError(response.status, '资源响应类型不符合协议');
@@ -280,15 +288,24 @@ export function createRagApi(deps: RagApiDeps) {
         try {
           assertIdentity(identity, deps.identity);
           const body = JSON.parse(xhr.responseText || '{}');
+          const serverMsg = typeof body?.msg === 'string' ? body.msg : '';
           if (xhr.status === 401 || body?.code === 401) {
             deps.onAuthExpired();
-            throw new AiApiError(401, '登录状态已失效');
+            throw new AiApiError(401, '登录状态已失效', undefined, serverMsg);
           }
           if (xhr.status === 201 && body?.code === 200 && body.data?.docId && body.data?.uploadId && body.data?.versionId) {
             resolve(body.data as UploadResult);
           }
           else {
-            reject(new AiApiError(xhr.status, body?.data?.errorCode ?? `upload failed (${xhr.status})`));
+            // 旧写法只读 `data.errorCode`：上传失败时若符号原因在 `msg`（如策略/权限类），
+            // 调用方拿到的是 `upload failed (403)`，无从分支。两者都保留。
+            const symbol = body?.data?.errorCode;
+            reject(new AiApiError(
+              xhr.status,
+              (typeof symbol === 'string' && symbol.trim() !== '' ? symbol : serverMsg) || `upload failed (${xhr.status})`,
+              undefined,
+              serverMsg,
+            ));
           }
         }
         catch (error) {

@@ -45,12 +45,23 @@ export class PlatformApiError extends Error {
    */
   readonly errorCode: string | null;
 
-  constructor(kind: IdentityOutcome['kind'], code: number, message: string, errorCode: string | null = null) {
+  /**
+   * 服务端 `msg` 原文；服务端没给时为 `null`（**不伪造**）。
+   *
+   * 为什么与 `errorCode` 并存：**符号原因可能只出现在 `msg` 里**。实测（RW-21 源码复核）：
+   * `APPROVER_POLICY_CLOSED` ⇒ HTTP 403 / `data.errorCode="FORBIDDEN"` / `msg="APPROVER_POLICY_CLOSED"`；
+   * `SANDBOX_POLICY_CLOSED` ⇒ HTTP 409 / `data.errorCode="RUN_STATE_CONFLICT"` / `msg="SANDBOX_POLICY_CLOSED"`。
+   * 只看 `errorCode` 会把这两者说成"权限不足/状态冲突"，丢掉真正可分支的原因。
+   */
+  readonly msg: string | null;
+
+  constructor(kind: IdentityOutcome['kind'], code: number, message: string, errorCode: string | null = null, msg: string | null = null) {
     super(message);
     this.name = 'PlatformApiError';
     this.kind = kind;
     this.code = code;
     this.errorCode = errorCode;
+    this.msg = msg;
   }
 }
 
@@ -66,6 +77,15 @@ export function envelopeErrorCode(envelope: PlatformEnvelope<unknown> | null | u
       return value;
   }
   return null;
+}
+
+/**
+ * 从信封里取服务端 `msg` 原文（与 `envelopeErrorCode` 对称）。
+ * 只认非空字符串：`undefined`/`null`/空串一律归为"服务端未给"。
+ */
+export function envelopeMsg(envelope: PlatformEnvelope<unknown> | null | undefined): string | null {
+  const value = envelope?.msg;
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
 }
 
 /**
@@ -113,6 +133,7 @@ export function unwrapData<T>(envelope: PlatformEnvelope<unknown> | null | undef
       outcome.kind === 'business-error' ? outcome.code : Number(envelope?.code ?? -1),
       outcome.message || '请求失败',
       envelopeErrorCode(envelope),
+      envelopeMsg(envelope),
     );
   }
   return envelope?.data as T;
@@ -129,6 +150,7 @@ export function unwrapRows<T>(
       outcome.kind === 'business-error' ? outcome.code : Number(envelope?.code ?? -1),
       outcome.message || '请求失败',
       envelopeErrorCode(envelope),
+      envelopeMsg(envelope),
     );
   }
   const rows = Array.isArray(envelope?.rows) ? (envelope.rows as T[]) : [];
@@ -242,6 +264,7 @@ export function createPlatformClient(deps: PlatformClientDeps): PlatformClient {
       // 只能靠它区分，故这里尽力读一次信封；读不出来也只是没有符号码，不掩盖 HTTP 失败。
       const failureEnvelope = await readFailureEnvelope(response);
       const errorCode = envelopeErrorCode(failureEnvelope);
+      const serverMsg = envelopeMsg(failureEnvelope);
       if (httpCode === 401)
         deps.onAuthExpired?.('登录状态已失效，请重新登录');
       if (httpCode === 403)
@@ -251,6 +274,8 @@ export function createPlatformClient(deps: PlatformClientDeps): PlatformClient {
         httpCode,
         `HTTP ${httpCode}`,
         errorCode,
+        // 符号原因可能只在 msg 里（APPROVER_POLICY_CLOSED / SANDBOX_POLICY_CLOSED），必须保留。
+        serverMsg,
       );
     }
 
