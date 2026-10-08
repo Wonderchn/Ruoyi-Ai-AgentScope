@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.agent.admin;
 
 import com.nageoffer.ai.ragent.agent.config.ConditionalOnAgentEngine;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -40,14 +41,15 @@ public class AgentDashboardReader {
 
     static final String OVERVIEW_SQL = """
             WITH users AS (
-                SELECT count(*) AS total_users,
-                       count(*) FILTER (WHERE create_time >= :start) AS new_users
-                FROM ai_legacy_user WHERE deleted = 0 AND create_time < :end
+                /* ai_legacy_user 没有租户列，用户口径沿用 RW-23-R1：租户消息中出现过的去重用户 */
+                SELECT count(DISTINCT user_id) AS total_users,
+                       count(DISTINCT user_id) FILTER (WHERE create_time >= :start) AS new_users
+                FROM ai_agent_message WHERE deleted = 0 AND tenant_id = :tenantId AND create_time < :end
             ), sessions AS (
                 SELECT count(*) AS total_sessions,
                        count(*) FILTER (WHERE create_time >= :start) AS sessions,
                        count(*) FILTER (WHERE create_time >= :previousStart AND create_time < :start) AS previous_sessions
-                FROM ai_agent_conversation WHERE deleted = 0 AND create_time < :end
+                FROM ai_agent_conversation WHERE deleted = 0 AND tenant_id = :tenantId AND create_time < :end
             ), messages AS (
                 SELECT count(*) AS total_messages,
                        count(*) FILTER (WHERE create_time >= :start) AS messages,
@@ -56,7 +58,7 @@ public class AgentDashboardReader {
                        count(DISTINCT user_id) FILTER (WHERE create_time >= :previousStart AND create_time < :start) AS previous_active_users,
                        count(DISTINCT (conversation_id, user_id)) FILTER (WHERE create_time >= :start) AS active_sessions,
                        count(DISTINCT (conversation_id, user_id)) FILTER (WHERE create_time >= :previousStart AND create_time < :start) AS previous_active_sessions
-                FROM ai_agent_message WHERE deleted = 0 AND create_time < :end
+                FROM ai_agent_message WHERE deleted = 0 AND tenant_id = :tenantId AND create_time < :end
             )
             SELECT * FROM users CROSS JOIN sessions CROSS JOIN messages
             """;
@@ -78,7 +80,7 @@ public class AgentDashboardReader {
                    count(*) FILTER (WHERE tool_calls = 1) AS single_tool_replies,
                    count(*) FILTER (WHERE tool_calls > 1) AS multi_tool_replies,
                    (SELECT count(*) FROM ai_agent_message
-                     WHERE deleted = 0 AND role = 'assistant'
+                     WHERE deleted = 0 AND tenant_id = :tenantId AND role = 'assistant'
                        AND create_time >= :previousStart AND create_time < :start) AS previous_total
             FROM (
                 SELECT message_status,
@@ -87,7 +89,7 @@ public class AgentDashboardReader {
                             THEN (SELECT count(*) FROM jsonb_array_elements(blocks) b WHERE b ->> 'kind' = 'tool')
                             ELSE 0 END AS tool_calls
                 FROM ai_agent_message
-                WHERE deleted = 0 AND role = 'assistant' AND create_time >= :start AND create_time < :end
+                WHERE deleted = 0 AND tenant_id = :tenantId AND role = 'assistant' AND create_time >= :start AND create_time < :end
             ) reply
             """;
 
@@ -108,7 +110,7 @@ public class AgentDashboardReader {
                 FROM ai_agent_message m
                 CROSS JOIN LATERAL jsonb_array_elements(
                     CASE WHEN jsonb_typeof(m.blocks) = 'array' THEN m.blocks ELSE '[]'::jsonb END) b
-                WHERE m.deleted = 0 AND m.role = 'assistant'
+                WHERE m.deleted = 0 AND m.tenant_id = :tenantId AND m.role = 'assistant'
                   AND m.create_time >= :start AND m.create_time < :end
                   AND b ->> 'kind' IN ('tool', 'confirm')
             ), top_tools AS (
@@ -155,20 +157,20 @@ public class AgentDashboardReader {
      */
     static final String MEMORY_SQL = """
             SELECT
-                (SELECT count(*) FROM ai_agent_context_compaction WHERE create_time >= :start AND create_time < :end) AS compactions,
+                (SELECT count(*) FROM ai_agent_context_compaction WHERE tenant_id = :tenantId AND create_time >= :start AND create_time < :end) AS compactions,
                 (SELECT count(*) FROM ai_agent_context_compaction
-                   WHERE create_time >= :start AND create_time < :end AND context_chars_before > 0) AS compactions_with_chars,
+                   WHERE tenant_id = :tenantId AND create_time >= :start AND create_time < :end AND context_chars_before > 0) AS compactions_with_chars,
                 (SELECT 100.0 * (1 - sum(context_chars_after)::numeric / NULLIF(sum(context_chars_before), 0))
                    FROM ai_agent_context_compaction
-                   WHERE create_time >= :start AND create_time < :end AND context_chars_before > 0) AS context_reduction_pct,
+                   WHERE tenant_id = :tenantId AND create_time >= :start AND create_time < :end AND context_chars_before > 0) AS context_reduction_pct,
                 (SELECT COALESCE(sum(context_chars_before), 0) FROM ai_agent_context_compaction
-                   WHERE create_time >= :start AND create_time < :end AND context_chars_before > 0) AS context_chars_before,
+                   WHERE tenant_id = :tenantId AND create_time >= :start AND create_time < :end AND context_chars_before > 0) AS context_chars_before,
                 (SELECT COALESCE(sum(context_chars_after), 0) FROM ai_agent_context_compaction
-                   WHERE create_time >= :start AND create_time < :end AND context_chars_before > 0) AS context_chars_after,
+                   WHERE tenant_id = :tenantId AND create_time >= :start AND create_time < :end AND context_chars_before > 0) AS context_chars_after,
                 count(*) FILTER (WHERE invalid_at IS NULL OR invalid_at >= :end) AS active_memories,
                 count(*) FILTER (WHERE create_time >= :start) AS added_memories,
                 count(*) FILTER (WHERE invalid_at >= :start AND invalid_at < :end) AS invalidated_memories
-            FROM ai_agent_memory WHERE create_time < :end
+            FROM ai_agent_memory WHERE tenant_id = :tenantId AND create_time < :end
             """;
 
     /*
@@ -178,34 +180,35 @@ public class AgentDashboardReader {
      */
     static final String TRENDS_SQL = """
             SELECT date_trunc(:granularity, create_time) AS bucket, 'messages' AS metric, count(*) AS value
-            FROM ai_agent_message WHERE deleted = 0 AND create_time >= :start AND create_time < :end GROUP BY bucket
+            FROM ai_agent_message WHERE deleted = 0 AND tenant_id = :tenantId AND create_time >= :start AND create_time < :end GROUP BY bucket
             UNION ALL
             SELECT date_trunc(:granularity, create_time), 'activeusers', count(DISTINCT user_id)
-            FROM ai_agent_message WHERE deleted = 0 AND create_time >= :start AND create_time < :end GROUP BY 1
+            FROM ai_agent_message WHERE deleted = 0 AND tenant_id = :tenantId AND create_time >= :start AND create_time < :end GROUP BY 1
             UNION ALL
             SELECT date_trunc(:granularity, create_time), 'sessions', count(*)
-            FROM ai_agent_conversation WHERE deleted = 0 AND create_time >= :start AND create_time < :end GROUP BY 1
+            FROM ai_agent_conversation WHERE deleted = 0 AND tenant_id = :tenantId AND create_time >= :start AND create_time < :end GROUP BY 1
             UNION ALL
             SELECT date_trunc(:granularity, create_time), 'messages_prev', count(*)
-            FROM ai_agent_message WHERE deleted = 0 AND create_time >= :previousStart AND create_time < :start GROUP BY 1
+            FROM ai_agent_message WHERE deleted = 0 AND tenant_id = :tenantId AND create_time >= :previousStart AND create_time < :start GROUP BY 1
             UNION ALL
             SELECT date_trunc(:granularity, create_time), 'activeusers_prev', count(DISTINCT user_id)
-            FROM ai_agent_message WHERE deleted = 0 AND create_time >= :previousStart AND create_time < :start GROUP BY 1
+            FROM ai_agent_message WHERE deleted = 0 AND tenant_id = :tenantId AND create_time >= :previousStart AND create_time < :start GROUP BY 1
             UNION ALL
             SELECT date_trunc(:granularity, create_time), 'sessions_prev', count(*)
-            FROM ai_agent_conversation WHERE deleted = 0 AND create_time >= :previousStart AND create_time < :start GROUP BY 1
+            FROM ai_agent_conversation WHERE deleted = 0 AND tenant_id = :tenantId AND create_time >= :previousStart AND create_time < :start GROUP BY 1
             UNION ALL
             SELECT date_trunc(:granularity, create_time),
                    CASE message_status WHEN 'NORMAL' THEN 'normal' WHEN 'INTERRUPTED' THEN 'interrupted'
                        WHEN 'AWAITING_CONFIRM' THEN 'awaitingConfirm' ELSE 'unknown' END, count(*)
-            FROM ai_agent_message WHERE deleted = 0 AND role = 'assistant'
+            FROM ai_agent_message WHERE deleted = 0 AND tenant_id = :tenantId AND role = 'assistant'
                 AND create_time >= :start AND create_time < :end GROUP BY 1, 2
             """;
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, timeout = 10)
     public Rows read(AgentDashboardWindow window) {
+        String tenantId = PrincipalContext.require().tenantId();
         Map<String, Object> params = Map.of("start", window.start(), "end", window.end(),
-                "previousStart", window.previousStart(), "granularity", window.granularity());
+                "previousStart", window.previousStart(), "granularity", window.granularity(), "tenantId", tenantId);
         return new Rows(jdbc.queryForMap(OVERVIEW_SQL, params), jdbc.queryForMap(REPLIES_SQL, params),
                 jdbc.queryForList(BLOCKS_SQL, params), jdbc.queryForMap(MEMORY_SQL, params),
                 jdbc.queryForList(TRENDS_SQL, params));

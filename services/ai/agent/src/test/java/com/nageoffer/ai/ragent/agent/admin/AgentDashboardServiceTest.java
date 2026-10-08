@@ -21,6 +21,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.admin.controller.DashboardController;
 import com.nageoffer.ai.ragent.admin.service.DashboardService;
 import com.nageoffer.ai.ragent.admin.service.impl.DashboardServiceImpl;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMessageMapper;
@@ -28,7 +30,10 @@ import com.nageoffer.ai.ragent.rag.dao.mapper.RagTraceRunMapper;
 import com.nageoffer.ai.ragent.user.dao.mapper.UserMapper;
 import cn.dev33.satoken.annotation.SaCheckRole;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.sql.Timestamp;
 import java.time.Clock;
@@ -37,6 +42,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -48,7 +54,9 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import org.junit.jupiter.api.Tag;
 
+@Tag("dev")
 class AgentDashboardServiceTest {
 
     private final AgentDashboardReader reader = mock(AgentDashboardReader.class);
@@ -59,6 +67,49 @@ class AgentDashboardServiceTest {
         @Override public Instant instant() { return now.get(); }
     };
     private final AgentDashboardService service = new AgentDashboardService(reader, clock);
+
+    @BeforeEach
+    void setPrincipal() {
+        PrincipalContext.set(principal("T-A"));
+    }
+
+    @AfterEach
+    void clearPrincipal() {
+        PrincipalContext.clear();
+    }
+
+    @Test
+    void tenantSnapshotsCannotReadEachOthersCachedStatistics() {
+        when(reader.read(any())).thenAnswer(invocation -> {
+            var base = emptyRows();
+            long messages = PrincipalContext.require().tenantId().equals("T-A") ? 11 : 22;
+            return new AgentDashboardReader.Rows(Map.of("messages", messages), base.replies(),
+                    base.blocks(), base.memory(), base.trends());
+        });
+        var tenantA = service.loadOverview("24h");
+        PrincipalContext.set(principal("T-B"));
+        var tenantB = service.loadOverview("24h");
+        assertThat(tenantA.getKpis().getMessages24h().getValue()).isEqualTo(11);
+        assertThat(tenantB.getKpis().getMessages24h().getValue()).isEqualTo(22);
+        assertThat(service.loadOverview("24h")).isSameAs(tenantB);
+        PrincipalContext.set(principal("T-A"));
+        assertThat(service.loadOverview("24h")).isSameAs(tenantA);
+        verify(reader, times(2)).read(any());
+        var cache = (Map<?, ?>) ReflectionTestUtils.getField(service, "cache");
+        assertThat(cache).isNotNull();
+        assertThat(cache.keySet()).isEqualTo(Set.of("T-A:24h:hour", "T-B:24h:hour"));
+    }
+
+    @Test
+    void missingPrincipalCannotReadEvenAWarmedCache() {
+        when(reader.read(any())).thenReturn(emptyRows());
+        service.loadOverview("24h");
+        PrincipalContext.clear();
+        assertThatThrownBy(() -> service.loadOverview("24h")).isInstanceOf(ClientException.class);
+        assertThatThrownBy(() -> service.loadPerformance("24h")).isInstanceOf(ClientException.class);
+        assertThatThrownBy(() -> service.loadTrends("messages", "24h", "hour")).isInstanceOf(ClientException.class);
+        verify(reader, times(1)).read(any());
+    }
 
     @Test
     void missingSamplesAreNotZeroRatesAndOnlyAgentFieldsAreSerialized() throws Exception {
@@ -219,5 +270,10 @@ class AgentDashboardServiceTest {
 
     private static AgentDashboardReader.Rows emptyRows() {
         return new AgentDashboardReader.Rows(Map.of(), Map.of(), List.of(), Map.of(), List.of());
+    }
+
+    private static ExecutionPrincipal principal(String tenantId) {
+        return new ExecutionPrincipal(tenantId, "1", "platform:" + tenantId + ":1", 1, 1,
+                Set.of("monitor.read"), "dashboard-test", "test", 1, Long.MAX_VALUE);
     }
 }
