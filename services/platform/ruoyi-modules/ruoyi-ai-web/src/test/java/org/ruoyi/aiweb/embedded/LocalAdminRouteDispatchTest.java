@@ -9,6 +9,9 @@ import com.nageoffer.ai.ragent.framework.security.RevocationGuard;
 import com.nageoffer.ai.ragent.ingestion.service.IntentTreeService;
 import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeChunkMapper;
 import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeDocumentMapper;
+import com.nageoffer.ai.ragent.knowledge.controller.KnowledgeChunkController;
+import com.nageoffer.ai.ragent.knowledge.controller.vo.KnowledgeChunkVO;
+import com.nageoffer.ai.ragent.knowledge.service.KnowledgeChunkService;
 import com.nageoffer.ai.ragent.rag.controller.*;
 import com.nageoffer.ai.ragent.rag.controller.vo.IntentNodeTreeVO;
 import com.nageoffer.ai.ragent.rag.controller.vo.QueryTermMappingVO;
@@ -60,12 +63,13 @@ class LocalAdminRouteDispatchTest {
     private final IntentResolver resolver = mock(IntentResolver.class);
     private final RetrievalEngine retrieval = mock(RetrievalEngine.class);
     private final RevocationGuard guard = mock(RevocationGuard.class);
+    private final KnowledgeChunkService chunks = mock(KnowledgeChunkService.class);
     private final List<String> acknowledgements = new ArrayList<>();
     private AnnotationConfigWebApplicationContext context;
     private MockServletContext servlet;
     private AiGatewayController gateway;
     private Set<String> permissions = Set.of("ai:config:read", "ai:config:publish", "ai:kb:read",
-            "ai:kb:retrieve", "ai:run:read", "ai:run:event:read");
+            "ai:kb:retrieve", "ai:run:read", "ai:run:event:read", "ai:document:read");
 
     @BeforeEach void setup() {
         when(intents.getFullTree()).thenReturn(List.of(IntentNodeTreeVO.builder().id("r6-intent").build()));
@@ -110,7 +114,9 @@ class LocalAdminRouteDispatchTest {
                     mock(KnowledgeChunkMapper.class), mock(KnowledgeDocumentMapper.class)));
             ObjectProvider<RevocationGuard> provider = mock(ObjectProvider.class);
             when(provider.getIfAvailable()).thenReturn(guard);
-            factory.registerSingleton("deliveryPermits", new DeliveryPermits(provider));
+            var permits = new DeliveryPermits(provider);
+            factory.registerSingleton("deliveryPermits", permits);
+            factory.registerSingleton("chunks", new KnowledgeChunkController(chunks, permits));
         });
         servlet = new MockServletContext();
         context.setServletContext(servlet);
@@ -187,6 +193,18 @@ class LocalAdminRouteDispatchTest {
         assertThat(response.getContentAsString()).contains("\"code\":200", "r6-created-intent");
         verifyNoInteractions(guard);
         assertThat(acknowledgements).isEmpty();
+    }
+
+    @Test void previouslyRegisteredKnowledgeChunkRouteAlsoTraversesThePublicGateway() throws Exception {
+        var chunk = new KnowledgeChunkVO();
+        chunk.setId("r6-chunk"); chunk.setDocId("doc-1");
+        var page = new Page<KnowledgeChunkVO>(); page.setRecords(List.of(chunk));
+        when(chunks.pageQuery(eq("doc-1"), any())).thenReturn(page);
+        var response = dispatch("GET", "/knowledge-base/docs/doc-1/chunks", null);
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(response.getContentAsString()).contains("\"code\":200", "r6-chunk");
+        verify(guard).enter(any(), eq("document.read"), eq("doc:doc-1"));
+        assertThat(acknowledgements).hasSize(1);
     }
 
     @Test void evalUsesItsActualControllerAndCarriesTheRetrievalReceipt() throws Exception {
