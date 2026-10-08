@@ -24,6 +24,7 @@ import com.nageoffer.ai.ragent.rag.core.rewrite.QueryRewriteService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -35,6 +36,24 @@ import java.util.List;
 @Slf4j
 @SpringBootTest
 @RequiredArgsConstructor(onConstructor = @__(@Autowired))
+@Disabled(
+            "本类确实有 2 条断言（assertNotNull / rewritten 非空），但同样断的是真实 LLM 输出。" + 
+            "若要恢复，必须先用 MockWebServer 把 LLM 取代，断言对的应是被测的改写/抽取逻辑。" + 
+            "真实根因（R-4 / RW-28-C2-R8 实测，推翻 R7 的‘数据源缺失’结论）：" + 
+            "测试配置 ruoyi-modules/ruoyi-ai-rag/src/test/resources/application.yaml 只 import 了 " + 
+            "file:${user.dir}/../bootstrap/src/main/resources/application.yaml，而 platform reactor 不存在 bootstrap 模块 " + 
+            "（find -type d -name bootstrap 仅命中 docs/script/sql/postgres/bootstrap，那是 SQL 目录），" + 
+            "optional import 全部落空 ⇒ 测试上下文没有任何 spring 配置。" + 
+            "分层阻塞链（R-4 实测，逐层补供后失败点整体前移）：" + 
+            "第1层 JDBC 数据源 Failed to determine a suitable driver class（注意：ruoyi-ai-rag/pom.xml 已声明 " + 
+            "org.postgresql:postgresql，不是缺驱动 jar，而是测试上下文无 URL 可推断）；" + 
+            "补上后第2层 StorageClientConfig.s3Client() 因 rag.storage.* 全为 null 抛 NPE；" + 
+            "补上后第3层 Redisson/Redis localhost:6379 Connection refused；" + 
+            "其后还有 Milvus 与真实 LLM。" + 
+            "注意：本类在默认 -Pdev 下因 pom 的 <groups>${profiles.active}</groups>=dev 而本来就不被选中执行，" + 
+            "加 @Disabled 不改变默认构建的任何数字（不增加不减少任何测试计数）。" + 
+            "若将来修正 profile 使其可选执行，本类仍必须「重写为真测试」，" + 
+            "不能只把 @Disabled 去掉就算恢复。")
 public class QueryRewriteTests {
 
     private final LLMService llmService;
