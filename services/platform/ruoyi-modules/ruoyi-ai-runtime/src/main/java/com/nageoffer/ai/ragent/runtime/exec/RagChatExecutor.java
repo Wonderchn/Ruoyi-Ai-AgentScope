@@ -20,7 +20,6 @@ package com.nageoffer.ai.ragent.runtime.exec;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
-import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.convention.ChatMessage;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService;
 import com.nageoffer.ai.ragent.runtime.config.ConfigAuthorityUnavailable;
@@ -584,7 +583,7 @@ public class RagChatExecutor implements RunExecutor {
      * 补齐，而不是让读路径去 union 两张表（后者要背双写与一致性）。
      *
      * <p><b>身份。</b>本方法在工作线程里跑，{@code RunWorker} <b>不</b>绑定
-     * {@code PrincipalContext}；而 {@code ConversationMessageService.addMessage} 与
+     * 请求级主体持有者；而 {@code ConversationMessageService.addMessage} 与
      * {@code AiDomainWriteIdentity} 都要求主体（V7 的 {@code tenant_id}/{@code member_id}
      * 是 NOT NULL 且刻意不提供"外部传参"重载，防止把请求体里的值写进身份列）。
      * 所以这里绑定的是执行器早已从 <b>run 行</b>权威事实推出的 {@code principal}
