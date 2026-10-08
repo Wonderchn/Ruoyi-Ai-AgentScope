@@ -81,7 +81,7 @@ class LocalWhitelistHandlerCoverageTest {
 
     /** 方级 mapping 注解：GET/POST/PUT/DELETE/PATCH。 */
     private static final Pattern METHOD_MAPPING = Pattern.compile(
-            "@(Get|Post|Put|Delete|Patch)Mapping\\s*\\(([^)]*)\\)");
+            "@(Get|Post|Put|Delete|Patch)Mapping\\s*(?:\\(([^)]*)\\))?");
 
     /** 类级前缀注解。 */
     private static final Pattern CLASS_MAPPING = Pattern.compile(
@@ -234,6 +234,9 @@ class LocalWhitelistHandlerCoverageTest {
      * 而漏扫正是本判据要防的"看起来没人接"。
      */
     private static String resolvePath(String annotationArgs) {
+        if (annotationArgs == null) {
+            return ""; // Bare @GetMapping maps the exact class prefix (e.g. /sample-questions).
+        }
         if (annotationArgs.contains("INTERNAL_PREFIX")) {
             Matcher literal = Pattern.compile("INTERNAL_PREFIX\\s*\\+\\s*\"([^\"]*)\"")
                     .matcher(annotationArgs);

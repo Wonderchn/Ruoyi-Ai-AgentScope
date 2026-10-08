@@ -249,7 +249,33 @@ public class AiGatewayController {
             new Route("PUT", "/knowledge-base/docs/{docId}/chunks/{chunkId}", "kb.write"),
             new Route("DELETE", "/knowledge-base/docs/{docId}/chunks/{chunkId}", "kb.write"),
             new Route("PATCH", "/knowledge-base/docs/{docId}/chunks/{chunkId}/enable", "kb.write"),
-            new Route("PATCH", "/knowledge-base/docs/{docId}/chunks/batch-enable", "kb.write"));
+            new Route("PATCH", "/knowledge-base/docs/{docId}/chunks/batch-enable", "kb.write"),
+            // R6: explicit administrative surfaces; GET replies carry P2 delivery receipts.
+            // KB/document full admin and Dashboard remain closed until their prerequisites are verified.
+            new Route("GET", "/intent-tree/trees", "config.read"),
+            new Route("POST", "/intent-tree", "config.publish"),
+            new Route("PUT", "/intent-tree/{id}", "config.publish"),
+            new Route("DELETE", "/intent-tree/{id}", "config.publish"),
+            new Route("POST", "/intent-tree/batch/enable", "config.publish"),
+            new Route("POST", "/intent-tree/batch/disable", "config.publish"),
+            new Route("POST", "/intent-tree/batch/delete", "config.publish"),
+            new Route("GET", "/mappings", "config.read"),
+            new Route("GET", "/mappings/{id}", "config.read"),
+            new Route("POST", "/mappings", "config.publish"),
+            new Route("PUT", "/mappings/{id}", "config.publish"),
+            new Route("DELETE", "/mappings/{id}", "config.publish"),
+            new Route("GET", "/sample-questions/random", "kb.read"),
+            new Route("GET", "/sample-questions", "kb.read"),
+            new Route("GET", "/sample-questions/{id}", "kb.read"),
+            new Route("POST", "/sample-questions", "config.publish"),
+            new Route("PUT", "/sample-questions/{id}", "config.publish"),
+            new Route("DELETE", "/sample-questions/{id}", "config.publish"),
+            new Route("GET", "/rag/traces/runs", "run.get"),
+            new Route("GET", "/rag/traces/runs/{traceId}", "run.get"),
+            new Route("GET", "/rag/traces/runs/{traceId}/nodes", "run.events"),
+            new Route("GET", "/biz-change-logs", "run.get"),
+            new Route("GET", "/biz-change-logs/{id}", "run.get"),
+            new Route("GET", "/rag/eval", "kb.retrieve"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;
