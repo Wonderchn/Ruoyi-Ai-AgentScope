@@ -89,6 +89,15 @@ class AiEmbeddedFeedbackConfigurationTest {
         runner.withPropertyValues(ENABLED)
                 .withBean(MessageFeedbackMapper.class, () -> mock(MessageFeedbackMapper.class))
                 .withBean(ConversationMessageMapper.class, () -> mock(ConversationMessageMapper.class))
+                // F03 装配面（T0 于 5ddec3e6 把会话历史写/读两侧加入本 assembly）：本用例只加载
+                // AiEmbeddedFeedbackConfiguration 一个配置类，因此必须把这些协作者补齐，否则
+                // context.hasNotFailed() 会因"缺 bean"失败。这不是放宽断言，而是供给本配置新增的依赖。
+                .withBean(com.nageoffer.ai.ragent.rag.dao.mapper.ConversationSummaryMapper.class,
+                        () -> mock(com.nageoffer.ai.ragent.rag.dao.mapper.ConversationSummaryMapper.class))
+                .withBean(com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMapper.class,
+                        () -> mock(com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMapper.class))
+                .withBean(com.nageoffer.ai.ragent.authorization.TenantConversationReadRepository.class,
+                        () -> mock(com.nageoffer.ai.ragent.authorization.TenantConversationReadRepository.class))
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     assertThat(context).hasSingleBean(
@@ -97,6 +106,18 @@ class AiEmbeddedFeedbackConfigurationTest {
                     // 锚点：服务 bean 真的是显式注册的那个实现，而不是替身
                     assertThat(context.getBean(MessageFeedbackService.class))
                             .isInstanceOf(com.nageoffer.ai.ragent.rag.service.impl.MessageFeedbackServiceImpl.class);
+                    // F03 锚点（新增，非放宽）：同一 assembly 里的会话历史写面也必须真的装配上，
+                    // 且实现必须是显式注册的那个类——与上面的反馈面同口径。
+                    // 依据：com.nageoffer.** 不在 platform 组件扫描根下，@Component 不生效，
+                    // 漏登记会让带 conversationId 的 run 在使用点 fail-closed（RagChatExecutor 抛错）。
+                    assertThat(context)
+                            .hasSingleBean(com.nageoffer.ai.ragent.rag.service.ConversationMessageService.class);
+                    assertThat(context.getBean(com.nageoffer.ai.ragent.rag.service.ConversationMessageService.class))
+                            .isInstanceOf(com.nageoffer.ai.ragent.rag.service.impl.ConversationMessageServiceImpl.class);
+                    assertThat(context)
+                            .hasSingleBean(com.nageoffer.ai.ragent.runtime.port.ConversationHistoryPort.class);
+                    assertThat(context.getBean(com.nageoffer.ai.ragent.runtime.port.ConversationHistoryPort.class))
+                            .isInstanceOf(com.nageoffer.ai.ragent.rag.service.impl.ConversationHistoryAdapter.class);
                 });
     }
 
