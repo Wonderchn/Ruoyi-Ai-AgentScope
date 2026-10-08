@@ -32,6 +32,12 @@
  *    ⚠️ **第二处例外（RW-07）**：运行配置权威 8 条 `/runtime-config/**` 已由
  *    `RuntimeCatalogController`（RW-06）+ `AiResourceController` 四条既有路由承载，
  *    权限行由 V28 播种；契约见 `./runtimeConfig.ts`。
+ *
+ *    ⚠️ **第三处例外（RW-04-R1 装配 / RW-05-R6 接页面）**：知识**分块面** 6 条
+ *    `/knowledge-base/docs/{docId}/chunks*` 已登记 `KnowledgeChunkController` 并逐条放行，
+ *    信封已改为整数 `ApiEnvelope`（GET 另有网关消费的交付回执头）；
+ *    本卡只接 GET 列表，契约见 `./knowledgeChunks.ts`。
+ *    **其余 rag 旧族（agent-skills / ingestion / 旧 knowledge-base）仍是 404，本节其余描述不变。**
  * 3. **知识库族 8 条白名单路由活着**（`AiGatewayController` ROUTES，M19/M20 实测
  *    200/400/404 分布健康）——经 `/api/ai/v1` 前缀。
  *
@@ -56,9 +62,11 @@
 import type { PlatformClient } from '@ruoyi/platform-client/http';
 import type { PageParams } from '../../utils/list';
 import { createAgentProfilesApi } from './agentProfiles';
+import { createKnowledgeChunksApi } from './knowledgeChunks';
 import { createRuntimeConfigApi } from './runtimeConfig';
 
 export * from './agentProfiles';
+export * from './knowledgeChunks';
 export * from './runtimeConfig';
 
 /** ragent 旧信封形状（`framework/convention/Result`：code 是**字符串**）。 */
@@ -227,6 +235,16 @@ export function createAiApi(client: PlatformClient) {
      * 不再走旧 `/agents`，也不再用字符串 `code:"0"` 判别。
      */
     agentProfiles: createAgentProfilesApi(client),
+
+    /**
+     * 知识分块（RW-05-R6 / T7）—— **本形态真实可达**（见 `./knowledgeChunks.ts`）。
+     *
+     * ⚠️ 更正基线事实：分块面**已**由内嵌装配登记（`KnowledgeChunkController`）并经
+     * `AiGatewayController.ROUTES` 放行 6 条；信封是 `ApiEnvelope`（整数 code=200），
+     * GET 另有网关自行消费的交付回执头。**本卡只接 GET 列表**（`current`/`size` 分页），
+     * 其余 5 条写入路由不接客户端、页面不放按钮。
+     */
+    knowledgeChunks: createKnowledgeChunksApi(client),
 
     /**
      * ragent 管理面其余族（Skills/Ingestion）。⚠️ BLOCKED-BY-EMBEDDED-REGISTRY：
