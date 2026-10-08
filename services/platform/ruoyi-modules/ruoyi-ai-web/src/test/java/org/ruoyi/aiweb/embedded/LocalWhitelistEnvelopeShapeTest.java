@@ -17,10 +17,13 @@
 
 package org.ruoyi.aiweb.embedded;
 
+import com.nageoffer.ai.ragent.framework.convention.Result;
 import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
+import com.nageoffer.ai.ragent.framework.web.Results;
 import com.nageoffer.ai.ragent.knowledge.controller.KnowledgeBaseController;
 import com.nageoffer.ai.ragent.knowledge.controller.KnowledgeChunkController;
 import com.nageoffer.ai.ragent.knowledge.controller.KnowledgeDocumentController;
+import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -31,6 +34,7 @@ import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
 import java.lang.reflect.Method;
@@ -38,10 +42,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -50,15 +54,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code code} 的信封（{@link ApiEnvelope}），不能是 {@code Result}。
  *
  * <p><b>为什么需要它。</b>D2 是这样漏过去的：{@code LocalWhitelistHandlerCoverageTest} 只断言
- * "白名单每条路由都有内层 handler"，而 {@code LocalKnowledgeChunkEnvelopeDispatchTest} 只覆盖
+ * "白名单每条路由都有内层 handler"，而 {@code LocalKnowledgeAdminEnvelopeDispatchTest} 只覆盖
  * 当前已登记的那几条。两条判据之间有一个空档——<b>"新放行一条路由，而它的 handler 返回字符串 code"</b>
  * 不会被任何一条挡住，运行期表现是网关 503（{@code missing envelope code}）。
- * 本类把这条规则显式化：**放行 = 必须整数信封**。
+ * 本类把这条规则显式化：<b>放行 = 必须整数信封</b>。
  *
- * <p><b>知识库/文档面当前未放行</b>（{@code AiEmbeddedKnowledgeAdminConfiguration} 默认只装分块面，
- * T0 也只登记了 6 条分块路由），因此它们的 {@code Result} 目前不构成 D2，本判据对它们是"未放行 ⇒ 不检查"。
- * 一旦 T0 在白名单里加它们的路由，本判据立刻变红，直到同法改为 {@link ApiEnvelope} —— 这正是
- * 把"将来会踩的坑"变成"集成时就报错"。
+ * <p><b>知识库面/文档面的信封状态（RW-04-R8 变更）。</b>改造前这两个面返回 platform
+ * {@code Result}（字符串 {@code code}），当时因为它们<b>未被放行</b>、也不是 bean
+ * （内嵌装配默认关闭）而不构成 D2。RW-04-R8 已把它们改成整数 {@link ApiEnvelope}
+ * （GET 另带回执头），于是本类的判定从"未放行 ⇒ 不检查"变成
+ * <b>"这两个面现在确实是整数 code"</b>。
+ * <b>本卡只消灭了"一经登记路由就必然 503"这一项，两个面仍未放行</b>——
+ * 见 {@link #knowledgeAdminFacesAreStillUnrouted()}。
  *
  * <p>路由表从 {@code AiGatewayController} <b>源码</b>解析（与该包既有护栏同一手法），
  * 内层 handler 的返回类型用反射读（控制器在测试类路径上）。
@@ -115,19 +122,68 @@ class LocalWhitelistEnvelopeShapeTest {
     }
 
     @Test
-    @DisplayName("判定器自身可证：喂它一条放行路由，它真的能指出字符串 code 的 handler")
+    @DisplayName("判定器自身可证：喂它一个字符串 code 的 handler，它真的能指出来")
     void checkerItselfRejectsAStringCodeHandler() {
-        // 正例：分块面已改成 ApiEnvelope
-        assertThat(stringCodeHandlers(KnowledgeChunkController.class))
-                .as("分块面已改造，不该再被判为字符串 code").isEmpty();
+        // RW-04-R8 之前，这条负例是"知识库面/文档面现在仍是 Result，判定器必须点出来"。
+        // 改造后这两个面已经合规，若继续拿它们当负例，就等于把判据钉成恒绿——
+        // 那正是本卡明令禁止的"削弱成恒绿"。因此负例改用**只存在于本测试装配里**的
+        // StringCodeProbeController：判定器仍然被证明"能红"，但不再依赖产品代码保持有缺陷。
+        List<String> probeOffenders = stringCodeHandlers(StringCodeProbeController.class);
+        assertThat(probeOffenders)
+                .as("判定器必须能识别字符串 code 的 handler（否则上面的判据是空跑）")
+                .isNotEmpty()
+                .anyMatch(offender -> offender.startsWith("stringCodeProbe -> Result"));
 
-        // 负例（证判定器非恒真）：知识库/文档面仍是 Result，判定器必须点出来
-        assertThat(stringCodeHandlers(KnowledgeBaseController.class))
-                .as("知识库面仍是 Result，判定器必须能识别（否则上面的判据是空跑）")
+        // 正例：三个知识面现在都必须是整数 code（这是本卡改造后的判定方向）。
+        for (Class<?> controller : List.of(KnowledgeChunkController.class,
+                KnowledgeBaseController.class, KnowledgeDocumentController.class)) {
+            assertThat(stringCodeHandlers(controller))
+                    .as(controller.getSimpleName() + " 面必须是整数 code 的 ApiEnvelope；"
+                            + "这些方法经网关时 LocalAiGatewayClient.requireSingleJsonObject "
+                            + "要求 code 是整数，而 Result 的 code 是字符串 \"0\" ⇒ 必然 503")
+                    .isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("信封判据只有一条豁免：文档面的裸字节面 .../file，且必须恰好一条")
+    void rawByteStreamShapeIsExplicit() {
+        // 豁免是"按形状限定"的（返回 void + 直接写 HttpServletResponse），因此必须钉住它的数量：
+        // 多出一条就说明有人新开了裸字节面而没走回执头判据；一条都没有就说明文档面被改窄了。
+        assertThat(rawByteStreamHandlers(KnowledgeDocumentController.class))
+                .as("文档面只允许一条裸字节面（file）；它的回执头由 ruoyi-ai-rag 的 "
+                        + "KnowledgeDocumentPrivateDownloadTest#fileShouldCarryDeliveryReceiptHeaders 钉住")
+                .containsExactly("file");
+        for (Class<?> controller : List.of(KnowledgeChunkController.class, KnowledgeBaseController.class)) {
+            assertThat(rawByteStreamHandlers(controller))
+                    .as(controller.getSimpleName() + " 面不应有裸字节面")
+                    .isEmpty();
+        }
+        // 豁免判定本身不能恒真：探针控制器（返回 Result，无 HttpServletResponse 参数）不在豁免范围内
+        assertThat(stringCodeHandlers(StringCodeProbeController.class))
+                .as("返回 Result 的 handler 不能被裸字节面豁免吞掉")
                 .isNotEmpty();
-        assertThat(stringCodeHandlers(KnowledgeDocumentController.class))
-                .as("文档面仍是 Result，判定器必须能识别")
-                .isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("红线：知识库面/文档面仍未放行（信封改造不等于激活）")
+    void knowledgeAdminFacesAreStillUnrouted() throws IOException {
+        List<String> patterns = whitelistedPatterns();
+
+        // 锚点：单数知识管理面当前只放行了 6 条分块路由。少了这条，下面就是"空集合为空"。
+        List<String> singular = patterns.stream()
+                .filter(pattern -> SINGULAR_KNOWLEDGE_SURFACE.matcher(pattern).find())
+                .toList();
+        assertThat(singular)
+                .as("锚点：必须真的读到单数 /knowledge-base 面已登记的分块路由")
+                .hasSizeGreaterThanOrEqualTo(6)
+                .allMatch(pattern -> pattern.contains("/chunks"));
+
+        assertThat(singular)
+                .as("知识库面与文档面仍未放行：FullAdmin 的构造闭包还缺 15 个单例 bean 与 2 组集合元素，"
+                        + "闭包不齐时装配上去会启动失败。信封改造只消灭了 503 这一项，"
+                        + "**不构成放行**；这 15 条路由由 T0 在闭包闭合后串行决定。")
+                .noneMatch(pattern -> !pattern.contains("/chunks"));
     }
 
     // ------------------------------------------------------------------ 判定
@@ -135,16 +191,39 @@ class LocalWhitelistEnvelopeShapeTest {
     /**
      * 该控制器里<b>不合规</b>的映射方法：既不是 {@link ApiEnvelope}，也不是
      * 体内装 {@code ApiEnvelope} 的 {@code ResponseEntity}（GET 走字节分支时要靠它带回执头）。
+     *
+     * <p><b>唯一的豁免是"裸字节面"</b>（{@link #isRawByteStream}）：返回 {@code void} 且
+     * 直接写 {@code HttpServletResponse} 的 GET（文档面的 {@code .../file}）。它不产 JSON，
+     * 所以根本没有信封可言；它要满足的是回执头条件，由 {@code rawByteStreamShapeIsExplicit}
+     * 与 {@code KnowledgeDocumentPrivateDownloadTest#fileShouldCarryDeliveryReceiptHeaders} 钉住。
+     * 这条豁免是<b>按形状限定</b>的（返回 void + 有 HttpServletResponse 参数），
+     * 不是按类名或方法名开洞——把某个 {@code Result} 方法改名也躲不过去。
      */
     private static List<String> stringCodeHandlers(Class<?> controller) {
         List<String> offenders = new ArrayList<>();
         for (Method method : mappedMethods(controller)) {
-            if (isIntegralEnvelope(method)) {
+            if (isIntegralEnvelope(method) || isRawByteStream(method)) {
                 continue;
             }
             offenders.add(method.getName() + " -> " + method.getReturnType().getSimpleName());
         }
         return offenders;
+    }
+
+    /** 裸字节面：返回 {@code void} 且直接写 {@code HttpServletResponse} 的映射方法。 */
+    private static boolean isRawByteStream(Method method) {
+        return method.getReturnType() == void.class
+                && Arrays.asList(method.getParameterTypes()).contains(HttpServletResponse.class);
+    }
+
+    private static List<String> rawByteStreamHandlers(Class<?> controller) {
+        List<String> raw = new ArrayList<>();
+        for (Method method : mappedMethods(controller)) {
+            if (isRawByteStream(method)) {
+                raw.add(method.getName());
+            }
+        }
+        return raw;
     }
 
     private static boolean isIntegralEnvelope(Method method) {
@@ -187,6 +266,15 @@ class LocalWhitelistEnvelopeShapeTest {
 
     /** 从网关源码解析白名单 pattern（保留声明顺序，顺序本身是路由语义的一部分）。 */
     private static List<String> whitelistedPatterns() throws IOException {
+        List<String> patterns = new ArrayList<>();
+        for (String entry : whitelistedRoutes()) {
+            patterns.add(entry.substring(entry.indexOf(' ') + 1));
+        }
+        return patterns;
+    }
+
+    /** 同上，但产出 {@code "METHOD /pattern"} 形式（放行判据要连方法一起看）。 */
+    private static List<String> whitelistedRoutes() throws IOException {
         Path source = locate(MODULES.resolve("ruoyi-ai-integration").resolve("src").resolve("main")
                 .resolve("java").resolve("org").resolve("ruoyi").resolve("aiintegration")
                 .resolve("web").resolve("AiGatewayController.java"));
@@ -195,11 +283,11 @@ class LocalWhitelistEnvelopeShapeTest {
         assertThat(routesStart).as("找不到 ROUTES 定义（源码形状变了？）").isGreaterThan(0);
         int routesEnd = text.indexOf(");", routesStart);
         Matcher matcher = ROUTE.matcher(text.substring(routesStart, routesEnd));
-        List<String> patterns = new ArrayList<>();
+        List<String> routes = new ArrayList<>();
         while (matcher.find()) {
-            patterns.add(matcher.group(2));
+            routes.add(matcher.group(1) + " " + matcher.group(2));
         }
-        return patterns;
+        return routes;
     }
 
     /** 与既有护栏同一手法：相对路径在 reactor 根找不到时，逐级向上找。 */
@@ -215,8 +303,20 @@ class LocalWhitelistEnvelopeShapeTest {
         throw new IllegalStateException("找不到 " + relative);
     }
 
-    @SuppressWarnings("unused")
-    private static Stream<Path> unusedGuard() {
-        return Stream.empty();
+    /**
+     * 判定器自证用的<b>负例</b>：返回字符串 {@code code} 的内层 handler。
+     *
+     * <p>只存在于本测试的源码里，生产不注册（不被任何 auto-configuration {@code @Import}）。
+     * 它让"判定器能红"这件事与产品代码的当前状态解耦：RW-04-R8 之前这条负例用的是
+     * 真实产品控制器，改造完成后那样做就等于把护栏钉成恒绿。
+     */
+    @RestController
+    @RequestMapping("/internal/ai/v1/probe")
+    static class StringCodeProbeController {
+
+        @GetMapping("/knowledge-base/string-code-probe")
+        Result<String> stringCodeProbe() {
+            return Results.success("probe");
+        }
     }
 }

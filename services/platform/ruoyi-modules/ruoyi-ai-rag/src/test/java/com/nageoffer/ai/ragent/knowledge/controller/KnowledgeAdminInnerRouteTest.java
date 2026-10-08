@@ -46,6 +46,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 
 import java.io.ByteArrayInputStream;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -53,6 +54,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -128,8 +130,8 @@ class KnowledgeAdminInnerRouteTest {
                 7, 3, Set.of("ai:document:read"), "jti", "platform", 0, Long.MAX_VALUE));
 
         mvc = MockMvcBuilders.standaloneSetup(
-                new KnowledgeBaseController(baseService),
-                new KnowledgeDocumentController(documentService, fileStorageService, schemaProvider),
+                new KnowledgeBaseController(baseService, permits),
+                new KnowledgeDocumentController(documentService, fileStorageService, schemaProvider, permits),
                 new KnowledgeChunkController(chunkService, permits)).build();
     }
 
@@ -248,6 +250,67 @@ class KnowledgeAdminInnerRouteTest {
                             + "而 Result 的 code 是字符串 \"0\" ⇒ 经网关必然 503");
         }
         assertEquals(6, checked, "分块面应有 6 个映射方法（判据不能空跑）");
+    }
+
+    @Test
+    @DisplayName("知识库面 5 个方法必须返回整数 code 的 ApiEnvelope（RW-04-R8）")
+    void knowledgeBaseHandlersMustReturnIntegralCodeEnvelope() {
+        // 与分块面同一条规则，只是这条面在 RW-04-R8 之前还返回 platform Result（字符串 code "0"）。
+        // 5 条全部要改：其中 2 条 GET 走网关字节分支，还要用 ResponseEntity 承载回执头。
+        assertIntegralEnvelopeShape(KnowledgeBaseController.class, 5, Set.of());
+    }
+
+    @Test
+    @DisplayName("文档面 11 条 JSON 方法必须返回整数 code 的 ApiEnvelope，裸字节那条单独豁免（RW-04-R8）")
+    void documentHandlersMustReturnIntegralCodeEnvelope() {
+        // file(...) 直写原始字节（返回 void），不吃 JSON 信封，因此不进信封判据；
+        // 它的回执头由 KnowledgeDocumentPrivateDownloadTest#fileShouldCarryDeliveryReceiptHeaders 钉住。
+        assertIntegralEnvelopeShape(KnowledgeDocumentController.class, 12, Set.of("file"));
+    }
+
+    /**
+     * 整数 code 信封形状的通用判据（RW-04-R8）。
+     *
+     * <p><b>不是恒绿</b>：{@code expectedMappedMethods} 先钉住"扫到了几个方法"，
+     * 扫描为空或控制器被掏空都会立刻失败；随后逐条断言返回类型。
+     * {@code ResponseEntity} 只允许出现在 GET 上——它承载的是交付回执头，写操作带上它没有意义。
+     */
+    private static void assertIntegralEnvelopeShape(Class<?> controller, int expectedMappedMethods,
+                                                    Set<String> byteStreamMethods) {
+        List<Method> mapped = new ArrayList<>();
+        for (Method method : controller.getDeclaredMethods()) {
+            if (method.isAnnotationPresent(GetMapping.class)
+                    || method.isAnnotationPresent(PostMapping.class)
+                    || method.isAnnotationPresent(PutMapping.class)
+                    || method.isAnnotationPresent(DeleteMapping.class)
+                    || method.isAnnotationPresent(PatchMapping.class)) {
+                mapped.add(method);
+            }
+        }
+        assertEquals(expectedMappedMethods, mapped.size(),
+                controller.getSimpleName() + " 的映射方法数变了：判据必须钉住分母，否则扫描为空会假绿");
+
+        for (Method method : mapped) {
+            if (byteStreamMethods.contains(method.getName())) {
+                assertEquals(void.class, method.getReturnType(),
+                        method.getName() + " 是裸字节面：必须直写响应，不返回信封");
+                assertTrue(method.isAnnotationPresent(GetMapping.class),
+                        method.getName() + " 必须是 GET（网关只对 GET 走字节分支并要求回执头）");
+                continue;
+            }
+            if (method.getReturnType() == ResponseEntity.class) {
+                assertTrue(method.isAnnotationPresent(GetMapping.class),
+                        method.getName() + " 用了 ResponseEntity 但不是 GET：只有 GET 走字节分支才需要承载回执头");
+                assertThat(method.getGenericReturnType().getTypeName())
+                        .as(method.getName() + " 的 ResponseEntity 体必须是 ApiEnvelope，不能回退成 Result")
+                        .contains("ApiEnvelope");
+                continue;
+            }
+            assertEquals(ApiEnvelope.class, method.getReturnType(),
+                    method.getName() + " 的返回类型必须是 ApiEnvelope："
+                            + "LocalAiGatewayClient.requireSingleJsonObject 要求 code 是整数，"
+                            + "而 Result 的 code 是字符串 \"0\" ⇒ 经网关必然 503");
+        }
     }
 
     // ------------------------------------------------------------ 反例：没有前缀就没有映射

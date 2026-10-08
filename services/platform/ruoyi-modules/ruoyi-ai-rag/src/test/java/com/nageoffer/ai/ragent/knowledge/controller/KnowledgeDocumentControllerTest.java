@@ -17,19 +17,28 @@
 
 package com.nageoffer.ai.ragent.knowledge.controller;
 
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.knowledge.controller.vo.KnowledgeDocumentVO;
 import com.nageoffer.ai.ragent.knowledge.service.KnowledgeDocumentService;
 import com.nageoffer.ai.ragent.knowledge.support.IngestionSpecSchemaProvider;
 import com.nageoffer.ai.ragent.rag.service.FileStorageService;
+import com.nageoffer.ai.ragent.runtime.web.DeliveryPermits;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.ContentDisposition;
 import org.springframework.mock.web.MockHttpServletResponse;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Set;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import org.junit.jupiter.api.Tag;
@@ -39,8 +48,25 @@ class KnowledgeDocumentControllerTest {
 
     private final KnowledgeDocumentService documentService = mock(KnowledgeDocumentService.class);
     private final FileStorageService fileStorageService = mock(FileStorageService.class);
+    private final DeliveryPermits permits = mock(DeliveryPermits.class);
     private final KnowledgeDocumentController controller = new KnowledgeDocumentController(
-            documentService, fileStorageService, mock(IngestionSpecSchemaProvider.class));
+            documentService, fileStorageService, mock(IngestionSpecSchemaProvider.class), permits);
+
+    @BeforeEach
+    void setUp() {
+        // .../file 是 GET ⇒ 网关字节分支要求两个 X-AI-Delivery-* 回执头，故需要真实形状的许可；
+        // 主体也必须存在（PrincipalContext.require()）。
+        when(permits.enter(any(), anyString(), anyString()))
+                .thenAnswer(invocation -> new DeliveryPermits.Permit(
+                        UUID.randomUUID().toString(), UUID.randomUUID().toString(), null));
+        PrincipalContext.set(new ExecutionPrincipal("T1", "2101", "platform:T1:2101",
+                7, 3, Set.of("ai:document:read"), "jti", "platform", 0, Long.MAX_VALUE));
+    }
+
+    @AfterEach
+    void clearPrincipal() {
+        PrincipalContext.clear();
+    }
 
     @Test
     void fileShouldExposeUnicodeNameThroughContentDisposition() throws Exception {
