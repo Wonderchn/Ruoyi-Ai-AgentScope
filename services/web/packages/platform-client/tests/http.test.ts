@@ -16,6 +16,7 @@ import {
   buildAuthHeaders,
   buildQueryString,
   createPlatformClient,
+  envelopeMsg,
   joinUrl,
   unwrapData,
   unwrapRows,
@@ -134,6 +135,49 @@ describe('unwrapData / unwrapRows', () => {
   it('失败时带出后端 msg（不让用户看"请求失败"四个字）', () => {
     assert.throws(() => unwrapData({ code: 500, msg: '企业名称已存在' }), /企业名称已存在/);
   });
+
+  /**
+   * RW-21：符号原因可能只在 `msg` 里（`data.errorCode` 是通用码）。
+   * `unwrapData` 必须同时带出 `errorCode` 与 `msg`，否则调用方无法区分
+   * 同为 409 的 `VERSION_CONFLICT` / `RUN_STATE_CONFLICT` / `APPROVER_POLICY_CLOSED`。
+   */
+  it('失败信封的 msg 与 data.errorCode 同时保留（msg 不因 errorCode 存在而丢失）', () => {
+    assert.throws(
+      () => unwrapData({ code: 409, msg: 'APPROVER_POLICY_CLOSED', data: { errorCode: 'FORBIDDEN' } }),
+      (error: unknown) => {
+        assert.ok(error instanceof PlatformApiError);
+        assert.equal(error.errorCode, 'FORBIDDEN');
+        assert.equal(error.msg, 'APPROVER_POLICY_CLOSED');
+        return true;
+      },
+    );
+    // 兼容性：业务失败时 `message` 仍是 `envelope.msg`（既有消费者按 message 显示不受影响）。
+    assert.throws(() => unwrapData({ code: 500, msg: '企业名称已存在', data: { errorCode: 'X' } }), (error: unknown) => {
+      assert.ok(error instanceof PlatformApiError);
+      assert.equal(error.message, '企业名称已存在');
+      assert.equal(error.msg, '企业名称已存在');
+      return true;
+    });
+  });
+
+  it('envelopeMsg：空串/null/非字符串一律视为"服务端未给"（不伪造）', () => {
+    assert.equal(envelopeMsg({ msg: 'x' }), 'x');
+    assert.equal(envelopeMsg({ msg: '   ' }), null);
+    assert.equal(envelopeMsg({ msg: null }), null);
+    assert.equal(envelopeMsg({}), null);
+    assert.equal(envelopeMsg(null), null);
+    assert.equal(envelopeMsg(undefined), null);
+  });
+
+  it('unwrapRows 的失败同样同时保留 msg 与符号码', () => {
+    assert.throws(() => unwrapRows({ code: 409, msg: 'SANDBOX_POLICY_CLOSED', data: { errorCode: 'RUN_STATE_CONFLICT' } }), (error: unknown) => {
+      assert.ok(error instanceof PlatformApiError);
+      assert.equal(error.errorCode, 'RUN_STATE_CONFLICT');
+      assert.equal(error.msg, 'SANDBOX_POLICY_CLOSED');
+      assert.equal(error.message, 'SANDBOX_POLICY_CLOSED');
+      return true;
+    });
+  });
 });
 
 describe('createPlatformClient', () => {
@@ -227,6 +271,31 @@ describe('createPlatformClient', () => {
       return error instanceof PlatformApiError && error.kind === 'auth-expired' && error.code === 401;
     });
     assert.equal(expired.length, 1);
+  });
+
+  /**
+   * RW-21：**HTTP 层失败**时符号原因可能只在 `msg` 里，`data.errorCode` 是通用码。
+   * 这条判据钉住"两者都保留"，否则调用方只能看到 `HTTP 403`。
+   */
+  it('HTTP 403 + {errorCode:FORBIDDEN, msg:APPROVER_POLICY_CLOSED}：errorCode 与 msg 都要带出', async () => {
+    const client = createPlatformClient({
+      identity: () => identity,
+      fetchImpl: fakeFetch(() => ({
+        status: 403,
+        json: { code: 403, msg: 'APPROVER_POLICY_CLOSED', data: { errorCode: 'FORBIDDEN' } },
+      })),
+    });
+
+    await assert.rejects(client.get('/api/ai/v1/runs/r-1/approvals'), (error: unknown) => {
+      assert.ok(error instanceof PlatformApiError);
+      assert.equal(error.kind, 'forbidden');
+      assert.equal(error.code, 403);
+      assert.equal(error.errorCode, 'FORBIDDEN');
+      assert.equal(error.msg, 'APPROVER_POLICY_CLOSED');
+      // 兼容性：`message` 仍是 `HTTP 403`（工作台/管理端的既有显示口径不变）
+      assert.equal(error.message, 'HTTP 403');
+      return true;
+    });
   });
 
   it('HTTP 500 不冒充业务码 200，也不触发身份回调', async () => {

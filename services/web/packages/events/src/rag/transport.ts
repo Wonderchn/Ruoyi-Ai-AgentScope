@@ -3,11 +3,36 @@ export interface RequestIdentity {
   epoch: number;
 }
 
+/**
+ * AI 网关面的失败错误。
+ *
+ * 策略原因可能位于 `msg`（如 APPROVER_POLICY_CLOSED），而 `errorCode` 只是 FORBIDDEN。
+ * 两者分别保留；`message` 仍默认等于 errorCode，errorCode 缺失时仍回退到 msg。
+ */
 export class AiApiError extends Error {
-  constructor(readonly status: number, readonly errorCode: string, message = errorCode) {
+  readonly status: number;
+  readonly errorCode: string;
+  /** 服务端 `msg` 原文；服务端没给时为空串（**不伪造**）。符号原因常在这里。 */
+  readonly msg: string;
+
+  constructor(status: number, errorCode: string, message = errorCode, msg = '') {
     super(message);
     this.name = 'AiApiError';
+    this.status = status;
+    this.errorCode = errorCode;
+    this.msg = msg;
   }
+}
+
+/** 分别读取失败信封的 errorCode 和 msg；优先级由调用点处理。 */
+function failureReasonOf(envelope: { data?: unknown, msg?: unknown } | null | undefined): { errorCode: string, msg: string } {
+  const data = envelope?.data;
+  const symbol = data !== null && typeof data === 'object'
+    ? (data as Record<string, unknown>).errorCode
+    : undefined;
+  const errorCode = typeof symbol === 'string' && symbol.trim() !== '' ? symbol : '';
+  const msg = typeof envelope?.msg === 'string' ? envelope.msg : '';
+  return { errorCode, msg };
 }
 
 export const DEFAULT_JSON_TIMEOUT_MS = 30_000;
@@ -60,12 +85,22 @@ export async function identityJson<T>(
     })();
     const { response, envelope } = await Promise.race([operation, aborted]);
     assertCurrent();
+    // 失败原因的两个来源**分开读**：`data.errorCode` 是符号码，`msg` 可能自己就是符号
+    // （APPROVER_POLICY_CLOSED / SANDBOX_POLICY_CLOSED）。旧写法用 `??` 把两者合成一个值，
+    // 于是 errorCode 存在时 msg 永久丢失。
+    const { errorCode: symbol, msg: serverMsg } = failureReasonOf(envelope);
     if (response.status === 401 || envelope?.code === 401) {
       expired();
-      throw new AiApiError(401, '登录状态已失效');
+      throw new AiApiError(401, '登录状态已失效', undefined, serverMsg);
     }
-    if (!response.ok || envelope?.code !== 200)
-      throw new AiApiError(response.status, envelope?.data?.errorCode ?? envelope?.msg ?? `request failed (${response.status})`);
+    if (!response.ok || envelope?.code !== 200) {
+      throw new AiApiError(
+        response.status,
+        symbol || serverMsg || `request failed (${response.status})`,
+        undefined,
+        serverMsg,
+      );
+    }
     return envelope.data as T;
   }
   catch (error) {

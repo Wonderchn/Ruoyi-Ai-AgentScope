@@ -29,6 +29,46 @@ test('current 401 invokes expiry once and HTTP failures never become success', a
   assert.equal(expired, 1);
 });
 
+/**
+ * RW-21：符号原因可能只出现在 `msg` 里（源码实证）——
+ * `APPROVER_POLICY_CLOSED` ⇒ 403 / `data.errorCode="FORBIDDEN"` / `msg="APPROVER_POLICY_CLOSED"`。
+ * 旧实现用 `data.errorCode ?? msg` 合成一个值，于是 errorCode 存在时 msg 永久丢失。
+ */
+test('HTTP 失败同时保留 data.errorCode 与 msg（符号原因不得被 ?? 吞掉）', async () => {
+  const identity = { token: 'one', epoch: 1 };
+  const fetcher = (async () => new Response(JSON.stringify({
+    code: 403,
+    msg: 'APPROVER_POLICY_CLOSED',
+    data: { errorCode: 'FORBIDDEN', retryable: false },
+  }), { status: 403 })) as typeof fetch;
+  await assert.rejects(
+    identityJson('/run', {}, identity, () => identity, () => {}, fetcher),
+    (error: unknown) => {
+      assert.ok(error instanceof AiApiError);
+      assert.equal(error.status, 403);
+      assert.equal(error.errorCode, 'FORBIDDEN');
+      assert.equal(error.msg, 'APPROVER_POLICY_CLOSED');
+      // 兼容性：`message` 仍默认等于 errorCode（既有消费者不受影响）
+      assert.equal(error.message, 'FORBIDDEN');
+      return true;
+    },
+  );
+});
+
+test('数据里没有 errorCode 时，errorCode 仍回退到 msg（旧的隐含语义保持不变）', async () => {
+  const identity = { token: 'one', epoch: 1 };
+  const fetcher = (async () => new Response(JSON.stringify({ code: 500, msg: 'SOMETHING_FAILED', data: {} }), { status: 500 })) as typeof fetch;
+  await assert.rejects(
+    identityJson('/run', {}, identity, () => identity, () => {}, fetcher),
+    (error: unknown) => {
+      assert.ok(error instanceof AiApiError);
+      assert.equal(error.errorCode, 'SOMETHING_FAILED');
+      assert.equal(error.msg, 'SOMETHING_FAILED');
+      return true;
+    },
+  );
+});
+
 test('a stuck fetch times out, aborts transport and ignores a late 401', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] });
   const identity = { token: 'one', epoch: 1 };
