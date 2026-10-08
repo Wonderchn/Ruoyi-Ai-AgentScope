@@ -126,6 +126,7 @@ public class FlwCategoryController extends BaseController {
      *
      * @param categoryBo 流程分类
      */
+    @SaCheckPermission("workflow:category:tree")
     @GetMapping("/categoryTree")
     public R<List<Tree<String>>> categoryTree(FlowCategoryBo categoryBo) {
         return R.ok(flwCategoryService.selectCategoryTreeList(categoryBo));

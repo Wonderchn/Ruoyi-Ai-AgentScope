@@ -1,5 +1,6 @@
 package org.ruoyi.workflow.controller;
 
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import lombok.RequiredArgsConstructor;
 import org.ruoyi.common.core.domain.R;
 import org.ruoyi.common.core.domain.dto.StartProcessReturnDTO;
@@ -14,6 +15,7 @@ import org.ruoyi.common.web.core.BaseController;
 import org.dromara.warm.flow.core.entity.Node;
 import org.dromara.warm.flow.orm.entity.FlowNode;
 import org.ruoyi.workflow.common.ConditionalOnEnable;
+import org.ruoyi.workflow.common.constant.FlowConstant;
 import org.ruoyi.workflow.domain.bo.*;
 import org.ruoyi.workflow.domain.vo.FlowHisTaskVo;
 import org.ruoyi.workflow.domain.vo.FlowTaskVo;
@@ -42,6 +44,7 @@ public class FlwTaskController extends BaseController {
      *
      * @param startProcessBo 启动流程参数
      */
+    @SaCheckPermission("workflow:task:start")
     @Log(title = "任务管理", businessType = BusinessType.INSERT)
     @RepeatSubmit()
     @PostMapping("/startWorkFlow")
@@ -55,6 +58,7 @@ public class FlwTaskController extends BaseController {
      *
      * @param completeTaskBo 办理任务参数
      */
+    @SaCheckPermission("workflow:task:complete")
     @Log(title = "任务管理", businessType = BusinessType.INSERT)
     @RepeatSubmit()
     @PostMapping("/completeTask")
@@ -68,6 +72,7 @@ public class FlwTaskController extends BaseController {
      * @param flowTaskBo 参数
      * @param pageQuery  分页
      */
+    @SaCheckPermission("workflow:task:listWait")
     @GetMapping("/pageByTaskWait")
     public TableDataInfo<FlowTaskVo> pageByTaskWait(FlowTaskBo flowTaskBo, PageQuery pageQuery) {
         return flwTaskService.pageByTaskWait(flowTaskBo, pageQuery);
@@ -80,6 +85,7 @@ public class FlwTaskController extends BaseController {
      * @param pageQuery  分页
      */
 
+    @SaCheckPermission("workflow:task:listFinish")
     @GetMapping("/pageByTaskFinish")
     public TableDataInfo<FlowHisTaskVo> pageByTaskFinish(FlowTaskBo flowTaskBo, PageQuery pageQuery) {
         return flwTaskService.pageByTaskFinish(flowTaskBo, pageQuery);
@@ -91,6 +97,7 @@ public class FlwTaskController extends BaseController {
      * @param flowTaskBo 参数
      * @param pageQuery  分页
      */
+    @SaCheckPermission("workflow:task:listAllWait")
     @GetMapping("/pageByAllTaskWait")
     public TableDataInfo<FlowTaskVo> pageByAllTaskWait(FlowTaskBo flowTaskBo, PageQuery pageQuery) {
         return flwTaskService.pageByAllTaskWait(flowTaskBo, pageQuery);
@@ -102,6 +109,7 @@ public class FlwTaskController extends BaseController {
      * @param flowTaskBo 参数
      * @param pageQuery  分页
      */
+    @SaCheckPermission("workflow:task:listAllFinish")
     @GetMapping("/pageByAllTaskFinish")
     public TableDataInfo<FlowHisTaskVo> pageByAllTaskFinish(FlowTaskBo flowTaskBo, PageQuery pageQuery) {
         return flwTaskService.pageByAllTaskFinish(flowTaskBo, pageQuery);
@@ -113,6 +121,7 @@ public class FlwTaskController extends BaseController {
      * @param flowTaskBo 参数
      * @param pageQuery  分页
      */
+    @SaCheckPermission("workflow:task:listCopy")
     @GetMapping("/pageByTaskCopy")
     public TableDataInfo<FlowTaskVo> pageByTaskCopy(FlowTaskBo flowTaskBo, PageQuery pageQuery) {
         return flwTaskService.pageByTaskCopy(flowTaskBo, pageQuery);
@@ -123,6 +132,7 @@ public class FlwTaskController extends BaseController {
      *
      * @param taskId 任务id
      */
+    @SaCheckPermission("workflow:task:get")
     @GetMapping("/getTask/{taskId}")
     public R<FlowTaskVo> getTask(@PathVariable Long taskId) {
         return R.ok(flwTaskService.selectById(taskId));
@@ -133,6 +143,7 @@ public class FlwTaskController extends BaseController {
      *
      * @param bo 参数
      */
+    @SaCheckPermission("workflow:task:getNextNodeList")
     @PostMapping("/getNextNodeList")
     public R<List<FlowNode>> getNextNodeList(@RequestBody FlowNextNodeBo bo) {
         return R.ok(flwTaskService.getNextNodeList(bo));
@@ -143,6 +154,7 @@ public class FlwTaskController extends BaseController {
      *
      * @param bo 参数
      */
+    @SaCheckPermission("workflow:task:terminate")
     @Log(title = "任务管理", businessType = BusinessType.INSERT)
     @RepeatSubmit()
     @PostMapping("/terminationTask")
@@ -151,16 +163,55 @@ public class FlwTaskController extends BaseController {
     }
 
     /**
-     * 任务操作
+     * 委派任务
      *
-     * @param bo            参数
-     * @param taskOperation 操作类型，委派 delegateTask、转办 transferTask、加签 addSignature、减签 reductionSignature
+     * @param bo 参数
      */
+    @SaCheckPermission("workflow:task:delegate")
     @Log(title = "任务管理", businessType = BusinessType.UPDATE)
     @RepeatSubmit
-    @PostMapping("/taskOperation/{taskOperation}")
-    public R<Void> taskOperation(@Validated @RequestBody TaskOperationBo bo, @PathVariable String taskOperation) {
-        return toAjax(flwTaskService.taskOperation(bo, taskOperation));
+    @PostMapping("/taskOperation/delegateTask")
+    public R<Void> delegateTask(@Validated @RequestBody TaskOperationBo bo) {
+        return toAjax(flwTaskService.taskOperation(bo, FlowConstant.DELEGATE_TASK));
+    }
+
+    /**
+     * 转办任务
+     *
+     * @param bo 参数
+     */
+    @SaCheckPermission("workflow:task:transfer")
+    @Log(title = "任务管理", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PostMapping("/taskOperation/transferTask")
+    public R<Void> transferTask(@Validated @RequestBody TaskOperationBo bo) {
+        return toAjax(flwTaskService.taskOperation(bo, FlowConstant.TRANSFER_TASK));
+    }
+
+    /**
+     * 加签
+     *
+     * @param bo 参数
+     */
+    @SaCheckPermission("workflow:task:addSignature")
+    @Log(title = "任务管理", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PostMapping("/taskOperation/addSignature")
+    public R<Void> addSignature(@Validated @RequestBody TaskOperationBo bo) {
+        return toAjax(flwTaskService.taskOperation(bo, FlowConstant.ADD_SIGNATURE));
+    }
+
+    /**
+     * 减签
+     *
+     * @param bo 参数
+     */
+    @SaCheckPermission("workflow:task:reductionSignature")
+    @Log(title = "任务管理", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PostMapping("/taskOperation/reductionSignature")
+    public R<Void> reductionSignature(@Validated @RequestBody TaskOperationBo bo) {
+        return toAjax(flwTaskService.taskOperation(bo, FlowConstant.REDUCTION_SIGNATURE));
     }
 
     /**
@@ -169,6 +220,7 @@ public class FlwTaskController extends BaseController {
      * @param taskIdList 任务id
      * @param userId     办理人id
      */
+    @SaCheckPermission("workflow:task:updateAssignee")
     @Log(title = "任务管理", businessType = BusinessType.UPDATE)
     @RepeatSubmit()
     @PutMapping("/updateAssignee/{userId}")
@@ -181,6 +233,7 @@ public class FlwTaskController extends BaseController {
      *
      * @param bo 参数
      */
+    @SaCheckPermission("workflow:task:backProcess")
     @Log(title = "任务管理", businessType = BusinessType.INSERT)
     @RepeatSubmit()
     @PostMapping("/backProcess")
@@ -194,6 +247,7 @@ public class FlwTaskController extends BaseController {
      * @param taskId       任务id
      * @param nowNodeCode  当前节点
      */
+    @SaCheckPermission("workflow:task:getBackTaskNode")
     @GetMapping("/getBackTaskNode/{taskId}/{nowNodeCode}")
     public R<List<Node>> getBackTaskNode(@PathVariable Long taskId, @PathVariable String nowNodeCode) {
         return R.ok(flwTaskService.getBackTaskNode(taskId, nowNodeCode));
@@ -204,6 +258,7 @@ public class FlwTaskController extends BaseController {
      *
      * @param taskId 任务id
      */
+    @SaCheckPermission("workflow:task:currentTaskAllUser")
     @GetMapping("/currentTaskAllUser/{taskId}")
     public R<List<UserDTO>> currentTaskAllUser(@PathVariable Long taskId) {
         return R.ok(flwTaskService.currentTaskAllUser(List.of(taskId)));
@@ -215,6 +270,7 @@ public class FlwTaskController extends BaseController {
      * @param bo 参数
      * @return 结果
      */
+    @SaCheckPermission("workflow:task:urge")
     @PostMapping("/urgeTask")
     public R<Void> urgeTask(@RequestBody FlowUrgeTaskBo bo) {
         return toAjax(flwTaskService.urgeTask(bo));
