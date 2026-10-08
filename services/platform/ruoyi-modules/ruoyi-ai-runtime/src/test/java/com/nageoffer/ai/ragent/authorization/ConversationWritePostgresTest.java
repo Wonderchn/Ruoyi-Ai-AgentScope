@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
 import java.io.IOException;
@@ -110,9 +111,8 @@ class ConversationWritePostgresTest {
                 .get().extracting(TenantConversationReadRepository.ConversationRow::title)
                 .isEqualTo("原标题");
 
-        int rows = named.update(AiResourceWriteService.SQL_RENAME_CONVERSATION, Map.of(
-                "title", "改后的标题", "tenant", TENANT_A, "member", MEMBER_A1,
-                "conversation", "c-rename"));
+        int rows = named.update(AiResourceWriteService.SQL_RENAME_CONVERSATION,
+                renameParams("改后的标题", TENANT_A, MEMBER_A1, "c-rename", null));
         assertThat(rows).as("命中 1 行").isEqualTo(1);
         assertThat(conversations.findConversation(TENANT_A, MEMBER_A1, "c-rename"))
                 .get().extracting(TenantConversationReadRepository.ConversationRow::title)
@@ -144,13 +144,11 @@ class ConversationWritePostgresTest {
     void crossScopeAndAlreadyDeletedAffectNoRows() {
         seed("c-scope", TENANT_A, MEMBER_A1, "受保护", 0);
         seed("c-gone", TENANT_A, MEMBER_A1, "已删除", 1);
-        assertThat(named.update(AiResourceWriteService.SQL_RENAME_CONVERSATION, Map.of(
-                "title", "越权改名", "tenant", TENANT_B, "member", MEMBER_A1,
-                "conversation", "c-scope")))
+        assertThat(named.update(AiResourceWriteService.SQL_RENAME_CONVERSATION,
+                renameParams("越权改名", TENANT_B, MEMBER_A1, "c-scope", null)))
                 .as("另一租户不能改名").isZero();
-        assertThat(named.update(AiResourceWriteService.SQL_RENAME_CONVERSATION, Map.of(
-                "title", "越权改名", "tenant", TENANT_A, "member", MEMBER_A2,
-                "conversation", "c-scope")))
+        assertThat(named.update(AiResourceWriteService.SQL_RENAME_CONVERSATION,
+                renameParams("越权改名", TENANT_A, MEMBER_A2, "c-scope", null)))
                 .as("同租户另一成员不能改名").isZero();
         assertThat(named.update(AiResourceWriteService.SQL_SOFT_DELETE_CONVERSATION, Map.of(
                 "tenant", TENANT_A, "member", MEMBER_A1, "conversation", "c-gone")))
@@ -165,8 +163,8 @@ class ConversationWritePostgresTest {
     void overlongTitleIsRejectedNotTruncated() {
         seed("c-long", TENANT_A, MEMBER_A1, "原标题", 0);
         String tooLong = "x".repeat(AiResourceWriteService.CONVERSATION_TITLE_MAX + 1);
-        assertThatThrownBy(() -> named.update(AiResourceWriteService.SQL_RENAME_CONVERSATION, Map.of(
-                "title", tooLong, "tenant", TENANT_A, "member", MEMBER_A1, "conversation", "c-long")))
+        assertThatThrownBy(() -> named.update(AiResourceWriteService.SQL_RENAME_CONVERSATION,
+                renameParams(tooLong, TENANT_A, MEMBER_A1, "c-long", null)))
                 .as("title 是 VARCHAR(128)：超长必须显式失败，静默截断会让用户看到的内容与存的不一致")
                 .hasMessageContaining("too long");
         assertThat(conversations.findConversation(TENANT_A, MEMBER_A1, "c-long"))
@@ -174,7 +172,39 @@ class ConversationWritePostgresTest {
                 .isEqualTo("原标题");
     }
 
+    @Test
+    @DisplayName("版本正负例：匹配版本更新并递增；旧版本不写、不改标题")
+    void matchingVersionWritesAndStaleVersionLeavesTheRowUnchanged() {
+        seed("c-version", TENANT_A, MEMBER_A1, "原版本标题", 0);
+        Long initial = versionOf("c-version");
+        assertThat(named.update(AiResourceWriteService.SQL_RENAME_CONVERSATION,
+                renameParams("新版本标题", TENANT_A, MEMBER_A1, "c-version", initial)))
+                .as("当前版本命中一行").isEqualTo(1);
+        assertThat(versionOf("c-version")).isEqualTo(initial + 1);
+        assertThat(named.update(AiResourceWriteService.SQL_RENAME_CONVERSATION,
+                renameParams("旧版本覆盖", TENANT_A, MEMBER_A1, "c-version", initial)))
+                .as("旧版本不得覆盖新标题").isZero();
+        assertThat(versionOf("c-version")).isEqualTo(initial + 1);
+        assertThat(conversations.findConversation(TENANT_A, MEMBER_A1, "c-version"))
+                .get().extracting(TenantConversationReadRepository.ConversationRow::title)
+                .isEqualTo("新版本标题");
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    private static MapSqlParameterSource renameParams(String title, String tenant, String member,
+                                                      String conversation, Long expectedVersion) {
+        // Map.of cannot carry null. Missing version is still a supplied nullable SQL parameter,
+        // exercising production's CAST(:expectedVersion AS bigint) rather than failing pre-SQL.
+        return new MapSqlParameterSource().addValue("title", title).addValue("tenant", tenant)
+                .addValue("member", member).addValue("conversation", conversation)
+                .addValue("expectedVersion", expectedVersion);
+    }
+
+    private static Long versionOf(String conversation) {
+        return named.queryForObject(AiResourceWriteService.SQL_CONVERSATION_VERSION,
+                Map.of("tenant", TENANT_A, "member", MEMBER_A1, "conversation", conversation), Long.class);
+    }
 
     private static void seed(String conversationId, String tenantId, String memberId, String title,
                              int deleted) {
