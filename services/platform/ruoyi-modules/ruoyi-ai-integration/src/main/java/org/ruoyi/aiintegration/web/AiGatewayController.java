@@ -149,6 +149,23 @@ public class AiGatewayController {
             //（= ai:conversation:write，会话消息是同一聚合的写面），不新增动作/权限行/迁移。
             new Route("POST", "/conversations/messages/{messageId}/feedback", "conversation.rename"),
             new Route("DELETE", "/conversations/messages/{messageId}/feedback", "conversation.rename"),
+            // RW-22-R1-R7（T0 登记，2026-10-08）：F17 推荐追问面。内层 handler =
+            // /internal/ai/v1/conversations/messages/{messageId}/recommended-questions，
+            // 由 RecommendedQuestionController（类级 @RequestMapping("/internal/ai/v1")）承接，
+            // 装配由 AiEmbeddedRecommendationConfiguration 显式登记（三开关：
+            // ai.integration.enabled + transport=local + p2.enabled + ai.model.enabled）。
+            //
+            // 此前该面三件套缺两件：控制器不是 bean（com.nageoffer.** 不在 platform 扫描根下）、
+            // 白名单零命中 ⇒ 客户端必然 404；而它的类级前缀在 RW-22-R1 已归位、信封已换成整数
+            // ApiEnvelope、身份已改用 PrincipalContext.require()（原 UserContext.getUserId()
+            // 在内嵌态恒为 null，会让 user_id 谓词静默失效）。本行是第三件。
+            //
+            // 动作复用 conversation.read：推荐追问是**用户本来就能读的**那条 assistant 消息的
+            // 派生内容，LLM 调用无外部副作用，落库只是该派生结果的缓存；本卡由此**不新增
+            // canonical 动作、不新增权限行、不新增迁移**（动作总数护栏不变，权威值以
+            // P1CurrentAuthorizationTest:209 的 assertEquals(34, ...) 为准）。
+            // 写面：**不铸** GET 交付回执（网关只在字节分支释放许可，JSON 分支铸造 = 许可泄漏）。
+            new Route("POST", "/conversations/messages/{messageId}/recommended-questions", "conversation.read"),
             // WP-034：F10 Agent 会话面。此前 `/agent/v1/**` 完全没有白名单路由，
             // 所以客户端**无法**经 `/api/ai/v1` 到达 WP-033B 交付的会话面——
             // 那是"服务端可装配"与"客户端可访问"之间的缺口。

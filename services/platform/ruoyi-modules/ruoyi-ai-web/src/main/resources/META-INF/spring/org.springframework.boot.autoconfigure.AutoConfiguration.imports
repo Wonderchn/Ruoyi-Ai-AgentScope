@@ -18,3 +18,4 @@ org.ruoyi.aiweb.embedded.AiEmbeddedKnowledgeAdminConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedIntentConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedObservabilityConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedAdminDeliveryConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedRecommendationConfiguration

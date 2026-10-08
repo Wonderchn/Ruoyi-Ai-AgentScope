@@ -20,6 +20,8 @@ package com.nageoffer.ai.ragent.rag.service.impl;
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.nageoffer.ai.ragent.framework.convention.ChatMessage;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.rag.dao.entity.ConversationMessageDO;
 import com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMessageMapper;
@@ -50,7 +52,11 @@ public class RecommendedQuestionServiceImpl implements RecommendedQuestionServic
 
     @Override
     public RecommendedQuestionsPayload generate(String messageId, String userId) {
-        ConversationMessageDO message = loadAssistantMessage(messageId, userId);
+        ExecutionPrincipal principal = PrincipalContext.require();
+        if (!principal.userId().equals(userId)) {
+            throw new ClientException("消息不存在");
+        }
+        ConversationMessageDO message = loadAssistantMessage(messageId, principal);
         if (isRecommendationDisabled(message)) {
             return RecommendedQuestionsPayload.empty();
         }
@@ -60,7 +66,7 @@ public class RecommendedQuestionServiceImpl implements RecommendedQuestionServic
             return RecommendedQuestionsPayload.success(cached);
         }
 
-        String question = loadQuestion(message);
+        String question = loadQuestion(message, principal);
         RecommendedQuestionsPayload generated =
                 generator.generate(question, CitationMarkup.strip(message.getContent()), message.getRetrievedChunks());
         if (generated.status() == RecommendedQuestionsPayload.Status.FAILED) {
@@ -69,20 +75,30 @@ public class RecommendedQuestionServiceImpl implements RecommendedQuestionServic
 
         // SUCCESS 与 EMPTY 都落库，空数组作为有效的负缓存
         ConversationMessageDO update = new ConversationMessageDO();
-        update.setId(message.getId());
         update.setRecommendedQuestions(generated.questions());
-        conversationMessageMapper.updateById(update);
+        int changed = conversationMessageMapper.update(update, Wrappers.lambdaUpdate(ConversationMessageDO.class)
+                .eq(ConversationMessageDO::getId, message.getId())
+                .eq(ConversationMessageDO::getTenantId, principal.tenantId())
+                .eq(ConversationMessageDO::getMemberId, principal.membershipId())
+                .eq(ConversationMessageDO::getUserId, principal.userId())
+                .eq(ConversationMessageDO::getRole, ROLE_ASSISTANT)
+                .eq(ConversationMessageDO::getDeleted, 0));
+        if (changed != 1) {
+            throw new ClientException("消息不存在");
+        }
         return generated;
     }
 
     /**
      * 定位 assistant 消息并校验归属（他人消息或非 assistant 消息一律视为不存在）
      */
-    private ConversationMessageDO loadAssistantMessage(String messageId, String userId) {
+    private ConversationMessageDO loadAssistantMessage(String messageId, ExecutionPrincipal principal) {
         ConversationMessageDO message = conversationMessageMapper.selectOne(
                 Wrappers.lambdaQuery(ConversationMessageDO.class)
                         .eq(ConversationMessageDO::getId, messageId)
-                        .eq(ConversationMessageDO::getUserId, userId)
+                        .eq(ConversationMessageDO::getTenantId, principal.tenantId())
+                        .eq(ConversationMessageDO::getMemberId, principal.membershipId())
+                        .eq(ConversationMessageDO::getUserId, principal.userId())
                         .eq(ConversationMessageDO::getRole, ROLE_ASSISTANT)
                         .eq(ConversationMessageDO::getDeleted, 0)
         );
@@ -95,7 +111,7 @@ public class RecommendedQuestionServiceImpl implements RecommendedQuestionServic
     /**
      * 通过明确的 replyToMessageId 获取当前答案对应的用户提问
      */
-    private String loadQuestion(ConversationMessageDO message) {
+    private String loadQuestion(ConversationMessageDO message, ExecutionPrincipal principal) {
         if (StrUtil.isBlank(message.getReplyToMessageId())) {
             return null;
         }
@@ -103,7 +119,9 @@ public class RecommendedQuestionServiceImpl implements RecommendedQuestionServic
                 Wrappers.lambdaQuery(ConversationMessageDO.class)
                         .eq(ConversationMessageDO::getId, message.getReplyToMessageId())
                         .eq(ConversationMessageDO::getConversationId, message.getConversationId())
-                        .eq(ConversationMessageDO::getUserId, message.getUserId())
+                        .eq(ConversationMessageDO::getTenantId, principal.tenantId())
+                        .eq(ConversationMessageDO::getMemberId, principal.membershipId())
+                        .eq(ConversationMessageDO::getUserId, principal.userId())
                         .eq(ConversationMessageDO::getRole, ROLE_USER)
                         .eq(ConversationMessageDO::getDeleted, 0)
         );
