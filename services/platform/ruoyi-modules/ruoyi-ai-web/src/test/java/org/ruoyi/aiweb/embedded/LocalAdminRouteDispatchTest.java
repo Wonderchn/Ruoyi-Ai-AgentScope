@@ -73,7 +73,7 @@ class LocalAdminRouteDispatchTest {
     private AiGatewayController gateway;
     private Set<String> permissions = Set.of("ai:config:read", "ai:config:publish", "ai:kb:read",
             "ai:kb:retrieve", "ai:run:read", "ai:run:event:read", "ai:document:read",
-            "ai:conversation:read");
+            "ai:conversation:write");
 
     @BeforeEach void setup() {
         when(intents.getFullTree()).thenReturn(List.of(IntentNodeTreeVO.builder().id("r6-intent").build()));
@@ -248,6 +248,21 @@ class LocalAdminRouteDispatchTest {
 
     @Test void recommendationRouteWithoutItsScopeStopsBeforeTheHandler() throws Exception {
         permissions = Set.of();
+        assertThat(dispatch("POST", "/conversations/messages/message-1/recommended-questions", "{}").getStatus())
+                .isEqualTo(403);
+        verifyNoInteractions(recommended, guard);
+    }
+
+    /**
+     * R（RW-29-R7）REVIEW_FAIL 的回归钉：该 POST 在缓存未命中时会
+     * ①调用真实 LLM generator（计费外呼）②UPDATE 落库，
+     * 因此**只持 {@code ai:conversation:read} 不得触发**。
+     *
+     * <p>这条判据钉的是"动作选错"这一类缺陷：把动作从写降回读、或误把该路由
+     * 登记为读动作，本判据会立刻变红。它同时防止"用读权限做写 + 触发外呼"复发。
+     */
+    @Test void recommendationRouteRejectsReadOnlyPermission() throws Exception {
+        permissions = Set.of("ai:conversation:read");
         assertThat(dispatch("POST", "/conversations/messages/message-1/recommended-questions", "{}").getStatus())
                 .isEqualTo(403);
         verifyNoInteractions(recommended, guard);
