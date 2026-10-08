@@ -38,6 +38,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestMapping;
 
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -58,6 +59,7 @@ import java.util.stream.Collectors;
  * 缺主体直接拒绝（{@code ClientException} → 403/整数码信封），不降级为"匿名检索"。</p>
  */
 @RestController
+@RequestMapping("/internal/ai/v1")
 @RequiredArgsConstructor
 @ConditionalOnProperty(prefix = "ragent.eval", name = "enabled", havingValue = "true")
 public class EvalController {

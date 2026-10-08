@@ -20,11 +20,17 @@ package org.ruoyi.aiweb.embedded;
 import com.nageoffer.ai.ragent.ingestion.service.impl.IntentTreeServiceImpl;
 import com.nageoffer.ai.ragent.rag.controller.IntentTreeController;
 import com.nageoffer.ai.ragent.rag.controller.QueryTermMappingController;
+import com.nageoffer.ai.ragent.rag.core.intent.IntentTreeCacheManager;
+import com.nageoffer.ai.ragent.rag.core.rewrite.QueryTermMappingCacheManager;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.rag.service.impl.QueryTermMappingAdminServiceImpl;
 import com.nageoffer.ai.ragent.sample.controller.SampleQuestionController;
 import com.nageoffer.ai.ragent.sample.service.impl.SampleQuestionServiceImpl;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 
@@ -88,9 +94,21 @@ public class AiEmbeddedIntentConfiguration {
      */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnEmbeddedLocal
+    @ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
     @Import({IntentTreeServiceImpl.class, IntentTreeController.class,
             QueryTermMappingAdminServiceImpl.class, QueryTermMappingController.class,
             SampleQuestionServiceImpl.class, SampleQuestionController.class})
     static class IntentAdmin {
+        @Bean
+        @ConditionalOnMissingBean
+        IntentTreeCacheManager intentTreeCacheManager(StringRedisTemplate redis, ObjectMapper mapper) {
+            return new IntentTreeCacheManager(redis, mapper);
+        }
+
+        @Bean
+        @ConditionalOnMissingBean
+        QueryTermMappingCacheManager queryTermMappingCacheManager(StringRedisTemplate redis, ObjectMapper mapper) {
+            return new QueryTermMappingCacheManager(redis, mapper);
+        }
     }
 }

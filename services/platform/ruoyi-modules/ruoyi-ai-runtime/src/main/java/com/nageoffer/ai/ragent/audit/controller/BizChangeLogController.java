@@ -28,6 +28,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestMapping;
 
 /**
  * 业务变更日志查询（F18 op3）。
@@ -42,6 +43,7 @@ import org.springframework.web.bind.annotation.RestController;
  * 用户面用 {@link BizChangeLogReadScope#memberOnlyCurrent()}。缺主体即拒绝。</p>
  */
 @RestController
+@RequestMapping("/internal/ai/v1")
 @RequiredArgsConstructor
 public class BizChangeLogController {
 
