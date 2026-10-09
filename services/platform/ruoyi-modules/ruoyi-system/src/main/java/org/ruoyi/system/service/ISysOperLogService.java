@@ -1,6 +1,7 @@
 package org.ruoyi.system.service;
 
 import org.ruoyi.common.mybatis.core.page.PageQuery;
+import org.ruoyi.common.tenant.audit.PlatformAuditAccess;
 import org.ruoyi.common.mybatis.core.page.TableDataInfo;
 import org.ruoyi.system.domain.bo.SysOperLogBo;
 import org.ruoyi.system.domain.vo.SysOperLogVo;
@@ -58,4 +59,13 @@ public interface ISysOperLogService {
      * 清空操作日志
      */
     void cleanOperLog();
+
+    /**
+     * <b>平台审计域读取</b>（R-2-R4）：只返回无归属审计行（{@code tenant_id = __platform_audit__}）。
+     * 必须持有 {@link PlatformAuditAccess}（平台超管专用凭据），否则拒绝。
+     *
+     * @param access 平台审计域访问凭据
+     * @return 无归属操作日志
+     */
+    List<SysOperLogVo> selectPlatformAudit(PlatformAuditAccess access);
 }
