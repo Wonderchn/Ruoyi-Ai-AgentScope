@@ -170,4 +170,25 @@ class AiResourceTargetedGrantTest {
         assertThat(verdicts.get("kb:kb-1")).as("定向分享在批量路径同样生效").isEqualTo(Verdict.GRANT);
         assertThat(verdicts.get("kb:kb-2")).as("tenant_all 维持数据范围求交").isEqualTo(Verdict.DENY);
     }
+
+    @Test
+    @DisplayName("折叠后的单 ref 路径同口径：恰 1 条定向授权经 filterDataScope 单决不得被丢（复核问题1）")
+    void singleGrantAfterFoldStillReAdmitted() {
+        AiResourceMapper resources = mock(AiResourceMapper.class);
+        AiResourceAclMapper acls = mock(AiResourceAclMapper.class);
+        when(resources.findByIds(eq(TENANT), anyMap()))
+                .thenReturn(new ArrayList<>(List.of(row("kb-1"), row("kb-2"))));
+        when(acls.findByIds(eq(TENANT), anyMap())).thenReturn(new ArrayList<>(List.of(
+                rule("kb-1", "MEMBER", PRINCIPAL_MEMBER, null))));
+        // 折叠后的单决分支按 dataScopeAllows/targetedGrantAllows 的单读事实路径取数
+        when(resources.findByPk(TENANT, "KB", "kb-1")).thenReturn(Optional.of(row("kb-1")));
+        when(acls.findByResource(TENANT, "KB", "kb-1")).thenReturn(List.of(rule("kb-1", "MEMBER", PRINCIPAL_MEMBER, null)));
+        var service = service(resources, acls);
+
+        // 入参 2 个，但 delegate 只授 1 个 ⇒ filterDataScope 走 refs.size()==1 的单决分支
+        var verdicts = service.checkBatch(principal(), "kb.read", List.of("kb:kb-1", "kb:kb-2"));
+
+        assertThat(verdicts.get("kb:kb-1")).as("单决分支必须与批量/check 同口径再准入").isEqualTo(Verdict.GRANT);
+        assertThat(verdicts.get("kb:kb-2")).as("无授权维持 DENY").isEqualTo(Verdict.DENY);
+    }
 }

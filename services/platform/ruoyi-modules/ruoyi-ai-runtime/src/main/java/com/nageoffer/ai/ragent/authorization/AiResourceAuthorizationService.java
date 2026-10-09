@@ -386,7 +386,12 @@ public class AiResourceAuthorizationService
 
     private List<String> filterDataScope(ExecutionPrincipal principal, String action, Collection<String> refs) {
         if (platformFacts == null || refs.isEmpty()) { return List.copyOf(refs); }
-        if (refs.size() == 1) { return refs.stream().filter(ref -> dataScopeAllows(principal, action, ref)).toList(); }
+        if (refs.size() == 1) {
+            // R12 卡3 复核处置（问题1）：单 ref 路径与 check()/批量再准入同口径——
+            // 定向 ACL 显式分享不被 owner-dataScope 否决（此前仅批量路径有再准入）。
+            return refs.stream().filter(ref -> dataScopeAllows(principal, action, ref)
+                    || targetedGrantAllows(principal, action, ref)).toList();
+        }
         // Fresh facts per check: no allow decision is cached across calls or authorization epochs.
         var all = new LinkedHashMap<>(facts(principal.tenantId(), refs));
         var frontier = new LinkedHashSet<>(refs);
@@ -463,13 +468,16 @@ public class AiResourceAuthorizationService
                 candidateRefs.add(new ArrayList<>(targeted));
             }
         }
-        if (!rejected.isEmpty()) {
-            var outcome = queryFacts(principal, action, candidateRefs.stream()
+        for (int offset = 0; offset < rejected.size(); offset += 200) {
+            // R12 卡3 复核处置（问题3）：与上方主循环同款 200 分片——超限时
+            // LocalPlatformFacts.match 会整体抛错（fail-closed 成 503），不允许。
+            int end = Math.min(offset + 200, rejected.size());
+            var outcome = queryFacts(principal, action, candidateRefs.subList(offset, end).stream()
                     .map(com.nageoffer.ai.ragent.framework.security.PlatformFactsPort.Candidate::subjectRefs)
                     .toList());
-            for (int i = 0; i < rejected.size(); i++) {
+            for (int i = 0; i < end - offset; i++) {
                 if (Boolean.TRUE.equals(outcome.matches().get(i))) {
-                    admitted.add(rejected.get(i));
+                    admitted.add(rejected.get(offset + i));
                 }
             }
         }
