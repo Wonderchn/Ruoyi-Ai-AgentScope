@@ -204,8 +204,11 @@ class P1RevocationRaceTest {
         org.mockito.ArgumentCaptor<String> whitelistSql = org.mockito.ArgumentCaptor.forClass(String.class);
         verify(jdbc).queryForObject(whitelistSql.capture(), any(Class.class), any(Object[].class));
         assertThat(whitelistSql.getValue())
-                .as("交付回执白名单必须覆盖按回执头铸造的三个读动作（W6/W8 泄漏面）")
-                .contains("'config.read'").contains("'flow.list'").contains("'flow.read'");
+                .as("交付回执白名单必须覆盖按回执头铸造的读动作（W6/W8 泄漏面 + 复核补列 agent.*）")
+                .contains("'config.read'").contains("'flow.list'").contains("'flow.read'")
+                .contains("'agent.list'").contains("'agent.read'")
+                .as("写侧 JSON 分支不铸回执头，不得入白名单（防例外范围扩大）")
+                .doesNotContain("'flow.write'").doesNotContain("'flow.delete'");
         verify(jdbc).update(contains("SET status = 'RELEASED'"), any(Object[].class));
 
         // 白名单不命中（count=0）：拒绝（身份不符），且绝不产生 RELEASED 写
