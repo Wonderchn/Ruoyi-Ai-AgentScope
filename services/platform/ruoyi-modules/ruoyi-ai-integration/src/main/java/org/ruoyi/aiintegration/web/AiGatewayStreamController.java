@@ -20,6 +20,8 @@ package org.ruoyi.aiintegration.web;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.ruoyi.aiintegration.config.AiIntegrationProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -42,6 +44,8 @@ import java.util.Map;
 @RequestMapping("/api/ai/v1")
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
 public class AiGatewayStreamController {
+
+    private static final Logger log = LoggerFactory.getLogger(AiGatewayStreamController.class);
 
     static final String AI_INTERNAL_PREFIX = "/internal/ai/v1";
 
@@ -264,6 +268,10 @@ public class AiGatewayStreamController {
 
     private void writeError(HttpServletResponse response, P04ErrorCode code) {
         if (response.isCommitted()) {
+            // 响应已提交（典型：SSE 已写出后逐帧交付回执失败）：不能改状态码，但不能静默
+            // （R12 卡2 F-W6-P1 可观测化；此前此分支无任何痕迹）。
+            log.warn("ai-gateway-stream error after commit: errorCode={} requestId={}",
+                    code.name(), RequestId.currentOrEmpty());
             return;
         }
         try {

@@ -21,6 +21,11 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jws;
 import io.jsonwebtoken.Jwts;
 import jakarta.servlet.http.HttpServletRequest;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -190,6 +195,36 @@ class P1GatewayIdentityTest {
         assertEquals(null,controller.gateway(request("GET","/api/ai/v1/knowledge-bases/kb-a"),response,null));
         verify(client).forward(any());
         assertEquals(null,response.getHeader("X-AI-Delivery-Permit"));
+    }
+
+    @Test
+    @DisplayName("响应已提交后交付回执失败 → 不静默：返回 null 且留 WARN（R12 卡2 可观测化）")
+    void ackFailureAfterCommitIsLoggedNotEmpty() {
+        stubMember();
+        when(client.forwardBytes(any())).thenReturn(new AiGatewayClient.ByteResponse(200,
+                ENVELOPE.getBytes(StandardCharsets.UTF_8),"application/json","","permit","operation"));
+        var response=new org.springframework.mock.web.MockHttpServletResponse();
+        when(client.forward(any())).thenAnswer(invocation -> {
+            assertTrue(response.isCommitted());
+            throw new AiGatewayClient.UpstreamUnavailableException("delivery release unconfirmed");
+        });
+
+        Logger logger = (Logger) LoggerFactory.getLogger(AiGatewayController.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            // 响应已提交：不能再改状态码——返回 null（与 finalOutputFlushPrecedesServiceRelease 同形）
+            assertEquals(null,controller.gateway(request("GET","/api/ai/v1/knowledge-bases/kb-a"),response,null));
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertTrue(appender.list.stream().anyMatch(event -> Level.WARN.equals(event.getLevel())
+                        && event.getFormattedMessage().contains("upstream-unavailable after commit")),
+                "已提交分支不得静默：ACK 失败必须留 WARN 日志（此前该分支无任何痕迹）");
+        assertEquals(200, response.getStatus());
     }
 
     @Test
