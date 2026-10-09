@@ -227,6 +227,10 @@ importers:
         version: 3.0.1(typescript@5.8.3)
 
   packages/events:
+    dependencies:
+      '@ruoyi/platform-client':
+        specifier: workspace:*
+        version: link:../platform-client
     devDependencies:
       '@types/node':
         specifier: 24.0.13

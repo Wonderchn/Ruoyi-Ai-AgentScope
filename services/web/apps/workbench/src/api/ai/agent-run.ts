@@ -51,6 +51,7 @@
 import type { AgentAction, RequestIdentity, RunSnapshot, RunSubmitBody } from '@ruoyi/events/rag';
 import type { RunFailure, RunFailureKind } from '../chat/run-chat';
 import { agentRunBody, assertIdentity, newRequestId } from '@ruoyi/events/rag';
+import { classifyResponse } from '@ruoyi/platform-client/identity';
 import { classifyRunFailure } from '../chat/run-chat';
 
 /** 网关公开前缀（与 `AiGatewayController` 逐字一致）。 */
@@ -531,18 +532,21 @@ export function createAgentRunApi(deps: AgentRunApiDeps): AgentRunApi {
       assertIdentity(identity, deps.identity);
       const envelope = await response.json().catch(() => null) as { code?: unknown; msg?: unknown; data?: unknown } | null;
       assertIdentity(identity, deps.identity);
+      const outcome = classifyResponse(envelope, 'ai-strict-integer');
       const code = typeof envelope?.code === 'number' ? envelope.code : response.status;
       const msg = typeof envelope?.msg === 'string' ? envelope.msg : '';
       const data = (envelope?.data ?? null) as Record<string, unknown> | null;
       const errorCode = typeof data?.errorCode === 'string' ? data.errorCode : '';
       const retryable = data?.retryable === true;
 
-      if (response.status === 401 || code === 401) {
+      if (response.ok && outcome.kind === 'protocol-error')
+        throw new AgentRunApiError(response.status, 'PROTOCOL_ERROR', outcome.message);
+      if (response.status === 401 || outcome.kind === 'auth-expired') {
         deps.onAuthExpired();
         throw new AgentRunApiError(401, errorCode || 'AUTH_REQUIRED', msg, retryable);
       }
-      if (!response.ok || code !== 200)
-        throw new AgentRunApiError(response.status, errorCode, msg, retryable);
+      if (!response.ok || outcome.kind !== 'ok')
+        throw new AgentRunApiError(response.ok ? code : response.status, errorCode, msg, retryable);
       return data as T;
     }
     finally {

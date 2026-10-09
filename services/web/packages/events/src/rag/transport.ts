@@ -1,3 +1,5 @@
+import { classifyResponse } from '@ruoyi/platform-client/identity';
+
 export interface RequestIdentity {
   token?: string;
   epoch: number;
@@ -89,13 +91,16 @@ export async function identityJson<T>(
     // （APPROVER_POLICY_CLOSED / SANDBOX_POLICY_CLOSED）。旧写法用 `??` 把两者合成一个值，
     // 于是 errorCode 存在时 msg 永久丢失。
     const { errorCode: symbol, msg: serverMsg } = failureReasonOf(envelope);
-    if (response.status === 401 || envelope?.code === 401) {
+    const outcome = classifyResponse(envelope, 'ai-strict-integer');
+    if (response.ok && outcome.kind === 'protocol-error')
+      throw new AiApiError(response.status, 'PROTOCOL_ERROR', outcome.message, serverMsg);
+    if (response.status === 401 || outcome.kind === 'auth-expired') {
       expired();
       throw new AiApiError(401, '登录状态已失效', undefined, serverMsg);
     }
-    if (!response.ok || envelope?.code !== 200) {
+    if (!response.ok || outcome.kind !== 'ok') {
       throw new AiApiError(
-        response.status,
+        response.ok && outcome.kind === 'forbidden' ? 403 : response.status,
         symbol || serverMsg || `request failed (${response.status})`,
         undefined,
         serverMsg,

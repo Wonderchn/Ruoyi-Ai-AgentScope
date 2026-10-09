@@ -10,6 +10,9 @@
     "./rag": "./src/rag/index.ts"
   },
   "types": "./src/index.ts",
+  "dependencies": {
+    "@ruoyi/platform-client": "workspace:*"
+  },
   "scripts": {
     "test": "node --import ./tests/ts-loader.mjs --test \"tests/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",

@@ -2,6 +2,24 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { AiApiError, DEFAULT_JSON_TIMEOUT_MS, identityJson } from '../src/rag/transport.ts';
 
+test('AI transport rejects malformed codes as protocol errors without expiring identity', async () => {
+  const identity = { token: 'one', epoch: 1 };
+  let expired = 0;
+  for (const code of ['200', '401', '403', null, undefined, 200.5, NaN, Infinity, -Infinity]) {
+    const fetcher = (async () => ({ ok: true, status: 200, json: async () => ({ code, data: 'unsafe' }) })) as unknown as typeof fetch;
+    await assert.rejects(identityJson('/api/ai/v1/runs', {}, identity, () => identity, () => expired++, fetcher),
+      (e: unknown) => e instanceof AiApiError && e.errorCode === 'PROTOCOL_ERROR');
+  }
+  assert.equal(expired, 0);
+  const invoke = (code: number) => identityJson('/api/ai/v1/runs', {}, identity, () => identity, () => expired++,
+    (async () => new Response(JSON.stringify({ code, data: { errorCode: 'FORBIDDEN' } }))) as typeof fetch);
+  assert.deepEqual(await invoke(200), { errorCode: 'FORBIDDEN' });
+  await assert.rejects(invoke(403), (e: unknown) => e instanceof AiApiError && e.status === 403 && e.errorCode === 'FORBIDDEN');
+  assert.equal(expired, 0);
+  await assert.rejects(invoke(401), (e: unknown) => e instanceof AiApiError && e.status === 401);
+  assert.equal(expired, 1);
+});
+
 for (const status of [200, 401, 403]) {
   test(`late ${status} cannot affect a new tenant identity`, async () => {
     const original = { token: 'old', epoch: 1 };

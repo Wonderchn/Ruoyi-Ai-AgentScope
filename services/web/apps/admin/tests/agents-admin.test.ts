@@ -220,8 +220,8 @@ describe('信封：ApiEnvelope 整数 code（成功 200）', () => {
       () => api.list(),
       (error: unknown) => {
         assert.ok(error instanceof PlatformApiError, '字符串 code 不得被当成功');
-        assert.equal(error.kind, 'business-error');
-        assert.equal(error.code, 0);
+        assert.equal(error.kind, 'protocol-error');
+        assert.equal(error.code, -1);
         return true;
       },
     );

@@ -141,7 +141,7 @@ export interface AgentPromptSaveBody {
  * Agent 目录管理 API 子域。
  *
  * 全部方法直接返回**解包后的 `data`**：共享 `PlatformClient` 只在 `code===200` 时放行，
- * 否则抛 `PlatformApiError`（`kind` = `auth-expired` | `forbidden` | `business-error`）。
+ * 否则抛 `PlatformApiError`（`kind` = `auth-expired` | `forbidden` | `business-error` | `protocol-error`）。
  */
 export function createAgentProfilesApi(client: PlatformClient) {
   const base = AGENT_CATALOG_AGENTS_PATH;
