@@ -18,9 +18,11 @@
 package org.ruoyi.aiweb.embedded;
 
 import com.nageoffer.ai.ragent.agent.runtime.AgentActionController;
+import com.nageoffer.ai.ragent.agent.runtime.AgentContract;
 import com.nageoffer.ai.ragent.agent.runtime.AgentLedger;
 import com.nageoffer.ai.ragent.agent.runtime.P3Properties;
 import com.nageoffer.ai.ragent.agent.runtime.SandboxTicketClient;
+import com.nageoffer.ai.ragent.ingest.ChatGateway;
 import com.nageoffer.ai.ragent.framework.security.RevocationGuard;
 import com.nageoffer.ai.ragent.runtime.RunAccessService;
 import com.nageoffer.ai.ragent.runtime.RunEventAppender;
@@ -81,6 +83,24 @@ public class AiEmbeddedAgentActionConfiguration {
             @ConditionalOnMissingBean
             public SandboxTicketClient sandboxTicketClient(P3Properties properties) {
                 return new SandboxTicketClient(properties);
+            }
+
+            /**
+             * R12 卡5 修复：注册 {@code agent.run} 的受理契约（{@link AgentContract}）。
+             *
+             * <p>{@code AgentContract} 是 {@code com.nageoffer.*} 包下的 {@code @Component}，
+             * platform 不做根包扫描 ⇒ 从未成为 bean ⇒ {@code RunAdmissionService} 对
+             * {@code action=agent.run} 走 "非 P2_ACTIONS 且无 contract" 分支，真实
+             * {@code POST /runs} 恒被 400「action is not enabled in P2 core」挡死
+             * （F-W5-1；W5 全链验收曾用契约夹具旁路）。此处按本组既有「显式 @Bean new」
+             * 惯例补上装配，门控与同组其余 p3 bean 完全一致（p3.enabled）。
+             */
+            @Bean
+            @ConditionalOnMissingBean
+            public AgentContract agentContract(P3Properties properties, AgentLedger agentLedger,
+                                               RunLedgerDao runLedgerDao, RunAccessService runAccessService,
+                                               ChatGateway chatGateway) {
+                return new AgentContract(properties, agentLedger, runLedgerDao, runAccessService, chatGateway);
             }
 
             @Bean

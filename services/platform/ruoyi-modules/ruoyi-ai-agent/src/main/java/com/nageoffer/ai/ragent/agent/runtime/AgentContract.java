@@ -85,6 +85,15 @@ public class AgentContract implements RuntimeActionContract {
 
     public void onAdmitted(ExecutionPrincipal principal,String runId,AdmissionRequest request){
         var run=runs.findRun(principal.tenantId(),runId).orElseThrow();
+        // R12 卡5：绑定行必须写"执行期将使用的同一份绑定"。合成模式（p3.synthetic-model=true，
+        // 无真实 provider 的验收形态）下执行器走 SyntheticChatGateway.syntheticBinding
+        // （AgentRunExecutor.bound 同判据）；受理侧若仍写已发布版本模型，则兼容门两侧不一致
+        // ⇒ 每个真实提交都在执行第一步被 AGENT_CHECKPOINT_INCOMPATIBLE 挡死（缺陷二）。
+        if(properties.isSyntheticModel()){
+            ledger.admitted(run,request,
+                    com.nageoffer.ai.ragent.ingest.SyntheticChatGateway.syntheticBinding(run.tenantId(),run.runId()).modelId());
+            return;
+        }
         var authority=modelAuthority;
         if(authority==null) throw new com.nageoffer.ai.ragent.runtime.config.ConfigAuthorityUnavailable("engine model authority is not wired; refusing to record an admitted model");
         ledger.admitted(run,request,authority.requirePublished(action()).modelId());

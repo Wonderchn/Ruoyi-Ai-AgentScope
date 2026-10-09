@@ -346,5 +346,12 @@ class LocalAgentActionRouteDispatchTest {
         SandboxTicketClient sandboxTicketClient() {
             return sandbox;
         }
+
+        /** R12 卡5：AgentContract（此配置新增的受理契约 bean）的模型依赖；本夹具为路由/派发面，
+         *  与其它协作 bean 同法给替身即可。 */
+        @Bean
+        com.nageoffer.ai.ragent.ingest.ChatGateway chatGateway() {
+            return mock(com.nageoffer.ai.ragent.ingest.ChatGateway.class);
+        }
     }
 }
