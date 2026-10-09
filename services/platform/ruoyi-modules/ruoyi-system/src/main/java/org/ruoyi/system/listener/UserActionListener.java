@@ -70,13 +70,30 @@ public class UserActionListener implements SaTokenListener {
         // 记录登录日志（事实已在入队前捕获）
         LogininforEvent logininforEvent = new LogininforEvent();
         logininforEvent.setTenantId(tenantId);
+        // R-2-R4：doLogin 在认证成功之后才触发，该租户已由认证策略核验 ⇒ 可信归属。
+        logininforEvent.setTenantVerified(true);
         logininforEvent.setUsername(username);
         logininforEvent.setStatus(Constants.LOGIN_SUCCESS);
         logininforEvent.setMessage(MessageUtils.message("user.login.success"));
         logininforEvent.setClientFacts(facts);
         SpringUtils.context().publishEvent(logininforEvent);
         // 更新登录信息
-        loginService.recordLoginInfo((Long) loginParameter.getExtra(LoginHelper.USER_KEY), ip);
+        //
+        // 🔴 R-2 返工（T0，2026-10-09）：本行原先在**任何租户上下文之外**执行
+        // `userMapper.updateById`（← SysLoginService.recordLoginInfo，UPDATE sys_user）。
+        // `sys_user` 是租户业务表，R-2 的 fail-closed 分支（PlusTenantLineHandler.ignoreTable）
+        // 会在"无可信租户上下文"时**在数据库操作前拒绝** ⇒ 登录整体 503（实测：
+        // `DEPENDENCY_UNAVAILABLE` / body.code 503），**应用对合法用户完全不可用**。
+        // R-2 自己的注释写明其前提是"认证流程会显式设置 dynamic 租户"，而这一行恰恰在
+        // PasswordAuthStrategy 的 TenantHelper.dynamic 作用域**之外**（同一个方法上面 10 行的
+        // Redis 写入就已经老老实实包了 dynamic，只有这一行漏了）。
+        //
+        // 修法：与上方 Redis 写入**同一形态**包进 dynamic。`tenantId` 取自
+        // `LoginHelper.TENANT_KEY`，而它是 `LoginHelper.login` 用
+        // `loginUser.getTenantId()` 写进去的（LoginHelper:53）——即**认证通过后的主体租户**，
+        // 不是请求自行声明的值，因此满足 R-2 `requireTrustedPrincipalTenant` 的可信要求。
+        TenantHelper.dynamic(tenantId, () ->
+                loginService.recordLoginInfo((Long) loginParameter.getExtra(LoginHelper.USER_KEY), ip));
         log.info("{}", authenticationEventSummary("login", loginId));
     }
 

@@ -16,6 +16,8 @@ import org.ruoyi.common.core.utils.StringUtils;
 import org.ruoyi.common.core.utils.reflect.ReflectUtils;
 import org.ruoyi.common.redis.utils.RedisUtils;
 import org.ruoyi.common.satoken.utils.LoginHelper;
+import org.ruoyi.common.tenant.audit.PlatformAuditAttribution;
+import org.ruoyi.common.tenant.exception.TenantException;
 
 import java.util.Stack;
 import java.util.function.Supplier;
@@ -131,6 +133,11 @@ public class TenantHelper {
         if (!isEnable()) {
             return;
         }
+        // R-2-R4（裁决 §7.1）：平台无归属审计标记是"未确认真实租户归属"的表示，不是租户。
+        // 它不得作为切租户目标——否则伪造该值就能在普通查询里读到无归属审计行。
+        if (PlatformAuditAttribution.isPlatformAudit(tenantId)) {
+            throw new TenantException("tenant.context.audit.marker.not.a.tenant");
+        }
         if (!LoginHelper.isLogin() || !global) {
             TEMP_DYNAMIC_TENANT.set(tenantId);
             return;
@@ -227,5 +234,15 @@ public class TenantHelper {
         }
         return tenantId;
     }
+
+    /*
+     * R-2-R4：此处曾有一个 withCapturedTenant(capturedTenantId, handle) 便捷方法，其"未捕获到租户"
+     * 分支走 TenantHelper.ignore(handle)。维护者裁决 §7.1 明确否掉了这条路：
+     *   - 缺上下文的例外只允许落在 sys_oper_log / sys_logininfor 两张表的专用审计 INSERT 上；
+     *   - 不得保留"可执行任意业务回调的通用空值 ignore 分支"。
+     * 该便捷方法已删除。无归属审计写入改由审计 mapper 上逐方法的
+     * @InterceptorIgnore(tenantLine = "true") 承担——例外是"一条语句"，不是"一段回调"；
+     * 归属值由 PlatformAuditAttribution 判定后显式写进实体，不再依赖 DDL 默认值。
+     */
 
 }
