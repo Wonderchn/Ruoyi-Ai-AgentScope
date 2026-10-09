@@ -362,7 +362,14 @@ public class AiGatewayController {
             if(response!=null && response.isCommitted()){return null;}
             return fail(ex.errorCode());
         } catch (AiGatewayClient.UpstreamUnavailableException ex) {
-            if(response!=null && response.isCommitted()){return null;}
+            if(response!=null && response.isCommitted()){
+                // 响应已提交（典型：GET 字节分支响应已写出，其后的交付回执/许可释放失败）：
+                // 不能再改状态码，但**绝不允许静默**——否则许可泄漏类故障在服务端零痕迹
+                // （R12 卡2 F-W6-P1 可观测化；此前此分支直接 return null，ACK 失败被完全吞掉）。
+                log.warn("ai-gateway upstream-unavailable after commit: method={} path={} reason={}",
+                        request.getMethod(), request.getRequestURI(), ex.getMessage(), ex);
+                return null;
+            }
             // 上游不可用/恶意响应：不放行也不泄露原因。
             // 但**服务端必须留下原因** —— 客户端只拿泛化文案，诊断信息只进日志。
             // 没有这一行时，三种截然不同的内部失败（执行事实不可用 / 内层路由未命中 /

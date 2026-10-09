@@ -238,8 +238,13 @@ public class DefaultRevocationGuard implements RevocationGuard {
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public void releaseDelivery(String tenantId, String memberId, String permitId, String operationId) {
+        // 白名单 = "会携带交付回执头（X-AI-Delivery-*）、由网关在响应提交后 ACK 释放"的动作集合。
+        // R12 卡2 修复：补入 flow.list/flow.read/config.read —— 三者均按该铸造模式交付
+        // （FlowWorkflowController 两条 GET；AdminDeliveryAdvice 的 config.read 族 GET），
+        // 缺一即"可铸造、不可释放"→ ACTIVE 许可泄漏（W6/W8 实测每次 GET 泄 1 条）。
+        // 写侧动作（flow.write/flow.delete 等 JSON 分支）按设计**不铸造回执头**，不入白名单。
         Long owned=jdbc.queryForObject("SELECT count(*) FROM ai_execution_permit WHERE tenant_id=? AND member_id=?"
-                + " AND permit_id=? AND operation_id=? AND action IN ('document.download','document.list','conversation.export','kb.list','kb.read','document.read','conversation.read','memory.read','run.get','run.events','run.stream','kb.retrieve','run.approve','run.reconcile')",
+                + " AND permit_id=? AND operation_id=? AND action IN ('document.download','document.list','conversation.export','kb.list','kb.read','document.read','conversation.read','memory.read','run.get','run.events','run.stream','kb.retrieve','run.approve','run.reconcile','config.read','flow.list','flow.read')",
                 Long.class,tenantId,memberId,permitId,operationId);
         if(owned==null || owned!=1){throw new ClientException("delivery identity mismatch");}
         release(permitId,operationId);

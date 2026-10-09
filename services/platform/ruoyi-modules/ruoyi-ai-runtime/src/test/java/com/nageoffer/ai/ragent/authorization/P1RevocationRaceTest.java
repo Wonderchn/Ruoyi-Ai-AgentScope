@@ -193,6 +193,32 @@ class P1RevocationRaceTest {
     }
 
     @Test
+    @DisplayName("交付回执白名单：flow.list/flow.read/config.read 在列（R12 卡2）；白名单不命中零释放写")
+    void releaseDeliveryWhitelistPinsR12DeliveryActions() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForObject(contains("action IN"), any(Class.class), any(Object[].class))).thenReturn(1L);
+        when(jdbc.update(contains("SET status = 'RELEASED'"), any(Object[].class))).thenReturn(1);
+
+        new DefaultRevocationGuard(jdbc).releaseDelivery("T1", "platform:T1:2101", "permit-1", "op-1");
+
+        org.mockito.ArgumentCaptor<String> whitelistSql = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(jdbc).queryForObject(whitelistSql.capture(), any(Class.class), any(Object[].class));
+        assertThat(whitelistSql.getValue())
+                .as("交付回执白名单必须覆盖按回执头铸造的三个读动作（W6/W8 泄漏面）")
+                .contains("'config.read'").contains("'flow.list'").contains("'flow.read'");
+        verify(jdbc).update(contains("SET status = 'RELEASED'"), any(Object[].class));
+
+        // 白名单不命中（count=0）：拒绝（身份不符），且绝不产生 RELEASED 写
+        JdbcTemplate miss = mock(JdbcTemplate.class);
+        when(miss.queryForObject(contains("action IN"), any(Class.class), any(Object[].class))).thenReturn(0L);
+        assertThatThrownBy(() -> new DefaultRevocationGuard(miss)
+                .releaseDelivery("T1", "platform:T1:2101", "permit-2", "op-2"))
+                .isInstanceOf(ClientException.class)
+                .hasMessageContaining("delivery identity mismatch");
+        verify(miss, never()).update(contains("SET status = 'RELEASED'"), any(Object[].class));
+    }
+
+    @Test
     @DisplayName("屏障状态写入：NO_ROW 拒绝；UNKNOWN 可写；upsert 含 ON CONFLICT（原位更新）")
     void barrierStateWritesAreGuarded() {
         JdbcTemplate jdbc = jdbcWithEpoch(3, List.of());
