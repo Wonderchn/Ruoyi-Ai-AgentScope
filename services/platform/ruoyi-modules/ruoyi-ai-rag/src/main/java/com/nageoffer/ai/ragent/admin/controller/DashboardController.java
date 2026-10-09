@@ -17,13 +17,14 @@
 
 package com.nageoffer.ai.ragent.admin.controller;
 
-import cn.dev33.satoken.annotation.SaCheckRole;
 import com.nageoffer.ai.ragent.admin.controller.vo.DashboardOverviewVO;
 import com.nageoffer.ai.ragent.admin.controller.vo.DashboardPerformance;
 import com.nageoffer.ai.ragent.admin.controller.vo.DashboardTrendsVO;
 import com.nageoffer.ai.ragent.admin.service.DashboardService;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
+import com.nageoffer.ai.ragent.framework.security.P04AiErrorCode;
+import com.nageoffer.ai.ragent.framework.security.P04AiException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
@@ -33,37 +34,33 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 运营 Dashboard（F18 op1）。
+ * 运营 Dashboard（F18 op0）。
  *
  * <p><b>信封（RW-23）</b>：经 AI 网关的内层 handler 必须返回整数 code 信封
  * （{@code LocalAiGatewayClient.requireSingleJsonObject} 要求 {@code code} 为整数且与 HTTP
  * 状态一致；AI 旧 {@code Result} 的 code 是字符串 {@code "0"}，经网关必然 503）。
  * 因此从 {@code Result} 改为 {@link ApiEnvelope}；三个 VO 的字段形状不变。</p>
  *
- * <p><b>授权范围（RW-23，未完成部分见报告）</b>：本控制器已 fail-closed 要求执行主体
- * （{@link PrincipalContext#require()}，缺主体 403/整数码信封）；但
- * {@code DashboardServiceImpl} / {@code AgentDashboardReader} 的<b>统计查询尚未按 tenant 过滤</b>
- * （现状是全局计数），因此在补齐租户限域之前<b>不得装配本控制器</b>——报告 §Dashboard 给了
- * 精确补丁规格与证据。</p>
+ * <p>RW-23-R1/R2 已分别限定 workflow 查询与 agent SQL/缓存的租户范围。
+ * 三个读入口分别复核规范主体与 {@code run.get}，由嵌入配置显式选择统计实现。</p>
  */
 @RestController
 @RequiredArgsConstructor
-@RequestMapping("/admin/dashboard")
-@SaCheckRole("admin")
-@ConditionalOnProperty(prefix = "ragent.engine", name = "type", havingValue = "workflow", matchIfMissing = true)
+@RequestMapping("/internal/ai/v1/dashboard")
+@ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
 public class DashboardController {
 
     private final DashboardService dashboardService;
 
     @GetMapping("/overview")
     public ResponseEntity<ApiEnvelope<DashboardOverviewVO>> overview(@RequestParam(required = false) String window) {
-        PrincipalContext.require();
+        requireRead();
         return reply(dashboardService.loadOverview(window));
     }
 
     @GetMapping("/performance")
     public ResponseEntity<ApiEnvelope<DashboardPerformance>> performance(@RequestParam(required = false) String window) {
-        PrincipalContext.require();
+        requireRead();
         return reply(dashboardService.loadPerformance(window));
     }
 
@@ -71,8 +68,14 @@ public class DashboardController {
     public ResponseEntity<ApiEnvelope<DashboardTrendsVO>> trends(@RequestParam String metric,
                                                                  @RequestParam(required = false) String window,
                                                                  @RequestParam(required = false) String granularity) {
-        PrincipalContext.require();
+        requireRead();
         return reply(dashboardService.loadTrends(metric, window, granularity));
+    }
+
+    private static void requireRead() {
+        if (!PrincipalContext.require().hasScope("run.get")) {
+            throw new P04AiException(P04AiErrorCode.FORBIDDEN);
+        }
     }
 
     private static <T> ResponseEntity<ApiEnvelope<T>> reply(T data) {

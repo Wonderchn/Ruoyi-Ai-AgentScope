@@ -10,7 +10,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 
-/** RW-23: explicit tenant-scoped read surfaces; Dashboard remains unassembled. */
+/** RW-23: explicit tenant-scoped read surfaces; Dashboard is assembled separately after RW-23-R1/R2. */
 @AutoConfiguration
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
 public class AiEmbeddedObservabilityConfiguration {
