@@ -110,4 +110,16 @@ class AgentProfileAdminServiceImplDefaultPromptTest {
                 .hasMessageContaining("未知的提示词");
         verify(templateRepository, never()).findProfiles();
     }
+
+    @Test
+    @DisplayName("模板行内容为空白：被 isNotBlank 过滤、返回空体（不输出空白默认；复核 P1 钉死）")
+    void blankTemplateContentYieldsEmpty() {
+        when(agentProfileMapper.selectOne(any())).thenReturn(null);
+        when(templateRepository.findProfiles()).thenReturn(List.of(
+                new PublicTemplateRepository.TemplateProfile("t-builtin", "内置", "d", "", 1, 0)));
+        when(templateRepository.findPrompts("t-builtin")).thenReturn(List.of(
+                new PublicTemplateRepository.TemplatePrompt("p-1", "t-builtin", "SYSTEM_CHAT", "   ")));
+
+        assertThat(service().defaultPrompt("SYSTEM_CHAT")).isEmpty();
+    }
 }
