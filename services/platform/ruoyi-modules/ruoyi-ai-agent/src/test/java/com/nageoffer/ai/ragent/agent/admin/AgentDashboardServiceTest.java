@@ -28,7 +28,8 @@ import com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMessageMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.RagTraceRunMapper;
 import com.nageoffer.ai.ragent.user.dao.mapper.UserMapper;
-import cn.dev33.satoken.annotation.SaCheckRole;
+import com.nageoffer.ai.ragent.framework.security.P04AiErrorCode;
+import com.nageoffer.ai.ragent.framework.security.P04AiException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -249,8 +250,28 @@ class AgentDashboardServiceTest {
     }
 
     @Test
-    void dashboardIsAdminOnly() {
-        assertThat(DashboardController.class.getAnnotation(SaCheckRole.class).value()).containsExactly("admin");
+    void dashboardRequiresCanonicalReadScopeBeforeEveryServiceCall() {
+        DashboardService statistics = mock(DashboardService.class);
+        DashboardController controller = new DashboardController(statistics);
+        PrincipalContext.clear();
+        assertThatThrownBy(() -> controller.overview("24h")).isInstanceOf(ClientException.class);
+        assertThatThrownBy(() -> controller.performance("24h")).isInstanceOf(ClientException.class);
+        assertThatThrownBy(() -> controller.trends("messages", "24h", "hour")).isInstanceOf(ClientException.class);
+        PrincipalContext.set(new ExecutionPrincipal("T-A", "1", "platform:T-A:1", 1, 1,
+                Set.of("conversation.read"), "dashboard-test", "test", 1, Long.MAX_VALUE));
+        for (Runnable read : List.<Runnable>of(() -> controller.overview("24h"),
+                () -> controller.performance("24h"), () -> controller.trends("messages", "24h", "hour"))) {
+            assertThatThrownBy(read::run).isInstanceOfSatisfying(P04AiException.class,
+                    error -> assertThat(error.errorCode()).isEqualTo(P04AiErrorCode.FORBIDDEN));
+        }
+        verifyNoInteractions(statistics);
+        PrincipalContext.set(principal("T-A"));
+        assertThat(controller.overview("24h").getStatusCode().value()).isEqualTo(200);
+        assertThat(controller.performance("24h").getStatusCode().value()).isEqualTo(200);
+        assertThat(controller.trends("messages", "24h", "hour").getStatusCode().value()).isEqualTo(200);
+        verify(statistics).loadOverview("24h");
+        verify(statistics).loadPerformance("24h");
+        verify(statistics).loadTrends("messages", "24h", "hour");
     }
 
     private static Map<String, Object> status(String kind, String status, long count) {
@@ -274,6 +295,6 @@ class AgentDashboardServiceTest {
 
     private static ExecutionPrincipal principal(String tenantId) {
         return new ExecutionPrincipal(tenantId, "1", "platform:" + tenantId + ":1", 1, 1,
-                Set.of("monitor.read"), "dashboard-test", "test", 1, Long.MAX_VALUE);
+                Set.of("run.get"), "dashboard-test", "test", 1, Long.MAX_VALUE);
     }
 }
