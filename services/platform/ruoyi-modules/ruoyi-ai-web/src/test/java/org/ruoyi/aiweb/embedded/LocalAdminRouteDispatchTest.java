@@ -32,6 +32,9 @@ import com.nageoffer.ai.ragent.rag.eval.EvalController;
 import com.nageoffer.ai.ragent.rag.service.QueryTermMappingAdminService;
 import com.nageoffer.ai.ragent.rag.service.RecommendedQuestionService;
 import com.nageoffer.ai.ragent.rag.service.RagTraceQueryService;
+import com.nageoffer.ai.ragent.rag.controller.RuntimeCatalogController;
+import com.nageoffer.ai.ragent.rag.service.RuntimeCatalogService;
+import com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService;
 import com.nageoffer.ai.ragent.runtime.web.DeliveryPermits;
 import com.nageoffer.ai.ragent.sample.controller.SampleQuestionController;
 import com.nageoffer.ai.ragent.sample.controller.vo.SampleQuestionVO;
@@ -137,6 +140,18 @@ class LocalAdminRouteDispatchTest {
             factory.registerSingleton("deliveryPermits", permits);
             factory.registerSingleton("chunks", new KnowledgeChunkController(chunks, permits));
             factory.registerSingleton("recommended", new RecommendedQuestionController(recommended));
+            // R12 卡4：/runtime-config 三 GET 必须同样拿到投递回执（此前 Advice 未覆盖该控制器）。
+            RuntimeCatalogService catalogService = mock(RuntimeCatalogService.class);
+            when(catalogService.currentRevision(tenantId)).thenReturn(new RuntimeCatalogService.RevisionRow(
+                    tenantId, "rev-fixture", 1, "PUBLISHED", "deepseek", "deepseek-flash", "r12c4-fixture",
+                    "hash-fixture", "{\"temperature\":0.2}", "env:R12C4_KEY", "2101",
+                    java.time.Instant.parse("2026-10-10T00:00:00Z"), 1536, 20L));
+            when(catalogService.knownModels(eq(tenantId), anyInt())).thenReturn(List.of());
+            when(catalogService.tiers(eq(tenantId), anyString())).thenReturn(List.of());
+            when(catalogService.revisions(eq(tenantId), anyInt())).thenReturn(List.of());
+            when(catalogService.settings(eq(tenantId), anyString())).thenReturn(Map.of());
+            factory.registerSingleton("runtimeCatalog", new RuntimeCatalogController(
+                    mock(AiResourceAuthorizationService.class), catalogService, context.getEnvironment()));
         });
         servlet = new MockServletContext();
         context.setServletContext(servlet);
@@ -197,7 +212,10 @@ class LocalAdminRouteDispatchTest {
                 Map.entry("/rag/traces/runs", "r6-trace-page"),
                 Map.entry("/rag/traces/runs/trace-1/nodes", "r6-trace-node"),
                 Map.entry("/biz-change-logs/log-1", "r6-change-log"),
-                Map.entry("/biz-change-logs", "r6-change-log-page"));
+                Map.entry("/biz-change-logs", "r6-change-log-page"),
+                Map.entry("/runtime-config/catalog", "platform.ai_runtime_config_revision"),
+                Map.entry("/runtime-config/settings", "deployment-env"),
+                Map.entry("/runtime-config/revisions", "\"revisions\":[]"));
         for (var entry : cases.entrySet()) {
             var response = dispatch("GET", entry.getKey(), null);
             assertThat(response.getStatus()).as(entry.getKey()).isEqualTo(200);
