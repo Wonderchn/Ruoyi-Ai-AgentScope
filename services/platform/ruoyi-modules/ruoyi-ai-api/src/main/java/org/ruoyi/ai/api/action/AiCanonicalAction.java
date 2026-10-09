@@ -66,6 +66,14 @@ public final class AiCanonicalAction {
         actions.put("config.publish", "ai:config:publish");
         actions.put("config.revoke", "ai:config:revoke");
         actions.put("tool.sandbox.write", "ai:tool:sandbox:write");
+        // F13-SLICE-1（AIFlow 工作流定义）：四条新动作。资源是 `ai_flow_workflow`，
+        // **带 tenant_id 列** ⇒ 租户级资源，不适用 PLATFORM_ADMIN_ACTIONS
+        // （那一组是给没有 tenant_id 的平台级目录用的）。
+        // 默认授予全为"否"：本批不写任何 sys_role_menu 行，由 provisioning 逐码授予。
+        actions.put("flow.list", "ai:flow:list");
+        actions.put("flow.read", "ai:flow:read");
+        actions.put("flow.write", "ai:flow:write");
+        actions.put("flow.delete", "ai:flow:delete");
         return Collections.unmodifiableMap(actions);
     }
 

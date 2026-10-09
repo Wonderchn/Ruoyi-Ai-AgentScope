@@ -28,9 +28,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.LinkedHashSet;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -198,6 +200,14 @@ class P1CurrentAuthorizationTest {
         assertEquals(P04ErrorCode.AUTHORIZATION_UNAVAILABLE.name(), errorCode(response));
     }
 
+
+    /** Set difference {@code a \ b}, as a LinkedHashSet (order-stable for messages). */
+    private static Set<String> diff(Set<String> a, Set<String> b) {
+        Set<String> out = new LinkedHashSet<>(a);
+        out.removeAll(b);
+        return out;
+    }
+
     @Test
     void registryCoversTheFrozenActionTable() {
         // P1 13 + P2 7 + approved P3 4 fixed actions = 24; WP-034A added the two F03
@@ -206,7 +216,93 @@ class P1CurrentAuthorizationTest {
         // so the frozen table is now 31. F11 (skill.*) is deliberately not landed in this batch
         // (its runtime closure is not assembled yet — task-13 / W4-T0-46).
         // Runtime authority administration adds three separately permissioned actions.
-        assertEquals(34, AiActionRegistry.knownActions().size());
+        //
+        // F13-SLICE-1：护栏由"单个数字精确相等"升级为**三项同时成立**的结构性替换。
+        // 旧 34 条**逐项集合相等**（不是只比数量），批准增量**逐项集合相等**（恰好这 4 条），
+        // 总数等于完整清单。**不得退化成 assertTrue(size >= 34)** —— 那会让"删掉一条再偷偷加两条"
+        // 通过；也不得只调大那个数字。
+        Set<String> oldFrozen = Set.of(
+                "kb.list", "kb.read", "kb.write", "kb.delete", "kb.acl.manage", "kb.retrieve",
+                "document.read", "document.download", "document.list", "document.upload",
+                "document.ingest",
+                "conversation.read", "conversation.export", "conversation.rename",
+                "conversation.delete",
+                "memory.read",
+                "run.get", "run.events", "run.submit", "run.cancel", "run.resume",
+                "run.stream", "run.approve", "run.reconcile",
+                "agent.execute", "agent.list", "agent.read", "agent.write", "agent.delete",
+                "agent.activate",
+                "config.read", "config.publish", "config.revoke",
+                "tool.sandbox.write");
+        Set<String> approvedIncrement = Set.of(
+                "flow.list", "flow.read", "flow.write", "flow.delete");
+        Set<String> fullList = new LinkedHashSet<>(oldFrozen);
+        fullList.addAll(approvedIncrement);
+
+        Set<String> actual = AiActionRegistry.knownActions();
+
+        // ① 旧 34 条映射完全保留：逐项集合相等
+        assertEquals(34, oldFrozen.size(), "old frozen table must be exactly 34 entries");
+        assertTrue(actual.containsAll(oldFrozen),
+                "old frozen actions must be fully preserved; missing=" + diff(oldFrozen, actual));
+        // ② 批准增量逐项集合相等：多的、少的、改名的都要红
+        assertEquals(approvedIncrement, diff(new LinkedHashSet<>(actual), oldFrozen),
+                "approved increment must equal the F13-SLICE-1 set exactly");
+        // ③ 总数等于完整清单（作为 ①② 的推论，仍显式断言）
+        assertEquals(fullList.size(), actual.size(),
+                "total must equal the complete list, not merely be >= 34");
+        assertFalse(actual.size() < 34, "total must never drop below the old frozen table");
+
+        // ④ (动作 -> 权限) 逐项相等。Spec §5.1 第 1 条要求的是"映射"逐项相等，不只是动作名集合相等。
+        // 只比名字会漏掉"值替换"这一类变异：例如把 kb.read 的权限改成 ai:kb:list，
+        // 动作名集合不变、总数不变，①②③ 全绿，P1AiPermissionContractTest 也拦不住
+        // （新值同样在 sys_menu 里有行）。所以这里把全部 38 条映射钉死：
+        // 任何一条的值被改动，都必须显式修改本清单，否则本判据红。
+        Map<String, String> expectedPairs = new LinkedHashMap<>();
+        expectedPairs.put("agent.activate", "ai:agent:activate");
+        expectedPairs.put("agent.delete", "ai:agent:delete");
+        expectedPairs.put("agent.execute", "ai:agent:execute");
+        expectedPairs.put("agent.list", "ai:agent:list");
+        expectedPairs.put("agent.read", "ai:agent:read");
+        expectedPairs.put("agent.write", "ai:agent:write");
+        expectedPairs.put("config.publish", "ai:config:publish");
+        expectedPairs.put("config.read", "ai:config:read");
+        expectedPairs.put("config.revoke", "ai:config:revoke");
+        expectedPairs.put("conversation.delete", "ai:conversation:delete");
+        expectedPairs.put("conversation.export", "ai:conversation:export");
+        expectedPairs.put("conversation.read", "ai:conversation:read");
+        expectedPairs.put("conversation.rename", "ai:conversation:write");
+        expectedPairs.put("document.download", "ai:document:download");
+        expectedPairs.put("document.ingest", "ai:document:ingest");
+        expectedPairs.put("document.list", "ai:document:read");
+        expectedPairs.put("document.read", "ai:document:read");
+        expectedPairs.put("document.upload", "ai:document:upload");
+        expectedPairs.put("flow.delete", "ai:flow:delete");
+        expectedPairs.put("flow.list", "ai:flow:list");
+        expectedPairs.put("flow.read", "ai:flow:read");
+        expectedPairs.put("flow.write", "ai:flow:write");
+        expectedPairs.put("kb.acl.manage", "ai:kb:acl");
+        expectedPairs.put("kb.delete", "ai:kb:delete");
+        expectedPairs.put("kb.list", "ai:kb:list");
+        expectedPairs.put("kb.read", "ai:kb:read");
+        expectedPairs.put("kb.retrieve", "ai:kb:retrieve");
+        expectedPairs.put("kb.write", "ai:kb:write");
+        expectedPairs.put("memory.read", "ai:memory:read");
+        expectedPairs.put("run.approve", "ai:run:approve");
+        expectedPairs.put("run.cancel", "ai:run:cancel");
+        expectedPairs.put("run.events", "ai:run:event:read");
+        expectedPairs.put("run.get", "ai:run:read");
+        expectedPairs.put("run.reconcile", "ai:run:reconcile");
+        expectedPairs.put("run.resume", "ai:run:resume");
+        expectedPairs.put("run.stream", "ai:run:stream");
+        expectedPairs.put("run.submit", "ai:run:submit");
+        expectedPairs.put("tool.sandbox.write", "ai:tool:sandbox:write");
+        Map<String, String> actualPairs = new LinkedHashMap<>();
+        for (String action : actual) {
+            actualPairs.put(action, AiActionRegistry.permissionOf(action).orElseThrow());
+        }
+        assertEquals(expectedPairs, actualPairs,
+                "every (action -> permission) pair must match exactly; a swapped value must go red");
         assertEquals(Optional.of("ai:config:read"), AiActionRegistry.permissionOf("config.read"));
         assertEquals(Optional.of("ai:config:publish"), AiActionRegistry.permissionOf("config.publish"));
         assertEquals(Optional.of("ai:config:revoke"), AiActionRegistry.permissionOf("config.revoke"));
