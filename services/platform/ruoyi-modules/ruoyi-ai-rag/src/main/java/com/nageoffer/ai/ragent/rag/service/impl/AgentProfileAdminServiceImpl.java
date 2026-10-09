@@ -39,6 +39,7 @@ import com.nageoffer.ai.ragent.rag.dao.entity.AgentPromptDO;
 import com.nageoffer.ai.ragent.rag.dao.mapper.AgentProfileMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.AgentPromptMapper;
 import com.nageoffer.ai.ragent.rag.service.AgentProfileAdminService;
+import com.nageoffer.ai.ragent.template.PublicTemplateRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -65,6 +66,8 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
     private final AgentPromptCacheManager cacheManager;
     private final OrchestrationProperties orchestrationProperties;
     private final BizChangeLogContext bizChangeLogContext;
+    /** 公共模板域只读仓库（R12 卡6：「取槽位默认值」的模板域回退）。 */
+    private final PublicTemplateRepository templateRepository;
 
     @Override
     public AgentProfileListVO list() {
@@ -287,10 +290,26 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
         AgentPromptSlot slot = AgentPromptSlot.find(slotKey)
                 .orElseThrow(() -> new ClientException("未知的提示词：" + slotKey));
         AgentProfileDO builtin = loadBuiltin();
-        if (builtin == null) {
-            return "";
+        if (builtin != null) {
+            String own = StrUtil.emptyIfNull(agentPromptResolver.loadOwnPrompts(builtin.getId()).get(slot.name()));
+            if (StrUtil.isNotBlank(own)) {
+                return own;
+            }
         }
-        return StrUtil.emptyIfNull(agentPromptResolver.loadOwnPrompts(builtin.getId()).get(slot.name()));
+        // R12 卡6 修复：内置默认实际存于公共模板域（tenant_id='__public_template__'）——
+        // 租户过滤链看不到该域（F-W3-1：e13「取槽位默认值」恒返回空体），必须经
+        // PublicTemplateRepository 按保留租户值显式读取（与 P1.3a 模板域口径一致；
+        // 只读，不把模板行落进任何租户）。
+        return templateRepository.findProfiles().stream()
+                .filter(profile -> isTrue(profile.builtin()))
+                .findFirst()
+                .map(profile -> templateRepository.findPrompts(profile.id()).stream()
+                        .filter(template -> slot.name().equals(template.slotKey()))
+                        .map(PublicTemplateRepository.TemplatePrompt::content)
+                        .filter(StrUtil::isNotBlank)
+                        .findFirst()
+                        .orElse(""))
+                .orElse("");
     }
 
     /**

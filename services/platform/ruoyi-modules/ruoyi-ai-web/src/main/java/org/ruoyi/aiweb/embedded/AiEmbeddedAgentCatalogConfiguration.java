@@ -6,6 +6,7 @@ import com.nageoffer.ai.ragent.rag.controller.AgentProfileController;
 import com.nageoffer.ai.ragent.rag.core.prompt.AgentPromptCacheManager;
 import com.nageoffer.ai.ragent.rag.core.prompt.AgentPromptResolver;
 import com.nageoffer.ai.ragent.rag.service.impl.AgentProfileAdminServiceImpl;
+import com.nageoffer.ai.ragent.template.PublicTemplateRepository;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Import;
@@ -60,7 +61,10 @@ import org.springframework.context.annotation.Import;
         // 那会注册第二个同类型 bean（BRIEF §4 已登记该坑）。
         OrchestrationProperties.class,
         // 审计上下文：AgentProfileAdminServiceImpl 的构造依赖之一，v6 里也不是 bean。
-        BizChangeLogContext.class
+        BizChangeLogContext.class,
+        // 公共模板域只读仓库（P1.3a）：R12 卡6 起作为「取槽位默认值」的模板域回退依赖
+        // （内置默认存于 __public_template__ 域，租户过滤链看不到），必须登记为 bean。
+        PublicTemplateRepository.class
 })
 public class AiEmbeddedAgentCatalogConfiguration {
 }
