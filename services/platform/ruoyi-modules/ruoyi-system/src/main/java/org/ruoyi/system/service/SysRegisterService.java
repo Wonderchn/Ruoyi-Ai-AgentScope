@@ -18,6 +18,7 @@ import org.ruoyi.common.core.utils.StringUtils;
 import org.ruoyi.common.log.event.LoginClientFacts;
 import org.ruoyi.common.log.event.LogininforEvent;
 import org.ruoyi.common.redis.utils.RedisUtils;
+import org.ruoyi.common.tenant.audit.PlatformAuditAttribution;
 import org.ruoyi.common.tenant.helper.TenantHelper;
 import org.ruoyi.common.web.config.properties.CaptchaProperties;
 import org.ruoyi.system.domain.SysUser;
@@ -72,25 +73,40 @@ public class SysRegisterService {
         if (exist) {
             throw new UserException("user.register.save.error", username);
         }
-        boolean regFlag = userService.registerUser(sysUser, tenantId);
+        // R-2-R3：注册是"未登录"路径，主体租户只能来自请求体（tenantId），
+        // 而 registerUser / bindDefaultRole 都要写带 tenant_id 的表（sys_user）或按租户读
+        // （tenantIdsOfUsers → sys_user）。此前它们跑在 dynamic() 块<b>外</b>，缺上下文时会被
+        // fail-closed 的租户行拦截器拒绝；这里把这段写入整体放进<b>同一个</b>显式租户作用域。
+        // 注意：不在此处再嵌套 dynamic()——嵌套的 clearDynamic() 会提前清掉外层作用域。
+        boolean regFlag = TenantHelper.dynamic(tenantId, () -> {
+            boolean ok = userService.registerUser(sysUser, tenantId);
+            if (ok) {
+                // 绑定默认角色（未配置则跳过，不影响注册流程）
+                bindDefaultRole(tenantId, sysUser.getUserId());
+            }
+            return ok;
+        });
         if (!regFlag) {
             throw new UserException("user.register.error");
         }
-        // 绑定默认角色（未配置则跳过，不影响注册流程）
-        bindDefaultRole(tenantId, sysUser.getUserId());
         recordLogininfor(tenantId, username, Constants.REGISTER, MessageUtils.message("user.register.success"));
     }
 
     /**
      * 读取配置 sys.register.defaultRoleId 并为新用户绑定默认角色。
      * 配置为空或角色 ID 无效时静默跳过。
+     *
+     * <p><b>R-2-R3</b>：本方法<b>必须在调用方已建立的租户作用域内</b>执行——
+     * 它按租户读配置、并通过 {@code insertUserAuth} 读写该租户的用户数据。
+     * 这里<b>不再</b>自开 {@code TenantHelper.dynamic(...)}：嵌套的
+     * {@code clearDynamic()} 会把外层的租户作用域一并清掉，导致同一方法里后续的
+     * 数据库操作重新落入"无上下文"。</p>
      */
     private void bindDefaultRole(String tenantId, Long userId) {
         if (userId == null) {
             return;
         }
-        Long defaultRoleId = TenantHelper.dynamic(tenantId, () ->
-            Convert.toLong(configService.selectConfigByKey(DEFAULT_ROLE_CONFIG_KEY), null));
+        Long defaultRoleId = Convert.toLong(configService.selectConfigByKey(DEFAULT_ROLE_CONFIG_KEY), null);
         if (defaultRoleId == null) {
             return;
         }
@@ -134,6 +150,8 @@ public class SysRegisterService {
         logininforEvent.setUsername(username);
         logininforEvent.setStatus(status);
         logininforEvent.setMessage(message);
+        // R-2-R4：注册成功（REGISTER）意味着该租户已被注册流程接受；验证码类失败发生在核验之前。
+        logininforEvent.setTenantVerified(PlatformAuditAttribution.verifiedByStatus(status));
         logininforEvent.setClientFacts(LoginClientFacts.capture(ServletUtils.getRequest()));
         SpringUtils.context().publishEvent(logininforEvent);
     }

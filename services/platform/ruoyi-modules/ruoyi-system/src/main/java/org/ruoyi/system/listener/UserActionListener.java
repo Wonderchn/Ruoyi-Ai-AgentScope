@@ -70,6 +70,8 @@ public class UserActionListener implements SaTokenListener {
         // 记录登录日志（事实已在入队前捕获）
         LogininforEvent logininforEvent = new LogininforEvent();
         logininforEvent.setTenantId(tenantId);
+        // R-2-R4：doLogin 在认证成功之后才触发，该租户已由认证策略核验 ⇒ 可信归属。
+        logininforEvent.setTenantVerified(true);
         logininforEvent.setUsername(username);
         logininforEvent.setStatus(Constants.LOGIN_SUCCESS);
         logininforEvent.setMessage(MessageUtils.message("user.login.success"));
