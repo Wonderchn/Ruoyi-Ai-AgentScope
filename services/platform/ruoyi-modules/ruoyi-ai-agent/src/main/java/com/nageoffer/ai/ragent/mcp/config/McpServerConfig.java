@@ -57,7 +57,7 @@ public class McpServerConfig {
      * {@code ragent.mcp.server.enabled}）：开关关时端点与过滤器一起不存在。
      *
      * <p>只接管 {@code REQUEST} 分派（streamable-http 的 SSE/异步收尾不受影响）；
-     * 顺序排在 requestId 过滤器（{@code Integer.MIN_VALUE + 50/100}）之后，
+     * 顺序排在 requestId 过滤器（{@code Integer.MIN_VALUE + 50}）之后，
      * 拒绝响应仍带请求标识。
      */
     @Bean

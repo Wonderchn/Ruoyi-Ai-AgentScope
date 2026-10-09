@@ -30,6 +30,8 @@ import jakarta.servlet.ServletRequest;
 import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -71,6 +73,8 @@ public class McpAuthFilter implements Filter {
 
     /** 与 platform 侧内部端点同名（{@code X-P04-Service-Credential}）。 */
     public static final String SERVICE_CREDENTIAL_HEADER = "X-P04-Service-Credential";
+
+    private static final Logger log = LoggerFactory.getLogger(McpAuthFilter.class);
 
     private static final String AUTHORIZATION_HEADER = "Authorization";
 
@@ -130,8 +134,12 @@ public class McpAuthFilter implements Filter {
 
         boolean anyCredential = (presentedCredential != null && !presentedCredential.isBlank())
                 || (authorization != null && !authorization.isBlank());
-        writeReject(servletResponse,
-                anyCredential ? P04AiErrorCode.DELEGATION_INVALID : P04AiErrorCode.AUTH_REQUIRED);
+        P04AiErrorCode errorCode = anyCredential ? P04AiErrorCode.DELEGATION_INVALID
+                : P04AiErrorCode.AUTH_REQUIRED;
+        // 审计：只记符号码与请求形状，绝不记凭证值（复核 P2 处置）
+        log.warn("mcp auth rejected errorCode={} method={} path={}",
+                errorCode.name(), servletRequest.getMethod(), servletRequest.getRequestURI());
+        writeReject(servletResponse, errorCode);
     }
 
     /** 常量时间比较；空配置（未设置属性）时服务凭证通道整体拒绝。 */
