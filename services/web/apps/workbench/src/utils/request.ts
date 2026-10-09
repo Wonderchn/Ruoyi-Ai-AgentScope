@@ -4,6 +4,7 @@ import hookFetch from 'hook-fetch';
 import { sseTextDecoderPlugin } from 'hook-fetch/plugins';
 import router from '@/routers';
 import { useUserStore } from '@/stores';
+import { createHookFetchEnvelopePlugin } from './response-policy';
 
 interface BaseResponse {
   code: number;
@@ -22,6 +23,19 @@ export const request = hookFetch.create<BaseResponse, 'data' | 'rows'>({
 
 function jwtPlugin(): HookFetchPlugin<BaseResponse> {
   return {
+    ...createHookFetchEnvelopePlugin<BaseResponse>({
+      onForbidden: (message) => {
+        void router.replace({ name: '403' });
+        ElMessage.error(message);
+      },
+      onAuthExpired: () => {
+        useUserStore().handleAuthExpired(
+          router.currentRoute.value.fullPath,
+          '登录状态已失效，请重新登录',
+        );
+      },
+      onFailure: message => ElMessage.error(message),
+    }),
     name: 'jwt',
     beforeRequest: async (config) => {
       const userStore = useUserStore();
@@ -29,33 +43,6 @@ function jwtPlugin(): HookFetchPlugin<BaseResponse> {
       config.headers.set('authorization', `Bearer ${userStore.token}`);
       config.headers.set('ClientID', import.meta.env.VITE_CLIENT_ID ?? '');
       return config;
-    },
-    afterResponse: async (response) => {
-      const userStore = useUserStore();
-      // console.log(response);
-      if (response.result?.code === 200) {
-        return response;
-      }
-      // 处理403逻辑
-      if (response.result?.code === 403) {
-        // 跳转到403页面（确保路由已配置）
-        router.replace({
-          name: '403',
-        });
-        ElMessage.error(response.result?.msg);
-        return Promise.reject(response);
-      }
-      // 处理401逻辑
-      if (response.result?.code === 401) {
-        // 如果没有权限，退出，且弹框提示登录
-        userStore.handleAuthExpired(
-          router.currentRoute.value.fullPath,
-          '登录状态已失效，请重新登录',
-        );
-        return Promise.reject(response);
-      }
-      ElMessage.error(response.result?.msg);
-      return Promise.reject(response);
     },
   };
 }
