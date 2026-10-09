@@ -21,6 +21,9 @@ import io.modelcontextprotocol.server.McpServer;
 import io.modelcontextprotocol.server.McpServerFeatures;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.server.transport.HttpServletStreamableServerTransportProvider;
+import jakarta.servlet.DispatcherType;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.boot.web.servlet.ServletRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -43,6 +46,30 @@ public class McpServerConfig {
     public ServletRegistrationBean<HttpServletStreamableServerTransportProvider> mcpServlet(
             HttpServletStreamableServerTransportProvider transportProvider) {
         return new ServletRegistrationBean<>(transportProvider, "/mcp");
+    }
+
+    /**
+     * /mcp 鉴权过滤器注册（R12 卡1 · F-W9-1）。
+     *
+     * <p>{@code /mcp} 是 servlet 映射、不经过 Spring MVC，Sa-Token 的拦截器对它是盲区 ——
+     * 鉴权必须落在 servlet 链上（判定逻辑与拒绝形状见 {@link McpAuthFilter}）。注册与
+     * {@code /mcp} servlet 同门控（外层 {@code ai.integration.enabled} + 内层
+     * {@code ragent.mcp.server.enabled}）：开关关时端点与过滤器一起不存在。
+     *
+     * <p>只接管 {@code REQUEST} 分派（streamable-http 的 SSE/异步收尾不受影响）；
+     * 顺序排在 requestId 过滤器（{@code Integer.MIN_VALUE + 50/100}）之后，
+     * 拒绝响应仍带请求标识。
+     */
+    @Bean
+    public FilterRegistrationBean<McpAuthFilter> mcpAuthFilterRegistration(
+            @Value("${ai.integration.authorization.service-credential:}") String serviceCredential) {
+        FilterRegistrationBean<McpAuthFilter> registration =
+                new FilterRegistrationBean<>(new McpAuthFilter(serviceCredential));
+        registration.addUrlPatterns("/mcp", "/mcp/*");
+        registration.setName("mcpAuthFilter");
+        registration.setDispatcherTypes(DispatcherType.REQUEST);
+        registration.setOrder(Integer.MIN_VALUE + 150);
+        return registration;
     }
 
     @Bean

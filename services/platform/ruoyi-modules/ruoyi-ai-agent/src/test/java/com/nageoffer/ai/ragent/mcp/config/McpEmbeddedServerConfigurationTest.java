@@ -20,10 +20,12 @@ package com.nageoffer.ai.ragent.mcp.config;
 import io.modelcontextprotocol.server.McpServerFeatures;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.server.transport.HttpServletStreamableServerTransportProvider;
+import jakarta.servlet.DispatcherType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.boot.web.servlet.ServletRegistrationBean;
 
 import java.util.List;
@@ -44,6 +46,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code McpSyncServer} 收到的 toolSpec 数量才是"工具真的注册了"的证据。
  * {@code McpServerConfig.requireReadOnlyHint} 在装配期就会把漏声明读/写的工具
  * 点名炸掉，因此"上下文能起来 + 清单精确匹配"同时证明了校验链活着。
+ *
+ * <p><b>R12 卡1 增补的装配锚。</b>{@code /mcp} 鉴权过滤器（{@link McpAuthFilter}）
+ * 与 servlet 同门控：禁用态 servlet 与过滤器一起缺席（负向两测），启用态过滤器
+ * 恰好挂在 {@code /mcp} + {@code /mcp/*} 且只接管 {@code REQUEST} 分派。
  */
 @Tag("dev")
 class McpEmbeddedServerConfigurationTest {
@@ -65,12 +71,14 @@ class McpEmbeddedServerConfigurationTest {
             .withUserConfiguration(McpEmbeddedServerConfiguration.class);
 
     @Test
-    @DisplayName("默认关闭：内层开关缺位时不装配任何 MCP 服务端 bean，不新增 /mcp 映射")
+    @DisplayName("默认关闭：内层开关缺位时不装配任何 MCP 服务端 bean，不新增 /mcp 映射与 /mcp 鉴权过滤器")
     void disabledByDefaultAndRegistersNothing() {
         runner.withPropertyValues("ai.integration.enabled=true").run(context -> {
             assertThat(context.getStartupFailure()).isNull();
             assertThat(context).doesNotHaveBean(McpSyncServer.class);
             assertThat(context).doesNotHaveBean(ServletRegistrationBean.class);
+            assertThat(context).as("R12 卡1：鉴权过滤器与 servlet 同门控，禁用态必须一起缺席")
+                    .doesNotHaveBean(FilterRegistrationBean.class);
             assertThat(context.getBeansOfType(McpServerFeatures.SyncToolSpecification.class))
                     .as("开关未开时连条件工具也不允许注册").isEmpty();
         });
@@ -82,12 +90,13 @@ class McpEmbeddedServerConfigurationTest {
         runner.withPropertyValues("ragent.mcp.server.enabled=true").run(context -> {
             assertThat(context.getStartupFailure()).isNull();
             assertThat(context).doesNotHaveBean(McpSyncServer.class);
+            assertThat(context).doesNotHaveBean(FilterRegistrationBean.class);
             assertThat(context.getBeansOfType(McpServerFeatures.SyncToolSpecification.class)).isEmpty();
         });
     }
 
     @Test
-    @DisplayName("开启后：server/transport/servlet 各恰好 1，工具清单精确等于 10 个且全部声明 readOnlyHint")
+    @DisplayName("开启后：server/transport/servlet/鉴权过滤器各恰好 1，工具清单精确等于 10 个且全部声明 readOnlyHint")
     void enabledContextRegistersExactlyTheExpectedToolSet() {
         runner.withPropertyValues("ai.integration.enabled=true", "ragent.mcp.server.enabled=true")
                 .run(context -> {
@@ -100,6 +109,16 @@ class McpEmbeddedServerConfigurationTest {
                     assertThat(servlet.getUrlMappings())
                             .as("MCP 端点映射必须恰好是 /mcp（与旧服务一致）")
                             .containsExactly("/mcp");
+
+                    FilterRegistrationBean<?> authFilter = context.getBean(FilterRegistrationBean.class);
+                    assertThat(authFilter.getFilter()).as("R12 卡1：/mcp 鉴权过滤器必须装配")
+                            .isInstanceOf(McpAuthFilter.class);
+                    assertThat(authFilter.getUrlPatterns())
+                            .as("鉴权过滤器必须恰好覆盖 /mcp 与 /mcp/*")
+                            .containsExactlyInAnyOrder("/mcp", "/mcp/*");
+                    assertThat(authFilter.determineDispatcherTypes())
+                            .as("只接管 REQUEST 分派（streamable-http 的异步/SSE 收尾不被打断）")
+                            .containsExactly(DispatcherType.REQUEST);
 
                     var toolSpecs = context.getBeansOfType(McpServerFeatures.SyncToolSpecification.class);
                     assertThat(toolSpecs).as("无条件工具必须是精确的 10 个").hasSize(10);
