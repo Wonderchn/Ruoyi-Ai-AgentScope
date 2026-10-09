@@ -7,6 +7,7 @@ import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
 import com.nageoffer.ai.ragent.rag.controller.IntentTreeController;
 import com.nageoffer.ai.ragent.rag.controller.QueryTermMappingController;
 import com.nageoffer.ai.ragent.rag.controller.RagTraceController;
+import com.nageoffer.ai.ragent.rag.controller.RuntimeCatalogController;
 import com.nageoffer.ai.ragent.rag.eval.EvalController;
 import com.nageoffer.ai.ragent.runtime.web.DeliveryPermits;
 import com.nageoffer.ai.ragent.sample.controller.SampleQuestionController;
@@ -31,7 +32,7 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyAdvice;
 public class AiEmbeddedAdminDeliveryConfiguration {
     @RestControllerAdvice(assignableTypes = {IntentTreeController.class, QueryTermMappingController.class,
             SampleQuestionController.class, RagTraceController.class, BizChangeLogController.class,
-            EvalController.class, DashboardController.class})
+            EvalController.class, DashboardController.class, RuntimeCatalogController.class})
     @ConditionalOnEmbeddedLocal
     @ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
     public static class AdminDeliveryAdvice implements ResponseBodyAdvice<Object> {
@@ -84,6 +85,11 @@ public class AiEmbeddedAdminDeliveryConfiguration {
             }
             if (controller == BizChangeLogController.class || controller == DashboardController.class) {
                 return "run.get";
+            }
+            if (controller == RuntimeCatalogController.class) {
+                // R12 卡4：/runtime-config 三个 GET（catalog/settings/revisions）此前无投递回执
+                // ⇒ 网关 forwardBytes 以 "delivery receipt missing" 拒成 503（内层实为 200）。
+                return "config.read";
             }
             return controller == EvalController.class ? "kb.retrieve" : null;
         }
