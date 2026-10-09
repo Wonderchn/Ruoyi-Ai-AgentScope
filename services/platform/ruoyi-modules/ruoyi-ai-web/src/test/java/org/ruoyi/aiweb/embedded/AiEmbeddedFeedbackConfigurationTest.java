@@ -52,8 +52,11 @@ import static org.mockito.Mockito.verify;
  * <ol>
  *   <li><b>装配正负例</b>：local 门控开 ⇒ 受理面 + 服务都在；关 ⇒ 都不是 bean
  *       （"开关关着 = 连 bean 都不是"，W3-T0-5 同族口径）；</li>
- *   <li><b>身份与委托</b>：主体来自 {@link PrincipalContext}，缺失拒绝，scope 复核
- *       （{@code conversation.rename}），委托只传业务参数；</li>
+ *   <li><b>身份与委托</b>：主体来自 {@link PrincipalContext}，缺失拒绝，scope 复核按各自路由动作
+ *       （提交 {@code conversation.rename}、**取消 {@code conversation.delete}**），委托只传业务参数；</li>
+ *   <li><b>裁决 §6：提交与取消是两个能力</b>：write-only 不能删、delete-only 能删、
+ *       delete-only 不能提交；并断言网关 {@code ROUTES} 的动作与内层 scope 字面量逐字一致
+ *       （两侧各自持有常量、不能互相 import，所以只能靠行为判据钉住，不能靠"看着一样"）；</li>
  *   <li><b>包络契约</b>：整数 {@code code=200}（旧 {@code Result} 字符串 {@code "0"} 会被
  *       网关 requireSingleJsonObject 收敛为 503 的回归锚）；</li>
  *   <li><b>D07 假成功红线</b>：消息链缺席时受理必须响亮拒绝，不允许"200 但消息发不出去"；
@@ -136,11 +139,12 @@ class AiEmbeddedFeedbackConfigurationTest {
     // ------------------------------------------------------------------ 2. 身份与委托
 
     @Test
-    @DisplayName("受理身份来自 PrincipalContext 并委托服务；换主体委托跟着变")
+    @DisplayName("受理身份来自 PrincipalContext 并委托服务；提交与取消各按自己的路由动作")
     void surfaceReadsIdentityFromPrincipalContextAndDelegates() {
         MessageFeedbackService service = mock(MessageFeedbackService.class);
         var surface = new AiEmbeddedFeedbackConfiguration.LocalTransportAssembly.FeedbackSurface(service);
 
+        // 提交：conversation.rename（= ai:conversation:write）
         PrincipalContext.set(principal("T1", "2101"));
         MessageFeedbackRequest request = new MessageFeedbackRequest();
         request.setVote(1);
@@ -148,8 +152,113 @@ class AiEmbeddedFeedbackConfigurationTest {
         assertThat(response.getBody().code()).isEqualTo(200);
         verify(service).submitFeedbackAsync(eq("msg-1"), any(MessageFeedbackRequest.class));
 
-        surface.cancel("msg-1");
+        // 取消：**另一个**动作 conversation.delete（裁决 §6）。
+        // 上面那个只持 conversation.rename 的主体不得能取消，故此处换主体。
+        PrincipalContext.set(principalWith("T1", "2101", "conversation.delete"));
+        ResponseEntity<ApiEnvelope<Void>> cancel = surface.cancel("msg-1");
+        assertThat(cancel.getBody().code()).isEqualTo(200);
         verify(service).cancelFeedbackAsync("msg-1");
+    }
+
+    // ------------------------------------------------------------------ 3b. 裁决 §6：提交与取消是两个能力
+
+    /**
+     * 维护者裁决 §6 原文：DELETE 反馈改用 {@code conversation.delete}；仓内**没有**
+     * "write 天然强于 delete" 的授权继承规则，所以"不是授权绕过，因为要求更强权限"
+     * 不能作为当前实现的安全结论。
+     *
+     * <p>本组判据就是这个结论的**行为**证明：write-only 不能删、delete-only 能删、
+     * delete-only 不能提交。两侧（网关 ROUTES 与内层 scope 字面量）都是独立持有的常量，
+     * 所以必须真正调用内层 handler，而不是比对字符串。
+     */
+    @Test
+    @DisplayName("裁决 §6：write-only 主体不能取消反馈（原文要求的负例）")
+    void writeOnlyPrincipalCannotCancelFeedback() {
+        MessageFeedbackService service = mock(MessageFeedbackService.class);
+        var surface = new AiEmbeddedFeedbackConfiguration.LocalTransportAssembly.FeedbackSurface(service);
+
+        // 只持 conversation.rename（= ai:conversation:write），没有任何 delete 能力
+        PrincipalContext.set(principalWith("T1", "2101", "conversation.rename"));
+
+        assertThatThrownBy(() -> surface.cancel("msg-1"))
+                .as("持 write-only 不得能删：DELETE 反馈要求 conversation.delete")
+                .isInstanceOf(com.nageoffer.ai.ragent.framework.security.P04AiException.class);
+        verify(service, never()).cancelFeedbackAsync(anyString());
+    }
+
+    @Test
+    @DisplayName("裁决 §6：delete-only 主体可以取消反馈（正例锚点，证明上一条不是恒真）")
+    void deleteOnlyPrincipalCanCancelFeedback() {
+        MessageFeedbackService service = mock(MessageFeedbackService.class);
+        var surface = new AiEmbeddedFeedbackConfiguration.LocalTransportAssembly.FeedbackSurface(service);
+
+        // 只持 conversation.delete，**没有** 任何 write/rename 能力
+        PrincipalContext.set(principalWith("T1", "2101", "conversation.delete"));
+
+        ResponseEntity<ApiEnvelope<Void>> response = surface.cancel("msg-1");
+        assertThat(response.getBody().code())
+                .as("delete-only 必须能按资源规则删除")
+                .isEqualTo(200);
+        verify(service).cancelFeedbackAsync("msg-1");
+    }
+
+    @Test
+    @DisplayName("裁决 §6：delete-only 主体不能提交反馈（提交仍走 conversation.rename）")
+    void deleteOnlyPrincipalCannotSubmitFeedback() {
+        MessageFeedbackService service = mock(MessageFeedbackService.class);
+        var surface = new AiEmbeddedFeedbackConfiguration.LocalTransportAssembly.FeedbackSurface(service);
+
+        PrincipalContext.set(principalWith("T1", "2101", "conversation.delete"));
+
+        assertThatThrownBy(() -> surface.submit("msg-1", new MessageFeedbackRequest()))
+                .as("POST 保持既有写权限；delete 不能替代 write")
+                .isInstanceOf(com.nageoffer.ai.ragent.framework.security.P04AiException.class);
+        verify(service, never()).submitFeedbackAsync(anyString(), any(MessageFeedbackRequest.class));
+    }
+
+    @Test
+    @DisplayName("裁决 §6：网关 ROUTES 的动作与内层 scope 字面量逐字一致（两侧各自持有，不能只改一边）")
+    void gatewayRouteActionsMatchTheInnerScopeLiterals() throws Exception {
+        java.lang.reflect.Field field = org.ruoyi.aiintegration.web.AiGatewayController.class
+                .getDeclaredField("ROUTES");
+        field.setAccessible(true);
+        java.util.List<?> routes = (java.util.List<?>) field.get(null);
+
+        String postAction = null;
+        String deleteAction = null;
+        for (Object route : routes) {
+            java.lang.reflect.Method m = route.getClass().getDeclaredMethod("method");
+            java.lang.reflect.Method p = route.getClass().getDeclaredMethod("pattern");
+            java.lang.reflect.Method a = route.getClass().getDeclaredMethod("action");
+            m.setAccessible(true);
+            p.setAccessible(true);
+            a.setAccessible(true);
+            if (!"/conversations/messages/{messageId}/feedback".equals(p.invoke(route))) {
+                continue;
+            }
+            if ("POST".equals(m.invoke(route))) {
+                postAction = (String) a.invoke(route);
+            } else if ("DELETE".equals(m.invoke(route))) {
+                deleteAction = (String) a.invoke(route);
+            }
+        }
+
+        assertThat(postAction)
+                .as("锚点：必须真的从网关 ROUTES 里读到反馈 POST 路由")
+                .isNotNull();
+        assertThat(deleteAction)
+                .as("锚点：必须真的从网关 ROUTES 里读到反馈 DELETE 路由")
+                .isNotNull();
+
+        // 网关登记的动作 == 内层 handler 自己复核的 scope。只改一边 => 本判据红。
+        assertThat(postAction).isEqualTo(
+                AiEmbeddedFeedbackConfiguration.LocalTransportAssembly.FeedbackSurface.SUBMIT_SCOPE);
+        assertThat(deleteAction).isEqualTo(
+                AiEmbeddedFeedbackConfiguration.LocalTransportAssembly.FeedbackSurface.CANCEL_SCOPE);
+        // 并且这两条路由**不得**再共用同一个动作（裁决 §6 的直接否定项）
+        assertThat(deleteAction)
+                .as("提交与取消不得共用动作：仓内没有 write 天然强于 delete 的继承规则")
+                .isNotEqualTo(postAction);
     }
 
     @Test
@@ -251,9 +360,17 @@ class AiEmbeddedFeedbackConfigurationTest {
     }
 
     private static ExecutionPrincipal principal(String tenant, String user) {
+        return principalWith(tenant, user, "conversation.rename");
+    }
+
+    /**
+     * 指定 scope 的主体。用于裁决 §6 的 write-only / delete-only 对照 ——
+     * 两个动作是不同能力，判据必须能分别构造只持其中一个的主体。
+     */
+    private static ExecutionPrincipal principalWith(String tenant, String user, String... scopes) {
         return new ExecutionPrincipal(tenant, user, "platform:" + tenant + ":" + user, 1, 1,
-                Set.of("conversation.rename"), "jti-feedback-" + user, "platform:local",
-                1, 9999999999L);
+                Set.of(scopes), "jti-feedback-" + user + "-" + String.join("+", scopes),
+                "platform:local", 1, 9999999999L);
     }
 
     /**
