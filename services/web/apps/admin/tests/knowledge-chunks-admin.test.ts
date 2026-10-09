@@ -156,8 +156,8 @@ describe('信封判据：字符串 "0" 必须被拒绝，整数 200 必须成功
       () => api.knowledgeChunks.list('doc-1', { current: 1, size: 10 }),
       (error: unknown) => {
         assert.ok(error instanceof PlatformApiError, `必须是 PlatformApiError，实际 ${String(error)}`);
-        assert.equal(error.kind, 'business-error', '字符串码不得被当成成功');
-        assert.equal(error.code, 0);
+        assert.equal(error.kind, 'protocol-error', '字符串码不得被当成成功');
+        assert.equal(error.code, -1);
         return true;
       },
     );

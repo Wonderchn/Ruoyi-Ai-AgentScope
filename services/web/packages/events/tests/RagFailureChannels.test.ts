@@ -65,6 +65,24 @@ function uploadReturning(status: number, envelope: unknown, expired: () => void 
   return { api, request: () => ({ path, sent, headers }) };
 }
 
+test('upload JSON applies the shared strict integer policy and preserves numeric identity errors', async () => {
+  let expired = 0;
+  const file = new File(['%PDF-1.7'], 'test.pdf', { type: 'application/pdf' });
+  const data = { docId: 'd-1', uploadId: 'u-1', versionId: 'v-1' };
+  for (const code of ['200', '401', '403', null, undefined, 200.5]) {
+    const { api } = uploadReturning(201, { code, data }, () => expired++);
+    await assert.rejects(api.uploadDocument('kb-1', file), (e: unknown) => e instanceof AiApiError && e.errorCode === 'PROTOCOL_ERROR');
+  }
+  assert.equal(expired, 0);
+  assert.deepEqual(await uploadReturning(201, { code: 200, data }).api.uploadDocument('kb-1', file), data);
+  await assert.rejects(uploadReturning(201, { code: 403, data: { errorCode: 'FORBIDDEN' } }, () => expired++).api.uploadDocument('kb-1', file),
+    (e: unknown) => e instanceof AiApiError && e.status === 403 && e.errorCode === 'FORBIDDEN');
+  assert.equal(expired, 0);
+  await assert.rejects(uploadReturning(201, { code: 401 }, () => expired++).api.uploadDocument('kb-1', file),
+    (e: unknown) => e instanceof AiApiError && e.status === 401);
+  assert.equal(expired, 1);
+});
+
 for (const errorCode of ['FORBIDDEN', undefined]) {
   test(`uploadDocument preserves msg with errorCode=${errorCode ?? 'missing'}`, async () => {
     const { api, request } = uploadReturning(403, {

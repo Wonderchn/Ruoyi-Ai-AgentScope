@@ -81,7 +81,7 @@ export interface KnowledgeChunkPageQuery {
  * 知识分块 API 子域。
  *
  * `list()` 返回共享客户端**解包后的 `data`**（即 `IPage` 对象）：`code===200` 才放行，
- * 否则抛 `PlatformApiError`（`kind` = `auth-expired` | `forbidden` | `business-error`）。
+ * 否则抛 `PlatformApiError`（`kind` = `auth-expired` | `forbidden` | `business-error` | `protocol-error`）。
  * 形状归一化（`records/total/current/size` → 页面状态）在页面逻辑模块里做，
  * 本文件只负责"请求逐字正确 + 信封必须成功"。
  */

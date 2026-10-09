@@ -17,8 +17,15 @@
  * 因此这里不 import Vue、不 import pinia，也不会出现第二份 token 存储。
  */
 
-import type { IdentityOutcome, IdentitySnapshot } from '../identity/index.ts';
+import type { EnvelopePolicy, IdentityOutcome, IdentitySnapshot } from '../identity/index.ts';
 import { classifyResponse } from '../identity/index.ts';
+export type { EnvelopePolicy } from '../identity/index.ts';
+
+/** 按最终请求 URL 选择策略，支持绝对 URL、部署子路径与 query。 */
+export function envelopePolicyForUrl(url: string): EnvelopePolicy {
+  const pathname = new URL(url, 'http://platform.invalid').pathname;
+  return /(?:^|\/)api\/ai\/v1(?:\/|$)/.test(pathname) ? 'ai-strict-integer' : 'platform-compatible';
+}
 
 /** 后端 `R<T>` / `TableDataInfo<T>` 的合并形状（hook-fetch 只解包 data/rows）。 */
 export interface PlatformEnvelope<T> {
@@ -125,12 +132,12 @@ export function buildAuthHeaders(
 }
 
 /** 解包 `R<T>`：`code === 200` 时取 `data`，否则抛错。 */
-export function unwrapData<T>(envelope: PlatformEnvelope<unknown> | null | undefined): T {
-  const outcome = classifyResponse(envelope);
+export function unwrapData<T>(envelope: PlatformEnvelope<unknown> | null | undefined, policy: EnvelopePolicy = 'platform-compatible'): T {
+  const outcome = classifyResponse(envelope, policy);
   if (outcome.kind !== 'ok') {
     throw new PlatformApiError(
       outcome.kind,
-      outcome.kind === 'business-error' ? outcome.code : Number(envelope?.code ?? -1),
+      outcome.kind === 'business-error' || outcome.kind === 'protocol-error' ? outcome.code : Number(envelope?.code ?? -1),
       outcome.message || '请求失败',
       envelopeErrorCode(envelope),
       envelopeMsg(envelope),
@@ -142,12 +149,13 @@ export function unwrapData<T>(envelope: PlatformEnvelope<unknown> | null | undef
 /** 解包 `TableDataInfo<T>`：返回 `{ rows, total }`。 */
 export function unwrapRows<T>(
   envelope: PlatformEnvelope<unknown> | null | undefined,
+  policy: EnvelopePolicy = 'platform-compatible',
 ): { rows: T[], total: number } {
-  const outcome = classifyResponse(envelope);
+  const outcome = classifyResponse(envelope, policy);
   if (outcome.kind !== 'ok') {
     throw new PlatformApiError(
       outcome.kind,
-      outcome.kind === 'business-error' ? outcome.code : Number(envelope?.code ?? -1),
+      outcome.kind === 'business-error' || outcome.kind === 'protocol-error' ? outcome.code : Number(envelope?.code ?? -1),
       outcome.message || '请求失败',
       envelopeErrorCode(envelope),
       envelopeMsg(envelope),
@@ -170,6 +178,8 @@ export interface RequestOptions {
 }
 
 export interface PlatformClientDeps {
+  /** 可对其他路径显式指定严格策略；AI 网关 URL 始终强制整数。 */
+  envelopePolicy?: EnvelopePolicy;
   /** API 基址，如 `/api`（与 `VITE_API_URL` 同义）。 */
   baseURL?: string;
   /** 身份来源：每次请求时读取（**不要**在闭包里缓存 token）。 */
@@ -231,11 +241,12 @@ export function createPlatformClient(deps: PlatformClientDeps): PlatformClient {
     method: string,
     path: string,
     options: RequestOptions = {},
-    unwrap: (envelope: PlatformEnvelope<unknown>) => R,
+    unwrap: (envelope: PlatformEnvelope<unknown>, policy: EnvelopePolicy) => R,
   ): Promise<R> {
     const doFetch = deps.fetchImpl ?? globalThis.fetch;
     const identity = deps.identity();
     const url = joinUrl(baseURL, path) + buildQueryString(options.query);
+    const policy = deps.envelopePolicy === 'ai-strict-integer' ? deps.envelopePolicy : envelopePolicyForUrl(url);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...buildAuthHeaders(identity),
@@ -280,20 +291,20 @@ export function createPlatformClient(deps: PlatformClientDeps): PlatformClient {
     }
 
     const envelope = (await response.json()) as PlatformEnvelope<unknown>;
-    const outcome = classifyResponse(envelope as { code?: number | string | null, msg?: string | null });
+    const outcome = classifyResponse(envelope, policy);
     if (outcome.kind === 'forbidden')
       deps.onForbidden?.(outcome.message);
     if (outcome.kind === 'auth-expired')
       deps.onAuthExpired?.(outcome.message);
 
-    return unwrap(envelope);
+    return unwrap(envelope, policy);
   }
 
   return {
-    get: <T>(path: string, options?: RequestOptions) => send<T>('GET', path, options, envelope => unwrapData<T>(envelope)),
-    getRows: <T>(path: string, options?: RequestOptions) => send<{ rows: T[], total: number }>('GET', path, options, envelope => unwrapRows<T>(envelope)),
-    post: <T>(path: string, options?: RequestOptions) => send<T>('POST', path, options, envelope => unwrapData<T>(envelope)),
-    put: <T>(path: string, options?: RequestOptions) => send<T>('PUT', path, options, envelope => unwrapData<T>(envelope)),
-    del: <T>(path: string, options?: RequestOptions) => send<T>('DELETE', path, options, envelope => unwrapData<T>(envelope)),
+    get: <T>(path: string, options?: RequestOptions) => send<T>('GET', path, options, (envelope, policy) => unwrapData<T>(envelope, policy)),
+    getRows: <T>(path: string, options?: RequestOptions) => send<{ rows: T[], total: number }>('GET', path, options, (envelope, policy) => unwrapRows<T>(envelope, policy)),
+    post: <T>(path: string, options?: RequestOptions) => send<T>('POST', path, options, (envelope, policy) => unwrapData<T>(envelope, policy)),
+    put: <T>(path: string, options?: RequestOptions) => send<T>('PUT', path, options, (envelope, policy) => unwrapData<T>(envelope, policy)),
+    del: <T>(path: string, options?: RequestOptions) => send<T>('DELETE', path, options, (envelope, policy) => unwrapData<T>(envelope, policy)),
   };
 }

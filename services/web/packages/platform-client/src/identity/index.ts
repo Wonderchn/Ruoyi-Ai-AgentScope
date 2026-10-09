@@ -24,11 +24,15 @@ export type IdentityOutcome
   = | { kind: 'ok' }
     | { kind: 'forbidden', message: string }
     | { kind: 'auth-expired', message: string }
+    | { kind: 'protocol-error', code: -1, message: string }
     | { kind: 'business-error', code: number, message: string };
 
+/** 旧平台兼容解析；AI 网关只接受整数码。 */
+export type EnvelopePolicy = 'platform-compatible' | 'ai-strict-integer';
+
 export interface ResponseCodeInput {
-  code?: number | string | null;
-  msg?: string | null;
+  code?: unknown;
+  msg?: unknown;
 }
 
 /**
@@ -38,10 +42,15 @@ export interface ResponseCodeInput {
  * 全文件都按这个约定写（见 `apps/workbench/src/utils/request.ts` 的 `jwtPlugin`）。
  * 这里保持同一约定，不偷偷把 0/204 当成功。
  */
-export function classifyResponse(input: ResponseCodeInput | null | undefined): IdentityOutcome {
+export function classifyResponse(
+  input: ResponseCodeInput | null | undefined,
+  policy: EnvelopePolicy = 'platform-compatible',
+): IdentityOutcome {
   const rawCode = input?.code;
+  if (policy === 'ai-strict-integer' && !(typeof rawCode === 'number' && Number.isInteger(rawCode)))
+    return { kind: 'protocol-error', code: -1, message: 'AI 响应协议错误：code 必须为整数' };
   const code = typeof rawCode === 'string' ? Number(rawCode) : rawCode;
-  const message = input?.msg ?? '';
+  const message = typeof input?.msg === 'string' ? input.msg : '';
 
   if (code === 200)
     return { kind: 'ok' };

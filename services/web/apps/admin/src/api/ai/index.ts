@@ -49,7 +49,7 @@
  * - **运行配置权威族（`/api/ai/v1/runtime-config/**`）同样是 `ApiEnvelope`（整数 code=200）**，
  *   由 `./runtimeConfig.ts` 独立持有（RW-07 起）。
  * - ragent 旧控制器返回**自己的 `Result`**：`{code:"0", message, data}`（字符串码）。
- *   若将来装配了这批控制器，`classifyResponse` 会把 `"0"` 当 business-error（code=0≠200），
+ *   AI 网关的共享客户端严格策略会把 `"0"` 当 protocol-error，
  *   **届时需要专用解包**，不能直接用 `client.get`——本工厂刻意为它们留独立方法，
  *   并在注释钉住这个坑（见 `ragResultEnvelopeOf`）。
  *
@@ -80,7 +80,7 @@ export interface RagResultEnvelope<T> {
 /**
  * ragent 信封判别（供未来装配后使用）。
  *
- * `code === '0'` 才算成功；`"0"` 被 `classifyResponse` 判为 business-error（0≠200），
+ * `code === '0'` 才算成功；AI 网关严格策略将 `"0"` 判为 protocol-error，
  * 所以这批端点**不能**直接用 `client.get`。当前本形态它们 404（HTTP 层就失败），
  * 该函数目前只有测试消费——它存在的意义是把契约**显式**留在前端侧。
  */

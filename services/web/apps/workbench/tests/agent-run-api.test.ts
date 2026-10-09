@@ -77,6 +77,29 @@ function api(responses: Array<{ status?: number; body: unknown }>, onAuthExpired
 
 const ok = (data: unknown) => ({ body: { code: 200, msg: 'success', data } });
 
+describe('AI strict integer transport', () => {
+  it('strings, missing/null and fractional codes cannot fall back to HTTP 200 success', async () => {
+    let expired = 0;
+    for (const code of ['200', '401', '403', undefined, null, 200.5, Number.NaN, Infinity, -Infinity]) {
+      const h = api([{ body: { code, data: { runId: RUN } } }], () => expired++);
+      await assert.rejects(h.client.getRun(RUN), (e: unknown) => e instanceof AgentRunApiError && e.errorCode === 'PROTOCOL_ERROR');
+    }
+    assert.equal(expired, 0);
+    assert.deepEqual(await api([ok({ runId: RUN })]).client.getRun(RUN), { runId: RUN });
+  });
+
+  it('numeric body 401 expires identity; numeric body 403 preserves identity and symbolic reason', async () => {
+    let expired = 0;
+    const h = api([
+      { body: { code: 401, data: { errorCode: 'AUTH_REQUIRED' } } },
+      { body: { code: 403, msg: 'APPROVER_POLICY_CLOSED', data: { errorCode: 'FORBIDDEN' } } },
+    ], () => expired++);
+    await assert.rejects(h.client.getRun(RUN), (e: unknown) => e instanceof AgentRunApiError && e.status === 401);
+    await assert.rejects(h.client.getRun(RUN), (e: unknown) => e instanceof AgentRunApiError && e.status === 403 && e.errorCode === 'FORBIDDEN' && e.msg === 'APPROVER_POLICY_CLOSED');
+    assert.equal(expired, 1);
+  });
+});
+
 describe('受理体（agent.run）', () => {
   it('read 模式：action/agentVersion/input.mode/resourceRefs/budget 逐项正确', () => {
     const body = buildAgentRunRequest({ kbId: KB, text: '查一下退货政策', mode: 'read' });

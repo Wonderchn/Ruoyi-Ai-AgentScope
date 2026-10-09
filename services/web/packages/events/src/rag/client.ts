@@ -14,6 +14,7 @@ import type { RequestIdentity } from './transport';
 import type { RunSubmitBody } from './logic';
 import { newRequestId } from './logic';
 import { AiApiError, assertIdentity, identityJson } from './transport';
+import { classifyResponse } from '@ruoyi/platform-client/identity';
 
 export interface RagApiDeps {
   /** API base URL (VITE_API_URL in the app); empty string means same origin. */
@@ -289,11 +290,14 @@ export function createRagApi(deps: RagApiDeps) {
           assertIdentity(identity, deps.identity);
           const body = JSON.parse(xhr.responseText || '{}');
           const serverMsg = typeof body?.msg === 'string' ? body.msg : '';
-          if (xhr.status === 401 || body?.code === 401) {
+          const outcome = classifyResponse(body, 'ai-strict-integer');
+          if (xhr.status >= 200 && xhr.status < 300 && outcome.kind === 'protocol-error')
+            throw new AiApiError(xhr.status, 'PROTOCOL_ERROR', outcome.message, serverMsg);
+          if (xhr.status === 401 || outcome.kind === 'auth-expired') {
             deps.onAuthExpired();
             throw new AiApiError(401, '登录状态已失效', undefined, serverMsg);
           }
-          if (xhr.status === 201 && body?.code === 200 && body.data?.docId && body.data?.uploadId && body.data?.versionId) {
+          if (xhr.status === 201 && outcome.kind === 'ok' && body.data?.docId && body.data?.uploadId && body.data?.versionId) {
             resolve(body.data as UploadResult);
           }
           else {
@@ -301,7 +305,7 @@ export function createRagApi(deps: RagApiDeps) {
             // 调用方拿到的是 `upload failed (403)`，无从分支。两者都保留。
             const symbol = body?.data?.errorCode;
             reject(new AiApiError(
-              xhr.status,
+              xhr.status >= 200 && xhr.status < 300 && outcome.kind === 'forbidden' ? 403 : xhr.status,
               (typeof symbol === 'string' && symbol.trim() !== '' ? symbol : serverMsg) || `upload failed (${xhr.status})`,
               undefined,
               serverMsg,
