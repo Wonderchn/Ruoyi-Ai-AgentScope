@@ -46,12 +46,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>判据分两层：
  * <ol>
  *   <li><b>容器层</b>：把 {@link AiEmbeddedMapperConfiguration} 装进一个真实容器，
- *       断言 7 个包里的 Mapper 都产生了 {@code MapperFactoryBean} 定义（以及开关关闭时没有）。
+ *       断言 8 个包里的 Mapper 都产生了 {@code MapperFactoryBean} 定义（以及开关关闭时没有）。
  *       用"标记为 lazy"而不是起完整 MyBatis 工厂：本判据要证明的是<b>扫描与注册</b>，
  *       真库往返由 WP-025 的 {@code MergedTableMapperPostgresTest} 负责，两者不互相冒充。</li>
  *   <li><b>覆盖层</b>：磁盘上每一个 AI Mapper 接口所在包都必须落在
  *       {@code @MapperScan} 声明的包清单里——否则"新加一个包里的 Mapper"会静默不被扫描，
- *       而容器层判据只检查已知的 7 个包，抓不到这种漂移。</li>
+ *       而容器层判据只检查已知的 8 个包，抓不到这种漂移。</li>
  * </ol>
  *
  * <p>还有一条钉住"为什么不用逗号写 {@code mapperPackage}"：platform 的
@@ -72,10 +72,10 @@ class AiEmbeddedMapperConfigurationTest {
             "knowledgeBaseMapper", "knowledgeDocumentMapper", "knowledgeChunkMapper",
             "ingestionPipelineMapper", "ingestionTaskMapper", "userMapper",
             "bizChangeLogMapper", "sampleQuestionMapper", "agentStateMapper",
-            "agentMemoryMapper", "agentConversationMapper");
+            "agentMemoryMapper", "agentConversationMapper", "aiFlowWorkflowMapper");
 
     @Test
-    @DisplayName("ai.integration.enabled=true 时 7 个 AI Mapper 包全部产生 Mapper bean 定义")
+    @DisplayName("ai.integration.enabled=true 时 8 个 AI Mapper 包全部产生 Mapper bean 定义")
     void aiMappersAreRegisteredWhenEmbeddedIsOn() {
         try (AnnotationConfigApplicationContext context = context("true")) {
             Set<String> names = new TreeSet<>(List.of(context.getBeanDefinitionNames()));
@@ -83,9 +83,9 @@ class AiEmbeddedMapperConfigurationTest {
                     .as("AI 侧 Mapper 必须真的成为 bean 定义；此前 mapperPackage=org.ruoyi.**.mapper 一个都不扫")
                     .containsAll(REPRESENTATIVE_MAPPERS);
 
-            // 覆盖到全部 7 个包（每个包至少一个）
+            // 覆盖到全部 8 个包（每个包至少一个）
             assertThat(mapperPackagesWithRegisteredBeans(context))
-                    .as("7 个 AI Mapper 包都要有代表 bean")
+                    .as("8 个 AI Mapper 包都要有代表 bean")
                     .isEqualTo(declaredScanPackages());
         }
     }
@@ -106,7 +106,7 @@ class AiEmbeddedMapperConfigurationTest {
     @DisplayName("覆盖层：磁盘上每个 AI Mapper 接口的包都在 @MapperScan 清单里")
     void everyAiMapperPackageIsScanned() throws IOException {
         Set<String> declared = declaredScanPackages();
-        assertThat(declared).hasSize(7);
+        assertThat(declared).hasSize(8);
 
         Set<String> onDisk = new TreeSet<>();
         try (Stream<Path> stream = Files.walk(locate(MODULES))) {

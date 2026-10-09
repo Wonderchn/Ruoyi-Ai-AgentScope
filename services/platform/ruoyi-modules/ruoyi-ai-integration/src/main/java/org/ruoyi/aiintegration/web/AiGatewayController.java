@@ -301,7 +301,18 @@ public class AiGatewayController {
             new Route("GET", "/rag/traces/runs/{traceId}/nodes", "run.events"),
             new Route("GET", "/biz-change-logs", "run.get"),
             new Route("GET", "/biz-change-logs/{id}", "run.get"),
-            new Route("GET", "/rag/eval", "kb.retrieve"));
+            new Route("GET", "/rag/eval", "kb.retrieve"),
+            // F13-SLICE-1（AIFlow 工作流定义面）。逐条登记，不用通配 `/flows/**`
+            // —— 通配会把同一前缀下任何将来新增的端点一起放行，等于取消白名单。
+            // 内层 handler = FlowWorkflowController（类级 /internal/ai/v1），
+            // 由 AiEmbeddedFlowConfiguration 显式装配、in AutoConfiguration.imports。
+            // 四条动作 flow.list/read/write/delete 默认授予全为"否"。
+            // 两条 GET 在网关走字节分支，故内层必须同时给整数 ApiEnvelope 与两个回执头。
+            new Route("GET", "/flows", "flow.list"),
+            new Route("GET", "/flows/{uuid}", "flow.read"),
+            new Route("POST", "/flows", "flow.write"),
+            new Route("PUT", "/flows/{uuid}", "flow.write"),
+            new Route("DELETE", "/flows/{uuid}", "flow.delete"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;

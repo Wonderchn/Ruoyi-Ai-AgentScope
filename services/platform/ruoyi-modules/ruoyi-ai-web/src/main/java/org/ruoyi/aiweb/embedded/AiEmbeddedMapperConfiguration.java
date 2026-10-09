@@ -55,7 +55,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
         "com.nageoffer.ai.ragent.user.dao.mapper",
         "com.nageoffer.ai.ragent.audit.dao.mapper",
         "com.nageoffer.ai.ragent.sample.dao.mapper",
-        "com.nageoffer.ai.ragent.agent.dao.mapper"
+        "com.nageoffer.ai.ragent.agent.dao.mapper",
+        "com.nageoffer.ai.ragent.flow.dao.mapper"
 })
 public class AiEmbeddedMapperConfiguration {
 }
