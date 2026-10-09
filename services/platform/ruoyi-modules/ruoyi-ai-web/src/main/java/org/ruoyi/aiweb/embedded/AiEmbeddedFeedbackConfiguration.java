@@ -144,10 +144,19 @@ public class AiEmbeddedFeedbackConfiguration {
         }
 
         /**
-         * 反馈受理面：内部前缀下的两个 handler（提交/取消），客户端路径由网关白名单放行
-         * （{@code POST|DELETE /conversations/messages/{messageId}/feedback} → 动作
-         * {@code conversation.rename}，复用已播种的 {@code ai:conversation:write}，
-         * 不新增规范动作/权限行/迁移 —— 与 C13.4 引擎两条同口径）。
+         * 反馈受理面：内部前缀下的两个 handler（提交/取消），客户端路径由网关白名单放行。
+         *
+         * <p><b>两条路由的委托动作不同（维护者裁决 §6）</b>：
+         * <ul>
+         *   <li>{@code POST   /conversations/messages/{messageId}/feedback} → {@code conversation.rename}
+         *       （= {@code ai:conversation:write}，既有写权限）；</li>
+         *   <li>{@code DELETE /conversations/messages/{messageId}/feedback} → {@code conversation.delete}
+         *       （= {@code ai:conversation:delete}）。</li>
+         * </ul>
+         * 原实现两条都用 {@code conversation.rename}。裁决明确否掉了
+         * "因为 delete 要求更强权限，所以不是授权绕过"这一辩护：仓内**没有**
+         * "write 天然强于 delete" 的授权继承规则。持 write-only 不得能删。
+         * 不新增规范动作/权限行/迁移（两个动作都是既有 34 条）。
          *
          * <p>静态嵌套控制器仍会被平台组件扫描独立发现；本类自身必须声明
          * 集成开启与 local 传输条件，不能依靠外层配置继承门控。
@@ -155,6 +164,18 @@ public class AiEmbeddedFeedbackConfiguration {
         @RestController
         @ConditionalOnEmbeddedLocal
         public static class FeedbackSurface {
+
+            /**
+             * 提交反馈的路由动作。必须与 {@code AiGatewayController.ROUTES} 中
+             * {@code POST /conversations/messages/{messageId}/feedback} 登记的动作逐字一致。
+             */
+            public static final String SUBMIT_SCOPE = "conversation.rename";
+
+            /**
+             * 取消反馈的路由动作。必须与 {@code AiGatewayController.ROUTES} 中
+             * {@code DELETE /conversations/messages/{messageId}/feedback} 登记的动作逐字一致。
+             */
+            public static final String CANCEL_SCOPE = "conversation.delete";
 
             /**
              * 内层可达前缀：与网关 {@code AI_INTERNAL_PREFIX} 同值。两侧各自持有常量
@@ -181,17 +202,23 @@ public class AiEmbeddedFeedbackConfiguration {
             @PostMapping(INTERNAL_PREFIX + "/conversations/messages/{messageId}/feedback")
             public ResponseEntity<ApiEnvelope<Void>> submit(@PathVariable String messageId,
                                                             @RequestBody MessageFeedbackRequest request) {
-                requirePrincipal();
+                requirePrincipal(SUBMIT_SCOPE);
                 feedbackService.submitFeedbackAsync(messageId, request);
                 return ResponseEntity.ok()
                         .header("Cache-Control", "no-store")
                         .body(ApiEnvelope.ok(null));
             }
 
-            /** 取消赞/踩反馈（无 body；同上，异步受理）。 */
+            /**
+             * 取消赞/踩反馈（无 body；同上，异步受理）。
+             *
+             * <p><b>本方法要求 {@code conversation.delete}，不是 {@code conversation.rename}。</b>
+             * 维护者裁决 §6：提交与取消是两个不同能力，仓内没有"write 天然强于 delete"的继承规则。
+             * 详见 {@link #requirePrincipal(String)}。
+             */
             @DeleteMapping(INTERNAL_PREFIX + "/conversations/messages/{messageId}/feedback")
             public ResponseEntity<ApiEnvelope<Void>> cancel(@PathVariable String messageId) {
-                requirePrincipal();
+                requirePrincipal(CANCEL_SCOPE);
                 feedbackService.cancelFeedbackAsync(messageId);
                 return ResponseEntity.ok()
                         .header("Cache-Control", "no-store")
@@ -202,14 +229,20 @@ public class AiEmbeddedFeedbackConfiguration {
              * 主体复核：缺主体拒绝（403 语义，与 {@code AiInternalExceptionResolver} 对
              * {@code ClientException} 的既有映射一致），有主体再复核路由动作 scope ——
              * "网关已校验"不构成内层免检的理由（{@code ConversationSurface.requirePrincipal} 的
-             * fail-closed 口径）。本路由动作 = {@code conversation.rename}。
+             * fail-closed 口径）。
+             *
+             * <p><b>scope 由调用方按各自的路由动作传入</b>（提交 {@link #SUBMIT_SCOPE}、
+             * 取消 {@link #CANCEL_SCOPE}）。这两个字面量必须与
+             * {@code AiGatewayController.ROUTES} 中同一路径上登记的动作**逐字一致**：
+             * 两个 reactor 各自持有常量、不能互相 import，所以一致性靠
+             * {@code AiEmbeddedFeedbackConfigurationTest} 的行为判据钉住，不能靠"看着一样"。
              */
-            private static void requirePrincipal() {
+            private static void requirePrincipal(String requiredScope) {
                 ExecutionPrincipal principal = PrincipalContext.get();
                 if (principal == null) {
                     throw new ClientException("缺少执行主体，无法受理消息反馈");
                 }
-                if (!principal.hasScope("conversation.rename")) {
+                if (!principal.hasScope(requiredScope)) {
                     throw new P04AiException(P04AiErrorCode.FORBIDDEN);
                 }
             }

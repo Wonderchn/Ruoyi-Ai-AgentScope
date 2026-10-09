@@ -145,10 +145,22 @@ public class AiGatewayController {
             new Route("POST", "/conversations/batch-delete", "conversation.delete"),
             // W3-5-BE-1（T0 登记，2026-10-06；t3-ingest 交付 AiEmbeddedFeedbackConfiguration 后）：
             // 消息反馈面（T6 workbench 历史页赞/踩）。此前 MessageFeedbackController 内层存在
-            // 但不在白名单 ⇒ 网关必然 404（T6 判据钉死的缺口）。动作复用 conversation.rename
-            //（= ai:conversation:write，会话消息是同一聚合的写面），不新增动作/权限行/迁移。
+            // 但不在白名单 ⇒ 网关必然 404（T6 判据钉死的缺口）。
+            //
+            // 🔴 维护者裁决 §6（2026-10-09 回填）：**提交与取消是两个不同能力，不得共用一个动作。**
+            //   POST   /…/feedback → `conversation.rename`（= ai:conversation:write，既有写权限）
+            //   DELETE /…/feedback → **`conversation.delete`**（= ai:conversation:delete）
+            // 原实现两行都用 `conversation.rename`。裁决原文：「仓内没有『write 天然强于 delete』的
+            // 授权继承规则，因此『不是授权绕过，因为要求更强权限』不能作为当前实现的安全结论。」
+            // ⇒ 持 write-only 的身份不得能删。不新增 canonical 动作、不新增权限行、不新增迁移
+            //（`conversation.delete` 是既有 34 条之一，故 P1CurrentAuthorizationTest 的动作条数护栏不变）。
+            //
+            // ⚠️ **不能只改本表**：内层 `AiEmbeddedFeedbackConfiguration.FeedbackSurface` 的 scope
+            // 复核是各自独立持有的字面量（另一 reactor 的类，不能互相 import）。两侧必须同时改，
+            // 且由 `AiEmbeddedFeedbackConfigurationTest` 的**行为**判据钉住
+            //（write-only 不能删 / delete-only 能删 / delete-only 不能提交）。
             new Route("POST", "/conversations/messages/{messageId}/feedback", "conversation.rename"),
-            new Route("DELETE", "/conversations/messages/{messageId}/feedback", "conversation.rename"),
+            new Route("DELETE", "/conversations/messages/{messageId}/feedback", "conversation.delete"),
             // RW-22-R1-R7（T0 登记，2026-10-08）：F17 推荐追问面。内层 handler =
             // /internal/ai/v1/conversations/messages/{messageId}/recommended-questions，
             // 由 RecommendedQuestionController（类级 @RequestMapping("/internal/ai/v1")）承接，
