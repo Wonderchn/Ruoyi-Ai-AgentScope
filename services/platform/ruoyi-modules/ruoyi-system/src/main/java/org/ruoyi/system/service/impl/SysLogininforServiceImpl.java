@@ -6,7 +6,6 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.ruoyi.common.core.constant.Constants;
-import org.ruoyi.common.core.exception.ServiceException;
 import org.ruoyi.common.core.utils.MapstructUtils;
 import org.ruoyi.common.core.utils.StringUtils;
 import org.ruoyi.common.core.utils.ip.AddressUtils;
@@ -14,9 +13,6 @@ import org.ruoyi.common.log.event.LoginClientFacts;
 import org.ruoyi.common.log.event.LogininforEvent;
 import org.ruoyi.common.mybatis.core.page.PageQuery;
 import org.ruoyi.common.mybatis.core.page.TableDataInfo;
-import org.ruoyi.common.tenant.audit.PlatformAuditAccess;
-import org.ruoyi.common.tenant.audit.PlatformAuditAttribution;
-import org.ruoyi.common.tenant.helper.TenantHelper;
 import org.ruoyi.system.domain.SysLogininfor;
 import org.ruoyi.system.domain.bo.SysLogininforBo;
 import org.ruoyi.system.domain.vo.SysClientVo;
@@ -72,7 +68,6 @@ public class SysLogininforServiceImpl implements ISysLogininforService {
             // 封装对象
             SysLogininforBo logininfor = new SysLogininforBo();
             logininfor.setTenantId(logininforEvent.getTenantId());
-            logininfor.setTenantVerified(logininforEvent.isTenantVerified());
             logininfor.setUserName(logininforEvent.getUsername());
             if (ObjectUtil.isNotNull(client)) {
                 logininfor.setClientKey(client.getClientKey());
@@ -90,10 +85,6 @@ public class SysLogininforServiceImpl implements ISysLogininforService {
                 logininfor.setStatus(Constants.FAIL);
             }
             // 插入数据
-            // R-2-R4：本方法在 @Async 线程执行，租户上下文不传播（本项目无 TaskDecorator），
-            // 不能读"当前租户"。归属由事件在入队前捕获（含"服务端是否核验过该租户"这一事实），
-            // 由 insertLogininfor 显式判定并写进实体——不再有任何 ignore 作用域，
-            // 也不会被下面的 catch 吞成一条 WARN 而静默丢失。
             insertLogininfor(logininfor);
         } catch (RuntimeException e) {
             // 审计是旁路：失败不得冒泡到登录流程，但必须留下可检索痕迹（旧实现在缺 UA 时 NPE 静默丢行）
@@ -176,43 +167,7 @@ public class SysLogininforServiceImpl implements ISysLogininforService {
     public void insertLogininfor(SysLogininforBo bo) {
         SysLogininfor logininfor = MapstructUtils.convert(bo, SysLogininfor.class);
         logininfor.setLoginTime(new Date());
-        // R-2-R4（裁决 §7.1）：归属在这里显式定下并写进实体，不依赖环境上下文、也不依赖 DDL 默认值。
-        // 请求自行声明的租户只有在服务端核验过（事件里的 tenantVerified）时才算可信归属。
-        PlatformAuditAttribution.Attribution attribution =
-                PlatformAuditAttribution.resolveWithReason(bo.getTenantId(), bo.isTenantVerified());
-        logininfor.setTenantId(attribution.tenantId());
-        if (attribution.unattributed()) {
-            log.warn("登录审计无归属：reason={}，记入平台审计域 tenant_id={}",
-                    attribution.reason(), attribution.tenantId());
-            insertAuditRow(logininfor);
-            return;
-        }
-        TenantHelper.dynamic(attribution.tenantId(), () -> insertAuditRow(logininfor));
-    }
-
-    /**
-     * 审计行落库的唯一入口。显式拒绝"归属为空"的行——{@code sys_logininfor.tenant_id}
-     * 有 DDL 默认 {@code '000000'}，让空值落下去就是"用默认租户冒充归属"（裁决明令禁止）。
-     */
-    private void insertAuditRow(SysLogininfor logininfor) {
-        if (StringUtils.isBlank(logininfor.getTenantId())) {
-            throw new ServiceException("审计行必须显式携带归属（真实租户或平台审计标记），不得依赖 DDL 默认值");
-        }
         baseMapper.insert(logininfor);
-    }
-
-    /**
-     * <b>平台审计域读取</b>（裁决 §7.1 执行范围第 4 条）：无归属登录审计只对平台超管开放，
-     * 且必须持有 {@link PlatformAuditAccess}。租户作用域下的普通查询仍按当前租户过滤。
-     */
-    @Override
-    public List<SysLogininforVo> selectPlatformAudit(PlatformAuditAccess access) {
-        if (access == null) {
-            throw new ServiceException("平台审计域访问必须持有 PlatformAuditAccess");
-        }
-        return baseMapper.selectPlatformAudit().stream()
-                .map(row -> MapstructUtils.convert(row, SysLogininforVo.class))
-                .toList();
     }
 
     /**

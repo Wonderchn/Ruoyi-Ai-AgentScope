@@ -26,7 +26,6 @@ import org.ruoyi.common.mybatis.helper.DataPermissionHelper;
 import org.ruoyi.common.redis.utils.RedisUtils;
 import org.ruoyi.common.satoken.utils.LoginHelper;
 import org.ruoyi.common.tenant.exception.TenantException;
-import org.ruoyi.common.tenant.audit.PlatformAuditAttribution;
 import org.ruoyi.common.tenant.helper.TenantHelper;
 import org.ruoyi.system.domain.SysUser;
 import org.ruoyi.system.domain.bo.SysSocialBo;
@@ -144,9 +143,6 @@ public class SysLoginService {
         logininforEvent.setUsername(username);
         logininforEvent.setStatus(status);
         logininforEvent.setMessage(message);
-        // R-2-R4：入队前把"服务端到底核验过租户没有"写成事实（裁决 §7.1 执行范围第 1 条）。
-        // 请求自行声明的租户在核验前不是可信归属。
-        logininforEvent.setTenantVerified(PlatformAuditAttribution.verifiedByStatus(status));
         logininforEvent.setClientFacts(LoginClientFacts.capture(ServletUtils.getRequest()));
         SpringUtils.context().publishEvent(logininforEvent);
     }

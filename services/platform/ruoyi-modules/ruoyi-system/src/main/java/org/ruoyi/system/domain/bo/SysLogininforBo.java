@@ -29,11 +29,6 @@ public class SysLogininforBo {
     private String tenantId;
 
     /**
-     * 服务端是否已核验该租户归属（R-2-R4；不落库，只用于审计归属判定）
-     */
-    private boolean tenantVerified;
-
-    /**
      * 用户账号
      */
     private String userName;
