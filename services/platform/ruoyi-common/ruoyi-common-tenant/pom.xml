@@ -27,6 +27,19 @@
             <artifactId>ruoyi-common-redis</artifactId>
         </dependency>
 
+        <!-- R-2：租户空上下文 fail-closed 的定向判据。单元判据 + 真实 PostgreSQL 判据。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
 </project>
