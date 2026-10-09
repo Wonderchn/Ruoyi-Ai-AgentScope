@@ -277,6 +277,48 @@ public class AiResourceAuthorizationService
         return true;
     }
 
+    /**
+     * 定向 ACL 授权是否命中（R12 卡3 修复：dataScope × GRANT 合成语义）。
+     *
+     * <p>{@link #dataScopeAllows} 问的是"资源 owner 是否在我的数据范围内"——对具名定向分享
+     * （ACL 规则授给某 member/role/department），该求交会把显式授权整体压回 DENY
+     * （W4 实证：data_scope=5 的成员被授权后仍 404 ⇒ ACL 机制整体失效）。
+     * 本方法用与 {@code delegate.decide()} **同一套规则编码**（本类 {@code facts()/AclRule}）
+     * 判定：资源链上任一层存在对 action 生效、未过期、主体类型非 {@code tenant_all} 的规则，
+     * 且其 subjectRef 被 platform 判为当前持有 ⇒ 显式定向分享成立，dataScope 否决不再适用。
+     *
+     * <p><b>边界</b>：{@code tenant_all}（隐式全员授予）与 owner 路径**不**走本豁免，
+     * 继续受 dataScope 求交（既有语义与判据不动）。
+     */
+    private boolean targetedGrantAllows(ExecutionPrincipal principal, String action, String ref) {
+        if (platformFacts == null) {
+            // 无平台端口时 dataScopeAllows 亦为 true（独立运行形态），本方法无适用场景
+            return true;
+        }
+        long now = clock.instant().getEpochSecond();
+        Set<String> subjectRefs = new LinkedHashSet<>();
+        Set<String> visited = new LinkedHashSet<>();
+        String current = ref;
+        while (current != null) {
+            if (!visited.add(current) || visited.size() > 32) { return false; }
+            ResourceFact fact = facts(principal.tenantId(), List.of(current)).get(current);
+            if (fact == null || !"ACTIVE".equals(fact.status())) { return false; }
+            for (AclRule rule : fact.acl()) {
+                if (!rule.appliesTo(action)) { continue; }
+                if (rule.expiresAtEpochSecond() != null && rule.expiresAtEpochSecond() <= now) { continue; }
+                // tenant_all = 隐式全员授予，不算定向分享（保持 dataScope 求交）
+                if ("tenant_all".equals(rule.subjectType())) { continue; }
+                subjectRefs.add(rule.subjectRef());
+            }
+            current = fact.parentRef();
+        }
+        if (subjectRefs.isEmpty()) { return false; }
+        var outcome = queryFacts(principal, action,
+                List.of(com.nageoffer.ai.ragent.framework.security.PlatformFactsPort.Candidate
+                        .subjectRefs(new ArrayList<>(subjectRefs))));
+        return !outcome.matches().isEmpty() && Boolean.TRUE.equals(outcome.matches().get(0));
+    }
+
     @Autowired
     public AiResourceAuthorizationService(AiResourceMapper resourceMapper,
                                           AiResourceAclMapper aclMapper,
@@ -318,7 +360,11 @@ public class AiResourceAuthorizationService
     public Verdict check(ExecutionPrincipal principal, String action, String resourceRef) {
         requirePlatform(principal, action, resourceRef);
         var verdict=delegate.check(principal, action, resourceRef);
-        return verdict==Verdict.GRANT && !dataScopeAllows(principal,action,resourceRef)?Verdict.DENY:verdict;
+        if (verdict != Verdict.GRANT || dataScopeAllows(principal, action, resourceRef)) {
+            return verdict;
+        }
+        // dataScope 否决 ⇒ 定向 ACL 显式分享可再准入（R12 卡3；tenant_all/owner 路径不变）
+        return targetedGrantAllows(principal, action, resourceRef) ? Verdict.GRANT : Verdict.DENY;
     }
 
     @Override
@@ -380,7 +426,54 @@ public class AiResourceAuthorizationService
                 if (!matches.get(i)) { allowed.remove(owners.get(offset + i)); }
             }
         }
-        return refs.stream().filter(allowed::contains).toList();
+        List<String> kept = refs.stream().filter(allowed::contains).toList();
+        if (kept.size() == refs.size()) {
+            return kept;
+        }
+        // dataScope 否决的资源：定向 ACL 显式分享可再准入（与 check 同口径，R12 卡3）。
+        // 事实复用上方批次已加载的 all（不新增 per-ref findByPk 查询，保持批量路径的
+        // "受控查询数"约束）；平台判定一次调用、按 ref 对齐（每 ref 一个主体候选）。
+        long now = clock.instant().getEpochSecond();
+        var admitted = new LinkedHashSet<>(kept);
+        var rejected = new ArrayList<String>();
+        var candidateRefs = new ArrayList<List<String>>();
+        for (String ref : refs) {
+            if (allowed.contains(ref)) {
+                continue;
+            }
+            Set<String> targeted = new LinkedHashSet<>();
+            Set<String> visited = new LinkedHashSet<>();
+            String current = ref;
+            boolean chainOk = true;
+            while (current != null) {
+                if (!visited.add(current) || visited.size() > 32) { chainOk = false; break; }
+                ResourceFact fact = all.get(current);
+                if (fact == null || !"ACTIVE".equals(fact.status())) { chainOk = false; break; }
+                for (AclRule rule : fact.acl()) {
+                    if (!rule.appliesTo(action)) { continue; }
+                    if (rule.expiresAtEpochSecond() != null && rule.expiresAtEpochSecond() <= now) { continue; }
+                    // tenant_all = 隐式全员授予，不算定向分享（保持 dataScope 求交）
+                    if ("tenant_all".equals(rule.subjectType())) { continue; }
+                    targeted.add(rule.subjectRef());
+                }
+                current = fact.parentRef();
+            }
+            if (chainOk && !targeted.isEmpty()) {
+                rejected.add(ref);
+                candidateRefs.add(new ArrayList<>(targeted));
+            }
+        }
+        if (!rejected.isEmpty()) {
+            var outcome = queryFacts(principal, action, candidateRefs.stream()
+                    .map(com.nageoffer.ai.ragent.framework.security.PlatformFactsPort.Candidate::subjectRefs)
+                    .toList());
+            for (int i = 0; i < rejected.size(); i++) {
+                if (Boolean.TRUE.equals(outcome.matches().get(i))) {
+                    admitted.add(rejected.get(i));
+                }
+            }
+        }
+        return refs.stream().filter(admitted::contains).toList();
     }
 
     @Override
