@@ -1,6 +1,11 @@
 package org.ruoyi.aiweb.embedded;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.nageoffer.ai.ragent.admin.controller.DashboardController;
+import com.nageoffer.ai.ragent.admin.controller.vo.DashboardOverviewVO;
+import com.nageoffer.ai.ragent.admin.controller.vo.DashboardPerformanceVO;
+import com.nageoffer.ai.ragent.admin.controller.vo.DashboardTrendsVO;
+import com.nageoffer.ai.ragent.admin.service.DashboardService;
 import com.nageoffer.ai.ragent.audit.controller.BizChangeLogController;
 import com.nageoffer.ai.ragent.audit.controller.vo.BizChangeLogVO;
 import com.nageoffer.ai.ragent.audit.service.BizChangeLogService;
@@ -56,6 +61,8 @@ import static org.mockito.Mockito.*;
 /** Real gateway/local MVC/controllers/receipt advice; only business collaborators are doubles. */
 @Tag("dev")
 class LocalAdminRouteDispatchTest {
+    private final DashboardService dashboard = mock(DashboardService.class);
+    private String tenantId = "T1";
     private final IntentTreeService intents = mock(IntentTreeService.class);
     private final QueryTermMappingAdminService mappings = mock(QueryTermMappingAdminService.class);
     private final SampleQuestionService samples = mock(SampleQuestionService.class);
@@ -105,10 +112,18 @@ class LocalAdminRouteDispatchTest {
         when(guard.enter(any(), anyString(), anyString())).thenAnswer(call -> new RevocationGuard.Operation(
                 guard, UUID.randomUUID().toString(), UUID.randomUUID().toString()));
 
+        when(dashboard.loadOverview(any())).thenAnswer(call -> DashboardOverviewVO.builder()
+                .engine("r10-overview-" + PrincipalContext.require().tenantId()).window(call.getArgument(0)).build());
+        when(dashboard.loadPerformance(any())).thenAnswer(call -> DashboardPerformanceVO.builder()
+                .engine("r10-performance-" + PrincipalContext.require().tenantId()).window(call.getArgument(0)).build());
+        when(dashboard.loadTrends(anyString(), any(), any())).thenAnswer(call -> DashboardTrendsVO.builder()
+                .metric("r10-trends-" + PrincipalContext.require().tenantId()).window(call.getArgument(1))
+                .granularity(call.getArgument(2)).build());
         context = new AnnotationConfigWebApplicationContext();
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("fixture", Map.of(
                 "ai.integration.enabled", "true", "ai.integration.transport", "local", "p2.enabled", "true")));
         context.addBeanFactoryPostProcessor(factory -> {
+            factory.registerSingleton("dashboard", new DashboardController(dashboard));
             factory.registerSingleton("intents", new IntentTreeController(intents));
             factory.registerSingleton("mappings", new QueryTermMappingController(mappings));
             factory.registerSingleton("samples", new SampleQuestionController(samples));
@@ -129,21 +144,21 @@ class LocalAdminRouteDispatchTest {
         context.refresh();
         servlet.setAttribute(WebApplicationContext.ROOT_WEB_APPLICATION_CONTEXT_ATTRIBUTE, context);
         var client = new LocalAiGatewayClient(2000, () -> Optional.of(new AiExecutionFacts(
-                "T1", "2101", "platform:T1:2101", 1, 1, permissions)),
+                tenantId, "2101", "platform:" + tenantId + ":2101", 1, 1, permissions)),
                 (tenant, member, permit, operation) -> {
-                    assertThat(tenant).isEqualTo("T1");
-                    assertThat(member).isEqualTo("platform:T1:2101");
+                    assertThat(tenant).isEqualTo(tenantId);
+                    assertThat(member).isEqualTo("platform:" + tenantId + ":2101");
                     acknowledgements.add(permit + ":" + operation);
                 });
         var identity = mock(PlatformIdentitySource.class);
-        when(identity.tenantState("T1")).thenReturn(PlatformIdentitySource.TenantState.ENABLED);
+        when(identity.tenantState(anyString())).thenReturn(PlatformIdentitySource.TenantState.ENABLED);
         when(identity.membership(anyString(), anyString(), anyString())).thenAnswer(call ->
-                new PlatformIdentitySource.PlatformIdentity("T1", "2101", "platform:T1:2101", true, permissions, 1));
+                new PlatformIdentitySource.PlatformIdentity(tenantId, "2101", "platform:" + tenantId + ":2101", true, permissions, 1));
         ObjectProvider<PlatformIdentitySource> provider = mock(ObjectProvider.class);
         when(provider.getIfAvailable()).thenReturn(identity);
         var current = mock(CurrentPrincipalResolver.class);
-        when(current.resolveCurrentMember()).thenReturn(Optional.of(
-                new CurrentPrincipalResolver.CurrentMember("T1", "2101", "platform:T1:2101")));
+        when(current.resolveCurrentMember()).thenAnswer(call -> Optional.of(
+                new CurrentPrincipalResolver.CurrentMember(tenantId, "2101", "platform:" + tenantId + ":2101")));
         when(current.isPlatformAdmin()).thenReturn(true);
         var properties = new AiIntegrationProperties();
         properties.setTransport("local"); properties.setAiBaseUrl("http://local");
@@ -167,7 +182,8 @@ class LocalAdminRouteDispatchTest {
         var result = gateway.gateway(request, output, body == null ? new byte[0] : body.getBytes(StandardCharsets.UTF_8));
         if (result != null) {
             output.setStatus(result.getStatusCode().value());
-            output.getWriter().write(String.valueOf(result.getBody()));
+        output.getWriter().write(result.getBody() instanceof String responseBody ? responseBody
+                : new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(result.getBody()));
         }
         return output;
     }
@@ -273,7 +289,52 @@ class LocalAdminRouteDispatchTest {
         assertThat(dispatch("GET", "/intent-tree/trees", null).getStatus()).isEqualTo(403);
         verifyNoInteractions(intents, guard);
         assertThat(dispatch("GET", "/intent-tree/trees/extra", null).getStatus()).isEqualTo(404);
+        var dashboardDenied = dispatch("GET", "/dashboard/overview", null);
+        assertThat(dashboardDenied.getStatus()).isEqualTo(403);
+        assertThat(new com.fasterxml.jackson.databind.ObjectMapper().readTree(dashboardDenied.getContentAsString())
+                .path("data").path("errorCode").asText()).isEqualTo("FORBIDDEN");
+        verifyNoInteractions(dashboard);
+    }
+
+    @Test void dashboardGetRoutesReachTheirOwnPayloadsAndConsumeOneReceiptPerTenantRequest() throws Exception {
+        permissions = Set.of("ai:run:read");
+        var cases = Map.of("/dashboard/overview?window=7d", "r10-overview-",
+                "/dashboard/performance?window=30d", "r10-performance-",
+                "/dashboard/trends?metric=messages&window=7d&granularity=day", "r10-trends-");
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        for (String tenant : List.of("T1", "T2", "T1")) {
+            tenantId = tenant;
+            for (var entry : cases.entrySet()) {
+                var response = dispatch("GET", entry.getKey(), null);
+                assertThat(response.getStatus()).as(entry.getKey()).isEqualTo(200);
+                var envelope = json.readTree(response.getContentAsString());
+                assertThat(envelope.path("code").isIntegralNumber()).isTrue();
+                assertThat(envelope.path("code").intValue()).isEqualTo(200);
+                assertThat(envelope.path("data").toString()).contains(entry.getValue() + tenant)
+                        .doesNotContain(entry.getValue() + (tenant.equals("T1") ? "T2" : "T1"));
+                assertThat(response.getContentAsString()).doesNotContain("X-AI-Delivery-Permit");
+                assertThat(PrincipalContext.hasPrincipal()).isFalse();
+            }
+        }
+        verify(dashboard, times(3)).loadOverview("7d");
+        verify(dashboard, times(3)).loadPerformance("30d");
+        verify(dashboard, times(3)).loadTrends("messages", "7d", "day");
+        assertThat(acknowledgements).hasSize(9).doesNotHaveDuplicates();
+        verify(guard, times(9)).enter(any(), eq("run.get"), startsWith("admin-read:/api/ai/v1/dashboard/"));
+    }
+
+    @Test void dashboardDeniedScopesAndNeighboringPathsNeverCallTheHandler() throws Exception {
+        permissions = Set.of("ai:config:read", "ai:kb:read");
+        for (String path : List.of("/dashboard/overview", "/dashboard/performance", "/dashboard/trends?metric=messages")) {
+            var response = dispatch("GET", path, null);
+            assertThat(response.getStatus()).isEqualTo(403);
+            assertThat(new com.fasterxml.jackson.databind.ObjectMapper().readTree(response.getContentAsString())
+                    .path("data").path("errorCode").asText()).isEqualTo("FORBIDDEN");
+        }
+        assertThat(dispatch("GET", "/dashboard/overview/extra", null).getStatus()).isEqualTo(404);
         assertThat(dispatch("GET", "/admin/dashboard/overview", null).getStatus()).isEqualTo(404);
+        verifyNoInteractions(dashboard, guard);
+        assertThat(acknowledgements).isEmpty();
     }
 
     @Configuration(proxyBeanMethods = false)

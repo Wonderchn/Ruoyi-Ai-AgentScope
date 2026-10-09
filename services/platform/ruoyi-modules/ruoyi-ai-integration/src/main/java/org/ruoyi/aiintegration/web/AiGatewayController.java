@@ -289,7 +289,7 @@ public class AiGatewayController {
             new Route("PATCH", "/knowledge-base/docs/{docId}/chunks/{chunkId}/enable", "kb.write"),
             new Route("PATCH", "/knowledge-base/docs/{docId}/chunks/batch-enable", "kb.write"),
             // R6: explicit administrative surfaces; GET replies carry P2 delivery receipts.
-            // KB/document full admin and Dashboard remain closed until their prerequisites are verified.
+            // KB/document full admin remains closed until its prerequisites are verified.
             new Route("GET", "/intent-tree/trees", "config.read"),
             new Route("POST", "/intent-tree", "config.publish"),
             new Route("PUT", "/intent-tree/{id}", "config.publish"),
@@ -308,6 +308,9 @@ public class AiGatewayController {
             new Route("POST", "/sample-questions", "config.publish"),
             new Route("PUT", "/sample-questions/{id}", "config.publish"),
             new Route("DELETE", "/sample-questions/{id}", "config.publish"),
+            new Route("GET", "/dashboard/overview", "run.get"),
+            new Route("GET", "/dashboard/performance", "run.get"),
+            new Route("GET", "/dashboard/trends", "run.get"),
             new Route("GET", "/rag/traces/runs", "run.get"),
             new Route("GET", "/rag/traces/runs/{traceId}", "run.get"),
             new Route("GET", "/rag/traces/runs/{traceId}/nodes", "run.events"),

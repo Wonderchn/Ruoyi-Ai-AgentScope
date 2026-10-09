@@ -1,6 +1,7 @@
 package org.ruoyi.aiweb.embedded;
 
 import com.nageoffer.ai.ragent.audit.controller.BizChangeLogController;
+import com.nageoffer.ai.ragent.admin.controller.DashboardController;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
 import com.nageoffer.ai.ragent.rag.controller.IntentTreeController;
@@ -30,7 +31,7 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyAdvice;
 public class AiEmbeddedAdminDeliveryConfiguration {
     @RestControllerAdvice(assignableTypes = {IntentTreeController.class, QueryTermMappingController.class,
             SampleQuestionController.class, RagTraceController.class, BizChangeLogController.class,
-            EvalController.class})
+            EvalController.class, DashboardController.class})
     @ConditionalOnEmbeddedLocal
     @ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
     public static class AdminDeliveryAdvice implements ResponseBodyAdvice<Object> {
@@ -81,7 +82,7 @@ public class AiEmbeddedAdminDeliveryConfiguration {
             if (controller == RagTraceController.class) {
                 return "nodes".equals(method.getMethod().getName()) ? "run.events" : "run.get";
             }
-            if (controller == BizChangeLogController.class) {
+            if (controller == BizChangeLogController.class || controller == DashboardController.class) {
                 return "run.get";
             }
             return controller == EvalController.class ? "kb.retrieve" : null;
