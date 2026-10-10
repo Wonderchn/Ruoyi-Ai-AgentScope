@@ -107,13 +107,14 @@ import static org.mockito.Mockito.when;
  * 改为本名（git rename，不是新建文件）。
  *
  * <p><b>为什么不用 {@code /api/ai/v1/...} 直接打网关。</b>那需要
- * {@code AiGatewayController.ROUTES} 里先有这些白名单条目；RW-04-R8 <b>刻意不登记</b>
- * 知识库面/文档面的路由（闭包还缺 15 个单例 bean 与 2 组集合元素，注册它们只会得到
- * 一个启动失败或永远 404 的公开面）。本判据刻意跑在<b>白名单之下游</b>，并按网关的同一条件
- * 选择分支（{@link #usesByteBranch(String)}），因此白名单一旦登记，这里跑的就是运行期真实路径。
- * <b>本判据不是公开可达性判据</b>：它证明的是"这两个面的响应经真实本地传输后仍是合法信封
- * + 带回执"；公开面此刻仍然关闭（见 {@code LocalWhitelistEnvelopeShapeTest} 的
- * {@code knowledgeAdminFacesAreStillUnrouted}）。
+ * {@code AiGatewayController.ROUTES} 里先有这些白名单条目；RW-04-R8 期<b>刻意不登记</b>
+ * 知识库面/文档面的路由（当时闭包未闭合，注册只会得到一个启动失败或永远 404 的公开面）。
+ * 本判据刻意跑在<b>白名单之下游</b>，并按网关的同一条件选择分支
+ * （{@link #usesByteBranch(String)}），因此它验的是"内层信封 + 回执"这一层。
+ * <b>本判据不是公开可达性判据</b>：自 S2-F05-A1 起这两面都已放行
+ * （见 {@code LocalWhitelistEnvelopeShapeTest} 的
+ * {@code knowledgeAdminFacesAreReleasedAndCounted} 与
+ * {@code LocalKnowledgeAdminRouteDispatchTest} 的网关级 404→200 判据）。
  *
  * <p><b>multipart 上传不在本判据里。</b>{@code POST /knowledge-base/{kbId}/docs/upload}
  * 声明 {@code consumes = multipart/form-data}，而探针只会发 JSON ⇒ 内层不匹配、返回 415，
