@@ -157,7 +157,7 @@ describe('双向断言二：有页面 ⇒ 必须有权限行（或显式登记�
     }
   });
 
-  it('无权限行的 AI 页面（ragent 管理面）必须全部登记在 PAIR-GAP 清单里，数量为 2', () => {
+  it('无权限行的 AI 页面（ragent 管理面）必须全部登记在 PAIR-GAP 清单里，数量为 1', () => {
     const routers = readRoutersSource();
     const gaps = pairGapNoRows();
     const gapRoutes = new Set(gaps.map(pair => pair.route));
@@ -172,9 +172,11 @@ describe('双向断言二：有页面 ⇒ 必须有权限行（或显式登记�
       }
     }
     // 2026-10-07 RW-03：/ai/agents 已随端点落地接到 ai:agent:list（V27-7141）；
-    // 2026-10-07 RW-07：/ai/settings 改由 runtime-config/settings 服务（V28-7150）
-    // ⇒ 余下 skills/ingestion 两条。
-    assert.equal(gaps.length, 2, `PAIR-GAP-NO-ROW 应为 2（skills/ingestion），实际 ${gaps.length}`);
+    // 2026-10-07 RW-07：/ai/settings 改由 runtime-config/settings 服务（V28-7150）；
+    // 2026-10-10 S2-F06-A1：/ai/ingestion 随管线 CRUD 装配接既有 ai:config:read
+    // （V28-7150 复用，零新增行；任务面仍未装配，但页面路由权限取管线面）
+    // ⇒ 余下 skills 一条。
+    assert.equal(gaps.length, 1, `PAIR-GAP-NO-ROW 应为 1（skills），实际 ${gaps.length}`);
   });
 });
 

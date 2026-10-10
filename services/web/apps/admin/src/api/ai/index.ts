@@ -37,7 +37,13 @@
  *    `/knowledge-base/docs/{docId}/chunks*` 已登记 `KnowledgeChunkController` 并逐条放行，
  *    信封已改为整数 `ApiEnvelope`（GET 另有网关消费的交付回执头）；
  *    本卡只接 GET 列表，契约见 `./knowledgeChunks.ts`。
- *    **其余 rag 旧族（agent-skills / ingestion / 旧 knowledge-base）仍是 404，本节其余描述不变。**
+ *
+ *    ⚠️ **第四处例外（S2-F06-A1 装配，2026-10-10）**：摄取**管线 CRUD** 5 条
+ *    `/api/ai/v1/ingestion/pipelines**` 已由 `AiEmbeddedIngestionConfiguration` 登记
+ *    `IngestionPipelineController` 并逐条放行进白名单，信封整数 `ApiEnvelope`
+ *    （读=config.read，写=config.publish；GET 交付回执同分块面）。
+ *    **任务面（`/ingestion/tasks**`）仍未装配，随 `ingestionTasks` 子域登记为 404。**
+ *    **其余 rag 旧族（agent-skills / 旧 knowledge-base）仍是 404，本节其余描述不变。**
  * 3. **知识库族 8 条白名单路由活着**（`AiGatewayController` ROUTES，M19/M20 实测
  *    200/400/404 分布健康）——经 `/api/ai/v1` 前缀。
  *
@@ -123,6 +129,8 @@ export interface KnowledgeBaseQuery {
 
 // ---------------------------------------------------------------------------
 // ragent 管理面（分母登记；本形态 BLOCKED-BY-EMBEDDED-REGISTRY）
+// 例外：IngestionPipelineRow/Page/Query 已随 S2-F06-A1 迁到活族
+// （见 createAiApi().ingestion 的契约注释）；此处类型保留并更新为活族形状。
 // ---------------------------------------------------------------------------
 
 /** `AgentSkillController`（`/agent-skills`）行分母。 */
@@ -135,14 +143,38 @@ export interface AgentSkillRow {
   [key: string]: unknown;
 }
 
-/** `IngestionPipelineController`（`/ingestion/pipelines`）行分母。 */
+/** `IngestionPipelineController`（`/ingestion/pipelines`）行分母（`IngestionPipelineVO`）。 */
 export interface IngestionPipelineRow {
   id?: string;
   name?: string;
   description?: string;
-  createdAt?: string;
-  updatedAt?: string;
+  /** `IngestionPipelineVO.nodes`（节点列表，创建/更新请求里是 `IngestionPipelineNodeRequest`）。 */
+  nodes?: Record<string, unknown>[];
+  createdBy?: string;
+  createTime?: string;
+  updateTime?: string;
   [key: string]: unknown;
+}
+
+/**
+ * `IPage<IngestionPipelineVO>` 的 JSON 形状（`ApiEnvelope` 解包后的 `data`），
+ * 按 MyBatis-Plus `Page` 的实际 getter 命名：`records/total/current/size`。
+ */
+export interface IngestionPipelinePage {
+  records?: IngestionPipelineRow[] | null;
+  total?: number | null;
+  current?: number | null;
+  size?: number | null;
+}
+
+/**
+ * 管线列表查询参数：控制器 `@RequestParam` 字段名逐字是 **`pageNo`/`pageSize`**（+ 可选 `keyword`），
+ * **不是** MyBatis-Plus `Page` 的 `current`/`size`（两者是不同分母，别照分块面模板写）。
+ */
+export interface IngestionPipelineQuery {
+  pageNo?: number;
+  pageSize?: number;
+  keyword?: string;
 }
 
 /** `IngestionTaskController`（`/ingestion/tasks`）行分母。 */
@@ -266,18 +298,45 @@ export function createAiApi(client: PlatformClient) {
         client.post<RagResultEnvelope<unknown>>(`/agent-skills/${encodeURIComponent(id)}/enabled`, { body: { enabled } }),
     },
 
+    /**
+     * 摄取**管线 CRUD**（S2-F06-A1，2026-10-10）—— **本形态真实可达**。
+     *
+     * 5 条 `/api/ai/v1/ingestion/pipelines**` 白名单路由（`AiGatewayController.ROUTES` 逐条登记）：
+     * 读=config.read（→`ai:config:read`）/ 写=config.publish（→`ai:config:publish`），
+     * 内层 handler = `IngestionPipelineController`（类级 `/internal/ai/v1`）。
+     * 信封 = `ApiEnvelope`（**整数** code=200），走共享 `PlatformClient`；
+     * GET 走网关字节分支（响应带 `X-AI-Delivery-Permit`/`X-AI-Delivery-Operation`，回执由网关
+     * 自行消费，**前端不得追加任何 ACK/release 请求**）。
+     * 列表响应 `data` 是 `IPage`（`records/total/current/size`）；请求参数是 `pageNo`/`pageSize`。
+     */
     ingestion: {
-      /** `POST /ingestion/pipelines`。 */
+      /** `POST /api/ai/v1/ingestion/pipelines`（config.publish）→ `ApiEnvelope<IngestionPipelineVO>`。 */
       createPipeline: (body: Record<string, unknown>) =>
-        client.post<RagResultEnvelope<string>>('/ingestion/pipelines', { body }),
+        client.post<IngestionPipelineRow>('/api/ai/v1/ingestion/pipelines', { body }),
+      /** `PUT /api/ai/v1/ingestion/pipelines/{id}`（config.publish）。 */
       updatePipeline: (id: string, body: Record<string, unknown>) =>
-        client.put<RagResultEnvelope<string>>(`/ingestion/pipelines/${encodeURIComponent(id)}`, { body }),
+        client.put<IngestionPipelineRow>(`/api/ai/v1/ingestion/pipelines/${encodeURIComponent(id)}`, { body }),
+      /** `GET /api/ai/v1/ingestion/pipelines/{id}`（config.read）。 */
       getPipeline: (id: string) =>
-        client.get<RagResultEnvelope<IngestionPipelineRow>>(`/ingestion/pipelines/${encodeURIComponent(id)}`),
-      /** `GET /ingestion/pipelines` → `Result<List<IngestionPipelineVO>>`。 */
-      listPipelines: () => client.get<RagResultEnvelope<IngestionPipelineRow[]>>('/ingestion/pipelines'),
+        client.get<IngestionPipelineRow>(`/api/ai/v1/ingestion/pipelines/${encodeURIComponent(id)}`),
+      /** `GET /api/ai/v1/ingestion/pipelines`（config.read）→ `ApiEnvelope<IPage<…>>`。 */
+      listPipelines: (query?: IngestionPipelineQuery) =>
+        client.get<IngestionPipelinePage>('/api/ai/v1/ingestion/pipelines', {
+          query: { pageNo: query?.pageNo, pageSize: query?.pageSize, keyword: query?.keyword },
+        }),
+      /** `DELETE /api/ai/v1/ingestion/pipelines/{id}`（config.publish）。 */
       removePipeline: (id: string) =>
-        client.del<RagResultEnvelope<string>>(`/ingestion/pipelines/${encodeURIComponent(id)}`),
+        client.del<unknown>(`/api/ai/v1/ingestion/pipelines/${encodeURIComponent(id)}`),
+    },
+
+    /**
+     * 摄取**任务面**（`IngestionTaskController`）。⚠️ 仍未装配：BLOCKED-BY-EMBEDDED-REGISTRY。
+     * 任务面牵出引擎全闭包（ParserRegistry 启动自检 / MinerU-Redisson / LLM），不在 S2-F06-A1
+     * 闭包内，本形态调用会 404。路径是分母（02-api-map.json `ai_reference_only` 组），
+     * 信封是 ragent `Result`（`code:"0"`）——**将来装配后也不能直接用 client.get**，
+     * 见 `ragResultEnvelopeOf` 的注释。
+     */
+    ingestionTasks: {
       createTask: (body: Record<string, unknown>) => client.post<RagResultEnvelope<string>>('/ingestion/tasks', { body }),
       uploadTask: (body: Record<string, unknown>) =>
         client.post<RagResultEnvelope<string>>('/ingestion/tasks/upload', { body }),

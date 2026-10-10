@@ -4,6 +4,7 @@ import com.nageoffer.ai.ragent.audit.controller.BizChangeLogController;
 import com.nageoffer.ai.ragent.admin.controller.DashboardController;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
+import com.nageoffer.ai.ragent.ingestion.controller.IngestionPipelineController;
 import com.nageoffer.ai.ragent.rag.controller.IntentTreeController;
 import com.nageoffer.ai.ragent.rag.controller.QueryTermMappingController;
 import com.nageoffer.ai.ragent.rag.controller.RagTraceController;
@@ -32,7 +33,8 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyAdvice;
 public class AiEmbeddedAdminDeliveryConfiguration {
     @RestControllerAdvice(assignableTypes = {IntentTreeController.class, QueryTermMappingController.class,
             SampleQuestionController.class, RagTraceController.class, BizChangeLogController.class,
-            EvalController.class, DashboardController.class, RuntimeCatalogController.class})
+            EvalController.class, DashboardController.class, RuntimeCatalogController.class,
+            IngestionPipelineController.class})
     @ConditionalOnEmbeddedLocal
     @ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
     public static class AdminDeliveryAdvice implements ResponseBodyAdvice<Object> {
@@ -89,6 +91,11 @@ public class AiEmbeddedAdminDeliveryConfiguration {
             if (controller == RuntimeCatalogController.class) {
                 // R12 卡4：/runtime-config 三个 GET（catalog/settings/revisions）此前无投递回执
                 // ⇒ 网关 forwardBytes 以 "delivery receipt missing" 拒成 503（内层实为 200）。
+                return "config.read";
+            }
+            if (controller == IngestionPipelineController.class) {
+                // S2-F06-A1：/ingestion/pipelines 两条 GET（列表/详情）同走网关字节分支，
+                // 与 RuntimeCatalogController 同形；动作 config.read（→ ai:config:read，V28-7150）。
                 return "config.read";
             }
             return controller == EvalController.class ? "kb.retrieve" : null;

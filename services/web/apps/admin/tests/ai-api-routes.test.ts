@@ -8,7 +8,8 @@
  * - ragent 管理面：02-api-map.json 的 ai_reference_only 路径（BLOCKED-BY-EMBEDDED-REGISTRY）；
  * - **已迁移族不在此文件**：Agent 目录（RW-03）见 `agents-admin.test.ts`，
  *   运行配置权威（RW-07，承接旧 `/system/model|provider` 与 `/rag/settings`）见
- *   `runtime-config-admin.test.ts`。
+ *   `runtime-config-admin.test.ts`，摄取**管线 CRUD**（S2-F06-A1，迁到
+ *   `/api/ai/v1/ingestion/pipelines**` 活族）见 `ingestion-admin.test.ts`。
  *
  * 另钉两个契约差异（防"照模板写"回归）：
  * - `agentSkills.setEnabled` 是 **POST** `/agent-skills/{id}/enabled`（不是 PUT）；
@@ -134,7 +135,7 @@ describe('MCP 目录：分母路径（BLOCKED-BY-G-22，形状先行）', () => 
 });
 
 describe('ragent 管理面（未装配族）：分母路径与信封差异（BLOCKED-BY-EMBEDDED-REGISTRY）', () => {
-  it('skills/ingestion/rag-settings 路径逐字', async () => {
+  it('skills 与摄取任务面路径逐字', async () => {
     const { calls, client } = harness();
     const api = createAiApi(client);
 
@@ -146,11 +147,14 @@ describe('ragent 管理面（未装配族）：分母路径与信封差异（BLO
     assert.equal(last(calls).method, 'GET');
     assert.equal(last(calls).url, '/agent-skills/tool-options');
 
-    await api.ingestion.listPipelines();
+    // 摄取**管线**面已于 S2-F06-A1 迁到活族（`/api/ai/v1/ingestion/pipelines**`，
+    // 整数信封 + 共享 client）——契约断言见 `ingestion-admin.test.ts`。
+    // 此处只留**仍未装配**的任务面（裸分母路径 + ragent 字符串信封）。
+    await api.ingestionTasks.listTasks();
     assert.equal(last(calls).method, 'GET');
-    assert.equal(last(calls).url, '/ingestion/pipelines');
+    assert.equal(last(calls).url, '/ingestion/tasks');
 
-    await api.ingestion.taskNodes('tk1');
+    await api.ingestionTasks.taskNodes('tk1');
     assert.equal(last(calls).method, 'GET');
     assert.equal(last(calls).url, '/ingestion/tasks/tk1/nodes');
   });
