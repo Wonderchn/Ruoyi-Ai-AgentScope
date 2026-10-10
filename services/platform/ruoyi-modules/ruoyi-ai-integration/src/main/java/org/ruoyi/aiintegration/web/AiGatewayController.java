@@ -339,6 +339,16 @@ public class AiGatewayController {
             new Route("GET", "/knowledge-base/docs/{docId}/chunk-logs", "document.read"),
             new Route("GET", "/knowledge-base/docs/{docId}/preview", "document.read"),
             new Route("GET", "/knowledge-base/docs/{docId}/file", "document.download"),
+            // ⚠️ 该条是 17 条里唯一**带限制**的：文件部件经本地通配分支可达
+            //    （MultipartResolutionDelegate 的 getParts 回退），但 multipart **表单字段**
+            //    （sourceType/sourceLocation/processMode/pipelineId/ingestionSpec/scheduleCron/
+            //    scheduleEnabled）不随转发体转送（BodyProvidingRequest 只暴露 query）⇒ 内层
+            //    @ModelAttribute 绑成 null。管理员 UI 的上传走 workbench/P2 专用流通道
+            //    （POST /documents/uploads），不经本行；本行服务的是 ragent 管理面既有端点。
+            //    限制已登记为判据（LocalKnowledgeAdminRouteDispatchTest：表单字段断言恒 null，
+            //    将来接通专用流通道时会翻红提醒同步改注释/判据）。**不要**用"再包一层
+            //    StandardMultipartHttpServletRequest"去修：实测表单字段会变成 ApplicationPart
+            //    形态导致绑定 400（red/a1-fixfield-web/，复核 F1）。
             new Route("POST", "/knowledge-base/{kbId}/docs/upload", "document.upload"),
             new Route("POST", "/knowledge-base/docs/{docId}/chunk", "document.ingest"),
             new Route("PUT", "/knowledge-base/docs/{docId}", "kb.write"),
