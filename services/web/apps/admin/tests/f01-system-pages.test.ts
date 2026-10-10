@@ -935,7 +935,7 @@ describe('op13 个人中心页', () => {
       // 且 multipart 字段名与后端 @RequestPart("avatarfile") 逐字一致。
       const source = fs.readFileSync(new URL('../src/pages/profile/index.vue', import.meta.url), 'utf8');
       assert.ok(source.includes('profile-avatar-upload'), '头像上传控件必须存在');
-      assert.ok(source.includes("formData.append('avatarfile'"), 'multipart 字段名必须是 avatarfile');
+      assert.ok(source.includes('formData.append(\'avatarfile\''), 'multipart 字段名必须是 avatarfile');
     }
     finally {
       scope.stop();
