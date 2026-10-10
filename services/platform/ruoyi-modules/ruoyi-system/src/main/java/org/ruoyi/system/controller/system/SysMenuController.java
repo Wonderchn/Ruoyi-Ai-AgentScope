@@ -24,6 +24,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 菜单信息
@@ -176,6 +177,10 @@ public class SysMenuController extends BaseController {
         if (menuService.checkMenuExistRole(menuId)) {
             return R.warn("菜单已分配,不允许删除");
         }
+        List<String> packages = menuService.tenantPackagesReferencing(menuId);
+        if (!packages.isEmpty()) {
+            return R.warn("菜单已被租户套餐引用,不允许删除: " + String.join("、", packages));
+        }
         return toAjax(menuService.deleteMenuById(menuId));
     }
 
@@ -189,21 +194,21 @@ public class SysMenuController extends BaseController {
     }
 
     /**
-     * 批量级联删除菜单
+     * 级联删除菜单（S2-F01/op4：服务端展开全部后代——调用方只传根即可；
+     * 角色绑定一并回收、租户套餐 menu_ids 清洗，返回清理计数）
      *
-     * @param menuIds 菜单ID串
+     * @param menuIds 菜单ID串（根菜单集合）
      */
     @SaCheckRole(TenantConstants.SUPER_ADMIN_ROLE_KEY)
     @SaCheckPermission("system:menu:remove")
     @Log(title = "菜单管理", businessType = BusinessType.DELETE)
     @DeleteMapping("/cascade/{menuIds}")
-    public R<Void> remove(@PathVariable("menuIds") Long[] menuIds) {
-        List<Long> menuIdList = List.of(menuIds);
-        if (menuService.hasChildByMenuId(menuIdList)) {
-            return R.warn("存在子菜单,不允许删除");
+    public R<Map<String, Object>> remove(@PathVariable("menuIds") Long[] menuIds) {
+        if (menuIds == null || menuIds.length == 0) {
+            return R.fail("menuIds 不能为空");
         }
-        menuService.deleteMenuById(menuIdList);
-        return R.ok();
+        Map<String, Object> counts = menuService.deleteMenuCascade(List.of(menuIds));
+        return R.ok("删除成功", counts);
     }
 
 }

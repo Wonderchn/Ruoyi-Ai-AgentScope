@@ -385,6 +385,129 @@ public class SysMenuServiceImpl implements ISysMenuService {
     }
 
     /**
+     * 查询引用该菜单的租户套餐名（S2-F01/op4）。CSV 逐 token 精确匹配，避免子串误伤
+     * （如 123 不应命中 1234）。
+     */
+    @Override
+    public List<String> tenantPackagesReferencing(Long menuId) {
+        List<String> names = new ArrayList<>();
+        if (menuId == null) {
+            return names;
+        }
+        String token = menuId.toString();
+        for (SysTenantPackage pkg : tenantPackageMapper.selectList(null)) {
+            if (csvContainsToken(pkg.getMenuIds(), token)) {
+                names.add(pkg.getPackageName());
+            }
+        }
+        return names;
+    }
+
+    /**
+     * 级联删除菜单子树（S2-F01/op4）。
+     *
+     * <p>与 {@link #deleteMenuById(List)} 的差别：**服务端展开全部后代**（调用方只传根即可，
+     * 对齐前端「级联删除」直觉），并一并回收角色绑定、清洗租户套餐 menu_ids、递增受影响
+     * 租户策略版本。单删（{@link #deleteMenuById(Long)}）保持"有子/已分配/被套餐引用"
+     * 三拒绝的保守语义；级联是显式强删路径，因此不拒绝、只清理，并回报清理计数。
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> deleteMenuCascade(List<Long> menuIds) {
+        // 1) 展开闭包：菜单为全局小表，一次读入内存计算后代（含多层）
+        List<SysMenu> all = baseMapper.selectList(new LambdaQueryWrapper<SysMenu>()
+            .select(SysMenu::getMenuId, SysMenu::getParentId));
+        Set<Long> closure = new LinkedHashSet<>(menuIds);
+        boolean grew = true;
+        while (grew) {
+            grew = false;
+            for (SysMenu m : all) {
+                if (m.getParentId() != null && closure.contains(m.getParentId()) && closure.add(m.getMenuId())) {
+                    grew = true;
+                }
+            }
+        }
+        List<Long> ids = new ArrayList<>(closure);
+        // 2) 删除前枚举受影响租户（角色-菜单绑定将被一并回收）
+        Set<String> tenantIds = tenantIdsBoundToMenus(ids);
+        // 3) 回收角色绑定
+        int roleBindings = roleMenuMapper.deleteByMenuIds(ids);
+        // 4) 清洗租户套餐 CSV（逐 token 去除闭包内 id）
+        int packages = 0;
+        int packageRefs = 0;
+        for (SysTenantPackage pkg : tenantPackageMapper.selectList(null)) {
+            String before = pkg.getMenuIds();
+            if (before == null || before.isEmpty()) {
+                continue;
+            }
+            String after = csvRemoveTokens(before, closure);
+            if (!after.equals(before)) {
+                pkg.setMenuIds(after);
+                tenantPackageMapper.updateById(pkg);
+                packages++;
+                packageRefs += countTokens(before) - countTokens(after);
+            }
+        }
+        // 5) 删除菜单行 + 策略版本（无实际删除则不动版本）
+        int rows = baseMapper.deleteByIds(ids);
+        if (rows > 0) {
+            aiPolicyMutationGuard.bump(tenantIds);
+        }
+        Map<String, Object> counts = new HashMap<>();
+        counts.put("menus", rows);
+        counts.put("roleBindings", roleBindings);
+        counts.put("packages", packages);
+        counts.put("packageRefs", packageRefs);
+        return counts;
+    }
+
+    private static boolean csvContainsToken(String csv, String token) {
+        if (StringUtils.isBlank(csv)) {
+            return false;
+        }
+        for (String t : csv.split(",")) {
+            if (token.equals(t.trim())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String csvRemoveTokens(String csv, Set<Long> remove) {
+        List<String> kept = new ArrayList<>();
+        for (String t : csv.split(",")) {
+            String trimmed = t.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            Long id = null;
+            try {
+                id = Long.valueOf(trimmed);
+            } catch (NumberFormatException ignore) {
+                // 非数字 token 原样保留（不猜测、不丢弃）
+            }
+            if (id != null && remove.contains(id)) {
+                continue;
+            }
+            kept.add(trimmed);
+        }
+        return String.join(",", kept);
+    }
+
+    private static int countTokens(String csv) {
+        if (StringUtils.isBlank(csv)) {
+            return 0;
+        }
+        int n = 0;
+        for (String t : csv.split(",")) {
+            if (!t.trim().isEmpty()) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /**
      * 校验菜单名称是否唯一
      *
      * @param menu 菜单信息
