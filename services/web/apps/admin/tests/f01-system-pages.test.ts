@@ -857,6 +857,7 @@ describe('op13 个人中心页', () => {
           profile: { get: fake.api.profileGet, update: fake.api.profileUpdate, updatePwd: fake.api.profileUpdatePwd },
           socials: { list: fake.api.socialsList },
         },
+        uploadContext: () => ({ baseUrl: '/api', token: 'tok', clientId: 'cid' }),
       },
     };
     return { fake, ...mountPage('../src/pages/profile/index.vue', modules, 'profile-page-test') };
@@ -930,8 +931,11 @@ describe('op13 个人中心页', () => {
       await saving;
       await settle();
       assert.match(page.notice.value, /已保存/);
+      // op12 落地后：旧"缺口标注"由**真实上传控件**取代，此处断言新面仍在（非静默丢失），
+      // 且 multipart 字段名与后端 @RequestPart("avatarfile") 逐字一致。
       const source = fs.readFileSync(new URL('../src/pages/profile/index.vue', import.meta.url), 'utf8');
-      assert.ok(source.includes('profile-avatar-gap'), '头像 multipart 缺口必须显式标注');
+      assert.ok(source.includes('profile-avatar-upload'), '头像上传控件必须存在');
+      assert.ok(source.includes("formData.append('avatarfile'"), 'multipart 字段名必须是 avatarfile');
     }
     finally {
       scope.stop();

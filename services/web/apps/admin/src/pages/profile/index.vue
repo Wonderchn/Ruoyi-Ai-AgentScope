@@ -10,10 +10,13 @@
   | 改口令 | PUT /system/user/profile/updatePwd（`{oldPassword,newPassword}`） | 同上 |
   | 社交关系 | GET /system/social/list | **无** `@SaCheckPermission` |
 
-  ## 头像上传缺口（**登记，不伪造**）
+  ## 头像上传（S2-F01/op12：页面本地 fetch 最小实现）
 
   `POST /system/user/profile/avatar` 是 **multipart**（`avatarfile`），响应是 `R<AvatarVo>`。
-  共享 `PlatformClient` 只处理 JSON ⇒ 本页不提供头像上传，只显示当前头像 URL 并标注缺口。
+  共享 `PlatformClient` 只处理 JSON ⇒ **不动共享包**：本页用页面本地 `fetch` 直发 FormData
+  （baseURL/token/clientId 经 `@/api` 的 `uploadContext()` 取数，与平台客户端同配置）；
+  服务端上传成功后**尽力回收旧头像
+  对象**（op12 服务端修复，失败仅留痕）。浏览器级回归随 F01 包级切片（登记为后续债务）。
 
   ## 口令纪律
 
@@ -23,7 +26,7 @@
 <script setup lang="ts">
 import type { SysProfileVo, SysSocialVo } from '@/api';
 import { computed, ref } from 'vue';
-import { systemApi } from '@/api';
+import { systemApi, uploadContext } from '@/api';
 
 const loading = ref(false);
 const error = ref('');
@@ -149,19 +152,68 @@ async function submitPwd() {
   }
 }
 
+/** 头像（op12）：页面本地 fetch 直发 multipart（共享 JSON 客户端不支持）。 */
+const avatarFile = ref<File | null>(null);
+const avatarUploading = ref(false);
+const avatarError = ref('');
+const avatarPreview = ref('');
+
+function onAvatarPicked(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const picked = input.files && input.files.length > 0 ? input.files[0] : null;
+  avatarFile.value = picked;
+  avatarError.value = '';
+  avatarPreview.value = picked ? URL.createObjectURL(picked) : '';
+}
+
+async function uploadAvatar() {
+  if (!avatarFile.value) {
+    avatarError.value = '请先选择图片文件';
+    return;
+  }
+  avatarUploading.value = true;
+  avatarError.value = '';
+  notice.value = '';
+  try {
+    const formData = new FormData();
+    formData.append('avatarfile', avatarFile.value);
+    const { baseUrl, token, clientId } = uploadContext();
+    const response = await fetch(`${baseUrl}/system/user/profile/avatar`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ClientID: clientId,
+      },
+      body: formData,
+    });
+    const envelope = await response.json().catch(() => null) as {
+      code?: number;
+      msg?: string;
+      data?: { imgUrl?: string };
+    } | null;
+    if (!envelope || envelope.code !== 200) {
+      throw new Error(envelope?.msg || `HTTP ${response.status}`);
+    }
+    avatarPreview.value = envelope.data?.imgUrl || avatarPreview.value;
+    avatarFile.value = null;
+    notice.value = '头像已更新。';
+    await load();
+    syncForm();
+  }
+  catch (caught) {
+    avatarError.value = caught instanceof Error ? caught.message : String(caught);
+  }
+  finally {
+    avatarUploading.value = false;
+  }
+}
+
 void load();
 void loadSocials();
 </script>
 
 <template>
   <div>
-    <ElAlert
-      data-testid="profile-avatar-gap"
-      type="info"
-      :closable="false"
-      class="mb-4"
-      title="头像上传缺口：POST /system/user/profile/avatar 是 multipart（avatarfile），共享 JSON 客户端不支持 ⇒ 本页只展示当前头像 URL（RW-15 报告 §NOT_RUN）。"
-    />
     <ElAlert
       v-if="notice"
       data-testid="profile-notice"
@@ -223,6 +275,38 @@ void loadSocials();
             {{ textOf(user, 'phonenumber') || '—' }}
           </ElDescriptionsItem>
         </ElDescriptions>
+
+        <div class="avatar-row" data-testid="profile-avatar">
+          <img
+            v-if="avatarPreview"
+            data-testid="profile-avatar-preview"
+            :src="avatarPreview"
+            alt="头像预览"
+            class="avatar-preview"
+          >
+          <input
+            data-testid="profile-avatar-file"
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            @change="onAvatarPicked"
+          >
+          <ElButton
+            type="primary"
+            :loading="avatarUploading"
+            data-testid="profile-avatar-upload"
+            @click="uploadAvatar()"
+          >
+            上传头像
+          </ElButton>
+        </div>
+        <ElAlert
+          v-if="avatarError"
+          data-testid="profile-avatar-error"
+          :title="avatarError"
+          type="error"
+          :closable="false"
+          class="mb-4"
+        />
 
         <ElForm label-width="90px" @submit.prevent>
           <ElFormItem label="昵称">
@@ -333,5 +417,19 @@ void loadSocials();
   padding: 24px;
   color: var(--el-text-color-secondary);
   text-align: center;
+}
+
+.avatar-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.avatar-preview {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  object-fit: cover;
 }
 </style>
