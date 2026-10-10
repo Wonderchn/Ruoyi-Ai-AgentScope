@@ -18,6 +18,7 @@ import org.ruoyi.system.aiidentity.AiPolicyMutationGuard;
 import org.ruoyi.system.domain.SysMenu;
 import org.ruoyi.system.domain.SysRole;
 import org.ruoyi.system.domain.SysRoleMenu;
+import org.ruoyi.system.domain.SysTenant;
 import org.ruoyi.system.domain.SysTenantPackage;
 import org.ruoyi.system.domain.bo.SysMenuBo;
 import org.ruoyi.system.domain.vo.MetaVo;
@@ -26,6 +27,7 @@ import org.ruoyi.system.domain.vo.SysMenuVo;
 import org.ruoyi.system.mapper.SysMenuMapper;
 import org.ruoyi.system.mapper.SysRoleMapper;
 import org.ruoyi.system.mapper.SysRoleMenuMapper;
+import org.ruoyi.system.mapper.SysTenantMapper;
 import org.ruoyi.system.mapper.SysTenantPackageMapper;
 import org.ruoyi.system.service.ISysMenuService;
 import org.springframework.stereotype.Service;
@@ -46,6 +48,7 @@ public class SysMenuServiceImpl implements ISysMenuService {
     private final SysRoleMapper roleMapper;
     private final SysRoleMenuMapper roleMenuMapper;
     private final SysTenantPackageMapper tenantPackageMapper;
+    private final SysTenantMapper tenantMapper;
     private final AiPolicyMutationGuard aiPolicyMutationGuard;
 
     /**
@@ -433,25 +436,35 @@ public class SysMenuServiceImpl implements ISysMenuService {
         // 3) 回收角色绑定
         int roleBindings = roleMenuMapper.deleteByMenuIds(ids);
         // 4) 清洗租户套餐 CSV（逐 token 去除闭包内 id）
+        Set<Long> cleanedPackageIds = new LinkedHashSet<>();
         int packages = 0;
         int packageRefs = 0;
         for (SysTenantPackage pkg : tenantPackageMapper.selectList(null)) {
             String before = pkg.getMenuIds();
-            if (before == null || before.isEmpty()) {
+            if (StringUtils.isBlank(before)) {
                 continue;
             }
             String after = csvRemoveTokens(before, closure);
-            if (!after.equals(before)) {
+            int removed = countTokens(before) - countTokens(after);
+            // 复核 P3-1：仅"实际移除 token>0"才写库与计数（空白归一化不触发写库）
+            if (removed > 0) {
                 pkg.setMenuIds(after);
                 tenantPackageMapper.updateById(pkg);
                 packages++;
-                packageRefs += countTokens(before) - countTokens(after);
+                packageRefs += removed; // 复核 P3-2：按出现次数计（重复 token 属数据异常，各计一次）
+                cleanedPackageIds.add(pkg.getPackageId());
             }
         }
-        // 5) 删除菜单行 + 策略版本（无实际删除则不动版本）
+        // 5) 删除菜单行 + 策略版本。
+        // 复核 P2：受影响租户 = 角色绑定租户 ∪ **被清洗套餐的使用租户**（与
+        // SysTenantPackageServiceImpl#tenantIdsUsingPackages 同口径——仅挂在套餐里、
+        // 无角色绑定的菜单在库内真实可达）；仍显式枚举、无全租户放大。
+        // 复核 P3-3：任一清理实际发生即 bump（孤儿绑定/仅套餐引用时菜单行数可为 0）。
         int rows = baseMapper.deleteByIds(ids);
-        if (rows > 0) {
-            aiPolicyMutationGuard.bump(tenantIds);
+        if (rows > 0 || roleBindings > 0 || packages > 0) {
+            Set<String> affected = new LinkedHashSet<>(tenantIds);
+            affected.addAll(tenantIdsUsingPackages(cleanedPackageIds));
+            aiPolicyMutationGuard.bump(affected);
         }
         Map<String, Object> counts = new HashMap<>();
         counts.put("menus", rows);
@@ -459,6 +472,24 @@ public class SysMenuServiceImpl implements ISysMenuService {
         counts.put("packages", packages);
         counts.put("packageRefs", packageRefs);
         return counts;
+    }
+
+    /**
+     * 枚举使用指定套餐集合的租户（P1.2b：受影响租户显式可枚举，禁止"全部租户"；
+     * 与 {@code SysTenantPackageServiceImpl#tenantIdsUsingPackages} 同口径）。
+     */
+    private Set<String> tenantIdsUsingPackages(Collection<Long> packageIds) {
+        Set<String> tenantIds = new HashSet<>();
+        if (CollUtil.isEmpty(packageIds)) {
+            return tenantIds;
+        }
+        for (SysTenant tenant : tenantMapper.selectList(
+            new LambdaQueryWrapper<SysTenant>().in(SysTenant::getPackageId, packageIds))) {
+            if (StringUtils.isNotBlank(tenant.getTenantId())) {
+                tenantIds.add(tenant.getTenantId());
+            }
+        }
+        return tenantIds;
     }
 
     private static boolean csvContainsToken(String csv, String token) {

@@ -197,6 +197,9 @@ public class SysMenuController extends BaseController {
      * 级联删除菜单（S2-F01/op4：服务端展开全部后代——调用方只传根即可；
      * 角色绑定一并回收、租户套餐 menu_ids 清洗，返回清理计数）
      *
+     * <p>本端点是**显式强删路径**：不拒绝（有子/已分配/被套餐引用均清理），
+     * 与单删 `/{menuId}` 的保守三拒绝形成刻意对照；清理计数在响应 data 中回报。
+     *
      * @param menuIds 菜单ID串（根菜单集合）
      */
     @SaCheckRole(TenantConstants.SUPER_ADMIN_ROLE_KEY)
