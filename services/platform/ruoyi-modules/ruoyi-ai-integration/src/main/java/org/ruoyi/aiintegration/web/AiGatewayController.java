@@ -285,12 +285,12 @@ public class AiGatewayController {
             new Route("POST", "/runtime-config/revisions/{revisionId}/catalog", "config.publish"),
             // RW-04-R1（T3 交付，T0 集成）：知识管理**分块面**的内层 handler
             // = KnowledgeChunkController（类级 /internal/ai/v1，公开前缀 /api/ai/v1）。
-            // 只登记**闭包已闭合**的分块面 6 条；KB 面与文档面的装配闭包未闭合
-            // （FileStorageService→ObjectStorageClient/凭据；文档面还要 ParserRegistry/
-            //  IngestionEngine 等），由 AiEmbeddedKnowledgeAdminConfiguration 默认关闭
-            // （ai.embedded.knowledge-admin.full=false），故此处**不登记**它们的路由 ——
-            // 登记了却没有 handler 会让 LocalWhitelistHandlerCoverageTest 的
-            // "放行了但没人接"护栏变红，且等于开放不可用面。
+            // KB 面与文档面当时闭包未闭合（FileStorageService→ObjectStorageClient/凭据；
+            // 文档面还要 ParserRegistry/IngestionEngine 等），由
+            // AiEmbeddedKnowledgeAdminConfiguration 默认关闭（ai.embedded.knowledge-admin.full
+            // =false），故 RW-04 期此处只登记分块面 6 条。
+            // **S2-F05-A1 起该闭包已闭合、开关在 shipped 内嵌档案打开**，KB 面与文档面
+            // 的 17 条随本段一并放行（见下方登记），登记即"放行＋有人接"成对成立。
             // 动作复用既有集合（document.read / kb.write），**不新增 canonical 动作、
             // 不新增权限行、不新增迁移**。段数互不遮蔽：{chunk-id}/enable 为 6 段、
             // batch-enable 为 5 段，与 5 段的 {chunk-id} 形状不同。
@@ -300,8 +300,58 @@ public class AiGatewayController {
             new Route("DELETE", "/knowledge-base/docs/{docId}/chunks/{chunkId}", "kb.write"),
             new Route("PATCH", "/knowledge-base/docs/{docId}/chunks/{chunkId}/enable", "kb.write"),
             new Route("PATCH", "/knowledge-base/docs/{docId}/chunks/batch-enable", "kb.write"),
+            // S2-F05-A1（2026-10-10）：知识管理**知识库面 5 条 + 文档面 12 条 = 17 条**。
+            // 内层 handler = KnowledgeBaseController / KnowledgeDocumentController
+            // （类级 /internal/ai/v1；由 AiEmbeddedKnowledgeAdminConfiguration.FullAdmin 装配，
+            //  门控 ai.embedded.knowledge-admin.full=true，shipped 内嵌档案已显式打开）。
+            //
+            // **逐条清点（本表以控制器映射方法实测为准）**：KB 面 5 = GET 列表/GET 详情/
+            // POST 创建/PUT 重命名/DELETE 删除；文档面 12 = ingestion-spec-schema/upload/
+            // chunk(重解析)/delete/详情/update/分页/search/enable/chunk-logs/preview/file。
+            // 树内旧注释的"15 条路由"是 RW-04-R8 期口径（当时文档面 10/11 条），
+            // 与实测 17 条不符，**以本表逐条登记为准**。
+            //
+            // 动作映射（全部为既有 canonical 动作，零新增；权限行 V4 7101-7108 + V5 7118/7119
+            // 已全部播种 ⇒ 零迁移）：
+            //   kb.list / kb.write / kb.read / kb.delete ← 与复数资源面 /knowledge-bases/** 同口径；
+            //   document.list → ai:document:read（复用读，AiCanonicalAction:36 既有映射）；
+            //   document.upload / document.ingest ← V5 已播种；
+            //   文档删除复用 kb.delete（与 POST /documents/{id}/tombstone 同口径——
+            //   仓内没有 document.delete 这个动作，且不新增第 39 个动作）；
+            //   摄取 schema 复用 config.read（控制器自铸许可用的也是它）。
+            //
+            // 段数与顺序（matchRoute 为**声明序首个命中**）：三条 3 段字面量
+            // （docs/ingestion-spec-schema、docs/search、{kbId}/docs）必须排在同为 3 段的
+            // 变量形 docs/{docId} 之前，否则 search/schema 会被 {docId} 吃掉；
+            // 4 段的 chunk-logs/preview/file、6 段的 enable 与既有 5/6 段分块面互不遮蔽。
+            //
+            // GET 的交付回执由**控制器自铸**（KnowledgeBaseController.queryKnowledgeBase/
+            // pageQuery、KnowledgeDocumentController.permitJson/file），**不并入**
+            // AiEmbeddedAdminDeliveryConfiguration 的 advice —— 两处都铸就是双铸（契约回执泄漏）。
+            //
+            // 未达面（B / 显式 NOT_RUN，不在此处冒充）：multipart 上传
+            // （POST /knowledge-base/{kbId}/docs/upload）经本地传输的部件直读、
+            // 真实 S3/OSS（rag.storage.type=s3|oss，F22 op3）、
+            // MQ 承载的两条事务消息操作（KB 删除 / 文档重解析：内嵌无 broker 时显式 503）。
+            new Route("GET", "/knowledge-base/docs/ingestion-spec-schema", "config.read"),
+            new Route("GET", "/knowledge-base/docs/search", "document.list"),
+            new Route("GET", "/knowledge-base/docs/{docId}", "document.read"),
+            new Route("GET", "/knowledge-base/docs/{docId}/chunk-logs", "document.read"),
+            new Route("GET", "/knowledge-base/docs/{docId}/preview", "document.read"),
+            new Route("GET", "/knowledge-base/docs/{docId}/file", "document.download"),
+            new Route("POST", "/knowledge-base/{kbId}/docs/upload", "document.upload"),
+            new Route("POST", "/knowledge-base/docs/{docId}/chunk", "document.ingest"),
+            new Route("PUT", "/knowledge-base/docs/{docId}", "kb.write"),
+            new Route("DELETE", "/knowledge-base/docs/{docId}", "kb.delete"),
+            new Route("PATCH", "/knowledge-base/docs/{docId}/enable", "kb.write"),
+            new Route("GET", "/knowledge-base/{kbId}/docs", "document.list"),
+            new Route("GET", "/knowledge-base", "kb.list"),
+            new Route("POST", "/knowledge-base", "kb.write"),
+            new Route("GET", "/knowledge-base/{kbId}", "kb.read"),
+            new Route("PUT", "/knowledge-base/{kbId}", "kb.write"),
+            new Route("DELETE", "/knowledge-base/{kbId}", "kb.delete"),
             // R6: explicit administrative surfaces; GET replies carry P2 delivery receipts.
-            // KB/document full admin remains closed until its prerequisites are verified.
+            // KB/document full admin 已由 S2-F05-A1 闭合放行（上方 17 条）。
             new Route("GET", "/intent-tree/trees", "config.read"),
             new Route("POST", "/intent-tree", "config.publish"),
             new Route("PUT", "/intent-tree/{id}", "config.publish"),

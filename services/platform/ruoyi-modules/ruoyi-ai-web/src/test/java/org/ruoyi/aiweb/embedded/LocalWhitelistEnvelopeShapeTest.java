@@ -59,13 +59,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 不会被任何一条挡住，运行期表现是网关 503（{@code missing envelope code}）。
  * 本类把这条规则显式化：<b>放行 = 必须整数信封</b>。
  *
- * <p><b>知识库面/文档面的信封状态（RW-04-R8 变更）。</b>改造前这两个面返回 platform
- * {@code Result}（字符串 {@code code}），当时因为它们<b>未被放行</b>、也不是 bean
+ * <p><b>知识库面/文档面的信封状态（RW-04-R8 改造，S2-F05-A1 放行）。</b>改造前这两个面返回
+ * platform {@code Result}（字符串 {@code code}），当时因为它们<b>未被放行</b>、也不是 bean
  * （内嵌装配默认关闭）而不构成 D2。RW-04-R8 已把它们改成整数 {@link ApiEnvelope}
  * （GET 另带回执头），于是本类的判定从"未放行 ⇒ 不检查"变成
  * <b>"这两个面现在确实是整数 code"</b>。
- * <b>本卡只消灭了"一经登记路由就必然 503"这一项，两个面仍未放行</b>——
- * 见 {@link #knowledgeAdminFacesAreStillUnrouted()}。
+ * <b>S2-F05-A1 起闭包闭合、17 条路由已登记</b>——"放行 = 必须整数信封"因此对这三个面
+ * <b>全部生效</b>（不再有"未放行 ⇒ 豁免"的缝），逐条清单由
+ * {@link #knowledgeAdminFacesAreReleasedAndCounted()} 钉住。
  *
  * <p>路由表从 {@code AiGatewayController} <b>源码</b>解析（与该包既有护栏同一手法），
  * 内层 handler 的返回类型用反射读（控制器在测试类路径上）。
@@ -106,11 +107,12 @@ class LocalWhitelistEnvelopeShapeTest {
                 continue;
             }
             Class<?> controller = knowledgeControllerFor(pattern);
-            for (Method method : mappedMethods(controller)) {
-                if (!isIntegralEnvelope(method)) {
-                    offenders.add(pattern + " → " + controller.getSimpleName() + "."
-                            + method.getName() + " 返回 " + method.getReturnType().getSimpleName());
-                }
+            // 走与自证判据**同一个**判定器：它同时带"裸字节面"豁免（返回 void +
+            // HttpServletResponse 参数，恰一条 file，由 rawByteStreamShapeIsExplicit 与
+            // KnowledgeDocumentPrivateDownloadTest 钉住）。S2-F05-A1 放行文档面后这条差异
+            // 才暴露出来——此前单数面只有分块路由，控制器里没有裸字节方法，判定器等价。
+            for (String offender : stringCodeHandlers(controller)) {
+                offenders.add(pattern + " → " + controller.getSimpleName() + "." + offender);
             }
         }
 
@@ -166,24 +168,78 @@ class LocalWhitelistEnvelopeShapeTest {
     }
 
     @Test
-    @DisplayName("红线：知识库面/文档面仍未放行（信封改造不等于激活）")
-    void knowledgeAdminFacesAreStillUnrouted() throws IOException {
-        List<String> patterns = whitelistedPatterns();
-
-        // 锚点：单数知识管理面当前只放行了 6 条分块路由。少了这条，下面就是"空集合为空"。
-        List<String> singular = patterns.stream()
-                .filter(pattern -> SINGULAR_KNOWLEDGE_SURFACE.matcher(pattern).find())
+    @DisplayName("红线（S2-F05-A1 改向）：知识管理面 23 条 = 分块 6 + 知识库 5 + 文档 12，逐条在列且无未审增量")
+    void knowledgeAdminFacesAreReleasedAndCounted() throws IOException {
+        List<String> routes = whitelistedRoutes();
+        List<String> singular = routes.stream()
+                .filter(route -> SINGULAR_KNOWLEDGE_SURFACE.matcher(patternOf(route)).find())
                 .toList();
-        assertThat(singular)
-                .as("锚点：必须真的读到单数 /knowledge-base 面已登记的分块路由")
-                .hasSizeGreaterThanOrEqualTo(6)
-                .allMatch(pattern -> pattern.contains("/chunks"));
 
+        // 锚点：必须真的读到单数 /knowledge-base 面的全部路由（RW-04-R1 的 6 + S2-F05-A1 的 17）。
         assertThat(singular)
-                .as("知识库面与文档面仍未放行：FullAdmin 的构造闭包还缺 15 个单例 bean 与 2 组集合元素，"
-                        + "闭包不齐时装配上去会启动失败。信封改造只消灭了 503 这一项，"
-                        + "**不构成放行**；这 15 条路由由 T0 在闭包闭合后串行决定。")
-                .noneMatch(pattern -> !pattern.contains("/chunks"));
+                .as("锚点：必须真的读到单数 /knowledge-base 面已登记的路由")
+                .hasSizeGreaterThanOrEqualTo(23);
+
+        // 逐条清点（清单 = 三个控制器的映射方法实测；"15 条"是 RW-04-R8 期的过期口径）。
+        // containsExactlyInAnyOrder 是**两侧**判据：少一条（放行被回退）或
+        // 多一条（未审的新放行）都会红。
+        assertThat(singular)
+                .as("知识管理面公开路由清单：分块面 6（RW-04-R1）+ 知识库面 5 + 文档面 12（S2-F05-A1）。"
+                        + "新增任何一条都要先回到本清单（放行 = 有人接 + 整数信封 + 动作已在白名单动作集内）")
+                .containsExactlyInAnyOrder(
+                        // 分块面 6（RW-04-R1 已放行）
+                        "GET /knowledge-base/docs/{docId}/chunks",
+                        "POST /knowledge-base/docs/{docId}/chunks",
+                        "PUT /knowledge-base/docs/{docId}/chunks/{chunkId}",
+                        "DELETE /knowledge-base/docs/{docId}/chunks/{chunkId}",
+                        "PATCH /knowledge-base/docs/{docId}/chunks/{chunkId}/enable",
+                        "PATCH /knowledge-base/docs/{docId}/chunks/batch-enable",
+                        // 知识库面 5（S2-F05-A1）
+                        "GET /knowledge-base",
+                        "POST /knowledge-base",
+                        "GET /knowledge-base/{kbId}",
+                        "PUT /knowledge-base/{kbId}",
+                        "DELETE /knowledge-base/{kbId}",
+                        // 文档面 12（S2-F05-A1）
+                        "GET /knowledge-base/docs/ingestion-spec-schema",
+                        "GET /knowledge-base/docs/search",
+                        "GET /knowledge-base/docs/{docId}",
+                        "GET /knowledge-base/docs/{docId}/chunk-logs",
+                        "GET /knowledge-base/docs/{docId}/preview",
+                        "GET /knowledge-base/docs/{docId}/file",
+                        "POST /knowledge-base/{kbId}/docs/upload",
+                        "POST /knowledge-base/docs/{docId}/chunk",
+                        "PUT /knowledge-base/docs/{docId}",
+                        "DELETE /knowledge-base/docs/{docId}",
+                        "PATCH /knowledge-base/docs/{docId}/enable",
+                        "GET /knowledge-base/{kbId}/docs");
+    }
+
+    @Test
+    @DisplayName("红线：3 段字面量路由必须排在同段的 {docId} 形之前（matchRoute 取声明序首个命中）")
+    void literalThreeSegmentRoutesPrecedeTheDocIdShape() throws IOException {
+        // 网关 matchRoute 逐条比较**声明序**，段数相同即可能互相遮蔽：
+        // docs/ingestion-spec-schema 与 docs/search 都是 3 段，若排在 docs/{docId} 之后，
+        // 它们会被 {docId} 吃掉（`{x}` 匹配任意非空段），运行期表现为
+        // "schema/search 恒 404 或落到详情语义"——静态看两条路由都在，只有真请求会发现。
+        List<String> singular = whitelistedRoutes().stream()
+                .filter(route -> SINGULAR_KNOWLEDGE_SURFACE.matcher(patternOf(route)).find())
+                .toList();
+        int docDetail = singular.indexOf("GET /knowledge-base/docs/{docId}");
+
+        assertThat(docDetail)
+                .as("锚点：变量形详情路由必须真的在表里")
+                .isGreaterThanOrEqualTo(0);
+        for (String literal : List.of("GET /knowledge-base/docs/ingestion-spec-schema",
+                "GET /knowledge-base/docs/search")) {
+            int index = singular.indexOf(literal);
+            assertThat(index)
+                    .as(literal + " 未登记")
+                    .isGreaterThanOrEqualTo(0);
+            assertThat(index)
+                    .as(literal + " 排在 GET /knowledge-base/docs/{docId} 之后会被其遮蔽")
+                    .isLessThan(docDetail);
+        }
     }
 
     // ------------------------------------------------------------------ 判定
@@ -262,6 +318,11 @@ class LocalWhitelistEnvelopeShapeTest {
             return KnowledgeDocumentController.class;
         }
         return KnowledgeBaseController.class;
+    }
+
+    /** {@code "METHOD /pattern"} → {@code "/pattern"}。 */
+    private static String patternOf(String route) {
+        return route.substring(route.indexOf(' ') + 1);
     }
 
     /** 从网关源码解析白名单 pattern（保留声明顺序，顺序本身是路由语义的一部分）。 */
