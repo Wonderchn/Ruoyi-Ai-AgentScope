@@ -33,15 +33,18 @@ const staticMenus = [
   { path: '/monitor/online', title: '在线用户', icon: 'Monitor', permission: 'monitor:online:list' },
   { path: '/monitor/server', title: '服务监控', icon: 'Monitor', permission: 'monitor:admin:list' },
   // W3-5 AI 管理域（成对核对表：src/config/permission-page-pairs.ts）。
-  // agents/skills/ingestion/settings 无权限行（ragent 管理面未播种 C 行），
-  // permission 留空 = 菜单恒显；后端端点本身 404（BLOCKED-BY-EMBEDDED-REGISTRY）。
+  // skills/ingestion 无权限行（ragent 管理面未播种 C 行 ⇒ PAIR-GAP-NO-ROW），
+  // permission 留空 = 菜单恒显。agents 随 V27-7141 接 ai:agent:list；
+  // models/settings 随 V28-7150/7151/7152 接 ai:config:read——三项均与路由 meta
+  // 逐字一致（S2-F02-α 修正：此前 models 误挂已退役 system:model:list、
+  // settings 与 agents 误留空；防漂移断言见 tests/permission-page-pairs.test.ts）。
   { path: '/ai/knowledge', title: '知识库', icon: 'Reading', permission: 'ai:kb:list' },
-  { path: '/ai/models', title: '模型与提供方', icon: 'Cpu', permission: 'system:model:list' },
-  { path: '/ai/agents', title: 'Agent 定义', icon: 'ChatDotRound', permission: '' },
+  { path: '/ai/models', title: '模型与提供方', icon: 'Cpu', permission: 'ai:config:read' },
+  { path: '/ai/agents', title: 'Agent 定义', icon: 'ChatDotRound', permission: 'ai:agent:list' },
   { path: '/ai/skills', title: 'Skills', icon: 'MagicStick', permission: '' },
   { path: '/ai/mcp', title: 'MCP 工具目录', icon: 'SetUp', permission: 'mcp:tool:list' },
   { path: '/ai/ingestion', title: '摄取流水线', icon: 'Box', permission: '' },
-  { path: '/ai/settings', title: '系统设置', icon: 'Tools', permission: '' },
+  { path: '/ai/settings', title: '系统设置', icon: 'Tools', permission: 'ai:config:read' },
 ];
 
 const collapsed = ref(false);
