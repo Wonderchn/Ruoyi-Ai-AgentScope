@@ -24,7 +24,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.sql.Timestamp;
+import java.util.AbstractMap;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -95,10 +100,31 @@ public class TenantConversationReadRepository {
      *
      * <p>范围与过滤条件保持逐字不变（tenant + member + conversation + deleted = 0），
      * 分页上限仍由调用方收敛在 1..200——补字段不允许放宽任何一条。
+     *
+     * <p><b>F17-A1 / op3：vote 富化。</b>消息列表是既有的唯一读面（网关
+     * {@code GET /conversations/{id}/messages}），此前不带反馈值——反馈历史在治理读里
+     * 回传不了 vote。这里<b>不新增路由</b>，对<b>本页消息</b>补一次按
+     * {@code (tenant, user, deleted = 0)} 限域的反馈查询：
+     * <ul>
+     *   <li>{@code vote ∈ {1, -1}}；没有有效反馈为 {@code null}；</li>
+     *   <li>取消占位（{@code vote=0, deleted=1}）<b>不</b>出现在读面——与旧链
+     *       {@code MessageFeedbackServiceImpl.getUserVotes} 的 {@code deleted=0} 口径一致；</li>
+     *   <li>{@code user_id} 谓词是"我的赞踩"的唯一来源：同一消息上他人的反馈行
+     *       （写入侧冲突键同为 {@code (tenant, message, user)}）不会被计入当前用户。</li>
+     * </ul>
+     *
+     * <p>查询按 {@code message_id IN (本页 id)} 取（页大小上界 200 ⇒ IN 列表有界）。
+     * 不改成联表：{@code MESSAGE_COLUMNS} 是构建期列护栏
+     * （{@code ConversationHistoryColumnGuardTest}）的读取对象，保持"单表选择列表"形状
+     * 才能让该护栏继续逐列对照 {@code ai_message} 的冻结形状。
      */
-    public List<MessageRow> listMessages(String tenantId, String memberId, String conversationId,
+    public List<MessageRow> listMessages(String tenantId, String memberId, String userId, String conversationId,
                                          long offset, int limit) {
         requireScope(tenantId, memberId);
+        if (userId == null || userId.isBlank()) {
+            // vote 是"当前用户"的反馈事实；没有用户就没有可返回的 vote，不允许匿名回退。
+            throw new ClientException("userId 不能为空");
+        }
         if (offset < 0 || limit < 1 || limit > 200) {
             throw new ClientException("分页参数非法");
         }
@@ -106,7 +132,7 @@ public class TenantConversationReadRepository {
                 + " FROM platform.ai_message"
                 + " WHERE tenant_id = ? AND member_id = ? AND conversation_id = ? AND deleted = 0"
                 + " ORDER BY create_time ASC, id ASC LIMIT ? OFFSET ?";
-        return jdbc.query(sql, (rs, rowNum) -> new MessageRow(
+        List<MessageRow> rows = jdbc.query(sql, (rs, rowNum) -> new MessageRow(
                         rs.getString("id"),
                         rs.getString("role"),
                         rs.getString("content"),
@@ -119,8 +145,44 @@ public class TenantConversationReadRepository {
                         rs.getString("retrieved_chunks"),
                         rs.getString("reply_to_message_id"),
                         rs.getString("model_name"),
-                        rs.getObject("total_tokens", Integer.class)),
+                        rs.getObject("total_tokens", Integer.class),
+                        null),
                 tenantId, memberId, conversationId, limit, offset);
+        if (rows.isEmpty()) {
+            // 空页不发起反馈查询：没有 id 可查，多发一条必空 SQL 只是噪声。
+            return rows;
+        }
+        Map<String, Integer> activeVotes = loadActiveVotes(tenantId, userId, rows);
+        if (activeVotes.isEmpty()) {
+            return rows;
+        }
+        return rows.stream()
+                .map(row -> activeVotes.containsKey(row.id()) ? row.withVote(activeVotes.get(row.id())) : row)
+                .toList();
+    }
+
+    /** 本页消息的当前用户有效反馈（{@code deleted = 0}；取消占位不返回）。 */
+    private Map<String, Integer> loadActiveVotes(String tenantId, String userId, List<MessageRow> rows) {
+        String placeholders = String.join(", ", Collections.nCopies(rows.size(), "?"));
+        List<Object> args = new ArrayList<>(2 + rows.size());
+        args.add(tenantId);
+        args.add(userId);
+        rows.forEach(row -> args.add(row.id()));
+        List<Map.Entry<String, Integer>> votes = jdbc.query(
+                "SELECT message_id, vote FROM platform.ai_message_feedback"
+                        + " WHERE tenant_id = ? AND user_id = ? AND deleted = 0"
+                        + " AND message_id IN (" + placeholders + ")",
+                (rs, rowNum) -> new AbstractMap.SimpleImmutableEntry<>(
+                        rs.getString("message_id"), rs.getObject("vote", Integer.class)),
+                args.toArray());
+        Map<String, Integer> byMessageId = new LinkedHashMap<>();
+        for (Map.Entry<String, Integer> vote : votes) {
+            // 冲突键 (tenant, message, user) 保证每个 message 至多一行；putIfAbsent 只是防御。
+            if (vote.getKey() != null && vote.getValue() != null) {
+                byMessageId.putIfAbsent(vote.getKey(), vote.getValue());
+            }
+        }
+        return byMessageId;
     }
 
     /** 会话计数：统计必须与列表同范围，不允许全库分母。 */
@@ -155,10 +217,22 @@ public class TenantConversationReadRepository {
      * <p>jsonb 列以 JSON 文本返回（无损）；{@code thinkingDuration} 可能为 NULL，
      * 所以用包装类型而不是 {@code int}——用基本类型会把 NULL 静默变成 0，
      * 而"没记录耗时"和"耗时 0 毫秒"是两件事。
+     *
+     * <p>{@code vote}（F17-A1 / op3）：当前用户对该消息的有效反馈（1=赞 / -1=踩），
+     * 无有效反馈为 NULL。与 {@code thinkingDuration} 同理用包装类型——
+     * "没反馈"和"反馈值为 0"（仅存在于取消占位 {@code deleted=1} 的行，读面不返回）不是一件事。
      */
     public record MessageRow(String id, String role, String content, String messageStatus,
                              Timestamp createTime, String thinkingContent, Integer thinkingDuration,
                              String sources, String recommendedQuestions, String retrievedChunks,
-                             String replyToMessageId, String modelName, Integer totalTokens) {
+                             String replyToMessageId, String modelName, Integer totalTokens,
+                             Integer vote) {
+
+        /** 富化用：同一条消息换一个 vote 值（记录不可变，只能重建）。 */
+        MessageRow withVote(Integer newVote) {
+            return new MessageRow(id, role, content, messageStatus, createTime, thinkingContent,
+                    thinkingDuration, sources, recommendedQuestions, retrievedChunks,
+                    replyToMessageId, modelName, totalTokens, newVote);
+        }
     }
 }

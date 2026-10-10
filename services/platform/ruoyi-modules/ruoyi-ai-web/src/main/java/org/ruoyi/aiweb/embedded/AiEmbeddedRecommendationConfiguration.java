@@ -73,7 +73,8 @@ import org.springframework.context.annotation.Import;
  *
  * <p><b>回执与动作。</b>本面是写面（POST），<b>不铸</b> GET 交付回执
  * （网关仅在字节分支释放许可，JSON 分支铸造会变成许可泄漏）。
- * 授权复用既有 canonical 动作 {@code conversation.read}，
+ * 授权复用既有 canonical 动作 {@code conversation.rename}（R6 重裁：只持
+ * {@code conversation.read} 的调用必须 403，见 {@code LocalAdminRouteDispatchTest}），
  * <b>不新增动作、不新增权限行、不新增迁移</b>（{@code P1CurrentAuthorizationTest} 的动作条数护栏不变）。
  *
  * <p><b>诚实边界。</b>本组装配正确性由 MVC/dispatch 判据与上下文装载判据证明；

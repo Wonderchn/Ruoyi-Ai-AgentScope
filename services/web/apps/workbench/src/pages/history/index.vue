@@ -11,10 +11,12 @@ const user = useUserStore();
 /**
  * W3-5 / F05+F17 消息反馈（`POST|DELETE /api/ai/v1/conversations/messages/{id}/feedback`）。
  *
- * ⚠️ 可达性事实（读平台树源码核实，详见 `@/api/ai/message-feedback` 模块头注释）：
- * 网关 `ROUTES` **未登记**该路由 ⇒ 当前交付下调用必然 404。
- * 本控件按**契约客户端**建设：端点开放后无需改码即可联调；当前按 `not-found`
- * 如实呈现"端点未开放"，**不渲染成功**（不以任何码冒充已提交）。
+ * 可达性事实（读平台树源码核实，详见 `@/api/ai/message-feedback` 模块头注释；判据态 B）：
+ * 网关 `ROUTES` **已登记**该路由（W3-5-BE-1 起；内嵌 `FeedbackSurface` 受理，
+ * 提交/取消各映射既有写动作为 conversation.rename / conversation.delete）。
+ * 默认交付下反馈生产者缺席（`ai.integration.legacy-listeners-enabled` 未开启）⇒
+ * 调用按 403 如实呈现"反馈链未开启"（来源由 failure.message 原样透出）；
+ * 本控件按**契约客户端**建设，**不渲染成功**（不以任何码冒充已提交）。
  */
 const feedback = createFeedbackApi({
   baseUrl: import.meta.env.VITE_API_URL,

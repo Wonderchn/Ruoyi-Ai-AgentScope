@@ -222,7 +222,9 @@ public class AiResourceController {
         var principal=PrincipalContext.require();requireGrant(principal,"conversation.read","conv:"+conversationId);
         if(conversations.findConversation(principal.tenantId(),principal.membershipId(),conversationId).isEmpty()){
             throw new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);}
-        return reply("conversation.read","conv:"+conversationId,conversations.listMessages(principal.tenantId(),principal.membershipId(),conversationId,offset,limit));
+        // F17-A1 / op3：读面富化当前用户的 vote（1/-1/null）；零新路由，动作/授权不变。
+        return reply("conversation.read","conv:"+conversationId,conversations.listMessages(
+                principal.tenantId(),principal.membershipId(),principal.userId(),conversationId,offset,limit));
     }
 
     /**
