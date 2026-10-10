@@ -19,10 +19,13 @@ package com.nageoffer.ai.ragent.rag.core.unified;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
+import com.baomidou.mybatisplus.core.config.GlobalConfig;
+import com.baomidou.mybatisplus.core.toolkit.GlobalConfigUtils;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.nageoffer.ai.ragent.authorization.AiDomainWriteIdentity;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
+import com.nageoffer.ai.ragent.framework.database.MyMetaObjectHandler;
 import com.nageoffer.ai.ragent.rag.dao.entity.ConversationDO;
 import com.nageoffer.ai.ragent.rag.dao.entity.ConversationMessageDO;
 import com.nageoffer.ai.ragent.rag.dao.entity.MessageFeedbackDO;
@@ -65,7 +68,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       不产生第二行，就地更新；</li>
  *   <li><b>条件 upsert / 乱序保护</b>：{@code WHERE update_time < EXCLUDED.update_time}
  *       ——旧事件（较早 submitTime）返回 0 行、不覆写新状态；</li>
- *   <li><b>取消占位</b>：{@code vote=0, deleted=1}；重复取消幂等（仍恰一行）；</li>
+ *   <li><b>取消</b>：{@code deleted=1}（无既有行时插入 {@code vote=0} 占位；既有行只置
+ *       deleted/update_time，vote 保留最后一次有效值——所有读面按 deleted=0 过滤）；
+ *       重复取消幂等（仍恰一行）；</li>
  *   <li><b>四步增量</b>：like→re-like→unlike→re-like 终点恰一行、vote=1/deleted=0；</li>
  *   <li><b>服务层双保险</b>（{@code MessageFeedbackServiceImpl.doUpsertFeedback} 的
  *       {@code lt(updateTime, submitTime)}）：乱序事件经服务层也不得覆写；</li>
@@ -121,6 +126,15 @@ class MessageFeedbackIdempotencyPostgresTest {
         ds.setPassword(DB_USER);
         MybatisConfiguration configuration = new MybatisConfiguration();
         configuration.setMapUnderscoreToCamelCase(true);
+        // 与服务层 update 路径同语义：@TableField(fill = INSERT_UPDATE) 的字段（update_time）
+        // 被 MP 无条件放进 SET 子句，值由 MetaObjectHandler 在执行前填充。台架不注册处理器时
+        // 该参数绑 null → 真库首跑报 `null value in column "update_time"`（复核 M1 后续发现①）。
+        // 生产（Spring）与既有真库 E2E 都用 MyMetaObjectHandler；这里必须按同一语义装配。
+        // 用 GlobalConfigUtils.defaults() 而不是裸 new GlobalConfig()：后者 dbConfig 为 null，
+        // MybatisSqlSessionFactoryBuilder.build 会解引用 tablePrefix 直接 NPE（真库首跑实测）。
+        GlobalConfig globalConfig = GlobalConfigUtils.defaults();
+        globalConfig.setMetaObjectHandler(new MyMetaObjectHandler());
+        GlobalConfigUtils.setGlobalConfig(configuration, globalConfig);
         configuration.setEnvironment(new Environment("f17-idem", new JdbcTransactionFactory(), ds));
         configuration.addMapper(ConversationMapper.class);
         configuration.addMapper(ConversationMessageMapper.class);
@@ -143,10 +157,14 @@ class MessageFeedbackIdempotencyPostgresTest {
         assertThat(upsertActive(MSG_LIKE, 1, t + 1_000)).as("重复点赞 = 就地更新（不产生第二行）").isEqualTo(1);
         assertThat(rawCount(MSG_LIKE, USER_ID)).isEqualTo(1);
 
-        assertThat(upsertCancelled(MSG_LIKE, t + 2_000)).as("取消 = 占位行（vote=0, deleted=1）").isEqualTo(1);
+        assertThat(upsertCancelled(MSG_LIKE, t + 2_000)).as("取消 = 同一行置 deleted=1").isEqualTo(1);
         assertThat(rawCount(MSG_LIKE, USER_ID)).isEqualTo(1);
-        assertThat(rawVote(MSG_LIKE, USER_ID)).as("取消占位 vote=0").isZero();
-        assertThat(rawDeleted(MSG_LIKE, USER_ID)).as("取消占位 deleted=1").isEqualTo(1);
+        assertThat(rawDeleted(MSG_LIKE, USER_ID)).as("取消的语义载体是 deleted=1").isEqualTo(1);
+        // 真库首跑（ENV-BATCH-3）实测：取消的冲突分支（DO UPDATE SET）只写 update_time/deleted，
+        // **不重写 vote** —— 既有行保留最后一次有效值；"vote=0 的占位"只出现在无既有行的取消
+        // （INSERT 分支，见 repeatedCancelIsIdempotent）。所有读路径按 deleted=0 过滤 ⇒
+        // 保留值对读面不可见（治理读/网关读面都不返回该行）。
+        assertThat(rawVote(MSG_LIKE, USER_ID)).as("取消不重写 vote：保留最后一次有效值").isEqualTo(1);
 
         assertThat(upsertActive(MSG_LIKE, 1, t + 3_000)).as("取消后再点赞 = 同一行复活").isEqualTo(1);
         assertThat(rawCount(MSG_LIKE, USER_ID)).isEqualTo(1);
@@ -170,6 +188,8 @@ class MessageFeedbackIdempotencyPostgresTest {
     @DisplayName("重复取消幂等（mapper）：晚到的第二次取消仍是同一占位行")
     void repeatedCancelIsIdempotent() throws Exception {
         long t = 1_800_000_200_000L;
+        // 首取消 = INSERT 分支（本消息行此前没有任何反馈）→ vote=0 的占位；
+        // 重复取消 = 冲突分支（只置 update_time/deleted，vote 保持占位值 0）→ 幂等。
         assertThat(upsertCancelled(MSG_CANCEL, t)).isEqualTo(1);
         assertThat(upsertCancelled(MSG_CANCEL, t + 1_000)).as("晚到的重复取消：更新同一行").isEqualTo(1);
         assertThat(rawCount(MSG_CANCEL, USER_ID)).isEqualTo(1);
