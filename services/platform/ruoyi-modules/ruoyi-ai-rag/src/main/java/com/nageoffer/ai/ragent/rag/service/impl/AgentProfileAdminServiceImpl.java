@@ -222,7 +222,6 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
     @Override
     public AgentPromptConfigVO loadPrompts(String id) {
         AgentProfileDO profile = mustLoad(id);
-        AgentProfileDO builtin = loadBuiltin();
         OrchestrationMode mode = orchestrationProperties.getMode();
         Map<String, String> own = agentPromptResolver.loadOwnPrompts(id);
 
@@ -244,7 +243,7 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
                 .agentId(id)
                 .agentName(profile.getName())
                 .builtin(isTrue(profile.getBuiltin()))
-                .defaultAgentName(builtin == null ? null : builtin.getName())
+                .defaultAgentName(loadDefaultAgentName())
                 .mode(mode.name())
                 .slots(slots)
                 .build();
@@ -318,6 +317,22 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
     private AgentProfileDO loadBuiltin() {
         return agentProfileMapper.selectOne(Wrappers.lambdaQuery(AgentProfileDO.class)
                 .eq(AgentProfileDO::getBuiltin, 1));
+    }
+
+    /**
+     * 内置智能体的名称；租户域缺席时经只读模板域补名（内置行存于保留租户
+     * {@code __public_template__}），与 {@link #defaultPrompt(String)} 的回落链同口径（R12 卡6）
+     */
+    private String loadDefaultAgentName() {
+        AgentProfileDO builtin = loadBuiltin();
+        if (builtin != null) {
+            return builtin.getName();
+        }
+        return templateRepository.findProfiles().stream()
+                .filter(profile -> isTrue(profile.builtin()))
+                .findFirst()
+                .map(PublicTemplateRepository.TemplateProfile::name)
+                .orElse(null);
     }
 
     /**
