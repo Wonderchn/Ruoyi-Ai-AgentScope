@@ -21,6 +21,7 @@ import com.nageoffer.ai.ragent.rag.dao.entity.AgentProfileDO;
 import com.nageoffer.ai.ragent.rag.dao.entity.AgentPromptDO;
 import com.nageoffer.ai.ragent.rag.dao.mapper.AgentProfileMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.AgentPromptMapper;
+import com.nageoffer.ai.ragent.template.PublicTemplateRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -35,13 +36,16 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import org.junit.jupiter.api.Tag;
 
 /**
  * 覆盖回落链：激活智能体的非空槽位覆盖内置，空白槽位回落内置
  * <p>
- * 每个用例只调一次 resolveAll，因为 mapper 桩按调用顺序返回（先查内置、再查激活）
+ * 每个用例只调一次 resolveAll，因为 mapper 桩按调用顺序返回（先查内置、再查激活）；
+ * 租户态内置行缺席时基线取自公共模板域（F09-A1 ③）。
  */
 @ExtendWith(MockitoExtension.class)
 @Tag("dev")
@@ -59,11 +63,15 @@ class AgentPromptResolverTest {
     @Mock
     private AgentPromptCacheManager cacheManager;
 
+    @Mock
+    private PublicTemplateRepository templateRepository;
+
     private AgentPromptResolver resolver;
 
     @BeforeEach
     void setUp() {
-        resolver = new AgentPromptResolver(agentProfileMapper, agentPromptMapper, cacheManager);
+        resolver = new AgentPromptResolver(agentProfileMapper, agentPromptMapper, cacheManager,
+                templateRepository);
         when(cacheManager.getFromCache()).thenReturn(null);
     }
 
@@ -139,6 +147,59 @@ class AgentPromptResolverTest {
         assertEquals("", resolver.resolve(AgentPromptSlot.KB_ANSWER));
     }
 
+    /**
+     * F09-A1 ③ 红判据：租户态内置行不在租户域（V7 转入保留租户 {@code __public_template__}），
+     * 未覆盖槽位必须经只读模板域回落内置基线——现缺失（= 断链）即红
+     */
+    @Test
+    void fallsBackToTemplateDomainBaselineForUnsetSlots() {
+        stubProfiles(null, profile(ACTIVE_ID, 0, 1));
+        stubPromptCalls(List.of(prompt(ACTIVE_ID, AgentPromptSlot.KB_ANSWER, "租户覆盖的知识库应答")));
+        when(templateRepository.findProfiles()).thenReturn(List.of(templateProfile("t-builtin", "内置")));
+        when(templateRepository.findPrompts("t-builtin")).thenReturn(List.of(
+                templatePrompt("t-builtin", AgentPromptSlot.KB_ANSWER, "模板知识库应答"),
+                templatePrompt("t-builtin", AgentPromptSlot.AGENT_MAIN, "模板人设")));
+
+        Map<String, String> resolved = resolver.resolveAll();
+
+        assertEquals("租户覆盖的知识库应答", resolved.get(AgentPromptSlot.KB_ANSWER.name()));
+        assertEquals("模板人设", resolved.get(AgentPromptSlot.AGENT_MAIN.name()),
+                "租户态未覆盖槽位必须回落模板域内置基线而不是缺席");
+    }
+
+    /**
+     * 模板域行是空白时不得当作基线（与 putNonBlank 的空白不覆盖判定同口径）
+     */
+    @Test
+    void templateBaselineSkipsBlankContent() {
+        stubProfiles(null, profile(ACTIVE_ID, 0, 1));
+        stubPromptCalls(List.of());
+        when(templateRepository.findProfiles()).thenReturn(List.of(templateProfile("t-builtin", "内置")));
+        when(templateRepository.findPrompts("t-builtin")).thenReturn(List.of(
+                templatePrompt("t-builtin", AgentPromptSlot.AGENT_MAIN, "   \n "),
+                templatePrompt("t-builtin", AgentPromptSlot.SYSTEM_CHAT, "模板闲聊")));
+
+        Map<String, String> resolved = resolver.resolveAll();
+
+        assertEquals("模板闲聊", resolved.get(AgentPromptSlot.SYSTEM_CHAT.name()));
+        assertNull(resolved.get(AgentPromptSlot.AGENT_MAIN.name()),
+                "空白模板内容不得作为基线");
+    }
+
+    /**
+     * 租户域已有内置行时不得再读模板域（租户内自配优先，与卡6 的回落次序一致）
+     */
+    @Test
+    void tenantBuiltinWinsWithoutTemplateRead() {
+        stubProfiles(profile(BUILTIN_ID, 1, 0), profile(ACTIVE_ID, 0, 1));
+        stubPromptCalls(allSlots(BUILTIN_ID, "内置内容"),
+                List.of(prompt(ACTIVE_ID, AgentPromptSlot.KB_ANSWER, "覆盖")));
+
+        resolver.resolveAll();
+
+        verify(templateRepository, never()).findProfiles();
+    }
+
     // === 桩数据 ===
 
     /**
@@ -180,5 +241,15 @@ class AgentPromptResolverTest {
             prompts.add(prompt(agentId, slot, content));
         }
         return prompts;
+    }
+
+    private static PublicTemplateRepository.TemplateProfile templateProfile(String id, String name) {
+        return new PublicTemplateRepository.TemplateProfile(id, name, "模板内置", "", 1, 0);
+    }
+
+    private static PublicTemplateRepository.TemplatePrompt templatePrompt(String agentId, AgentPromptSlot slot,
+                                                                          String content) {
+        return new PublicTemplateRepository.TemplatePrompt(agentId + "-" + slot.name(), agentId,
+                slot.name(), content);
     }
 }

@@ -25,6 +25,7 @@ import com.nageoffer.ai.ragent.rag.dao.entity.AgentProfileDO;
 import com.nageoffer.ai.ragent.rag.dao.entity.AgentPromptDO;
 import com.nageoffer.ai.ragent.rag.dao.mapper.AgentProfileMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.AgentPromptMapper;
+import com.nageoffer.ai.ragent.template.PublicTemplateRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -32,10 +33,12 @@ import org.springframework.stereotype.Component;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * 智能体提示词解析器
- * 优先取激活智能体的槽位，空白则回落内置智能体；面向终端用户的提示词一律从此处读取
+ * 优先取激活智能体的槽位，空白则回落内置智能体（租户域缺席时基线取自公共模板域）；
+ * 面向终端用户的提示词一律从此处读取
  */
 @Slf4j
 @Component
@@ -45,6 +48,8 @@ public class AgentPromptResolver {
     private final AgentProfileMapper agentProfileMapper;
     private final AgentPromptMapper agentPromptMapper;
     private final AgentPromptCacheManager cacheManager;
+    /** 公共模板域只读仓库（F09-A1：租户态内置基线在模板域，经显式保留租户值只读回落）。 */
+    private final PublicTemplateRepository templateRepository;
 
     /**
      * @return 槽位提示词，内置智能体也没配时返回空串
@@ -93,16 +98,35 @@ public class AgentPromptResolver {
     }
 
     private Map<String, String> loadFromDb() {
-        AgentProfileDO builtin = firstByFlag(AgentProfileDO::getBuiltin);
-        if (builtin == null) {
-            log.warn("未找到内置智能体，空槽位将无提示词可回落");
-        }
-
         // 先铺内置作为基线，再让激活智能体的非空槽位覆盖；两者同为一条时重复覆盖无副作用
         Map<String, String> resolved = new HashMap<>();
-        putNonBlank(resolved, builtin);
+        AgentProfileDO builtin = firstByFlag(AgentProfileDO::getBuiltin);
+        if (builtin != null) {
+            putNonBlank(resolved, builtin);
+        } else {
+            // F09-A1 ③：租户态内置行不在租户域（V7 起转入保留租户 __public_template__），
+            // 经只读模板域铺基线；口径与 AgentProfileAdminServiceImpl#defaultPrompt（R12 卡6）一致
+            putTemplateBaseline(resolved);
+        }
         putNonBlank(resolved, firstByFlag(AgentProfileDO::getActive));
         return resolved;
+    }
+
+    /**
+     * 模板域内置基线（只读）：仅当租户域没有内置行时使用；空白模板内容不铺
+     * （与 {@link #putNonBlank} 的"空白不覆盖"判定同口径），缺失时维持原告警语义
+     */
+    private void putTemplateBaseline(Map<String, String> target) {
+        Optional<PublicTemplateRepository.TemplateProfile> builtin = templateRepository.findProfiles().stream()
+                .filter(profile -> Integer.valueOf(1).equals(profile.builtin()))
+                .findFirst();
+        if (builtin.isEmpty()) {
+            log.warn("未找到内置智能体（租户域与模板域均缺），空槽位将无提示词可回落");
+            return;
+        }
+        templateRepository.findPrompts(builtin.get().id()).stream()
+                .filter(prompt -> StrUtil.isNotBlank(prompt.content()))
+                .forEach(prompt -> target.put(prompt.slotKey(), prompt.content()));
     }
 
     private AgentProfileDO firstByFlag(SFunction<AgentProfileDO, Integer> flag) {
