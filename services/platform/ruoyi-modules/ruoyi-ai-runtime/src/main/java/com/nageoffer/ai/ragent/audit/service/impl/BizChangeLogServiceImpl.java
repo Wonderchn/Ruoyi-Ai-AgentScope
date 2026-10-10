@@ -34,7 +34,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 /**
- * 业务变更日志查询实现（F18 op3）。
+ * 业务变更日志查询实现（F18 op2）。
  *
  * <p>RW-23：{@code ai_biz_change_log.tenant_id}/{@code member_id} 是 V7 的 NOT NULL 平台侧列，
  * 但此前 page/get <b>没有任何过滤</b>（分页按业务键筛全库、详情直接 selectById）→ 跨租户可读。

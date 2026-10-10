@@ -31,7 +31,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RequestMapping;
 
 /**
- * 业务变更日志查询（F18 op3）。
+ * 业务变更日志查询（F18 op2）。
  *
  * <p><b>信封（RW-23）</b>：经 AI 网关的内层 handler 必须返回整数 code 信封
  * （{@code LocalAiGatewayClient.requireSingleJsonObject} 要求 {@code code} 为整数且与 HTTP
