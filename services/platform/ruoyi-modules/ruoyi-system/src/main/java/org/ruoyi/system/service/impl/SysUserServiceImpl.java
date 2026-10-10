@@ -34,6 +34,7 @@ import org.ruoyi.system.domain.vo.SysRoleVo;
 import org.ruoyi.system.domain.vo.SysUserExportVo;
 import org.ruoyi.system.domain.vo.SysUserVo;
 import org.ruoyi.system.mapper.*;
+import org.ruoyi.common.core.service.OssService;
 import org.ruoyi.system.service.ISysUserService;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
@@ -59,6 +60,7 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
     private final SysUserRoleMapper userRoleMapper;
     private final SysUserPostMapper userPostMapper;
     private final AiPolicyMutationGuard aiPolicyMutationGuard;
+    private final OssService ossService;
 
     /**
      * 提取用户记录的 tenant_id 集合（P1.2b：受影响租户显式可枚举；跨租户读取忽略租户过滤）。
@@ -460,10 +462,22 @@ public class SysUserServiceImpl implements ISysUserService, UserService {
      */
     @Override
     public boolean updateUserAvatar(Long userId, Long avatar) {
-        return baseMapper.update(null,
+        // S2-F01/op12：更新成功后**尽力**回收旧头像对象（deleteFile 独立事务、失败仅留痕；
+        // 上传成功而回收失败时旧对象成孤儿——不阻断主流程，与"撤回"口径一致）。
+        SysUser old = baseMapper.selectById(userId);
+        Long oldAvatar = old == null ? null : old.getAvatar();
+        boolean updated = baseMapper.update(null,
             new LambdaUpdateWrapper<SysUser>()
                 .set(SysUser::getAvatar, avatar)
                 .eq(SysUser::getUserId, userId)) > 0;
+        if (updated && oldAvatar != null && oldAvatar > 0L && !oldAvatar.equals(avatar)) {
+            try {
+                ossService.deleteFile(oldAvatar);
+            } catch (Exception e) {
+                log.warn("旧头像回收失败，保留孤儿对象 userId={} oldAvatar={}: {}", userId, oldAvatar, e.getMessage());
+            }
+        }
+        return updated;
     }
 
     /**

@@ -11,6 +11,7 @@
  * 本卡把它们改成与 system/monitor/ai 相同的**工厂 + 绑定**形态；页面仍可用原来的函数名
  * （本文件逐个重新导出），调用点无需改动。
  */
+import { useIdentityStore } from '@/stores/identity';
 import platformClient from '@/utils/request';
 import { createAiApi } from './ai';
 import { createMenuApi } from './menu';
@@ -70,3 +71,17 @@ export const createMenu = menuApi.create;
 export const updateMenu = menuApi.update;
 export const removeMenu = menuApi.remove;
 export const cascadeRemoveMenus = menuApi.cascadeRemove;
+
+/**
+ * 页面本地 fetch 的取数口（S2-F01/op12）：multipart 等"共享 JSON 客户端不支持"
+ * 的场景由页面自行 fetch——绑定只提供 baseURL 与当前身份快照，不发请求、不建第二客户端。
+ * RW-15 债务口径延续：浏览器级回归随 F01 包级切片。
+ */
+export function uploadContext() {
+  const identity = useIdentityStore();
+  return {
+    baseUrl: import.meta.env.VITE_API_URL as string,
+    token: identity.token,
+    clientId: identity.clientId,
+  };
+}
