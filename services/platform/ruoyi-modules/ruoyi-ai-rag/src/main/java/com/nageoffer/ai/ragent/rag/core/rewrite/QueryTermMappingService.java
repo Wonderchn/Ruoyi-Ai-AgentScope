@@ -37,7 +37,12 @@ public class QueryTermMappingService {
     private final QueryTermMappingCacheManager cacheManager;
 
     /**
-     * 对用户问题做术语归一化
+     * 对用户问题做术语归一化。
+     *
+     * <p>口径（F07-A1 定稿）：仅 {@code enabled=1} 且 {@code matchType=1} 的规则生效；
+     * 历史遗留的非 1 值静默跳过（管理面已拒绝写入非 1，此分支只兜历史数据）。
+     * 缓存读写经 {@link QueryTermMappingCacheManager}，缺执行主体时 fail-closed
+     * （ClientException），不回落默认租户。
      */
     public String normalize(String text) {
         if (text == null || text.isEmpty()) {
@@ -72,7 +77,12 @@ public class QueryTermMappingService {
     }
 
     /**
-     * 加载映射规则：优先从 Redis 缓存读取，缓存未命中则从数据库加载并回填缓存
+     * 加载映射规则：优先从 Redis 缓存读取（按当前主体的租户命名空间），
+     * 缓存未命中则从数据库加载、按 priority/源词长度排序后回填缓存。
+     *
+     * <p>缓存契约（详见 {@link QueryTermMappingCacheManager} 类注释）：TTL 7 天仅作兜底，
+     * 失效主通道是管理面 CRUD 的 clearCache；映射硬删（物理删）后缓存已清，
+     * 下一次读自然回库；空列表是有效缓存值，避免"一条规则都没配"时每次提问白读一次库。
      */
     private List<QueryTermMappingDO> loadMappings() {
         List<QueryTermMappingDO> cached = cacheManager.getMappingsFromCache();
