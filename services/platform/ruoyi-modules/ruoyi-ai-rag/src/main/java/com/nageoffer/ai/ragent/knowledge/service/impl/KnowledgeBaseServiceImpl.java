@@ -27,6 +27,7 @@ import com.mzt.logapi.starter.annotation.LogRecord;
 import com.nageoffer.ai.ragent.audit.constant.BizChangeBizType;
 import com.nageoffer.ai.ragent.audit.constant.BizChangeOperationType;
 import com.nageoffer.ai.ragent.audit.support.BizChangeLogContext;
+import com.nageoffer.ai.ragent.authorization.AiDomainWriteIdentity;
 import com.nageoffer.ai.ragent.knowledge.controller.request.KnowledgeBaseCreateRequest;
 import com.nageoffer.ai.ragent.knowledge.controller.request.KnowledgeBasePageRequest;
 import com.nageoffer.ai.ragent.knowledge.controller.request.KnowledgeBaseUpdateRequest;
@@ -146,6 +147,11 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public String create(KnowledgeBaseCreateRequest requestParam) {
+        // S2-F05-A2：写身份只来自执行主体，且在最前面 fail-closed 解析（先于任何 mapper 交互）。
+        // 内嵌传输下 UserContext 恒空（UserContextInterceptor 对 /internal/ai/v1/ + PrincipalContext
+        // 跳过填充），而 ai_knowledge_base.created_by 是 V7 NOT NULL 且无默认值——真机 503
+        // （PG NOT NULL 违约）的根因之一；userId 口径与 AiResourceWriteService 的 KB 创建一致。
+        String operator = PrincipalContext.require().userId();
         // 名称重复校验（租户内唯一：uk_knowledge_base_tenant_collection 与同名判断都按租户圈定）
         String name = requestParam.getName().replaceAll("\\s+", "");
         requireNameAvailable(name, null, requestParam.getName());
@@ -165,10 +171,13 @@ public class KnowledgeBaseServiceImpl implements KnowledgeBaseService {
                 .name(requestParam.getName())
                 .embeddingModel(requestParam.getEmbeddingModel())
                 .collectionName(requestParam.getCollectionName())
-                .createdBy(UserContext.getUsername())
-                .updatedBy(UserContext.getUsername())
+                .createdBy(operator)
+                .updatedBy(operator)
                 .deleted(0)
                 .build();
+        // tenant_id / owner_member_id 同为 V7 NOT NULL：统一由 AiDomainWriteIdentity 从
+        // 执行主体写入（缺主体已在方法开头拒绝，不会落到默认租户桶）。
+        AiDomainWriteIdentity.apply(kbDO);
 
         knowledgeBaseMapper.insert(kbDO);
 
