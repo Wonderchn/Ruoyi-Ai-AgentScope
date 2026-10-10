@@ -20,6 +20,7 @@ package com.nageoffer.ai.ragent.rag.service.impl;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
@@ -55,7 +56,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * RW-23（F18 op2/op6）：RAG Trace 读路径必须按 {@code tenant_id}（非 tenant-wide 时再加
+ * RW-23（F18 op1/op5）：RAG Trace 读路径必须按 {@code tenant_id}（非 tenant-wide 时再加
  * {@code member_id}）限域，且跨租户 traceId 与"不存在"同外显。
  *
  * <p>改前行为：{@code pageRuns/detail/listNodes} 只按 traceId/conversationId/taskId/status 过滤，
@@ -90,7 +91,7 @@ class RagTraceQueryScopeTest {
 
     @BeforeEach
     void setUp() {
-        service = new RagTraceQueryServiceImpl(runMapper, nodeMapper, userMapper);
+        service = new RagTraceQueryServiceImpl(runMapper, nodeMapper, userMapper, new ObjectMapper());
         PrincipalContext.clear();
     }
 

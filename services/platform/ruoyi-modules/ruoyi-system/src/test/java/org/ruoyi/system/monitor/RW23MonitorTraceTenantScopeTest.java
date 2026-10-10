@@ -54,7 +54,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * RW-23（F18 op15 / op6）：平台 monitor 链路追踪必须按登录租户限域。
+ * RW-23（F18 op5）：平台 monitor 链路追踪必须按登录租户限域。
  *
  * <p>改前行为（可复现）：{@code list} 把请求里的 {@link TraceRunBo} 原样下传，而
  * {@code TraceRecordServiceImpl} 只在"调用方自己填了 tenantId"时才过滤 —— 不传即跨租户全量；

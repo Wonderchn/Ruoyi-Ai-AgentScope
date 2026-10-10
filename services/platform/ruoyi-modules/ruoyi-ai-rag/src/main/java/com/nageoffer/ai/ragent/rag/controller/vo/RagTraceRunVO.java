@@ -56,4 +56,25 @@ public class RagTraceRunVO {
     private Date startTime;
 
     private Date endTime;
+
+    /**
+     * 提示词 token 用量；来源为 {@code ai_rag_trace_run.extra_data} 的 {@code prompt_tokens} 键。
+     *
+     * <p><b>三态语义（F18 op1 契约）</b>：缺键 / JSON {@code null} / 非数字 / 坏 JSON → {@code null}
+     * （未知，不得伪 0）；显式写入 {@code 0} → {@code 0}。对账状态（UNKNOWN / 未对账）不在本面表达，
+     * 归 F23 用量账本（B 面）。
+     */
+    private Integer promptTokens;
+
+    /**
+     * 补全 token 用量；来源为 {@code ai_rag_trace_run.extra_data} 的 {@code completion_tokens} 键。
+     * 三态语义同 {@link #promptTokens}。
+     */
+    private Integer completionTokens;
+
+    /**
+     * 总 token 用量；来源为 {@code ai_rag_trace_run.extra_data} 的 {@code total_tokens} 键。
+     * 缺键即 {@code null}，不由 prompt+completion 推算。三态语义同 {@link #promptTokens}。
+     */
+    private Integer totalTokens;
 }

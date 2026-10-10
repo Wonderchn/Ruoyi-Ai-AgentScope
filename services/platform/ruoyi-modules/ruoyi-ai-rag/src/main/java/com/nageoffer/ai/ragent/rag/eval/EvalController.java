@@ -48,7 +48,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * 效果评测接口（F18 op4）。
+ * 效果评测接口（F18 op3）。
  *
  * <p><b>信封（RW-23）</b>：经 AI 网关的内层 handler 必须返回整数 code 信封
  * （{@code LocalAiGatewayClient.requireSingleJsonObject} 要求 {@code code} 为整数且与 HTTP
