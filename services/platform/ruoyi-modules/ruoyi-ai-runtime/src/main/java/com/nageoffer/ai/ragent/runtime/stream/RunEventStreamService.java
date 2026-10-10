@@ -92,15 +92,21 @@ public class RunEventStreamService {
             return false;
         }
         long min = dao.minSeq(principal.tenantId(), runId);
-        Instant oldest = dao.oldestEventAt(principal.tenantId(), runId);
-        boolean retentionExpired = oldest != null
-                && Duration.between(oldest, Instant.now()).toHours() >= properties.getEvents().getRetentionHours();
+        // 保留期判定在 DB 内完成（RunLedgerDao#retentionExpired）：true = 本游标之后的首个
+        // 待回放事件已早于保留窗口。时间窗一律以 DB now() 为锚（D4：app/VM 时钟 +8h 差）。
+        boolean retentionExpired = dao.retentionExpired(principal.tenantId(), runId, afterSeq,
+                properties.getEvents().getRetentionHours());
         if (afterSeq > 0 && min > 0 && afterSeq < min - 1) {
             writeCursorExpired(response, principal, runId, afterSeq, run);
             return false;
         }
         if (afterSeq == 0 && min > 1) {
             writeCursorExpired(response, principal, runId, 0, run);
+            return false;
+        }
+        if (retentionExpired) {
+            // 保留期外回放请求：与 minSeq 游标路径同形，410 + 快照（P0.3 §3.3）
+            writeCursorExpired(response, principal, runId, afterSeq, run);
             return false;
         }
         response.setStatus(HttpServletResponse.SC_OK);
