@@ -48,6 +48,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.Date;
+import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -72,9 +73,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       不影响当前用户的行。</li>
  * </ul>
  *
+ * <p><b>夹具独立性（复核 M1 修复点：不得隐式依赖方法执行顺序）。</b>本类全部判据的键都是
+ * {@code (tenant, message, user)}；若多个用例共享同一条消息行，则"先跑哪个用例"会改变
+ * ON CONFLICT 命中的既有行及其 update_time，把断言结果绑到 JUnit 的方法执行顺序上
+ * （默认顺序≠声明顺序 ⇒ 首写会在旧行上命中 WHERE 守卫返回 0 行 ⇒ 必红）。
+ * 因此<b>每个用例拥有自己的消息行</b>（{@link #MSG_LIKE} 等五个常量），任何执行顺序下
+ * 首写都是 INSERT（恰 1 行）——不需要 {@code @Order}（那只是掩盖顺序依赖），也不依赖
+ * 用例中途清场。{@code @BeforeAll} 的 purge 只负责跨"类重复运行"的干净起点。
+ *
  * <p>需要 {@code -Dragent.merged.test.jdbc-url=...}（数据库已应用冻结迁移 V7..V10）；
- * 未提供时显式跳过并给出原因，不伪装通过。本类只碰 {@code f17idem-%} 前缀的行，
- * 重复运行不依赖"库是干净的"。
+ * 未提供时显式跳过并给出原因，不伪装通过。本类只碰 {@code f17idem-%} 前缀的行。
  */
 @Tag("dev")
 @EnabledIfSystemProperty(named = MessageFeedbackIdempotencyPostgresTest.URL_PROPERTY, matches = ".+",
@@ -91,7 +99,14 @@ class MessageFeedbackIdempotencyPostgresTest {
     private static final String MEMBER = "platform:F17-IDEM-T:11";
     private static final String CONV = "f17idem-conv-1";
     private static final String CONV_ROW = "f17idem-conv-r";
-    private static final String MESSAGE = "f17idem-msg-1";
+
+    // 每用例一条独立消息行（键 (tenant, message, user) 的 message 维度互不相同）；
+    // 上面的类注释已说明：共享消息行会把断言结果绑到执行顺序上（复核 M1）。
+    private static final String MSG_LIKE = "f17idem-msg-like";
+    private static final String MSG_STALE = "f17idem-msg-stale";
+    private static final String MSG_CANCEL = "f17idem-msg-cancel";
+    private static final String MSG_SERVICE = "f17idem-msg-svc";
+    private static final String MSG_TWO_USERS = "f17idem-msg-two";
 
     private static PGSimpleDataSource ds;
     private static SqlSessionFactory factory;
@@ -112,7 +127,7 @@ class MessageFeedbackIdempotencyPostgresTest {
         configuration.addMapper(MessageFeedbackMapper.class);
         factory = new MybatisSqlSessionFactoryBuilder().build(configuration);
         purgeFixtureRows();
-        seedConversationAndMessage();
+        seedConversationAndMessages();
     }
 
     @AfterEach
@@ -124,49 +139,49 @@ class MessageFeedbackIdempotencyPostgresTest {
     @DisplayName("like→re-like→unlike→re-like：冲突键 (tenant,message,user)，终点恰一行且可复活")
     void likeReLikeUnlikeReLikeEndsInExactlyOneActiveRow() throws Exception {
         long t = 1_800_000_000_000L;
-        assertThat(upsertActive(1, t)).as("首次点赞 = 插入").isEqualTo(1);
-        assertThat(upsertActive(1, t + 1_000)).as("重复点赞 = 就地更新（不产生第二行）").isEqualTo(1);
-        assertThat(rawCount(USER_ID)).isEqualTo(1);
+        assertThat(upsertActive(MSG_LIKE, 1, t)).as("首次点赞 = 插入").isEqualTo(1);
+        assertThat(upsertActive(MSG_LIKE, 1, t + 1_000)).as("重复点赞 = 就地更新（不产生第二行）").isEqualTo(1);
+        assertThat(rawCount(MSG_LIKE, USER_ID)).isEqualTo(1);
 
-        assertThat(upsertCancelled(t + 2_000)).as("取消 = 占位行（vote=0, deleted=1）").isEqualTo(1);
-        assertThat(rawCount(USER_ID)).isEqualTo(1);
-        assertThat(rawVote(USER_ID)).as("取消占位 vote=0").isZero();
-        assertThat(rawDeleted(USER_ID)).as("取消占位 deleted=1").isEqualTo(1);
+        assertThat(upsertCancelled(MSG_LIKE, t + 2_000)).as("取消 = 占位行（vote=0, deleted=1）").isEqualTo(1);
+        assertThat(rawCount(MSG_LIKE, USER_ID)).isEqualTo(1);
+        assertThat(rawVote(MSG_LIKE, USER_ID)).as("取消占位 vote=0").isZero();
+        assertThat(rawDeleted(MSG_LIKE, USER_ID)).as("取消占位 deleted=1").isEqualTo(1);
 
-        assertThat(upsertActive(1, t + 3_000)).as("取消后再点赞 = 同一行复活").isEqualTo(1);
-        assertThat(rawCount(USER_ID)).isEqualTo(1);
-        assertThat(rawVote(USER_ID)).isEqualTo(1);
-        assertThat(rawDeleted(USER_ID)).isZero();
+        assertThat(upsertActive(MSG_LIKE, 1, t + 3_000)).as("取消后再点赞 = 同一行复活").isEqualTo(1);
+        assertThat(rawCount(MSG_LIKE, USER_ID)).isEqualTo(1);
+        assertThat(rawVote(MSG_LIKE, USER_ID)).isEqualTo(1);
+        assertThat(rawDeleted(MSG_LIKE, USER_ID)).isZero();
     }
 
     @Test
     @DisplayName("乱序保护（mapper）：旧 update_time 的 upsert 影响 0 行，不覆写新状态")
     void staleUpsertDoesNotOverwriteNewerState() throws Exception {
         long t = 1_800_000_100_000L;
-        assertThat(upsertActive(1, t)).isEqualTo(1);
+        assertThat(upsertActive(MSG_STALE, 1, t)).isEqualTo(1);
 
-        assertThat(upsertActive(-1, t - 5_000)).as("旧事件：WHERE update_time < EXCLUDED.update_time 不成立")
-                .isZero();
-        assertThat(rawVote(USER_ID)).as("新状态保持 1，不被旧事件覆写").isEqualTo(1);
-        assertThat(rawCount(USER_ID)).isEqualTo(1);
+        assertThat(upsertActive(MSG_STALE, -1, t - 5_000))
+                .as("旧事件：WHERE update_time < EXCLUDED.update_time 不成立").isZero();
+        assertThat(rawVote(MSG_STALE, USER_ID)).as("新状态保持 1，不被旧事件覆写").isEqualTo(1);
+        assertThat(rawCount(MSG_STALE, USER_ID)).isEqualTo(1);
     }
 
     @Test
     @DisplayName("重复取消幂等（mapper）：晚到的第二次取消仍是同一占位行")
     void repeatedCancelIsIdempotent() throws Exception {
         long t = 1_800_000_200_000L;
-        assertThat(upsertCancelled(t)).isEqualTo(1);
-        assertThat(upsertCancelled(t + 1_000)).as("晚到的重复取消：更新同一行").isEqualTo(1);
-        assertThat(rawCount(USER_ID)).isEqualTo(1);
-        assertThat(rawVote(USER_ID)).isZero();
-        assertThat(rawDeleted(USER_ID)).isEqualTo(1);
+        assertThat(upsertCancelled(MSG_CANCEL, t)).isEqualTo(1);
+        assertThat(upsertCancelled(MSG_CANCEL, t + 1_000)).as("晚到的重复取消：更新同一行").isEqualTo(1);
+        assertThat(rawCount(MSG_CANCEL, USER_ID)).isEqualTo(1);
+        assertThat(rawVote(MSG_CANCEL, USER_ID)).isZero();
+        assertThat(rawDeleted(MSG_CANCEL, USER_ID)).isEqualTo(1);
     }
 
     @Test
     @DisplayName("服务层双保险：乱序事件被 lt(updateTime, submitTime) 拦下，新事件才生效")
     void serviceLayerStaleEventIsIgnoredAndNewerEventWins() throws Exception {
         long t = 1_800_000_300_000L;
-        assertThat(upsertActive(1, t)).isEqualTo(1);
+        assertThat(upsertActive(MSG_SERVICE, 1, t)).isEqualTo(1);
         PrincipalContext.clear();
 
         try (SqlSession session = factory.openSession(true)) {
@@ -176,14 +191,14 @@ class MessageFeedbackIdempotencyPostgresTest {
                     null);
 
             service.submitFeedbackByEvent(MessageFeedbackEvent.builder()
-                    .messageId(MESSAGE).userId(USER_ID).vote(-1).submitTime(t - 5_000).build());
-            assertThat(rawVote(USER_ID)).as("乱序（旧 submitTime）经服务层不得覆写").isEqualTo(1);
-            assertThat(rawCount(USER_ID)).isEqualTo(1);
+                    .messageId(MSG_SERVICE).userId(USER_ID).vote(-1).submitTime(t - 5_000).build());
+            assertThat(rawVote(MSG_SERVICE, USER_ID)).as("乱序（旧 submitTime）经服务层不得覆写").isEqualTo(1);
+            assertThat(rawCount(MSG_SERVICE, USER_ID)).isEqualTo(1);
 
             service.submitFeedbackByEvent(MessageFeedbackEvent.builder()
-                    .messageId(MESSAGE).userId(USER_ID).vote(-1).submitTime(t + 5_000).build());
-            assertThat(rawVote(USER_ID)).as("新事件（晚 submitTime）正常覆写").isEqualTo(-1);
-            assertThat(rawCount(USER_ID)).isEqualTo(1);
+                    .messageId(MSG_SERVICE).userId(USER_ID).vote(-1).submitTime(t + 5_000).build());
+            assertThat(rawVote(MSG_SERVICE, USER_ID)).as("新事件（晚 submitTime）正常覆写").isEqualTo(-1);
+            assertThat(rawCount(MSG_SERVICE, USER_ID)).isEqualTo(1);
         }
     }
 
@@ -191,13 +206,13 @@ class MessageFeedbackIdempotencyPostgresTest {
     @DisplayName("用户维度独立：同一消息上另一 user_id 是独立行，互不覆写")
     void anotherUserVoteIsAnIndependentRow() throws Exception {
         long t = 1_800_000_400_000L;
-        assertThat(upsertActive(1, t)).isEqualTo(1);
-        assertThat(upsertFeedback(OTHER_USER_ID, -1, t + 1_000)).isEqualTo(1);
+        assertThat(upsertActive(MSG_TWO_USERS, 1, t)).isEqualTo(1);
+        assertThat(upsertFeedback(MSG_TWO_USERS, OTHER_USER_ID, -1, t + 1_000)).isEqualTo(1);
 
-        assertThat(rawCount(USER_ID)).as("当前用户仍恰一行").isEqualTo(1);
-        assertThat(rawCount(OTHER_USER_ID)).as("另一用户是独立行（冲突键含 user_id）").isEqualTo(1);
-        assertThat(rawVote(USER_ID)).isEqualTo(1);
-        assertThat(rawVote(OTHER_USER_ID)).isEqualTo(-1);
+        assertThat(rawCount(MSG_TWO_USERS, USER_ID)).as("当前用户仍恰一行").isEqualTo(1);
+        assertThat(rawCount(MSG_TWO_USERS, OTHER_USER_ID)).as("另一用户是独立行（冲突键含 user_id）").isEqualTo(1);
+        assertThat(rawVote(MSG_TWO_USERS, USER_ID)).isEqualTo(1);
+        assertThat(rawVote(MSG_TWO_USERS, OTHER_USER_ID)).isEqualTo(-1);
     }
 
     // ---------------------------------------------------------------- 夹具与直接写路径
@@ -210,49 +225,52 @@ class MessageFeedbackIdempotencyPostgresTest {
         }
     }
 
-    private static void seedConversationAndMessage() {
+    private static void seedConversationAndMessages() {
         withPrincipal(() -> {
             ConversationDO conversation = ConversationDO.builder()
                     .id(CONV_ROW).conversationId(CONV).userId(USER_ID).title("F17 幂等夹具")
                     .lastTime(new Date(1_800_000_000_000L)).build();
             AiDomainWriteIdentity.apply(conversation);
-            ConversationMessageDO message = ConversationMessageDO.builder()
-                    .id(MESSAGE).conversationId(CONV).userId(USER_ID).role("assistant")
-                    .content("F17 幂等夹具消息").messageStatus("NORMAL").build();
-            AiDomainWriteIdentity.apply(message);
             try (SqlSession session = factory.openSession(true)) {
                 session.getMapper(ConversationMapper.class).insert(conversation);
-                session.getMapper(ConversationMessageMapper.class).insert(message);
+                for (String messageId : List.of(MSG_LIKE, MSG_STALE, MSG_CANCEL, MSG_SERVICE, MSG_TWO_USERS)) {
+                    ConversationMessageDO message = ConversationMessageDO.builder()
+                            .id(messageId).conversationId(CONV).userId(USER_ID).role("assistant")
+                            .content("F17 幂等夹具消息 " + messageId).messageStatus("NORMAL").build();
+                    AiDomainWriteIdentity.apply(message);
+                    session.getMapper(ConversationMessageMapper.class).insert(message);
+                }
             }
         });
     }
 
-    private static int upsertActive(int vote, long submitTime) {
+    private static int upsertActive(String messageId, int vote, long submitTime) {
         try (SqlSession session = factory.openSession(true)) {
             return session.getMapper(MessageFeedbackMapper.class).upsertActiveFeedback(
-                    feedback(USER_ID, vote, submitTime));
+                    feedback(messageId, USER_ID, vote, submitTime));
         }
     }
 
-    private static int upsertFeedback(String userId, int vote, long submitTime) {
+    private static int upsertFeedback(String messageId, String userId, int vote, long submitTime) {
         try (SqlSession session = factory.openSession(true)) {
             return session.getMapper(MessageFeedbackMapper.class).upsertActiveFeedback(
-                    feedback(userId, vote, submitTime));
+                    feedback(messageId, userId, vote, submitTime));
         }
     }
 
-    private static int upsertCancelled(long submitTime) {
+    private static int upsertCancelled(String messageId, long submitTime) {
         try (SqlSession session = factory.openSession(true)) {
             return session.getMapper(MessageFeedbackMapper.class).upsertCancelledFeedback(
-                    feedback(USER_ID, null, submitTime));
+                    feedback(messageId, USER_ID, null, submitTime));
         }
     }
 
-    private static MessageFeedbackDO feedback(String userId, Integer vote, long submitTime) {
+    /** 反馈行主键由 (message, user) 派生：VARCHAR(20) 内，且与 purge 前缀一致。 */
+    private static MessageFeedbackDO feedback(String messageId, String userId, Integer vote, long submitTime) {
         Date stamp = new Date(submitTime);
         MessageFeedbackDO row = MessageFeedbackDO.builder()
-                .id("f17idem-fb-" + userId)
-                .messageId(MESSAGE)
+                .id(messageId.replace("-msg-", "-fb-") + "-" + userId)
+                .messageId(messageId)
                 .conversationId(CONV)
                 .userId(userId)
                 .vote(vote)
@@ -266,26 +284,28 @@ class MessageFeedbackIdempotencyPostgresTest {
 
     // ---------------------------------------------------------------- 读回（含 deleted=1 占位；@TableLogic 查询看不到）
 
-    private static long rawCount(String userId) throws Exception {
+    private static long rawCount(String messageId, String userId) throws Exception {
         return rawLong("SELECT count(*) FROM platform.ai_message_feedback"
-                + " WHERE tenant_id = ? AND message_id = ? AND user_id = ?", userId);
+                + " WHERE tenant_id = ? AND message_id = ? AND user_id = ?", messageId, userId);
     }
 
-    private static long rawVote(String userId) throws Exception {
+    private static long rawVote(String messageId, String userId) throws Exception {
         return rawLong("SELECT vote FROM platform.ai_message_feedback"
-                + " WHERE tenant_id = ? AND message_id = ? AND user_id = ? ORDER BY update_time DESC LIMIT 1", userId);
+                + " WHERE tenant_id = ? AND message_id = ? AND user_id = ? ORDER BY update_time DESC LIMIT 1",
+                messageId, userId);
     }
 
-    private static long rawDeleted(String userId) throws Exception {
+    private static long rawDeleted(String messageId, String userId) throws Exception {
         return rawLong("SELECT deleted FROM platform.ai_message_feedback"
-                + " WHERE tenant_id = ? AND message_id = ? AND user_id = ? ORDER BY update_time DESC LIMIT 1", userId);
+                + " WHERE tenant_id = ? AND message_id = ? AND user_id = ? ORDER BY update_time DESC LIMIT 1",
+                messageId, userId);
     }
 
-    private static long rawLong(String sql, String userId) throws Exception {
+    private static long rawLong(String sql, String messageId, String userId) throws Exception {
         try (Connection connection = ds.getConnection();
              PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, TENANT);
-            statement.setString(2, MESSAGE);
+            statement.setString(2, messageId);
             statement.setString(3, userId);
             try (ResultSet rs = statement.executeQuery()) {
                 assertThat(rs.next()).as("夹具行必须存在：%s", sql).isTrue();
