@@ -3,25 +3,31 @@
 
   ## 分母（02-api-map.json IngestionPipelineController + IngestionTaskController）
 
-  流水线：POST /ingestion/pipelines、PUT /ingestion/pipelines/{id}、
+  管线：POST /ingestion/pipelines、PUT /ingestion/pipelines/{id}、
   GET /ingestion/pipelines/{id}、GET /ingestion/pipelines、DELETE /ingestion/pipelines/{id}。
   任务：POST /ingestion/tasks、POST /ingestion/tasks/upload、GET /ingestion/tasks/{id}、
   GET /ingestion/tasks/{id}/nodes、GET /ingestion/tasks。
 
-  ## ⚠️ BLOCKED-BY-EMBEDDED-REGISTRY
+  ## 可达性（S2-F06-A1，2026-10-10 更正）
 
-  两个控制器都在 ruoyi-ai-rag（ragent 包）且未进内嵌装配 ⇒ 本形态 404。
-  页面照分母先行（流水线列表 + 任务列表/任务详情节点进度契约形），
-  联调判据 NOT_RUN；信封 ragent Result（code:"0"）。
+  - **管线 CRUD 5 条已装配并放行**：`AiEmbeddedIngestionConfiguration` 登记
+    `IngestionPipelineController`（类级 `/internal/ai/v1`），`AiGatewayController.ROUTES`
+    逐条放行 `/api/ai/v1/ingestion/pipelines**`（读=config.read / 写=config.publish）；
+    信封整数 `ApiEnvelope`，列表 `data` 是 `IPage`（records/total）——页面按此解析。
+  - **任务面（IngestionTaskController 5 条）仍未装配**（BLOCKED-BY-EMBEDDED-REGISTRY）：
+    任务分页牵出引擎全闭包（ParserRegistry 启动自检 / MinerU-Redisson / LLM），
+    不在本切片闭包内，调用将 404；任务卡片保留分母形态与阻断标注，联调判据 NOT_RUN。
 -->
 <script setup lang="ts">
 import { ref } from 'vue';
 import { aiApi } from '@/api';
 import BlockedBy from '@/components/BlockedBy.vue';
 import { errorMessageOf } from '@/utils';
+import { createPipelinePageRequest, normalizePipelinePage, pipelineIdOf, pipelineNameOf } from './pipelineAdmin';
 
 // ---------------------------------------------------------------- 流水线
 const pipelineRows = ref<Record<string, unknown>[]>([]);
+const pipelineTotal = ref(0);
 const pipelineLoading = ref(false);
 const pipelineError = ref('');
 const pipelineLoaded = ref(false);
@@ -29,21 +35,20 @@ const pipelineLoaded = ref(false);
 async function loadPipelines() {
   pipelineLoading.value = true;
   pipelineError.value = '';
+  const requested = createPipelinePageRequest();
   try {
-    const envelope = await aiApi.ingestion.listPipelines();
-    if (envelope && typeof envelope === 'object' && 'data' in envelope) {
-      const data = (envelope as { data?: unknown }).data;
-      pipelineRows.value = Array.isArray(data) ? data : [];
-      pipelineLoaded.value = true;
-    }
-    else {
-      pipelineRows.value = [];
-      pipelineLoaded.value = false;
-      pipelineError.value = '端点未装配或返回形状不符合 ragent Result 契约';
-    }
+    // 活族形态：共享 client 解包 `ApiEnvelope`（code===200 才返回 data），
+    // data 是 `IPage`（records/total/current/size）——**不是数组**。
+    const page = await aiApi.ingestion.listPipelines(requested);
+    const normalized = normalizePipelinePage(page, requested);
+    pipelineRows.value = normalized.rows;
+    pipelineTotal.value = normalized.total;
+    pipelineLoaded.value = true;
   }
   catch (e) {
     pipelineError.value = errorMessageOf(e);
+    pipelineRows.value = [];
+    pipelineTotal.value = 0;
     pipelineLoaded.value = false;
   }
   finally {
@@ -51,7 +56,7 @@ async function loadPipelines() {
   }
 }
 
-// ---------------------------------------------------------------- 任务
+// ---------------------------------------------------------------- 任务（仍未装配，保留分母形态）
 const taskRows = ref<Record<string, unknown>[]>([]);
 const taskLoading = ref(false);
 const taskError = ref('');
@@ -61,7 +66,7 @@ async function loadTasks() {
   taskLoading.value = true;
   taskError.value = '';
   try {
-    const envelope = await aiApi.ingestion.listTasks();
+    const envelope = await aiApi.ingestionTasks.listTasks();
     if (envelope && typeof envelope === 'object' && 'data' in envelope) {
       const data = (envelope as { data?: unknown }).data;
       taskRows.value = Array.isArray(data) ? data : [];
@@ -96,7 +101,7 @@ async function openDetail(row: Record<string, unknown>) {
   detailError.value = '';
   detailNodes.value = [];
   try {
-    const envelope = await aiApi.ingestion.taskNodes(detailTaskId.value);
+    const envelope = await aiApi.ingestionTasks.taskNodes(detailTaskId.value);
     const data = envelope && typeof envelope === 'object' && 'data' in envelope
       ? (envelope as { data?: unknown }).data
       : undefined;
@@ -118,15 +123,12 @@ function str(row: Record<string, unknown>, key: string): string {
 
 <template>
   <div>
-    <BlockedBy
-      reason="EMBEDDED-REGISTRY"
-      detail="IngestionPipelineController（5 条）与 IngestionTaskController（5 条）在 ruoyi-ai-rag 的 ragent 包内，未进本形态内嵌装配（AiEmbedded*Configuration 显式登记制），调用将 404。页面按 02-api-map 分母先行开发；联调判据 NOT_RUN。"
-    />
-
     <ElCard class="mb-4">
       <template #header>
         <div class="toolbar">
-          <span>流水线（GET /ingestion/pipelines）</span>
+          <span>
+            流水线（GET /api/ai/v1/ingestion/pipelines）<template v-if="pipelineLoaded"> · 共 {{ pipelineTotal }} 条</template>
+          </span>
           <ElButton data-testid="ingestion-pipeline-reload" :loading="pipelineLoading" @click="loadPipelines()">
             加载
           </ElButton>
@@ -144,7 +146,7 @@ function str(row: Record<string, unknown>, key: string): string {
         正在加载…
       </div>
       <div v-else-if="!pipelineLoaded" data-testid="ingestion-pipeline-idle" class="state-block">
-        尚未加载（本形态端点未装配，按 NOT_RUN 口径不自动发起）。
+        尚未加载（点击「加载」发起 GET /api/ai/v1/ingestion/pipelines）。
       </div>
       <div v-else-if="pipelineRows.length === 0" data-testid="ingestion-pipeline-empty" class="state-block">
         成功响应，没有流水线。
@@ -152,12 +154,16 @@ function str(row: Record<string, unknown>, key: string): string {
       <ElTable v-else data-testid="ingestion-pipeline-rows" :data="pipelineRows" border size="small">
         <ElTableColumn label="ID" width="280">
           <template #default="{ row }">
-            {{ str(row, 'id') }}
+            {{ pipelineIdOf(row) }}
           </template>
         </ElTableColumn>
-        <ElTableColumn prop="name" label="名称" min-width="180" />
+        <ElTableColumn label="名称" min-width="180">
+          <template #default="{ row }">
+            {{ pipelineNameOf(row) }}
+          </template>
+        </ElTableColumn>
         <ElTableColumn prop="description" label="描述" min-width="240" show-overflow-tooltip />
-        <ElTableColumn prop="createdAt" label="创建时间" width="180" />
+        <ElTableColumn prop="createTime" label="创建时间" width="180" />
       </ElTable>
     </ElCard>
 
@@ -170,6 +176,10 @@ function str(row: Record<string, unknown>, key: string): string {
           </ElButton>
         </div>
       </template>
+      <BlockedBy
+        reason="EMBEDDED-REGISTRY"
+        detail="任务面 IngestionTaskController（5 条）在 ruoyi-ai-rag 的 ragent 包内，未进本形态内嵌装配（牵出引擎全闭包：ParserRegistry 启动自检/MinerU-Redisson/LLM），调用将 404。管线 CRUD（5 条）已由 S2-F06-A1 装配并放行（上方卡片可用）；任务面随装配卡另批处理，联调判据 NOT_RUN。"
+      />
       <ElAlert
         v-if="taskError"
         data-testid="ingestion-task-error"
@@ -182,7 +192,7 @@ function str(row: Record<string, unknown>, key: string): string {
         正在加载…
       </div>
       <div v-else-if="!taskLoaded" data-testid="ingestion-task-idle" class="state-block">
-        尚未加载。
+        尚未加载（本形态任务面未装配，按 NOT_RUN 口径不自动发起）。
       </div>
       <div v-else-if="taskRows.length === 0" data-testid="ingestion-task-empty" class="state-block">
         成功响应，没有任务。
@@ -226,7 +236,7 @@ function str(row: Record<string, unknown>, key: string): string {
         <ElTableColumn prop="status" label="状态" width="120" />
         <ElTableColumn prop="durationMs" label="耗时(ms)" width="110" />
         <ElTableColumn prop="message" label="消息" min-width="180" />
-        <ElTableColumn prop="errorMessage" label="错误" min-width="200" />
+        <ElTableColumn prop="errorMessage" label="错误" min-width="200" show-overflow-tooltip />
       </ElTable>
     </ElDrawer>
   </div>

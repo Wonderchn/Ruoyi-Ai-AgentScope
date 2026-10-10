@@ -156,8 +156,9 @@ export const layoutRouter: RouteRecordRaw[] = [
       {
         // W3-5：AI 管理域页面族（成对核对表见 src/config/permission-page-pairs.ts）。
         // permission 串逐字取自 sys_menu 分母（V2/V4/V14/V16/V19/V27/V28）；
-        // skills/ingestion 两页**没有**对应权限行（端点未装配，T0 裁决
-        // 不播 C 行）——成对表里登记为 PAIR-GAP-NO-ROW。
+        // skills 页**没有**对应权限行（端点未装配，T0 裁决不播 C 行）——成对表里
+        // 登记为 PAIR-GAP-NO-ROW；ai/ingestion 已于 S2-F06-A1（2026-10-10）随
+        // 管线 CRUD 装配接到既有 ai:config:read（V28-7150，不新增权限行）。
         // ai/agents 已由 V27（7132-7136 权限行 + 7141 C 行）与 RW-03 成对，权限串逐字 ai:agent:list。
         // ai/models 与 ai/settings 已由 V28（7150-7152）与 RW-07 成对，权限串逐字 ai:config:read。
         path: 'ai/knowledge',
@@ -209,10 +210,14 @@ export const layoutRouter: RouteRecordRaw[] = [
         meta: { title: 'MCP 工具目录', icon: 'SetUp', permission: 'mcp:tool:list' },
       },
       {
+        // S2-F06-A1（2026-10-10）：管线 CRUD 5 条已装配并进白名单
+        // （AiEmbeddedIngestionConfiguration + AiGatewayController.ROUTES），
+        // 读=config.read / 写=config.publish；页面路由与侧栏同改
+        // 既有 ai:config:read（V28-7150，复用，不新增权限行/菜单号）。
         path: 'ai/ingestion',
         name: 'aiIngestion',
         component: () => import('@/pages/ai/ingestion/index.vue'),
-        meta: { title: '摄取流水线', icon: 'Box', permission: '' },
+        meta: { title: '摄取流水线', icon: 'Box', permission: 'ai:config:read' },
       },
       {
         // RW-07（2026-10-07）：设置页改由运行配置权威分布面服务
