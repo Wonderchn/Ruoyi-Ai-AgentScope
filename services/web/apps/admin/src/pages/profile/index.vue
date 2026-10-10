@@ -157,13 +157,22 @@ const avatarFile = ref<File | null>(null);
 const avatarUploading = ref(false);
 const avatarError = ref('');
 const avatarPreview = ref('');
+/** 预览用 blob URL：替换/成功后必须 revoke（复核 P3 收口）。 */
+let avatarBlobUrl = '';
 
 function onAvatarPicked(event: Event) {
   const input = event.target as HTMLInputElement;
   const picked = input.files && input.files.length > 0 ? input.files[0] : null;
   avatarFile.value = picked;
   avatarError.value = '';
-  avatarPreview.value = picked ? URL.createObjectURL(picked) : '';
+  if (avatarBlobUrl) {
+    URL.revokeObjectURL(avatarBlobUrl);
+    avatarBlobUrl = '';
+  }
+  if (picked) {
+    avatarBlobUrl = URL.createObjectURL(picked);
+  }
+  avatarPreview.value = avatarBlobUrl;
 }
 
 async function uploadAvatar() {
@@ -178,12 +187,19 @@ async function uploadAvatar() {
     const formData = new FormData();
     formData.append('avatarfile', avatarFile.value);
     const { baseUrl, token, clientId } = uploadContext();
-    const response = await fetch(`${baseUrl}/system/user/profile/avatar`, {
+    // 归一尾斜杠（与共享客户端 joinUrl 同语义；复核 P3 收口）。
+    const base = baseUrl.replace(/\/+$/, '');
+    // 空身份不发空头（与共享客户端 buildAuthHeaders"空则不写"同语义）。
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    if (clientId) {
+      headers.ClientID = clientId;
+    }
+    const response = await fetch(`${base}/system/user/profile/avatar`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ClientID: clientId,
-      },
+      headers,
       body: formData,
     });
     const envelope = await response.json().catch(() => null) as {
@@ -193,6 +209,10 @@ async function uploadAvatar() {
     } | null;
     if (!envelope || envelope.code !== 200) {
       throw new Error(envelope?.msg || `HTTP ${response.status}`);
+    }
+    if (avatarBlobUrl) {
+      URL.revokeObjectURL(avatarBlobUrl);
+      avatarBlobUrl = '';
     }
     avatarPreview.value = envelope.data?.imgUrl || avatarPreview.value;
     avatarFile.value = null;
