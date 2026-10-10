@@ -75,14 +75,20 @@ class ConversationHistoryPostgresTest {
         conversations = new TenantConversationReadRepository(jdbc);
 
         jdbc.execute("CREATE SCHEMA IF NOT EXISTS platform");
-        // ai_message 有指向 ai_conversation 的外键（fk_message_conversation），所以父表必须先建；
-        // 两个测试类各自建自己需要的表，谁先跑都不受影响。
+        // ai_message 有指向 ai_conversation 的外键（fk_message_conversation），
+        // ai_message_feedback 有指向 ai_message 的外键（fk_message_feedback_message）——
+        // 删除按"子表在前"、创建按"父表在前"；两个测试类各自建自己需要的表，谁先跑都不受影响。
+        jdbc.execute("DROP TABLE IF EXISTS platform.ai_message_feedback");
         jdbc.execute("DROP TABLE IF EXISTS platform.ai_message");
         jdbc.execute("DROP TABLE IF EXISTS platform.ai_conversation");
         for (String ddl : FrozenTableDdl.forTable("ai_conversation")) {
             jdbc.execute(ddl);
         }
         for (String ddl : FrozenTableDdl.forTable("ai_message")) {
+            jdbc.execute(ddl);
+        }
+        // F17-A1 / op3：读面 vote 富化的真库判据要用到反馈表
+        for (String ddl : FrozenTableDdl.forTable("ai_message_feedback")) {
             jdbc.execute(ddl);
         }
         // 形状锚点：这些列必须来自冻结迁移，否则下面的断言无从谈起
@@ -94,6 +100,14 @@ class ConversationHistoryPostgresTest {
                 .contains("id", "conversation_id", "role", "content", "message_status", "deleted",
                         "tenant_id", "member_id", "thinking_content", "thinking_duration",
                         "sources", "recommended_questions", "retrieved_chunks", "reply_to_message_id");
+        // F17-A1 / op3：vote 富化读的是这张表；形状锚点保证下面的真库夹具插入的是冻结形状
+        List<String> feedbackColumns = jdbc.queryForList(
+                "SELECT column_name FROM information_schema.columns WHERE table_schema='platform'"
+                        + " AND table_name='ai_message_feedback'", String.class);
+        assertThat(feedbackColumns)
+                .as("从冻结迁移抽出的 ai_message_feedback 形状")
+                .contains("id", "message_id", "conversation_id", "user_id", "vote", "deleted",
+                        "tenant_id", "member_id", "create_time", "update_time");
 
         jdbc.update("DELETE FROM platform.ai_message");
         jdbc.update("DELETE FROM platform.ai_conversation");
@@ -125,7 +139,7 @@ class ConversationHistoryPostgresTest {
     @DisplayName("完整历史：思考/引用/推荐问题/检索片段/回复关系都回到读取路径上")
     void historyCarriesEveryDeclaredField() {
         List<TenantConversationReadRepository.MessageRow> rows =
-                conversations.listMessages(TENANT, MEMBER, CONV, 0, 200);
+                conversations.listMessages(TENANT, MEMBER, "21", CONV, 0, 200);
 
         assertThat(rows).extracting(TenantConversationReadRepository.MessageRow::id)
                 .as("只返回本租户本成员且未删除的两条").containsExactly("m-1", "m-2");
@@ -152,7 +166,7 @@ class ConversationHistoryPostgresTest {
     @DisplayName("NULL 与 0 必须可区分：没记录耗时不能变成耗时 0 毫秒")
     void absentValuesStayNullInsteadOfBecomingZero() {
         TenantConversationReadRepository.MessageRow question =
-                conversations.listMessages(TENANT, MEMBER, CONV, 0, 200).get(0);
+                conversations.listMessages(TENANT, MEMBER, "21", CONV, 0, 200).get(0);
         assertThat(question.thinkingContent()).isNull();
         assertThat(question.thinkingDuration())
                 .as("包装类型：NULL 保持 NULL，不能静默变成 0")
@@ -167,13 +181,13 @@ class ConversationHistoryPostgresTest {
     @Test
     @DisplayName("补字段没有放宽范围：跨成员/跨租户/已删除都读不到")
     void scopeAndSoftDeleteStillApply() {
-        List<String> ids = conversations.listMessages(TENANT, MEMBER, CONV, 0, 200).stream()
+        List<String> ids = conversations.listMessages(TENANT, MEMBER, "21", CONV, 0, 200).stream()
                 .map(TenantConversationReadRepository.MessageRow::id).toList();
         assertThat(ids).doesNotContain("m-3", "m-other-member", "m-other-tenant");
-        assertThat(conversations.listMessages(OTHER_TENANT, MEMBER, CONV, 0, 200))
+        assertThat(conversations.listMessages(OTHER_TENANT, MEMBER, "21", CONV, 0, 200))
                 .extracting(TenantConversationReadRepository.MessageRow::id)
                 .containsExactly("m-other-tenant");
-        assertThat(conversations.listMessages(TENANT, OTHER_MEMBER, CONV_OTHER_MEMBER, 0, 200))
+        assertThat(conversations.listMessages(TENANT, OTHER_MEMBER, "22", CONV_OTHER_MEMBER, 0, 200))
                 .extracting(TenantConversationReadRepository.MessageRow::id)
                 .containsExactly("m-other-member");
     }
@@ -181,13 +195,56 @@ class ConversationHistoryPostgresTest {
     @Test
     @DisplayName("分页上限仍然收敛在 1..200，补字段不允许放宽参数校验")
     void paginationBoundsAreUnchanged() {
-        assertThatThrownBy(() -> conversations.listMessages(TENANT, MEMBER, CONV, 0, 201))
+        assertThatThrownBy(() -> conversations.listMessages(TENANT, MEMBER, "21", CONV, 0, 201))
                 .isInstanceOf(RuntimeException.class);
-        assertThatThrownBy(() -> conversations.listMessages(TENANT, MEMBER, CONV, -1, 10))
+        assertThatThrownBy(() -> conversations.listMessages(TENANT, MEMBER, "21", CONV, -1, 10))
                 .isInstanceOf(RuntimeException.class);
-        assertThat(conversations.listMessages(TENANT, MEMBER, CONV, 1, 1))
+        assertThat(conversations.listMessages(TENANT, MEMBER, "21", CONV, 1, 1))
                 .extracting(TenantConversationReadRepository.MessageRow::id)
                 .containsExactly("m-2");
+    }
+
+    @Test
+    @DisplayName("F17-A1：vote 只回传当前用户的有效反馈——他人行不计入、取消占位不出现")
+    void voteEnrichmentIsScopedToCurrentUserAndHidesCancelledPlaceholders() {
+        String mine = "f17fb-mine";
+        String other = "f17fb-other";
+        try {
+            jdbc.update("INSERT INTO platform.ai_message_feedback (id, message_id, conversation_id, user_id,"
+                            + " vote, create_time, update_time, deleted, tenant_id, member_id)"
+                            + " VALUES (?,?,?,?,?, now(), now(), 0, ?, ?)",
+                    mine, "m-2", CONV, "21", 1, TENANT, MEMBER);
+            // 对抗性负例：同租户、同成员维度、**另一个 user_id** 的反馈行（冻结 schema 允许：
+            // user 是投票人维度，FK 只约束 tenant+message）。user_id 谓词必须让它不出现在 21 的读面。
+            jdbc.update("INSERT INTO platform.ai_message_feedback (id, message_id, conversation_id, user_id,"
+                            + " vote, create_time, update_time, deleted, tenant_id, member_id)"
+                            + " VALUES (?,?,?,?,?, now(), now(), 0, ?, ?)",
+                    other, "m-2", CONV, "99", -1, TENANT, MEMBER);
+            Long persistedRows = jdbc.queryForObject(
+                    "SELECT count(*) FROM platform.ai_message_feedback WHERE tenant_id = ? AND message_id = ?",
+                    Long.class, TENANT, "m-2");
+            assertThat(persistedRows).as("库里确实有两行（负例不是空跑）").isEqualTo(2L);
+
+            List<TenantConversationReadRepository.MessageRow> rows =
+                    conversations.listMessages(TENANT, MEMBER, "21", CONV, 0, 200);
+            assertThat(rowOf(rows, "m-2").vote())
+                    .as("读面必须带回当前用户自己的有效反馈（1=赞）").isEqualTo(1);
+            assertThat(rowOf(rows, "m-1").vote())
+                    .as("没有反馈的消息 vote 为 null，不是 0").isNull();
+
+            // 取消占位（vote=0, deleted=1）不出现在读面——与旧链 getUserVotes 的 deleted=0 口径一致
+            jdbc.update("UPDATE platform.ai_message_feedback SET vote = 0, deleted = 1, update_time = now()"
+                    + " WHERE id = ?", mine);
+            assertThat(rowOf(conversations.listMessages(TENANT, MEMBER, "21", CONV, 0, 200), "m-2").vote())
+                    .as("取消后的占位行不得作为反馈回传（null≠0）").isNull();
+        } finally {
+            jdbc.update("DELETE FROM platform.ai_message_feedback WHERE id IN (?, ?)", mine, other);
+        }
+    }
+
+    private static TenantConversationReadRepository.MessageRow rowOf(
+            List<TenantConversationReadRepository.MessageRow> rows, String messageId) {
+        return rows.stream().filter(row -> messageId.equals(row.id())).findFirst().orElseThrow();
     }
 
     @Test

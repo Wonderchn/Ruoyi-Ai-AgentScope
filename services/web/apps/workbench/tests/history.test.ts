@@ -5,7 +5,8 @@
  * 而"历史不只保留 message.content"是 F03 的验收点。映射抽成纯函数之后，
  * 每一条字段契约都能在这里钉住，不需要起浏览器或后端。
  *
- * 后端口径来自 `TenantConversationReadRepository.MessageRow`（13 字段），
+ * 后端口径来自 `TenantConversationReadRepository.MessageRow`（F03 的 13 字段；
+ * F17-A1 起读面再富化 `vote`，共 14 字段——本映射只消费历史字段，暂不消费 vote），
  * 其中三个 jsonb 列以 **JSON 文本**返回（`jsonb::text`）。
  */
 import assert from 'node:assert/strict';
