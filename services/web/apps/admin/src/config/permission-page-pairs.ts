@@ -84,8 +84,11 @@ export const AI_ADMIN_PAIRS: readonly PermissionPagePair[] = [
     route: '/ai/knowledge/:kbId/docs/:docId',
     page: '文档分块',
     status: 'live',
-    endpoint: 'BLOCKED-BY-EMBEDDED-REGISTRY',
-    note: 'chunks 6 条端点未进内嵌装配；页面契约先行，联调 NOT_RUN',
+    endpoint: 'live',
+    // 该 note 曾写"chunks 6 条端点未进内嵌装配"——早在 RW-04-R1 已放行并装配（ChunkAdmin）；
+    // S2-F05-A1 起知识管理面的另外 17 条（KB 5 + 文档 12）也已放行，
+    // 故本页端点族为活。浏览器端联调仍属 B 面（NOT_RUN，runner 待选型）。
+    note: 'GET/POST/PUT/DELETE/PATCH /api/ai/v1/knowledge-base/docs/{docId}/chunks*（白名单 document.read + kb.write，RW-04-R1 起已装配）',
   },
   {
     permission: 'ai:kb:write',

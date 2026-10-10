@@ -75,11 +75,12 @@ import org.springframework.web.bind.annotation.RestController;
  * <b>三条写操作走 JSON 分支，不铸回执</b>——JSON 分支不会释放许可，
  * 在那里铸造等于制造永久 ACTIVE 的许可泄漏。
  *
- * <p><b>本控制器仍未放行（RW-04-R8）。</b>信封改造只消除了"一经登记路由就必然 503"这一项，
- * <b>不等于已激活</b>：{@code FullAdmin} 的构造闭包仍缺 15 个单例 bean 与 2 组集合元素，
- * {@code AiGatewayController.ROUTES} 里也<b>没有</b>本面的任何一条路由
- * （由 {@code LocalWhitelistEnvelopeShapeTest#knowledgeAdminFacesAreStillUnrouted} 钉住）。
- * 在那两项闭合之前，本面既不会被装配，也不会被公开可达。
+ * <p><b>本控制器自 S2-F05-A1 起已放行（RW-04-R8 改造 + F05 闭包闭合）。</b>RW-04-R8 的信封改造
+ * 只消除了"一经登记路由就必然 503"这一项；S2-F05-A1 把 {@code FullAdmin} 的构造闭包补齐、
+ * 并在 {@code AiGatewayController.ROUTES} 逐条登记了本面 5 条（公开前缀
+ * {@code /api/ai/v1/knowledge-base/**}）。"放行 = 必须整数信封"因此由
+ * {@code LocalWhitelistEnvelopeShapeTest#knowledgeAdminFacesAreReleasedAndCounted}
+ * 逐条钉住（该判据此前钉的是"仍未放行"）。
  */
 @RestController
 @RequestMapping("/internal/ai/v1")

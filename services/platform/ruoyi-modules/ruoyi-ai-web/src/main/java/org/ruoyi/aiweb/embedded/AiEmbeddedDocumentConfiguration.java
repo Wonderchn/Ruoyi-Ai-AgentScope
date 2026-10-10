@@ -54,7 +54,10 @@ import org.springframework.transaction.PlatformTransactionManager;
  * {@link UploadController}（含 {@link DeliveryPermits} 交付许可）。
  *
  * <p>上传（multipart）与私有 PDF 取流（{@code /documents/{id}/source}）属流式传输面，
- * 当前由网关 fail-closed 503，待专用本地流传输落地。
+ * 由 {@code AiGatewayStreamController} 的专用本地流传输承接（
+ * {@code POST /documents/uploads} 与 {@code GET /documents/{id}/source}，均已在白名单，
+ * R11/w4 实测取流 200 并带逐帧交付回执）。本注释曾写"当前由网关 fail-closed 503，
+ * 待专用本地流传输落地"——那是专用流通道落地前的状态，已过期（S2-F05-A1 勘误）。
  */
 @AutoConfiguration
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")

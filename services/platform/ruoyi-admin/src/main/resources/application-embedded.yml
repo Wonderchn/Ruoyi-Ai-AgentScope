@@ -185,6 +185,16 @@ ai:
         provider: bailian
         model: qwen-vl-max
 
+  # S2-F05-A1：知识管理面（/api/ai/v1/knowledge-base/** 单数 = admin 管理面）的装配闭包开关。
+  # 开 = 知识库面 5 条 + 文档面 12 条整体装配并放行（FullAdmin）；闭包在
+  # AiEmbeddedKnowledgeAdminConfiguration 里逐项登记，缺一节即启动响亮失败（fail-closed），
+  # 不会静默变成一个 404 的管理面。F06-A2 的文档计划任务组条件**包含**本条件
+  # （同一闭包不拆两套门），但那条链还要 ai.integration.legacy-listeners-enabled=true 才开，
+  # 故打开本键不会顺带打开旧调度。
+  embedded:
+    knowledge-admin:
+      full: true
+
 # P2 正式运行路径（受理/生命周期/上传摄取/私有对象/事件流）——与独立 AI 应用同一开关；
 # P0.4 实验路径保持关闭（p04.enabled 缺省 false，与 P2 互斥）。
 p2:
@@ -223,6 +233,13 @@ rag:
     type: pg
   keyword:
     type: none
+  # S2-F05-A1：知识管理面的对象存储后端。内嵌档案用**本地文件系统**（无凭据），
+  # 与 P2 的 p2.object-store.type=fs 同款决策：对象只能经服务端 openStream 按租户前缀读取，
+  # 不提供浏览器直连（公共读面不存在）。真实 S3/OSS（type=s3|oss）的内嵌接线与验收
+  # 属 F22 op3，本档案不冒充已接通；根目录只写相对路径，绝对路径经环境变量注入。
+  storage:
+    type: fs
+    root: ${KB_OBJECT_STORE_ROOT:./data/kb-objects}
   default:
     collection-name: rag_default_store
     # 必须与冻结迁移里向量列的物理维度一致（1536）；缺配置时检索/索引 fail-closed 拒绝。

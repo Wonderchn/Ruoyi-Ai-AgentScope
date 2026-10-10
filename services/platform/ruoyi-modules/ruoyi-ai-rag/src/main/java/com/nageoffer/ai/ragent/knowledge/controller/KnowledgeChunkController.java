@@ -74,10 +74,12 @@ import org.springframework.web.bind.annotation.RestController;
  * <b>批量/写入的 5 条走 JSON 分支，不铸造回执</b>——JSON 分支不会释放许可，
  * 在那里铸造等于制造永久 ACTIVE 的许可泄漏。
  *
- * <p>同包内的 {@code KnowledgeBaseController}/{@code KnowledgeDocumentController}
- * <b>仍是 {@code Result}</b>：它们当前<b>未被白名单放行</b>、也不是 bean（内嵌装配默认关闭），
- * 所以还不构成 D2。**将来一旦放行它们的路由，必须同法改为 {@link ApiEnvelope}（GET 还要回执头）**，
- * 否则会重复同一个 503。这条约束由 {@code LocalWhitelistEnvelopeShapeTest} 兜住。
+ * <p>同包内的 {@code KnowledgeBaseController}/{@code KnowledgeDocumentController} 在此后的
+ * RW-04-R8 一并改为整数 {@link ApiEnvelope}（GET 带回执头），并在 S2-F05-A1 补齐装配闭包后
+ * 放行（公开前缀 {@code /api/ai/v1/knowledge-base/**}，17 条：KB 5 + 文档 12）。
+ * 本注释曾写它们"仍是 {@code Result}、未被白名单放行、也不是 bean"——那是 RW-04-R8 之前的状态，
+ * 已过期。放行面的信封形状由 {@code LocalWhitelistEnvelopeShapeTest} 逐条钉住
+ * （放行 = 必须整数信封，无"未放行 ⇒ 豁免"的缝）。
  */
 @RestController
 @RequestMapping("/internal/ai/v1")
