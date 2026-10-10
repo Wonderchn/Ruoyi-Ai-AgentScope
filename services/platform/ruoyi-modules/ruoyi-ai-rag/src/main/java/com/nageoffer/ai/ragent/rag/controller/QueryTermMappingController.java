@@ -37,8 +37,11 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * 关键词映射管理控制器
  *
- * <p><b>路径面（RW-22-R1）</b>：类级前缀 {@code /internal/ai/v1}；公开面经网关白名单为
- * {@code /api/ai/v1/query-terms/**}。此前无类级 {@code @RequestMapping}，裸路径
+ * <p><b>路径面（RW-22-R1，F07-A1 对齐实际）</b>：类级前缀 {@code /internal/ai/v1}；
+ * 公开面经网关白名单为 {@code /api/ai/v1/mappings}（含 {@code /mappings/{id}}，
+ * {@code AiGatewayController} 白名单逐条登记 {@code config.read}/{@code config.publish}）。
+ * 此前 javadoc 误写为 {@code /api/ai/v1/query-terms/**}，该路径不存在。
+ * 更早之前无类级 {@code @RequestMapping}，裸路径
  * {@code /mappings/...} 不在委托主体保护前缀下 ⇒ 拿不到主体（WP-034/RW-04-R1 同形缺陷）。
  *
  * <p><b>信封（RW-22-R1）</b>：返回 {@link ApiEnvelope}（整数 {@code code}）。

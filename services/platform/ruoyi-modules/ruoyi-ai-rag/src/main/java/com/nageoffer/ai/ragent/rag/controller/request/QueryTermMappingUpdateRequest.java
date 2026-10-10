@@ -36,7 +36,9 @@ public class QueryTermMappingUpdateRequest {
     private String targetTerm;
 
     /**
-     * 匹配类型 1：精确匹配 2：前缀匹配 3：正则匹配 4：整词匹配
+     * 匹配类型：仅 1（精确匹配）被接受，缺省（不传）时不改动原值；
+     * 2（前缀）/3（正则）/4（整词）为预留值，未实现——传入即明确拒绝（400 语义），
+     * 不做静默落库（读侧只认 1，静默收下等于配置失效）。
      */
     private Integer matchType;
 
