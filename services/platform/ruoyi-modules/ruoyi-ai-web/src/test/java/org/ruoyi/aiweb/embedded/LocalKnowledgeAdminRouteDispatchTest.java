@@ -39,7 +39,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.ruoyi.ai.api.AiExecutionFacts;
 import org.ruoyi.ai.api.identity.AiIdentityPort;
 import org.ruoyi.aiintegration.config.AiIntegrationProperties;
@@ -134,6 +133,10 @@ class LocalKnowledgeAdminRouteDispatchTest {
     private static final List<String> acknowledgements = new ArrayList<>();
     private static final List<String> permits = new ArrayList<>();
 
+    /** multipart 部件在**请求处理中**被替身读走的副本（临时文件随请求结束即被容器删除）。 */
+    private static final AtomicReference<String> uploadedFilename = new AtomicReference<>();
+    private static final AtomicReference<byte[]> uploadedBytes = new AtomicReference<>();
+
     /** 请求期权限集合：网关与内层都读它，故"缺 scope"负例改的是真的判定输入。 */
     private static final AtomicReference<Set<String>> CURRENT_PERMISSIONS =
             new AtomicReference<>(ALL_PERMISSIONS);
@@ -195,6 +198,8 @@ class LocalKnowledgeAdminRouteDispatchTest {
         reset(baseService, documentService, fileStorageService, schemaProvider, revocations);
         permits.clear();
         acknowledgements.clear();
+        uploadedFilename.set(null);
+        uploadedBytes.set(null);
         CURRENT_PERMISSIONS.set(ALL_PERMISSIONS);
         when(revocations.enter(any(), anyString(), anyString())).thenAnswer(invocation -> {
             permits.add(invocation.getArgument(1) + "/" + invocation.getArgument(2));
@@ -362,12 +367,11 @@ class LocalKnowledgeAdminRouteDispatchTest {
                 .as("multipart 上传必须经网关 200（路由已放行 + 部件经本地传输重建）").isEqualTo(200);
         assertThat(response.body()).contains("\"code\":200").contains("f05-doc-uploaded");
 
-        ArgumentCaptor<MultipartFile> fileCaptor = ArgumentCaptor.forClass(MultipartFile.class);
-        verify(documentService).upload(eq("kb-1"), any(), fileCaptor.capture());
-        MultipartFile delivered = fileCaptor.getValue();
-        assertThat(delivered).as("部件必须原样到达内层 handler（体转发会让它为 null）").isNotNull();
-        assertThat(delivered.getOriginalFilename()).isEqualTo("f05.pdf");
-        assertThat(delivered.getBytes()).isEqualTo(pdf);
+        verify(documentService).upload(eq("kb-1"), any(), any());
+        assertThat(uploadedFilename.get())
+                .as("部件必须原样到达内层 handler（体转发会让它为 null）")
+                .isEqualTo("f05.pdf");
+        assertThat(uploadedBytes.get()).isEqualTo(pdf);
     }
 
     // ------------------------------------------------------------------ 替身数据
@@ -401,7 +405,15 @@ class LocalKnowledgeAdminRouteDispatchTest {
         uploaded.setId("doc-uploaded");
         uploaded.setKbId("kb-1");
         uploaded.setDocName("f05-doc-uploaded");
-        when(documentService.upload(anyString(), any(), any())).thenReturn(uploaded);
+        when(documentService.upload(anyString(), any(), any())).thenAnswer(invocation -> {
+            // 部件是**落盘**的（Tomcat 的 MultipartConfigElement 默认 fileSizeThreshold=0）：
+            // 请求结束后容器即删除临时文件，故文件字节必须在**请求处理中**读走，
+            // 不能留到断言时再读（那会让判据随容器删档时机抖动——夹具纪律，不是被测事实）。
+            MultipartFile incoming = invocation.getArgument(2);
+            uploadedFilename.set(incoming == null ? null : incoming.getOriginalFilename());
+            uploadedBytes.set(incoming == null ? null : incoming.getBytes());
+            return uploaded;
+        });
 
         KnowledgeDocumentVO docRow = new KnowledgeDocumentVO();
         docRow.setId("doc-1");
