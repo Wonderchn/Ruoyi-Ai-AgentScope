@@ -205,3 +205,92 @@ describe('G-10 对照锚点（trace 成对链路保持）', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// S2-F02-α：静态侧边栏（layouts/staticMenus）⇔ 路由 meta ⇔ 迁移权限行 防漂移
+// ---------------------------------------------------------------------------
+
+/** 读取侧边栏静态菜单源码（layouts/index.vue）。 */
+function readLayoutsSource(): string {
+  return readFileSync(join(appRoot, 'src', 'layouts', 'index.vue'), 'utf8');
+}
+
+/** 解析 staticMenus 的 (path, permission) 对（单行对象字面量）。 */
+function extractStaticMenus(source: string): { path: string; permission: string }[] {
+  const out: { path: string; permission: string }[] = [];
+  const re = /^\s*\{ path: '([^']+)'[^}]*permission: '([^']*)' \},?\s*$/;
+  for (const line of source.split('\n')) {
+    const m = line.match(re);
+    if (m)
+      out.push({ path: m[1], permission: m[2] });
+  }
+  return out;
+}
+
+/** 解析路由表 (path, permission) 映射（与 extractAiRoutes 同法，不限 ai/ 前缀）。 */
+function extractRoutePermissions(source: string): Map<string, string> {
+  const map = new Map<string, string>();
+  let currentPath: string | null = null;
+  for (const line of source.split('\n')) {
+    const pathMatch = line.match(/path:\s*'([^']+)'/);
+    if (pathMatch) {
+      currentPath = pathMatch[1];
+      continue;
+    }
+    if (currentPath) {
+      const permMatch = line.match(/permission:\s*'([^']*)'/);
+      if (permMatch) {
+        map.set(currentPath, permMatch[1]);
+        currentPath = null;
+      }
+    }
+  }
+  return map;
+}
+
+describe('S2-F02-α 静态菜单防漂移（layouts ⇔ 路由 meta ⇔ 迁移权限行）', () => {
+  const layouts = readLayoutsSource();
+  const routers = readRoutersSource();
+  const sqls = readMigrationSqls();
+  const menus = extractStaticMenus(layouts);
+  const routePerms = extractRoutePermissions(routers);
+
+  it('采集锚点：staticMenus 至少 20 项且含 /ai/models', () => {
+    assert.ok(menus.length >= 20, `staticMenus 应 >= 20 项，实际 ${menus.length}`);
+    assert.ok(menus.some(m => m.path === '/ai/models'), 'staticMenus 必须包含 /ai/models（锚点：解析通道有效）');
+  });
+
+  it('每条非空静态权限都必须有 sys_menu 迁移权限行（防退役串复活）', () => {
+    for (const m of menus) {
+      if (!m.permission)
+        continue;
+      assert.ok(
+        sqls.some(s => s.text.includes(`'${m.permission}'`)),
+        `侧边栏 '${m.path}' 的权限 '${m.permission}' 在迁移 SQL 中没有权限行 ⇒ FAIL（已退役/拼错/漂移）`,
+      );
+    }
+  });
+
+  it('静态菜单与路由 meta 的权限串必须逐字一致（修 models/settings/agents 漂移）', () => {
+    const checked: string[] = [];
+    for (const m of menus) {
+      const routePath = m.path.replace(/^\//, '');
+      if (!routePerms.has(routePath))
+        continue;
+      checked.push(m.path);
+      assert.equal(
+        m.permission,
+        routePerms.get(routePath),
+        `'${m.path}'：侧边栏权限 '${m.permission}' ≠ 路由 meta '${routePerms.get(routePath)}' ⇒ 可见性/可达性分叉`,
+      );
+    }
+    assert.ok(checked.length >= 15, `至少应交叉核对到 15 条菜单-路由对，实际 ${checked.length}（解析通道失效会让本断言变恒真）`);
+  });
+
+  it('已退役权限串不得再出现在侧边栏（S2-F02-α 回归锚）', () => {
+    assert.ok(
+      !layouts.includes(`'system:model:list'`),
+      `'system:model:list' 已退役（旧面 /system/model/* 无后端）——侧边栏不得再引用`,
+    );
+  });
+});
