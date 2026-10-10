@@ -185,6 +185,11 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
             throw new ClientException("暂不支持的文件类型：" + stored.getDetectedType());
         }
 
+        // S2-F05-A2：写身份只来自执行主体（与 KB 创建同一口径）。内嵌传输下 UserContext 恒空
+        // （UserContextInterceptor 对 /internal/ai/v1/ + PrincipalContext 跳过填充），而
+        // ai_knowledge_document.created_by 是 V7 NOT NULL 且无默认值：用 UserContext 取值会与
+        // KB 创建同一形状失败（NOT NULL 违约 → 503）。
+        String operator = PrincipalContext.require().userId();
         KnowledgeDocumentDO documentDO = KnowledgeDocumentDO.builder()
                 .kbId(kbId)
                 .docName(stored.getOriginalFilename())
@@ -202,8 +207,8 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                 .processMode(modeConfig.processMode().getValue())
                 .ingestionSpec(modeConfig.ingestionSpec())
                 .pipelineId(modeConfig.pipelineId())
-                .createdBy(UserContext.getUsername())
-                .updatedBy(UserContext.getUsername())
+                .createdBy(operator)
+                .updatedBy(operator)
                 .build();
         documentMapper.insert(documentDO);
         bizChangeLogContext.put(String.valueOf(documentDO.getId()), null, documentDO);
