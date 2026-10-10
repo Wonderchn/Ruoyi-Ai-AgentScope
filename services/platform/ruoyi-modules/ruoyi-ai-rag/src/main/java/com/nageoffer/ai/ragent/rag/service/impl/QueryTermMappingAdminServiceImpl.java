@@ -28,6 +28,8 @@ import com.nageoffer.ai.ragent.audit.constant.BizChangeBizType;
 import com.nageoffer.ai.ragent.audit.constant.BizChangeOperationType;
 import com.nageoffer.ai.ragent.audit.support.BizChangeLogContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
+import com.nageoffer.ai.ragent.framework.security.P04AiErrorCode;
+import com.nageoffer.ai.ragent.framework.security.P04AiException;
 import com.nageoffer.ai.ragent.rag.controller.request.QueryTermMappingCreateRequest;
 import com.nageoffer.ai.ragent.rag.controller.request.QueryTermMappingPageRequest;
 import com.nageoffer.ai.ragent.rag.controller.request.QueryTermMappingUpdateRequest;
@@ -63,11 +65,13 @@ public class QueryTermMappingAdminServiceImpl implements QueryTermMappingAdminSe
         String targetTerm = StrUtil.trimToNull(requestParam.getTargetTerm());
         Assert.notBlank(sourceTerm, () -> new ClientException("原始词不能为空"));
         Assert.notBlank(targetTerm, () -> new ClientException("目标词不能为空"));
+        Integer matchType = requestParam.getMatchType() != null ? requestParam.getMatchType() : 1;
+        requireSupportedMatchType(matchType);
 
         QueryTermMappingDO record = new QueryTermMappingDO();
         record.setSourceTerm(sourceTerm);
         record.setTargetTerm(targetTerm);
-        record.setMatchType(requestParam.getMatchType() != null ? requestParam.getMatchType() : 1);
+        record.setMatchType(matchType);
         record.setPriority(requestParam.getPriority() != null ? requestParam.getPriority() : 0);
         record.setEnabled(requestParam.getEnabled() != null ? (requestParam.getEnabled() ? 1 : 0) : 1);
         record.setRemark(StrUtil.trimToNull(requestParam.getRemark()));
@@ -90,6 +94,12 @@ public class QueryTermMappingAdminServiceImpl implements QueryTermMappingAdminSe
     )
     public void update(String id, QueryTermMappingUpdateRequest requestParam) {
         Assert.notNull(requestParam, () -> new ClientException("请求不能为空"));
+        // 口径定稿（F07-A1）：match_type 非 1 在入参处直接拒绝（400 语义），不进入资源查找。
+        // 若先查存在性，"不存在的 id + 非法 match_type"会先变成 not-found（403 族），
+        // 且读侧只认 1 —— 静默落库等于配置失效，必须在写入口拦死。
+        if (requestParam.getMatchType() != null) {
+            requireSupportedMatchType(requestParam.getMatchType());
+        }
         QueryTermMappingDO record = loadById(id);
         QueryTermMappingDO before = BeanUtil.copyProperties(record, QueryTermMappingDO.class);
 
@@ -160,6 +170,24 @@ public class QueryTermMappingAdminServiceImpl implements QueryTermMappingAdminSe
                         .orderByDesc(QueryTermMappingDO::getUpdateTime)
         );
         return result.convert(this::toVO);
+    }
+
+    /**
+     * match_type 口径定稿（F07-A1）：仅支持 1（精确匹配，子串命中即替换）。
+     * 2（前缀）/3（正则）/4（整词）未实现，明确拒绝而不是静默落库——
+     * 读侧（{@code QueryTermMappingService.normalize}）只对 matchType==1 生效，
+     * 静默收下其余值等于"配了但不生效"。
+     *
+     * <p>用 {@link P04AiException}+{@code BAD_REQUEST} 而非 {@code ClientException}：
+     * 内嵌链路由 {@code AiInternalExceptionResolver} 把该异常映射为 HTTP 400；
+     * {@code ClientException} 会被映射成 403 TENANT_CONTEXT_MISSING（缺租户语义），
+     * 用在这里语义错误。
+     */
+    private static void requireSupportedMatchType(Integer matchType) {
+        if (matchType == null || matchType != 1) {
+            throw new P04AiException(P04AiErrorCode.BAD_REQUEST,
+                    "当前仅支持 match_type=1（精确匹配），match_type=" + matchType + " 尚未实现");
+        }
     }
 
     private QueryTermMappingDO loadById(String id) {

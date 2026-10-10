@@ -47,7 +47,9 @@ public class QueryTermMappingDO {
     private String targetTerm;
 
     /**
-     * 匹配类型 1：精确匹配 2：前缀匹配 3：正则匹配 4：整词匹配
+     * 匹配类型：当前仅 1（精确匹配，子串命中即替换）生效。
+     * 2（前缀）/3（正则）/4（整词）为预留值：管理面 create/update 明确拒绝（400 语义），
+     * 读侧（QueryTermMappingService）对历史遗留的非 1 值跳过不生效。
      */
     private Integer matchType;
 
