@@ -99,12 +99,14 @@ public final class AiCanonicalAction {
      * <b>平台管理身份专属动作</b>：除"身份持有该动作对应的 scope"之外，
      * 还要求调用方是<b>平台管理身份</b>。
      *
-     * <p>为什么需要第二道条件（维护者裁决 A2-ter）：Agent 目录表
+     * <p>为什么需要第二道条件（维护者裁决 A2-ter）：该批动作面向平台管理的 Agent 目录/
+     * 模板面。<b>数据面事实勘误（F09-A1，仅注释，行为不变）</b>：目录表
      * （{@code ai_agent_profile}/{@code ai_agent_prompt}/{@code ai_agent_skill}）
-     * <b>没有 {@code tenant_id} 列</b>，{@code uk_agent_name} 还是<b>全局唯一</b>
-     * —— 也就是说目录是<b>平台级</b>资源，不是租户级资源。若只按 scope 放行，
-     * 任何被误授予 {@code ai:agent:write} 的租户成员都能改到所有租户共用的目录，
-     * 违反 AGENTS.md「缺少租户或主体时必须拒绝」。
+     * 已有 {@code tenant_id} 列（NOT NULL；模板行显式落在保留租户 {@code __public_template__}，
+     * V7:1863-1864），唯一键为租户作用域（V7:2050-2056）—— 不再按"没有 {@code tenant_id} 列、
+     * {@code uk_agent_name} 全局唯一"的旧描述理解。若只按 scope 放行，被误授予
+     * {@code ai:agent:write} 的租户成员即可改动该平台管理面的目录内容，与 AGENTS.md
+     * 「缺少租户或主体时必须拒绝」的收口方向不符，故第二道门按裁决保持不变。
      *
      * <p>因此本集合里的动作要求<b>两个独立条件同时成立</b>：
      * ① 身份显式持有该 scope；② 调用方是平台管理身份。
