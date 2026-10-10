@@ -136,8 +136,17 @@ export interface SysUserOnlineVo {
 export interface ServerInfoVo {
   cpu: { cores: number; systemLoadAverage: number; systemCpuLoad: number; processCpuLoad: number };
   mem: { total: number; free: number; used: number; usage: number };
-  jvm: { total: number; max: number; free: number; used: number; usage: number;
-         version: string; home: string; startTimeMillis: number; uptimeSeconds: number };
+  jvm: {
+    total: number;
+    max: number;
+    free: number;
+    used: number;
+    usage: number;
+    version: string;
+    home: string;
+    startTimeMillis: number;
+    uptimeSeconds: number;
+  };
   sys: { hostName: string; osName: string; osArch: string; userDir: string };
   disk: { path: string; total: number; free: number; usable: number; used: number; usage: number };
 }
