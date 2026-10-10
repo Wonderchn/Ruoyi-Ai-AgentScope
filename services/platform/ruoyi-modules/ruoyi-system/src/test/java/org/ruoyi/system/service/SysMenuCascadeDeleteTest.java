@@ -27,10 +27,12 @@ import org.ruoyi.system.aiidentity.AiPolicyMutationGuard;
 import org.ruoyi.system.domain.SysMenu;
 import org.ruoyi.system.domain.SysRole;
 import org.ruoyi.system.domain.SysRoleMenu;
+import org.ruoyi.system.domain.SysTenant;
 import org.ruoyi.system.domain.SysTenantPackage;
 import org.ruoyi.system.mapper.SysMenuMapper;
 import org.ruoyi.system.mapper.SysRoleMapper;
 import org.ruoyi.system.mapper.SysRoleMenuMapper;
+import org.ruoyi.system.mapper.SysTenantMapper;
 import org.ruoyi.system.mapper.SysTenantPackageMapper;
 import org.ruoyi.system.service.impl.SysMenuServiceImpl;
 
@@ -63,16 +65,20 @@ class SysMenuCascadeDeleteTest {
                 new MapperBuilderAssistant(new MybatisConfiguration(), ""), SysMenu.class);
         TableInfoHelper.initTableInfo(
                 new MapperBuilderAssistant(new MybatisConfiguration(), ""), SysRoleMenu.class);
+        TableInfoHelper.initTableInfo(
+                new MapperBuilderAssistant(new MybatisConfiguration(), ""), SysTenant.class);
     }
 
     private final SysMenuMapper menuMapper = mock(SysMenuMapper.class);
     private final SysRoleMapper roleMapper = mock(SysRoleMapper.class);
     private final SysRoleMenuMapper roleMenuMapper = mock(SysRoleMenuMapper.class);
     private final SysTenantPackageMapper tenantPackageMapper = mock(SysTenantPackageMapper.class);
+    private final SysTenantMapper tenantMapper = mock(SysTenantMapper.class);
     private final AiPolicyMutationGuard guard = mock(AiPolicyMutationGuard.class);
 
     private SysMenuServiceImpl service() {
-        return new SysMenuServiceImpl(menuMapper, roleMapper, roleMenuMapper, tenantPackageMapper, guard);
+        return new SysMenuServiceImpl(menuMapper, roleMapper, roleMenuMapper, tenantPackageMapper,
+                tenantMapper, guard);
     }
 
     private static SysMenu menu(long id, Long parentId) {
@@ -154,5 +160,69 @@ class SysMenuCascadeDeleteTest {
         assertTrue(cap.getValue().isEmpty(), "必须传显式空集，而不是近似/全量租户");
         assertEquals(1, counts.get("menus"));
         assertEquals(0, counts.get("packages"));
+    }
+
+    @Test
+    void packageOnlyReferenceBumpsTenantsUsingTheCleanedPackage() {
+        // 复核 P2：菜单 7 无任何角色绑定、仅被套餐 11 引用 → bump 集合必须并入"使用套餐 11 的租户"
+        when(menuMapper.selectList(any())).thenReturn(List.of(menu(7, 0L)));
+        when(roleMenuMapper.selectList(any())).thenReturn(List.of());
+        SysTenantPackage p = pkg(11L, "pkgOnlyRef", "7,9");
+        when(tenantPackageMapper.selectList(any())).thenReturn(List.of(p));
+        SysTenant t = new SysTenant();
+        t.setTenantId("t9");
+        t.setPackageId(11L);
+        when(tenantMapper.selectList(any())).thenReturn(List.of(t));
+        when(menuMapper.deleteByIds(any())).thenReturn(1);
+
+        Map<String, Object> counts = service().deleteMenuCascade(List.of(7L));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Collection<String>> cap = ArgumentCaptor.forClass(java.util.Collection.class);
+        verify(guard).bump(cap.capture());
+        assertEquals(Set.of("t9"), new HashSet<>(cap.getValue()), "套餐维度受影响租户必须入 bump 集合");
+        assertEquals(1, counts.get("packages"));
+        assertEquals(1, counts.get("packageRefs"));
+    }
+
+    @Test
+    void orphanBindingsOnlyCleanupStillBumps() {
+        // 复核 P3-3：菜单行已不存在（rows=0），孤儿 role_menu 绑定被回收 → 仍须 bump
+        when(menuMapper.selectList(any())).thenReturn(List.of(menu(8, 0L)));
+        SysRoleMenu rm = new SysRoleMenu();
+        rm.setMenuId(8L);
+        rm.setRoleId(7L);
+        when(roleMenuMapper.selectList(any())).thenReturn(List.of(rm));
+        SysRole role = new SysRole();
+        role.setRoleId(7L);
+        role.setTenantId("t1");
+        when(roleMapper.selectByIds(any())).thenReturn(List.of(role));
+        when(tenantPackageMapper.selectList(any())).thenReturn(List.of());
+        when(roleMenuMapper.deleteByMenuIds(any())).thenReturn(1);
+        when(menuMapper.deleteByIds(any())).thenReturn(0);
+
+        Map<String, Object> counts = service().deleteMenuCascade(List.of(8L));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Collection<String>> cap = ArgumentCaptor.forClass(java.util.Collection.class);
+        verify(guard).bump(cap.capture());
+        assertEquals(Set.of("t1"), new HashSet<>(cap.getValue()), "孤儿清理同样触发受影响租户版本递增");
+        assertEquals(0, counts.get("menus"));
+        assertEquals(1, counts.get("roleBindings"));
+    }
+
+    @Test
+    void whitespaceOnlyNormalizationDoesNotCountOrWrite() {
+        // 复核 P3-1：CSV 仅空白差异、无实际移除 → 不写库、不计数
+        when(menuMapper.selectList(any())).thenReturn(List.of(menu(5, 0L)));
+        when(roleMenuMapper.selectList(any())).thenReturn(List.of());
+        when(tenantPackageMapper.selectList(any())).thenReturn(List.of(pkg(11L, "pkgSpaced", " 9 , 10 ")));
+        when(menuMapper.deleteByIds(any())).thenReturn(1);
+
+        Map<String, Object> counts = service().deleteMenuCascade(List.of(5L));
+
+        verify(tenantPackageMapper, never()).updateById(any(SysTenantPackage.class));
+        assertEquals(0, counts.get("packages"));
+        assertEquals(0, counts.get("packageRefs"));
     }
 }
