@@ -21,3 +21,4 @@ org.ruoyi.aiweb.embedded.AiEmbeddedAdminDeliveryConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedRecommendationConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedFlowConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedDashboardConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedKnowledgeScheduleConfiguration
