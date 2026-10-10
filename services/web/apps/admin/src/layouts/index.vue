@@ -31,6 +31,7 @@ const staticMenus = [
   { path: '/monitor/operlog', title: '操作日志', icon: 'Document', permission: 'monitor:operlog:list' },
   { path: '/monitor/logininfor', title: '登录日志', icon: 'Key', permission: 'monitor:logininfor:list' },
   { path: '/monitor/online', title: '在线用户', icon: 'Monitor', permission: 'monitor:online:list' },
+  { path: '/monitor/server', title: '服务监控', icon: 'Monitor', permission: 'monitor:admin:list' },
   // W3-5 AI 管理域（成对核对表：src/config/permission-page-pairs.ts）。
   // agents/skills/ingestion/settings 无权限行（ragent 管理面未播种 C 行），
   // permission 留空 = 菜单恒显；后端端点本身 404（BLOCKED-BY-EMBEDDED-REGISTRY）。

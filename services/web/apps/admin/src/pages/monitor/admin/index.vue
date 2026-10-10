@@ -8,8 +8,8 @@
   usage 为服务端已换算百分数（-1=不可算）。只读页，无任何写操作。
 -->
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
 import type { ServerInfoVo } from '@/api/monitor';
+import { onMounted, ref } from 'vue';
 import { monitorApi } from '@/api/bound';
 
 const loading = ref(false);
@@ -17,7 +17,8 @@ const error = ref('');
 const info = ref<ServerInfoVo | null>(null);
 
 function fmtBytes(v?: number): string {
-  if (v === undefined || v === null || v < 0) return '-';
+  if (v === undefined || v === null || v < 0)
+    return '-';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let n = v;
   let i = 0;
@@ -37,7 +38,8 @@ function fmtLoad(v?: number): string {
 }
 
 function fmtUptime(sec?: number): string {
-  if (sec === undefined || sec < 0) return '-';
+  if (sec === undefined || sec < 0)
+    return '-';
   const d = Math.floor(sec / 86400);
   const h = Math.floor((sec % 86400) / 3600);
   const m = Math.floor((sec % 3600) / 60);
@@ -49,9 +51,11 @@ async function load(): Promise<void> {
   error.value = '';
   try {
     info.value = await monitorApi.server.info();
-  } catch (e: unknown) {
+  }
+  catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e);
-  } finally {
+  }
+  finally {
     loading.value = false;
   }
 }
@@ -67,13 +71,20 @@ onMounted(load);
         {{ loading ? '刷新中…' : '刷新' }}
       </button>
     </div>
-    <p v-if="error" class="server-error" data-testid="server-error">{{ error }}</p>
+    <p v-if="error" class="server-error" data-testid="server-error">
+      {{ error }}
+    </p>
     <template v-if="info">
       <section data-testid="server-cpu">
         <h4>CPU</h4>
         <table class="server-table">
           <tbody>
-            <tr><td>核心数</td><td data-testid="server-cpu-cores">{{ info.cpu.cores }}</td></tr>
+            <tr>
+              <td>核心数</td>
+              <td data-testid="server-cpu-cores">
+                {{ info.cpu.cores }}
+              </td>
+            </tr>
             <tr><td>系统平均负载</td><td>{{ fmtLoad(info.cpu.systemLoadAverage) }}</td></tr>
             <tr><td>系统 CPU 负载</td><td>{{ fmtLoad(info.cpu.systemCpuLoad) }}</td></tr>
             <tr><td>进程 CPU 负载</td><td>{{ fmtLoad(info.cpu.processCpuLoad) }}</td></tr>
@@ -97,7 +108,12 @@ onMounted(load);
             <tr><td>堆总量 / 最大</td><td>{{ fmtBytes(info.jvm.total) }} / {{ fmtBytes(info.jvm.max) }}</td></tr>
             <tr><td>堆已用</td><td>{{ fmtBytes(info.jvm.used) }}（{{ fmtPct(info.jvm.usage) }}）</td></tr>
             <tr><td>堆空闲</td><td>{{ fmtBytes(info.jvm.free) }}</td></tr>
-            <tr><td>Java 版本</td><td data-testid="server-jvm-version">{{ info.jvm.version }}</td></tr>
+            <tr>
+              <td>Java 版本</td>
+              <td data-testid="server-jvm-version">
+                {{ info.jvm.version }}
+              </td>
+            </tr>
             <tr><td>运行时长</td><td>{{ fmtUptime(info.jvm.uptimeSeconds) }}</td></tr>
           </tbody>
         </table>
@@ -124,7 +140,9 @@ onMounted(load);
         </table>
       </section>
     </template>
-    <p v-else-if="!error" data-testid="server-loading">加载中…</p>
+    <p v-else-if="!error" data-testid="server-loading">
+      加载中…
+    </p>
   </div>
 </template>
 
