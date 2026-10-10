@@ -181,7 +181,8 @@ public class AiGatewayController {
             // T0 据此重裁为既有写动作，与本文件上方
             // `POST /conversations/messages/{messageId}/feedback`（同样是"对会话消息的写"）**同一口径**：
             // **不新增 canonical 动作、不新增权限行、不新增迁移**（权威值以
-            // P1CurrentAuthorizationTest:209 的 assertEquals(34, ...) 为准）。
+            // P1CurrentAuthorizationTest:245/:252 为准：旧 34 条逐项保留 +
+            // F13 批准的 flow.* 4 条 = 38，**不得新增第 39 个动作**）。
             // 判据两侧都钉住：持 `ai:conversation:write` 才 200；**只持 `ai:conversation:read` 必须 403**。
             // 未采用"读权限时只读缓存、不落库"的折中：那会让同一端点出现两种成功形状，
             // 与 RW-22-R1"同一控制器不分裂成两种成功形状"的既定纪律冲突。
@@ -194,15 +195,26 @@ public class AiGatewayController {
             // 逐条登记（**不用通配 `/agent/v1/**`**，也不做根 Controller 扫描）：
             // 通配会把同一前缀下任何将来新增的控制器一起放行，等于取消白名单。
             //
-            // 动作复用会话读/写，不新增权限行：Agent 会话与普通会话是同一
+            // 动作复用会话读/写/删除，不新增权限行：Agent 会话与普通会话是同一
             // "用户自己的会话"语义（`ai:conversation:read/write/delete`），
             // 且 AgentConversationServiceImpl 自身按 tenant+user 限定作用域。
-            // 有意**不**放行 `POST /agent/v1/conversations/batch-delete`：
-            // 批量多资源授权是计划 §13 的待决定项。
+            //
+            // F10-A1（2026-10-10）补齐两条（原"有意不放行 batch-delete"的口径已由 D05 消灭）：
+            //   create：镜像 G-52 general 路径 `POST /conversations` 的映射
+            //     （→ conversation.rename；内层 ConversationSurface.create 已在，
+            //     归属只取 PrincipalContext，请求体只有 title）；
+            //   batch-delete：镜像 RW-01/F03 general 路径 `POST /conversations/batch-delete`
+            //     的映射（→ conversation.delete）。"批量多资源授权是计划 §13 待决定项"
+            //     的前置条件已由 D05（批量授权决定 + 服务端契约与负例族）消灭；agent 路径
+            //     复用同一受控服务契约 ConversationBatchDeleteService（集合 ≤100 /
+            //     空集合与重复 ID 拒绝 / 逐资源 permit / 单事务），故按同一先例放行，
+            //     零迁移、零新权限行。
             new Route("GET", "/agent/v1/conversations", "conversation.read"),
             new Route("GET", "/agent/v1/conversations/{id}/messages", "conversation.read"),
+            new Route("POST", "/agent/v1/conversations", "conversation.rename"),
             new Route("PUT", "/agent/v1/conversations/{id}/title", "conversation.rename"),
             new Route("DELETE", "/agent/v1/conversations/{id}", "conversation.delete"),
+            new Route("POST", "/agent/v1/conversations/batch-delete", "conversation.delete"),
             // WP-033 / C13.4（T0 登记，2026-10-06）：Agent **引擎**面。经源码核实四条真实端点
             // 早已存在（AgentChatController:94/112/129、AgentMetaController:85），但此前
             // 一条都不在白名单里 —— 与本文件上一段记录的会话面缺口同类：
@@ -220,10 +232,10 @@ public class AiGatewayController {
             // 动作与权限全部**复用既有已播种行**，不新增 canonical 动作、不新增迁移：
             //   run.cancel    -> ai:run:cancel     (V5)
             //   agent.execute -> ai:agent:execute  (V6)
-            // `P1CurrentAuthorizationTest` 断言 knownActions().size()==34，故不得新增动作。
-            // （注：本条注释曾长期写作"26"，是过期数字；权威值以 P1CurrentAuthorizationTest:209
-            //   的 assertEquals(34, AiActionRegistry.knownActions().size()) 为准。R/RW-29 已两次
-            //   因该过期数字产生误导，故此处更正并保留说明。）
+            // 权威值以 P1CurrentAuthorizationTest:245/:252 为准：旧 34 条逐项集合相等 +
+            // 总数 = 34 + F13 批准的 flow.* 4 条 = 38，故不得新增动作（不得新增第 39 个动作）。
+            // （注：本条注释曾长期写作"26"、后写作"34"并引用过期行号 209，均为过期信息；
+            //   此处按实测权威更正并保留说明。）
             new Route("GET", "/memories", "memory.read"),
             new Route("GET", "/runs/{id}", "run.get"),
             new Route("GET", "/runs/{id}/event-records", "run.events"),

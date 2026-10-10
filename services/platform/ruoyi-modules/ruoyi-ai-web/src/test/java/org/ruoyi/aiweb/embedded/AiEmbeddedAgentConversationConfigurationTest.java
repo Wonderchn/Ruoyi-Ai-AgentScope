@@ -358,7 +358,67 @@ class AiEmbeddedAgentConversationConfigurationTest {
                     .isInstanceOf(ClientException.class);
             assertThatThrownBy(() -> surface.delete("conv-1"))
                     .isInstanceOf(ClientException.class);
+            assertThatThrownBy(() -> surface.create(
+                    new AiEmbeddedAgentConversationConfiguration.LocalTransport.ConversationEnabled
+                            .ConversationSurface.TitleRequest("无主体")))
+                    .isInstanceOf(ClientException.class);
+            assertThatThrownBy(() -> surface.batchDelete(
+                    new AiEmbeddedAgentConversationConfiguration.LocalTransport.ConversationEnabled
+                            .ConversationSurface.BatchDeleteRequest(List.of("conv-1"))))
+                    .isInstanceOf(ClientException.class);
         });
+    }
+
+    /**
+     * F10-A1：create / batch-delete 委托既有受控服务（不复制业务逻辑），归属只取 PrincipalContext。
+     *
+     * <p>两层判据：
+     * <ol>
+     *   <li><b>归属契约</b>：{@code TitleRequest} 的记录组件必须恰好是 {@code [title]} ——
+     *       请求体没有 tenant/member/user 字段可写，归属由服务在 {@code PrincipalContext} 上解析，
+     *       控制器既不接收、也无法覆盖；</li>
+     *   <li><b>受控服务语义</b>：批量删除逐资源（字典序）取 permit、单次调用整批删除，
+     *       而不是"循环调单删"或"复用一个单资源 permit"。</li>
+     * </ol>
+     */
+    @Test
+    @DisplayName("F10-A1：create/batch-delete 委托既有受控服务，归属只取 PrincipalContext")
+    void createAndBatchDeleteDelegateToTheControlledServices() {
+        AgentConversationService service = mock(AgentConversationService.class);
+        RevocationGuard guard = mock(RevocationGuard.class);
+        when(guard.enter(any(), anyString(), anyString())).thenAnswer(invocation ->
+                new RevocationGuard.Operation(guard, java.util.UUID.randomUUID().toString(),
+                        java.util.UUID.randomUUID().toString()));
+        var surface = new AiEmbeddedAgentConversationConfiguration.LocalTransport.ConversationEnabled
+                .ConversationSurface(service, guardProvider(guard),
+                new ConversationBatchDeleteService(service, guardProvider(guard)));
+
+        PrincipalContext.set(principal("T1", "2101"));
+
+        // create：只传标题；身份字段在请求体里不存在（记录组件恰一条）
+        when(service.create("新会话")).thenReturn("conv-new");
+        var created = surface.create(new AiEmbeddedAgentConversationConfiguration.LocalTransport
+                .ConversationEnabled.ConversationSurface.TitleRequest("新会话"));
+        assertThat(created.getBody().data())
+                .containsEntry("conversationId", "conv-new").containsEntry("created", true);
+        assertThat(java.util.Arrays.stream(AiEmbeddedAgentConversationConfiguration.LocalTransport
+                        .ConversationEnabled.ConversationSurface.TitleRequest.class.getRecordComponents())
+                .map(java.lang.reflect.RecordComponent::getName).toList())
+                .as("请求体只有 title：tenant/member/user 由服务从 PrincipalContext 取，客户端无从提交")
+                .containsExactly("title");
+        verify(service).create("新会话");
+
+        // batch-delete：逐资源 permit（字典序）+ 单次 deleteBatch（不是循环调单删）
+        when(service.existsForUser("conv-1", "2101")).thenReturn(true);
+        when(service.existsForUser("conv-2", "2101")).thenReturn(true);
+        var deleted = surface.batchDelete(new AiEmbeddedAgentConversationConfiguration.LocalTransport
+                .ConversationEnabled.ConversationSurface.BatchDeleteRequest(List.of("conv-2", "conv-1")));
+        assertThat(deleted.getBody().data())
+                .containsEntry("deletedCount", 2).containsEntry("permitCount", 2);
+        verify(guard).enter(any(), eq("conversation.delete"), eq("conv:conv-1"));
+        verify(guard).enter(any(), eq("conversation.delete"), eq("conv:conv-2"));
+        verify(service).deleteBatch(List.of("conv-1", "conv-2"), "2101");
+        verify(service, never()).delete(anyString(), anyString());
     }
 
     /** 极简 ObjectProvider：只表达"许可执行侧在不在"。 */
@@ -471,7 +531,7 @@ class AiEmbeddedAgentConversationConfigurationTest {
      * 于是"有人提前放行"会立刻失败，而"交付内层契约"不会误报。
      */
     @Test
-    @DisplayName("C4/D05：F03 批量删除已按 D05 逐条放行；Agent 侧仍保持未放行")
+    @DisplayName("C4/D05：两族批量删除均已逐条放行（F03 general；F10-A1 起含 Agent 路径）")
     void batchDeleteReachabilityMatchesTheD05Decision() throws Exception {
         java.lang.reflect.Field field = org.ruoyi.aiintegration.web.AiGatewayController.class
                 .getDeclaredField("ROUTES");
@@ -497,10 +557,15 @@ class AiEmbeddedAgentConversationConfigurationTest {
         assertThat(patterns)
                 .as("F03 批量删除不得用通配替代逐条登记")
                 .noneMatch(pattern -> pattern.contains("/conversations/**"));
-        // Agent 侧维持不放行：F10 的批量面本轮不改可达性（RW-01 有意未申请）。
+        // F10-A1（2026-10-10）：Agent 路径按同一 D05 先例放行（镜像 general 路径；
+        // 复用已交付的受控服务契约 ConversationBatchDeleteService：集合 ≤100 / 空集合与重复 ID 拒绝 /
+        // 逐资源 permit / 单事务），且同样必须逐条登记、不得通配。
         assertThat(patterns)
-                .as("Agent 侧批量删除仍不放行：内层有契约 ≠ 公开可达，F10 另卡决定")
-                .noneMatch(pattern -> pattern.contains("/agent/v1/conversations/batch-delete"));
+                .as("F10-A1 已放行 Agent 路径批量删除（D05 决定 + RW-01 先例 + 内层受控契约齐备）")
+                .contains("/agent/v1/conversations/batch-delete");
+        assertThat(patterns)
+                .as("Agent 路径批量删除不得用通配替代逐条登记")
+                .noneMatch(pattern -> pattern.contains("/agent/v1/conversations/**"));
     }
 
     /** 从控制器方法注解里抽出 `METHOD path` 形式的集合。 */

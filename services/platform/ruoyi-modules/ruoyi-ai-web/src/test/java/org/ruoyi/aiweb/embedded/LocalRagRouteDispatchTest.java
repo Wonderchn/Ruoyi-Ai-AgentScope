@@ -320,8 +320,10 @@ class LocalRagRouteDispatchTest {
         // 白名单是**逐条**的，不是前缀通配：相邻/相似路径不得被放行
         assertThat(post("/api/ai/v1/conversations/batch-delete-extra", "{}", true).statusCode()).isEqualTo(404);
         assertThat(post("/api/ai/v1/conversations/batch-delete/all", "{}", true).statusCode()).isEqualTo(404);
-        // Agent 会话面的同名端点**有意不放行**（D05：普通会话面放行 ≠ Agent 面放行）
-        assertThat(post("/api/ai/v1/agent/v1/conversations/batch-delete", "{}", true).statusCode()).isEqualTo(404);
+        // F10-A1 起 Agent 路径同名端点也已放行（可达性判据见 LocalAgentConversationRouteDispatchTest）；
+        // 这里只钉白名单仍是逐条形状：Agent 路径下的相邻/相似路径不得被前缀放行
+        assertThat(post("/api/ai/v1/agent/v1/conversations/batch-delete/all", "{}", true).statusCode())
+                .isEqualTo(404);
     }
 
     @Test

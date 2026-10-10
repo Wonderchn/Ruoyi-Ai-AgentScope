@@ -53,8 +53,10 @@ import org.springframework.transaction.PlatformTransactionManager;
  * {@link AgentActionController}。
  *
  * <p>AgentScope 引擎面（{@code AgentChatController}/{@code AgentConversationController}/
- * {@code AgentMetaController}，{@code @ConditionalOnAgentEngine}）不在本组：其路由不在
- * 网关白名单内，随 E4/E5 前端契约与 Worker 执行链一并装配。
+ * {@code AgentMetaController}，{@code @ConditionalOnAgentEngine}）不在本组：其两条 JSON 路由
+ * （{@code /agent/v1/stop}、{@code /agent/v1/meta}）已在网关 {@code AiGatewayController.ROUTES}
+ * 逐条登记、SSE 两条（chat/confirm）由 {@code AiGatewayStreamController} 精确映射，不受本组装配影响；
+ * 引擎面随 WP-032/WP-033（{@code ragent.engine.type=agent}）独立门控装配。
  */
 @AutoConfiguration
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
