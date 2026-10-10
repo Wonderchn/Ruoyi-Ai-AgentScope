@@ -48,7 +48,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * RW-23（F18 op3/op6）：业务变更日志读路径必须限域。
+ * RW-23（F18 op2/op5）：业务变更日志读路径必须限域。
  *
  * <p>改前行为：{@code page} 只按业务键筛选（可跨租户全量分页）、{@code get(id)} 直接
  * {@code selectById}（跨租户可读），两处都没有 tenant/member 条件。

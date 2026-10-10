@@ -23,6 +23,8 @@ import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.rag.controller.request.RagTraceRunPageRequest;
 import com.nageoffer.ai.ragent.rag.controller.vo.RagTraceDetailVO;
 import com.nageoffer.ai.ragent.rag.controller.vo.RagTraceNodeVO;
@@ -51,6 +53,11 @@ import java.util.stream.Collectors;
  * <p>F18/RW-23：每个查询都先落"限域"（{@link RagTraceReadScope}）—— tenant 恒等过滤，
  * 非 tenant-wide 时再加 member 过滤。跨租户/跨成员的 traceId 与"不存在"同外显
  * （与 {@code TenantRunReadRepository} 的 {@code (tenant_id, run_id)} 口径一致）。
+ *
+ * <p>F18 op1 token 用量：从 {@code extra_data} 的 {@code prompt_tokens/completion_tokens/total_tokens}
+ * 三键解析（run / node 同口径，零迁移）。三态语义：缺键 / JSON {@code null} / 非数字 / 坏 JSON →
+ * {@code null}（未知，不得伪 0）；显式 {@code 0} → {@code 0}；UNKNOWN / 未对账不在本面表达
+ * （对账状态归 F23 用量账本，B 面）。
  */
 @Service
 @RequiredArgsConstructor
@@ -59,6 +66,7 @@ public class RagTraceQueryServiceImpl implements RagTraceQueryService {
     private final RagTraceRunMapper runMapper;
     private final RagTraceNodeMapper nodeMapper;
     private final UserMapper userMapper;
+    private final ObjectMapper objectMapper;
 
     @Override
     public IPage<RagTraceRunVO> pageRuns(RagTraceRunPageRequest request, RagTraceReadScope scope) {
@@ -154,6 +162,7 @@ public class RagTraceQueryServiceImpl implements RagTraceQueryService {
     private RagTraceRunVO toRunVO(RagTraceRunDO run, Map<String, String> usernameMap, Map<String, Long> ttftMap) {
         String username = resolveUsername(run.getUserId(), usernameMap);
         String question = parseQuestion(run.getExtraData());
+        JsonNode extraData = parseExtraData(run.getExtraData());
         return RagTraceRunVO.builder()
                 .traceId(run.getTraceId())
                 .traceName(run.getTraceName())
@@ -169,6 +178,9 @@ public class RagTraceQueryServiceImpl implements RagTraceQueryService {
                 .question(question)
                 .startTime(run.getStartTime())
                 .endTime(run.getEndTime())
+                .promptTokens(tokenOf(extraData, "prompt_tokens"))
+                .completionTokens(tokenOf(extraData, "completion_tokens"))
+                .totalTokens(tokenOf(extraData, "total_tokens"))
                 .build();
     }
 
@@ -238,6 +250,37 @@ public class RagTraceQueryServiceImpl implements RagTraceQueryService {
         }
     }
 
+    /**
+     * 宽容解析 {@code extra_data}：空白 / 非 JSON 对象 / 坏 JSON 一律 {@code null}（读路径不抛）。
+     */
+    private JsonNode parseExtraData(String extraData) {
+        if (StrUtil.isBlank(extraData)) {
+            return null;
+        }
+        try {
+            JsonNode json = objectMapper.readTree(extraData);
+            return json != null && json.isObject() ? json : null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * 读取 token 计数字段（F18 op1 三态契约）：缺键 / JSON {@code null} / 非数字 → {@code null}
+     * （未知不得伪 0）；显式 {@code 0} → {@code 0}。对账状态（UNKNOWN / 未对账）不在本面表达
+     * （归 F23 用量账本，B 面）。
+     */
+    private Integer tokenOf(JsonNode extraData, String key) {
+        if (extraData == null) {
+            return null;
+        }
+        JsonNode value = extraData.get(key);
+        if (value == null || value.isNull() || !value.isNumber()) {
+            return null;
+        }
+        return value.intValue();
+    }
+
     private String resolveUsername(String userId, Map<String, String> usernameMap) {
         if (StrUtil.isBlank(userId) || usernameMap == null || usernameMap.isEmpty()) {
             return null;
@@ -246,6 +289,7 @@ public class RagTraceQueryServiceImpl implements RagTraceQueryService {
     }
 
     private RagTraceNodeVO toNodeVO(RagTraceNodeDO node) {
+        JsonNode extraData = parseExtraData(node.getExtraData());
         return RagTraceNodeVO.builder()
                 .traceId(node.getTraceId())
                 .nodeId(node.getNodeId())
@@ -260,6 +304,9 @@ public class RagTraceQueryServiceImpl implements RagTraceQueryService {
                 .durationMs(node.getDurationMs())
                 .startTime(node.getStartTime())
                 .endTime(node.getEndTime())
+                .promptTokens(tokenOf(extraData, "prompt_tokens"))
+                .completionTokens(tokenOf(extraData, "completion_tokens"))
+                .totalTokens(tokenOf(extraData, "total_tokens"))
                 .build();
     }
 }

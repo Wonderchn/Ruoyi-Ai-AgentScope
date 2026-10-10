@@ -38,7 +38,7 @@ public class RagTraceRunPageRequest extends Page {
     private String status;
 
     /**
-     * 起始时间（含），按链路开始时间过滤（F18 op2「运行列表（筛选）」）。
+     * 起始时间（含），按链路开始时间过滤（F18 op1「运行列表（筛选）」）。
      */
     @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private Date beginTime;
