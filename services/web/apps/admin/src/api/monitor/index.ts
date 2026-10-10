@@ -129,6 +129,19 @@ export interface SysUserOnlineVo {
   loginTime?: number;
 }
 
+/**
+ * S2-F01/op14：服务监控快照（`GET /monitor/server`，`R<ServerInfoVo>`，单资源不分页）。
+ * 口径：负载类不可用为 -1；内存/JVM/磁盘为字节，usage 为已换算百分数（-1=不可算）。
+ */
+export interface ServerInfoVo {
+  cpu: { cores: number; systemLoadAverage: number; systemCpuLoad: number; processCpuLoad: number };
+  mem: { total: number; free: number; used: number; usage: number };
+  jvm: { total: number; max: number; free: number; used: number; usage: number;
+         version: string; home: string; startTimeMillis: number; uptimeSeconds: number };
+  sys: { hostName: string; osName: string; osArch: string; userDir: string };
+  disk: { path: string; total: number; free: number; usable: number; used: number; usage: number };
+}
+
 export function createMonitorApi(client: PlatformClient) {
   return {
     trace: {
@@ -140,6 +153,11 @@ export function createMonitorApi(client: PlatformClient) {
       nodes: (traceId: string) => client.get<TraceNodeVo[]>(`/monitor/trace/node/list/${encodeURIComponent(traceId)}`),
       /** 完整详情（`R<TraceDetailVo>`，**不分页**）。 */
       detail: (traceId: string) => client.get<TraceDetailVo>(`/monitor/trace/detail/${encodeURIComponent(traceId)}`),
+    },
+
+    /** S2-F01/op14：服务监控快照（`SysServerController`，权限=菜单 117 既有 `monitor:admin:list`）。 */
+    server: {
+      info: () => client.get<ServerInfoVo>('/monitor/server'),
     },
 
     operlogs: {
