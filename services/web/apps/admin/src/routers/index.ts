@@ -89,6 +89,15 @@ export const layoutRouter: RouteRecordRaw[] = [
         meta: { title: '缓存监控', icon: 'Coin', permission: 'monitor:cache:list' },
       },
       {
+        // S2-F01/op14（2026-10-10）：服务监控。权限串逐字取自种子菜单 117「Admin监控」
+        // （hidden，component=monitor/admin/index）——后端 SysServerController@/monitor/server
+        // 与之一一对应，零迁移补齐既有预留挂点。
+        path: 'monitor/server',
+        name: 'serverMonitor',
+        component: () => import('@/pages/monitor/admin/index.vue'),
+        meta: { title: '服务监控', icon: 'Cpu', permission: 'monitor:admin:list' },
+      },
+      {
         // RW-15：F01 op1 租户管理（写面：新增/编辑/删除/启停/套餐-字典-配置同步）。
         path: 'tenant',
         name: 'tenantList',
