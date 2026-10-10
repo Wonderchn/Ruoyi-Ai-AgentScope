@@ -155,16 +155,18 @@ class P1AiPermissionContractTest {
      * 一并放行——那等于取消白名单，正是计划 §7 明令禁止的形态。
      */
     @Test
-    @DisplayName("WP-034：F10 的 4 条 Agent 会话路由逐条放行，且不存在 /agent/v1/** 通配")
+    @DisplayName("WP-034 + F10-A1：F10 的 6 条 Agent 会话路由逐条放行，且不存在 /agent/v1/** 通配")
     void agentConversationRoutesAreWhitelistedIndividually() throws Exception {
         List<String> patterns = whitelistedPatterns();
 
         assertThat(patterns)
-                .as("四条会话路由必须逐条登记（列表/消息/改名/单删）")
+                .as("六条会话路由必须逐条登记（列表/消息/新建/改名/单删/批量删除）")
                 .contains("GET /agent/v1/conversations",
                         "GET /agent/v1/conversations/{id}/messages",
+                        "POST /agent/v1/conversations",
                         "PUT /agent/v1/conversations/{id}/title",
-                        "DELETE /agent/v1/conversations/{id}");
+                        "DELETE /agent/v1/conversations/{id}",
+                        "POST /agent/v1/conversations/batch-delete");
         assertThat(patterns)
                 .as("禁止开放通配 /agent/v1/**：那会把同前缀下任何新增控制器一起放行")
                 .noneMatch(pattern -> pattern.contains("/agent/v1/**")
@@ -176,9 +178,12 @@ class P1AiPermissionContractTest {
                 .as("F03 批量删除逐条放行（D05 已决定），且不得用通配替代")
                 .contains("POST /conversations/batch-delete")
                 .noneMatch(pattern -> pattern.contains("/conversations/**"));
+        // F10-A1（2026-10-10）：Agent 路径按同一 D05 先例放行（镜像 general 路径，
+        // 复用既有 conversation.delete 动作与受控服务契约）；仍必须逐条登记、不得通配。
         assertThat(patterns)
-                .as("Agent 侧批量删除仍不放行：F10 的批量面本轮不改可达性，避免一次开口两处")
-                .noneMatch(pattern -> pattern.contains("/agent/v1/conversations/batch-delete"));
+                .as("Agent 侧批量删除（F10-A1）逐条放行：镜像 F03 general 路径的 D05 口径")
+                .contains("POST /agent/v1/conversations/batch-delete")
+                .noneMatch(pattern -> pattern.contains("/agent/v1/conversations/**"));
         // 动作必须是已有规范动作：不新增权限行（Agent 会话与普通会话是同一"用户自己的会话"语义）
         assertThat(whitelistedActions())
                 .as("四条路由分别绑定会话读/改名/删除动作")

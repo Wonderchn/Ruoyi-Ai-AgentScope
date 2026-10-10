@@ -90,9 +90,12 @@ import java.util.Map;
  * 本轮不在本机可验证范围内。会话 CRUD（列表/历史/改名/删除）<b>不依赖</b>那条链，
  * 因此用独立开关 {@code agent.conversation.enabled} 交付，不把它绑在引擎开关上。
  *
- * <p><b>有意不交付 F10 的 {@code batch-delete}。</b>批量删除要先回答"一个 permit 能否覆盖
- * N 个资源"这个授权问题（计划 §13 的待决定项之一）。在决定之前只提供单资源删除，
- * 不自行发明批量授权语义；网关白名单也因此只登记单资源删除。
+ * <p><b>{@code batch-delete} 已交付并已放行（原"有意不交付"的说明已过期，保留沿革）。</b>
+ * 批量删除曾等待"一个 permit 能否覆盖 N 个资源"的授权决定（计划 §13 待决定项之一）；
+ * D05 已作出决定（F03 先例 RW-01 据此放行 general 路径），本包据此交付受控服务端契约
+ * {@link ConversationBatchDeleteService}，F10-A1（2026-10-10）再镜像放行 agent 路径
+ * {@code POST /agent/v1/conversations/batch-delete}（复用 {@code conversation.delete}，
+ * 零迁移、零新权限行）。
  */
 @AutoConfiguration
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
@@ -359,8 +362,9 @@ public class AiEmbeddedAgentConversationConfiguration {
                  * "两条路径各写一遍、其中一条漏了一层"，这正是本包历史上出过的缺陷形态。
                  *
                  * <p><b>路径映射到客户端 {@code POST /agent/v1/conversations/batch-delete}。</b>
-                 * 该客户端路径在网关白名单里**继续不放行**（C4/D05：集合授权与负例齐备前不开），
-                 * 所以本端点在默认部署下经公开路径仍是 404；先有服务端契约与负例，再开 UI。
+                 * F10-A1（2026-10-10）已在网关白名单逐条登记该客户端路径（镜像 F03 general 路径的
+                 * {@code conversation.delete} 映射）；D05 的批量授权决定与负例族由 RW-01 先行交付，
+                 * 故不再维持"公开路径 404"的边界。
                  *
                  * <p>返回整数 code 包络（网关对 POST JSON 的硬要求）。
                  */

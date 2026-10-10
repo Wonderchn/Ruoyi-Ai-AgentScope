@@ -67,9 +67,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 源码扫描覆盖**所有**已登记的控制器，与是否装配无关——两者是不同维度，
  * 装配与放行的**行为**由各自的端到端判据负责。
  *
- * <p>反向不成立也不报错：内层可以存在未被白名单放行的 handler（例如有意不放行的
- * {@code batch-delete}、仅供内部调用的 barrier/release 端点）。那是**允许**的形态，
- * 本判据只禁止"放行了但没人接"。
+ * <p>反向不成立也不报错：内层可以存在未被白名单放行的 handler（例如仅供内部调用的
+ * barrier/release 端点）。那是**允许**的形态，本判据只禁止"放行了但没人接"。
  */
 @Tag("dev")
 class LocalWhitelistHandlerCoverageTest {
@@ -98,14 +97,19 @@ class LocalWhitelistHandlerCoverageTest {
 
         // 锚点：两侧都必须真的读到东西，否则本判据会退化成恒真
         assertThat(routes)
-                .as("锚点：必须真的读到网关路由表（含本包新增的 F10 四条）")
+                .as("锚点：必须真的读到网关路由表（含 F10 会话族六条）")
                 .hasSizeGreaterThanOrEqualTo(34)
-                .contains("GET /agent/v1/conversations", "DELETE /conversations/{id}", "POST /runs");
+                .contains("GET /agent/v1/conversations",
+                        "POST /agent/v1/conversations",
+                        "POST /agent/v1/conversations/batch-delete",
+                        "DELETE /conversations/{id}", "POST /runs");
         assertThat(handlers)
                 .as("锚点：必须真的扫到内层 handler（含会话面与 run 面）")
                 .contains("GET " + INTERNAL_PREFIX + "/conversations",
                         "POST " + INTERNAL_PREFIX + "/runs",
-                        "DELETE " + INTERNAL_PREFIX + "/agent/v1/conversations/{}");
+                        "POST " + INTERNAL_PREFIX + "/agent/v1/conversations",
+                        "DELETE " + INTERNAL_PREFIX + "/agent/v1/conversations/{}",
+                        "POST " + INTERNAL_PREFIX + "/agent/v1/conversations/batch-delete");
 
         List<String> unreachable = new ArrayList<>();
         Set<String> routeKeys = new LinkedHashSet<>();
