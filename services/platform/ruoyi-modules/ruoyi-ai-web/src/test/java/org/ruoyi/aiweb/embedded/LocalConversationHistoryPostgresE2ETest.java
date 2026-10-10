@@ -155,8 +155,10 @@ import static org.mockito.Mockito.when;
  * <p><b>不签收的范围。</b>本类只签"公开面受理 → 公开历史回读看到该轮 + 跨租户不可见"这一条；
  * 它不签 F03 的其它验收点，也不替代适配器级/内层 dispatch 级判据（那些各自的卡另有其判据）。
  *
- * <p>需要隔离库：{@code -Dragent.conversation.test.jdbc-url=jdbc:postgresql://host:port/db}；
+ * <p>需要隔离库：{@code -Dragent.conversation.test.jdbc-url=jdbc:postgresql://host:port/db}
+ * （凭据可经 {@code -D…jdbc-user} / {@code -D…jdbc-password} 覆盖，缺省 {@code postgres}/空）；
  * 未提供时显式跳过（与既有 PG 判据同一开关），不会静默变绿。
+ * <b>本类会自建/自删 platform 表，必须连独占隔离库</b>，不得指向共享主库。
  */
 @Tag("dev")
 @EnabledIfSystemProperty(named = LocalConversationHistoryPostgresE2ETest.URL_PROPERTY, matches = ".+",
@@ -165,6 +167,23 @@ import static org.mockito.Mockito.when;
 class LocalConversationHistoryPostgresE2ETest {
 
     static final String URL_PROPERTY = "ragent.conversation.test.jdbc-url";
+    /**
+     * 连接凭据可用系统属性覆盖（缺省保持历史口径：便携 PG 的 {@code postgres}/空密码）。
+     * 独占隔离库（本类会自建/自删 platform 表，必须连隔离库）用专用测试角色注入
+     * （F17-A1 真库复跑：{@code f17hist}，测试工件、非敏感，与 {@code MergedTableMapperPostgresTest}
+     * 的 {@code migrate_platform} 同一先例）。
+     */
+    static final String USER_PROPERTY = "ragent.conversation.test.jdbc-user";
+    static final String PASSWORD_PROPERTY = "ragent.conversation.test.jdbc-password";
+
+    /** 测试连接：URL 补 currentSchema，凭据按系统属性覆盖（缺省=便携 PG 口径）。 */
+    private static DriverManagerDataSource testDataSource(String rawUrl) {
+        String url = rawUrl.contains("currentSchema") ? rawUrl
+                : rawUrl + (rawUrl.contains("?") ? "&" : "?") + "currentSchema=platform";
+        return new DriverManagerDataSource(url,
+                System.getProperty(USER_PROPERTY, "postgres"),
+                System.getProperty(PASSWORD_PROPERTY, ""));
+    }
 
     // ---------------------------------------------------------------- 身份（两个租户）
     private static final String T1 = "T1";
@@ -236,10 +255,7 @@ class LocalConversationHistoryPostgresE2ETest {
     static void setUp() throws Exception {
         String url = System.getProperty(URL_PROPERTY);
         assertThat(url).as("缺少 -D" + URL_PROPERTY).isNotBlank();
-        if (!url.contains("currentSchema")) {
-            url = url + (url.contains("?") ? "&" : "?") + "currentSchema=platform";
-        }
-        DataSource dataSource = new DriverManagerDataSource(url, "postgres", "");
+        DataSource dataSource = testDataSource(url);
         jdbc = new JdbcTemplate(dataSource);
         createFrozenTables();
         seed();
@@ -698,11 +714,7 @@ class LocalConversationHistoryPostgresE2ETest {
 
         @Bean
         DataSource dataSource() {
-            String url = System.getProperty(URL_PROPERTY);
-            if (!url.contains("currentSchema")) {
-                url = url + (url.contains("?") ? "&" : "?") + "currentSchema=platform";
-            }
-            return new DriverManagerDataSource(url, "postgres", "");
+            return testDataSource(System.getProperty(URL_PROPERTY));
         }
 
         @Bean

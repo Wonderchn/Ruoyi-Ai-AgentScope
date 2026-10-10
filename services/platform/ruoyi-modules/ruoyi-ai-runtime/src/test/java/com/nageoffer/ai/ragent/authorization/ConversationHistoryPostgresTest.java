@@ -39,7 +39,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 本判据盯的就是"这些列真的回来了"，以及**没有**因为补字段而放宽范围与过滤。
  *
  * <p>表形状从冻结迁移抽出（{@link FrozenTableDdl}），需要
- * {@code -Dragent.conversation.test.jdbc-url=...}；未提供时显式跳过。
+ * {@code -Dragent.conversation.test.jdbc-url=...}（凭据可经 {@code -D…jdbc-user} /
+ * {@code -D…jdbc-password} 覆盖，缺省 {@code postgres}/空）；未提供时显式跳过。
+ * <b>本类会 DROP/重建 platform 表，必须连独占隔离库</b>，不得指向共享主库。
  */
 @Tag("dev")
 @EnabledIfSystemProperty(named = ConversationHistoryPostgresTest.URL_PROPERTY, matches = ".+",
@@ -48,6 +50,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ConversationHistoryPostgresTest {
 
     static final String URL_PROPERTY = "ragent.conversation.test.jdbc-url";
+    /**
+     * 连接凭据可用系统属性覆盖（缺省保持历史口径：便携 PG 的 {@code postgres}/空密码）。
+     * 独占隔离库用专用测试角色注入（F17-A1 真库复跑：{@code f17hist}，测试工件、非敏感，
+     * 与 {@code MergedTableMapperPostgresTest} 的 {@code migrate_platform} 同一先例）。
+     */
+    static final String USER_PROPERTY = "ragent.conversation.test.jdbc-user";
+    static final String PASSWORD_PROPERTY = "ragent.conversation.test.jdbc-password";
 
     private static final String TENANT = "T-HIST";
     private static final String MEMBER = "platform:T-HIST:21";
@@ -70,7 +79,9 @@ class ConversationHistoryPostgresTest {
     static void setUp() throws IOException {
         String url = System.getProperty(URL_PROPERTY);
         assertThat(url).as("缺少 -D" + URL_PROPERTY).isNotBlank();
-        DriverManagerDataSource ds = new DriverManagerDataSource(url, "postgres", "");
+        DriverManagerDataSource ds = new DriverManagerDataSource(url,
+                System.getProperty(USER_PROPERTY, "postgres"),
+                System.getProperty(PASSWORD_PROPERTY, ""));
         jdbc = new JdbcTemplate(ds);
         conversations = new TenantConversationReadRepository(jdbc);
 
