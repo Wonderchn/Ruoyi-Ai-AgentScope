@@ -1107,9 +1107,11 @@ describe('op15 缓存页', () => {
     }
   });
 
-  test('服务监控（D1 服务端缺失）在页面显式标注，不伪造数据', () => {
+  test('服务监控缺口已消解：页面改为指向 /monitor/server 的指针（S2-F01/op14 后）', () => {
     const source = fs.readFileSync(new URL('../src/pages/cache/index.vue', import.meta.url), 'utf8');
-    assert.ok(source.includes('server-monitor-missing'), '服务监控缺口必须有机器可判标记');
+    assert.ok(source.includes('server-monitor-link'), '服务监控须有指向监控页的机器可判指针');
+    assert.ok(source.includes('/monitor/server'), '指针必须写明目标路由');
+    assert.equal(source.includes('data-testid="server-monitor-missing"'), false, '旧"服务端不存在"缺口标记（testid）必须退役（陈述已与事实不符）');
     assert.equal(/monitorApi\.cache\.(?:getNames|getKeys|clear)/.test(source), false, '本仓没有缓存清理端点，页面不得调用');
   });
 });
