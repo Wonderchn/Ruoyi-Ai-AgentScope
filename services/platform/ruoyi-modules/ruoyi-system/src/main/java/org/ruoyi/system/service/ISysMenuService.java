@@ -7,6 +7,7 @@ import org.ruoyi.system.domain.vo.RouterVo;
 import org.ruoyi.system.domain.vo.SysMenuVo;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -152,6 +153,20 @@ public interface ISysMenuService {
      * @return 结果
      */
     void deleteMenuById(List<Long> menuIds);
+
+    /**
+     * 查询引用该菜单的租户套餐名（S2-F01/op4：单删"被套餐引用"精确拒绝的依据；空列表=未被引用）。
+     */
+    List<String> tenantPackagesReferencing(Long menuId);
+
+    /**
+     * 级联删除菜单子树（S2-F01/op4）：**服务端展开全部后代**（调用方只传根即可），
+     * 一并回收角色绑定、清洗租户套餐 menu_ids、递增受影响租户策略版本。
+     *
+     * @param menuIds 根菜单集合（各自全部后代都会被删除）
+     * @return 计数：menus=删除行数 / roleBindings=回收绑定数 / packages=命中套餐数 / packageRefs=清洗引用数
+     */
+    Map<String, Object> deleteMenuCascade(List<Long> menuIds);
 
     /**
      * 校验菜单名称是否唯一
