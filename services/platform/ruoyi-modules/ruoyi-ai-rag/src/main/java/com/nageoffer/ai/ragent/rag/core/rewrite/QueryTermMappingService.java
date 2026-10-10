@@ -78,7 +78,15 @@ public class QueryTermMappingService {
 
     /**
      * 加载映射规则：优先从 Redis 缓存读取（按当前主体的租户命名空间），
-     * 缓存未命中则从数据库加载、按 priority/源词长度排序后回填缓存。
+     * 缓存未命中则从数据库加载、排序后回填缓存。
+     *
+     * <p><b>排序口径（F07-A2 定稿）</b>：priority 升序——数值越小优先级越高、越先应用
+     * （原库 DDL 注释「优先级，数值越小优先级越高（先匹配长词）」、DO/DTO javadoc
+     * 「数值越小优先级越高（一般长词在前）」、管理面列表 {@code orderByAsc(priority)}
+     * 三处一致；此前实现误为 {@code reversed()} 大数值先生效，与上述口径相反）。
+     * 未设优先级（null）排在显式优先级之后；同优先级按源词长度降序（长词在前，
+     * 防长词被短词改写打断）。{@link #normalize(String)} 是按顺序逐条替换的链式语义，
+     * 顺序即行为。
      *
      * <p>缓存契约（详见 {@link QueryTermMappingCacheManager} 类注释）：TTL 7 天仅作兜底，
      * 失效主通道是管理面 CRUD 的 clearCache；映射硬删（物理删）后缓存已清，
@@ -97,7 +105,7 @@ public class QueryTermMappingService {
                         .eq(QueryTermMappingDO::getEnabled, 1)
         );
         dbList.sort(Comparator
-                .comparing(QueryTermMappingDO::getPriority, Comparator.nullsLast(Integer::compareTo)).reversed()
+                .comparing(QueryTermMappingDO::getPriority, Comparator.nullsLast(Integer::compareTo))
                 .thenComparing(m -> m.getSourceTerm() == null ? 0 : m.getSourceTerm().length(), Comparator.reverseOrder())
         );
 
