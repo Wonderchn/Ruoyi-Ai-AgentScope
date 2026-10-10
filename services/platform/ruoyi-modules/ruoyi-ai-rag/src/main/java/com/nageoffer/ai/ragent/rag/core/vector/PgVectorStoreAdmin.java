@@ -35,6 +35,14 @@ public class PgVectorStoreAdmin implements VectorStoreAdmin {
 
     // Validate the index on the table this connection actually resolves, not a name
     // anywhere in the database. Only migrations own DDL; application accounts use DML.
+    //
+    // S2-F05-A2（真机 503 第二层）：不要在这里断言表的 schema 名。冻结迁移
+    // （V7__unified_ai_domain.sql:653）把 ai_knowledge_vector 建在 platform schema，
+    // 而此前多写的 `AND ns.nspname = 'ai'` 与迁移事实矛盾：真机上 hnsw / opclass /
+    // opns='extensions' / atttypmod / valid / ready 全条件皆满足，只差这一条 ⇒ EXISTS 恒 false
+    // ⇒ ensureVectorSpace 恒 503（create KB 永久 503）。未限定名的解析
+    // （to_regclass + search_path）才是"连接实际解析到的表"这层语义；schema 归属由迁移决定，
+    // 不属于应用侧就绪检查——检查的对象由 to_regclass 解析结果锚定，不再叠加名字断言。
     private static final String VECTOR_INDEX_QUERY = """
             SELECT EXISTS (
               SELECT 1 FROM pg_index i
@@ -45,7 +53,7 @@ public class PgVectorStoreAdmin implements VectorStoreAdmin {
               JOIN pg_opclass opc ON opc.oid = i.indclass[0]
               JOIN pg_namespace opns ON opns.oid = opc.opcnamespace
               JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = i.indkey[0]
-              WHERE t.oid = to_regclass('ai_knowledge_vector') AND ns.nspname = 'ai'
+              WHERE t.oid = to_regclass('ai_knowledge_vector')
                 AND am.amname = 'hnsw' AND opc.opcname = 'vector_cosine_ops'
                 AND opns.nspname = 'extensions' AND a.attname = 'embedding'
                 AND a.atttypmod = ? AND i.indnkeyatts = 1
