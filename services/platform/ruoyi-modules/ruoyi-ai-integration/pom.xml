@@ -28,6 +28,14 @@
             <groupId>org.springframework</groupId>
             <artifactId>spring-tx</artifactId>
         </dependency>
+        <!-- 认证失败的协议化映射（P04 信封）：本模块的 @RestControllerAdvice 以最高优先级覆盖
+             org.ruoyi.aiintegration 包，必须显式识别 Sa-Token 的 NotLoginException，
+             否则未登录会被兜底的 Exception 分支映射成 500（N1-unauthenticated-401 契约）。
+             只取 core 的异常类型，不引入 starter/运行时行为。 -->
+        <dependency>
+            <groupId>cn.dev33</groupId>
+            <artifactId>sa-token-core</artifactId>
+        </dependency>
         <!-- E3：AI 能力的本地边界。规范动作表与执行事实从这里取，避免网关与运行模块各存一份。
              该模块是零依赖的纯契约模块，不会把 Spring/Servlet/AgentScope 带进来。 -->
         <dependency>

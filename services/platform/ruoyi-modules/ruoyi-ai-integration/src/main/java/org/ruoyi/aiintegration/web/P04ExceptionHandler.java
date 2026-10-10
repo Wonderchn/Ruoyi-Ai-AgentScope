@@ -17,6 +17,7 @@
 
 package org.ruoyi.aiintegration.web;
 
+import cn.dev33.satoken.exception.NotLoginException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -47,6 +48,25 @@ public class P04ExceptionHandler {
         return ResponseEntity.status(errorCode.httpStatus())
                 .header(RequestId.HEADER, RequestId.currentOrEmpty())
                 .body(ApiResponse.error(errorCode.httpStatus(), ex.getMessage(), errorCode.name()));
+    }
+
+    /**
+     * 认证失败（未登录/凭证缺失/凭证失效）：本协议以 HTTP 401 + {@code AUTH_REQUIRED}
+     * 表达（HTTP 状态 == body.code，符号码在 {@code data.errorCode}）。
+     *
+     * <p>没有本分支时，Sa-Token 的 {@link NotLoginException} 会落进兜底的
+     * {@link #handleUnexpected} 分支被映射成 500 —— 这是 native 矩阵
+     * {@code N1-unauthenticated-401} 契约（匿名提交必须 401 且不产生受理行）实测到的
+     * 回归：本 advice 以最高优先级覆盖 {@code org.ruoyi.aiintegration} 包，
+     * platform 全局的 {@code SaTokenExceptionHandler} 无机会接手。
+     */
+    @ExceptionHandler(NotLoginException.class)
+    public ResponseEntity<ApiResponse<java.util.Map<String, Object>>> handleNotLogin(NotLoginException ex) {
+        log.warn("p04 unauthenticated requestId={}", RequestId.currentOrEmpty());
+        P04ErrorCode code = P04ErrorCode.AUTH_REQUIRED;
+        return ResponseEntity.status(code.httpStatus())
+                .header(RequestId.HEADER, RequestId.currentOrEmpty())
+                .body(ApiResponse.error(code.httpStatus(), code.message(), code.name()));
     }
 
     @ExceptionHandler({org.springframework.dao.DataAccessException.class,
