@@ -91,12 +91,14 @@ import static org.mockito.Mockito.when;
  * 本条判据用<b>真实 Tomcat + 真实网关 + 真实 LocalAiGatewayClient</b> 发真实 HTTP 请求，
  * 一次覆盖三层：任何一层回退，这里立刻红。
  *
- * <p><b>正例</b>：列表 / 消息 / 改名 / 单删四条路由各自 200 且形状正确；受保护读路径带回执头
- * 并真的登记了 permit；无 scope 时 403；白名单外 404；未登录 401；
+ * <p><b>正例</b>：列表 / 消息 / 新建 / 改名 / 单删 / 批量删除六条路由各自 200 且形状正确；
+ * 受保护读路径带回执头并真的登记了 permit；批量删除在单次请求内逐资源取 permit 并整批删除
+ * （不是"循环调单删"）；无 scope 时 403；白名单外 404；未登录 401；
  * <b>外部直接请求内部路径返回 404 关闭体</b>（证明"内部前缀"不是对外新增面）。
  *
- * <p><b>负例（安全边界）</b>：{@code batch-delete} 有意未放行 → 404；
- * 通配形态（如 {@code /agent/v1/conversations/1/2/3}）不匹配任何路由 → 404。
+ * <p><b>负例（安全边界）</b>：批量删除的集合契约经网关同样成立（空集合 / 重复 ID / 超限 → 400，
+ * 且在取得任何 permit 之前整体拒绝）；通配形态（如 {@code /agent/v1/conversations/1/2/3}）
+ * 不匹配任何路由 → 404。
  */
 @Tag("dev")
 class LocalAgentConversationRouteDispatchTest {
@@ -239,19 +241,82 @@ class LocalAgentConversationRouteDispatchTest {
         verify(conversations).delete("conv-1", USER);
     }
 
-    // ------------------------------------------------------------------ 负向：安全边界
+    // ------------------------------------------- 正向续（F10-A1）：create 与 batch-delete 放行
 
+    /**
+     * F10-A1：批量删除经网关真实可达（此前刻意 404；D05/RW-01 之后按同一先例放行）。
+     *
+     * <p><b>为什么这条代替了"有意未放行"的负例。</b>原负例钉的是"批量授权决定之前不开面"；
+     * D05 已作出决定、RW-01 已放行 general 路径并交付服务端契约与负例族，前置条件消灭。
+     * 此处要求的不只是 200，还包括**受控服务语义**：字典序逐资源 permit（不是复用一个
+     * 单资源 permit）、单次调用整批删除（不是循环调单删）。
+     */
     @Test
-    void batchDeleteStaysClosedOnPurpose() throws Exception {
-        // 批量删除的多资源授权是计划 §13 待决定项：白名单与控制器都不放行。
+    void batchDeleteIsReachableThroughTheControlledService() throws Exception {
+        when(conversations.existsForUser("conv-1", USER)).thenReturn(true);
+        when(conversations.existsForUser("conv-2", USER)).thenReturn(true);
+
         HttpResponse<String> response = post("/api/ai/v1/agent/v1/conversations/batch-delete",
-                "{\"ids\":[\"conv-1\"]}");
+                "{\"conversationIds\":[\"conv-2\",\"conv-1\"]}");
 
         assertThat(response.statusCode())
-                .as("未决定批量授权语义前，批量删除必须不可达（不是 200/403，而是路由不存在）")
-                .isEqualTo(404);
-        verify(conversations, never()).deleteBatch(any(), anyString());
+                .as("F10-A1 前这里是 404：白名单刻意未登记（批量授权待决定项）")
+                .isEqualTo(200);
+        assertThat(response.body()).contains("\"code\":200")
+                .contains("\"deletedCount\":2").contains("\"permitCount\":2");
+        // 逐资源 permit：两个不同资源各取一次，且顺序确定（字典序）；"复用一个单资源 permit"
+        // 或乱序取 permit 都会被下面两条 + deleteBatch 的实参顺序钉住
+        verify(revocations).enter(any(), eq("conversation.delete"), eq("conv:conv-1"));
+        verify(revocations).enter(any(), eq("conversation.delete"), eq("conv:conv-2"));
+        verify(conversations).deleteBatch(List.of("conv-1", "conv-2"), USER);
+        verify(conversations, never()).delete(anyString(), anyString());
     }
+
+    @Test
+    void batchDeleteKeepsTheControlledSetContractThroughTheGateway() throws Exception {
+        // 空集合：受控服务整体拒绝（不是静默成功），且不落任何删除
+        HttpResponse<String> empty = post("/api/ai/v1/agent/v1/conversations/batch-delete",
+                "{\"conversationIds\":[]}");
+        assertThat(empty.statusCode()).isEqualTo(400);
+        assertThat(empty.body()).contains("BAD_REQUEST");
+
+        // 重复 ID：拒绝而不是静默去重（"实际动作集合 ≠ 请求集合"是契约要防的形态）
+        HttpResponse<String> duplicates = post("/api/ai/v1/agent/v1/conversations/batch-delete",
+                "{\"conversationIds\":[\"conv-1\",\"conv-1\"]}");
+        assertThat(duplicates.statusCode()).isEqualTo(400);
+        assertThat(duplicates.body()).contains("BAD_REQUEST");
+
+        // 超过 100：拒绝而不是截断
+        String oversize = java.util.stream.IntStream.range(0, 101)
+                .mapToObj(i -> "\"conv-" + i + "\"")
+                .collect(java.util.stream.Collectors.joining(",", "{\"conversationIds\":[", "]}"));
+        HttpResponse<String> tooMany = post("/api/ai/v1/agent/v1/conversations/batch-delete", oversize);
+        assertThat(tooMany.statusCode()).isEqualTo(400);
+        assertThat(tooMany.body()).contains("BAD_REQUEST");
+
+        // 三条负例都在取得 permit 之前拒绝：删除与 permit 一次都没发生
+        verify(conversations, never()).deleteBatch(any(), anyString());
+        verify(revocations, never()).enter(any(), anyString(), anyString());
+    }
+
+    @Test
+    void createIsReachableAndDelegatesToTheExistingService() throws Exception {
+        when(conversations.create("新会话")).thenReturn("conv-new");
+
+        HttpResponse<String> response = post("/api/ai/v1/agent/v1/conversations",
+                "{\"title\":\"新会话\"}");
+
+        assertThat(response.statusCode())
+                .as("F10-A1 前这里是 404：agent 路径没有 create 白名单行（G-52 只放行了 general 路径）")
+                .isEqualTo(200);
+        assertThat(response.body()).contains("\"code\":200")
+                .contains("\"conversationId\":\"conv-new\"").contains("\"created\":true");
+        // 归属只来自 PrincipalContext：委托只传标题（TitleRequest 只有 title 字段），
+        // 请求体无法携带 tenant/member/user 影响归属
+        verify(conversations).create("新会话");
+    }
+
+    // ------------------------------------------------------------------ 负向：安全边界
 
     @Test
     void unmatchedShapesAndUnknownRoutesStayHidden() throws Exception {
