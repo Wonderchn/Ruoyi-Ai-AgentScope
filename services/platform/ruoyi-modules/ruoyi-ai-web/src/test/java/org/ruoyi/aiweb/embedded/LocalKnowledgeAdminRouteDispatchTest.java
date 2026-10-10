@@ -347,6 +347,13 @@ class LocalKnowledgeAdminRouteDispatchTest {
 
     // ------------------------------------------------------------------ multipart
 
+    /**
+     * 上传面**文件部件**：经网关 200 且部件原样到达内层 handler。
+     *
+     * <p>（复核 F1 更正）原表述"体转发 ⇒ 内层拿到空 multipart / `@RequestPart` 解析不出文件"
+     * 不成立——文件部件经 Spring `MultipartResolutionDelegate` 的 `getParts` 回退本就可达。
+     * 本方法因此只钉"文件部件可达"这一事实。
+     */
     private void assertMultipartUploadCarriesTheFilePart() throws Exception {
         byte[] pdf = "%PDF-1.4 f05-upload".getBytes(StandardCharsets.UTF_8);
         String boundary = "F05BOUNDARY";
@@ -364,14 +371,59 @@ class LocalKnowledgeAdminRouteDispatchTest {
                 HttpResponse.BodyHandlers.ofString());
 
         assertThat(response.statusCode())
-                .as("multipart 上传必须经网关 200（路由已放行 + 部件经本地传输重建）").isEqualTo(200);
+                .as("multipart 上传必须经网关 200（路由已放行 + 文件部件可达）").isEqualTo(200);
         assertThat(response.body()).contains("\"code\":200").contains("f05-doc-uploaded");
 
         verify(documentService).upload(eq("kb-1"), any(), any());
         assertThat(uploadedFilename.get())
-                .as("部件必须原样到达内层 handler（体转发会让它为 null）")
+                .as("文件部件必须原样到达内层 handler（经 MultipartResolutionDelegate 的 getParts 回退）")
                 .isEqualTo("f05.pdf");
         assertThat(uploadedBytes.get()).isEqualTo(pdf);
+    }
+
+    /**
+     * 上传面**表单字段**：已知限制的**响亮失败**形状（复核 F1 的登记 + change-detector）。
+     *
+     * <p>本切片曾尝试"multipart 外请求按部件重建 wrapper"来让字段可达——**实测反被证伪**：
+     * 外请求在网关侧已被 multipartResolver 解析（`StandardMultipartHttpServletRequest`），
+     * 再包一层后字段以 `ApplicationPart` 形态进入 `@ModelAttribute` 绑定 ⇒
+     * `MethodArgumentNotValidException` ⇒ 400（证据 `red/a1-fixfield-web/`）。
+     * 回退该改动**不能**消除 400（本判据在回退后仍红过一轮，证据链见波报 §3 ⑧）——
+     * 即 400 来自"字段经 multipart 解析链以 Part 形态外露"这一既有事实，与转送 wrapper 形状无关。
+     *
+     * <p>故把**实际形状**钉住：带表单字段的请求 → 400（不是静默丢字段、也不是 200），
+     * 且 handler 未被调用。将来若专用流通道（F23 面）接通使字段可用，本断言会翻红，
+     * 须同步改本判据与 `AiGatewayController` 上传路由的限制注释。
+     */
+    @Test
+    @DisplayName("已知限制：multipart 表单字段经通配分支响亮失败（400，不是静默丢字段）")
+    void multipartFormFieldsFailLoudlyOnTheCatchAllTransport() throws Exception {
+        byte[] pdf = "%PDF-1.4 f05-fields".getBytes(StandardCharsets.UTF_8);
+        String boundary = "F05FIELDS";
+        String body = "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"sourceType\"\r\n\r\n"
+                + "url\r\n"
+                + "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"sourceLocation\"\r\n\r\n"
+                + "https://example.invalid/f05.pdf\r\n"
+                + "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"file\"; filename=\"f05.pdf\"\r\n"
+                + "Content-Type: application/pdf\r\n\r\n"
+                + new String(pdf, StandardCharsets.UTF_8) + "\r\n"
+                + "--" + boundary + "--\r\n";
+        HttpResponse<String> response = CLIENT.send(HttpRequest.newBuilder()
+                        .uri(URI.create("http://127.0.0.1:" + port
+                                + "/api/ai/v1/knowledge-base/kb-1/docs/upload"))
+                        .header("Authorization", "Bearer synthetic-session")
+                        .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                        .POST(HttpRequest.BodyPublishers.ofString(body)).build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertThat(response.statusCode())
+                .as("限制登记（复核 F1）：表单字段以 ApplicationPart 形态进绑定 ⇒ 400；"
+                        + "字段改为可达时（专用流通道 / F23）本断言翻红，须同步改注释与判据")
+                .isEqualTo(400);
+        verify(documentService, never()).upload(anyString(), any(), any());
     }
 
     // ------------------------------------------------------------------ 替身数据

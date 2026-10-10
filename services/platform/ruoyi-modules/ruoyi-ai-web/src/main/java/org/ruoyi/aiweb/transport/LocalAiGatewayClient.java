@@ -64,7 +64,6 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.context.request.async.WebAsyncManager;
 import org.springframework.web.context.WebApplicationContext;
-import org.springframework.web.multipart.MultipartHttpServletRequest;
 import org.springframework.web.servlet.HandlerAdapter;
 import org.springframework.web.servlet.HandlerExceptionResolver;
 import org.springframework.web.servlet.HandlerExecutionChain;
@@ -319,29 +318,19 @@ public class LocalAiGatewayClient extends AiGatewayClient {
         if (attributes.getResponse() == null) {
             throw new UpstreamUnavailableException("delivery output absent");
         }
-        return dispatchTo(request, new Captured(attributes.getResponse()), targetRequest(request));
-    }
-
-    /**
-     * 目标请求形状：<b>multipart 外请求按部件转送</b>，其余按转发体转送。
-     *
-     * <p>白名单通配分支（{@code AiGatewayController} 的 JSON 转发）此前一律用
-     * {@link BodyProvidingRequest} 包体——但 multipart 请求的体在容器解析部件后已经耗尽，
-     * 体转发会让内层拿到"空的 multipart"（{@code @RequestPart} 解析不出文件、
-     * {@code @ModelAttribute} 读不到表单字段），运行期表现是"路由登记了、请求也到了、
-     * 部件却丢了"。故与上传流通道（{@code forwardUploadStream}）同款：
-     * 外请求是 {@code MultipartHttpServletRequest}（容器已解析部件）时，
-     * 用 {@link MultipartTargetRequest} 把部件与参数按原样交给内层 handler。
-     *
-     * <p>非 multipart 请求的转送形状一字未改（体 + query 仍走 {@link BodyProvidingRequest}），
-     * 因此除"经通配分支的 multipart 路由"外，既有路由的行为与判据都不受影响。
-     * 上传流通道（{@code /documents/uploads}）走的是自己的 {@code MultipartTargetRequest} 构造，
-     * 不经过本方法。
-     */
-    private static TargetRequestBuilder targetRequest(ForwardRequest request) {
-        return (outer, targetPath) -> outer instanceof MultipartHttpServletRequest
-                ? new MultipartTargetRequest(outer, targetPath)
-                : new BodyProvidingRequest(outer, request.body(), targetPath, request.uri().getRawQuery());
+        // S2-F05-A1 复核 F1 结论（2026-10-11）：曾尝试"multipart 外请求改走
+        // MultipartTargetRequest（按部件转送）"，实测**反被证伪**——
+        // 外请求在网关侧已被 multipartResolver 解析过（StandardMultipartHttpServletRequest），
+        // 再包一层 StandardMultipartHttpServletRequest 后，表单字段的
+        // {@code @ModelAttribute} 绑定会拿到 ApplicationPart 形态的值 ⇒ 400
+        // （证据：red/a1-fixfield-web/，19x 判据里恰该断言翻红）。同时复核员探针证明
+        // 文件部件在原形状下经 MultipartResolutionDelegate 的 getParts 回退可达。
+        // ⇒ 本次回退为原形状（体 + query 转送）；"经通配分支的 multipart 表单字段不可达"
+        // 作为**已知限制**登记在 AiGatewayController 的上传路由注释与判据里
+        // （专用流通道属 F23 面，不在本切片）。
+        return dispatchTo(request, new Captured(attributes.getResponse()),
+                (outer, targetPath) -> new BodyProvidingRequest(outer, request.body(), targetPath,
+                        request.uri().getRawQuery()));
     }
 
     private static HttpServletRequest currentRequest() {
