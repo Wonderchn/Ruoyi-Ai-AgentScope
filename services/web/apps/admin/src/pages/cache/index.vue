@@ -8,12 +8,12 @@
   **服务端只有这一条缓存端点**：没有 `/getNames`、`/getKeys/**`、`/clearCache*`（RuoYi 上游有，
   本仓实查不存在）⇒ 本页只做**只读**展示，不提供"按名清理/按键清理"按钮（不伪造能力）。
 
-  ## 服务监控（RW-14 差异 D1：**服务端缺失**）
+  ## 服务监控（S2-F01/op14 已交付；本页由"缺口标注"改为指针）
 
-  `git grep 'monitor/server|ServerController'` 在 `services/platform` 下**零命中**：
-  平台没有 `/monitor/server` 或等价的服务器指标端点。冻结 op15 的"服务监控"因此**无法通过
-  补页面达成等价** —— 本页把它显示为**显式缺口**（`data-testid="server-monitor-missing"`），
-  并登记 owner：T0 决定是否新增端点 + 权限行 + 迁移号（RW-14 §3 D1）。
+  原 RW-14 差异 D1（"服务端不存在 `/monitor/server`"）已由 S2-F01/op14 消解：
+  `GET /monitor/server`（`SysServerController`，权限 `monitor:admin:list`，种子菜单 117）
+  已在 s2-baseline（PR #25）交付。本页原缺口标记（`server-monitor-missing`）随之退役，
+  改为指向监控页的机器可判指针（`server-monitor-link`）——**不保留与事实不符的陈述**。
 
   ## 环境事实
 
@@ -83,11 +83,11 @@ if (permitted.value)
 <template>
   <div>
     <ElAlert
-      data-testid="server-monitor-missing"
-      type="warning"
+      data-testid="server-monitor-link"
+      type="success"
       :closable="false"
       class="mb-4"
-      title="服务监控（op15 子行为）在本仓**服务端不存在**（RW-14 差异 D1：git grep 'monitor/server' 零命中）。补页面无法达成等价；需 T0 决定新增端点 + 权限行 + 迁移号。本页只显示该缺口，不造数据。"
+      title="服务监控（op15 子行为）已提供：见 /monitor/server（S2-F01/op14 交付，权限 monitor:admin:list）。原'服务端不存在'缺口标记已随该交付退役。"
     />
 
     <ElCard class="mb-4">
