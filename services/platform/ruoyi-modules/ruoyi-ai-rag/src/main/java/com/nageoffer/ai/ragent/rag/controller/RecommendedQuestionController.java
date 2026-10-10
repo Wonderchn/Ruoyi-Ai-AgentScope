@@ -48,7 +48,9 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p><b>信封（RW-22-R1）</b>：返回 {@link ApiEnvelope}（整数 {@code code}）。
  *
- * <p>授权不在本层：动作复用 {@code conversation.read}，不新增 canonical 动作。
+ * <p>授权不在本层：网关白名单动作为 {@code conversation.rename}（R6 重裁——只持
+ * {@code conversation.read} 的调用必须 403，见 {@code LocalAdminRouteDispatchTest}），
+ * 不新增 canonical 动作。
  */
 @RestController
 @RequestMapping("/internal/ai/v1")

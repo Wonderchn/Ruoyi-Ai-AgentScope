@@ -148,7 +148,7 @@ class P1ConversationEventIsolationTest {
                 .isInstanceOf(ClientException.class);
         assertThatThrownBy(() -> events.listEvents("", "run-1", 0, 10))
                 .isInstanceOf(ClientException.class);
-        assertThatThrownBy(() -> conversations.listMessages("T1", "platform:T1:1", "conv-1", -1, 10))
+        assertThatThrownBy(() -> conversations.listMessages("T1", "platform:T1:1", "1", "conv-1", -1, 10))
                 .isInstanceOf(ClientException.class);
         assertThatThrownBy(() -> conversations.findConversation("T1", "platform:T1:1", null))
                 .isInstanceOf(ClientException.class);

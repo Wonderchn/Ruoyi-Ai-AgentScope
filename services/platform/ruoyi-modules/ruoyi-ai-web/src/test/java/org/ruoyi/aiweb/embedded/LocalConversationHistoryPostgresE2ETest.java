@@ -355,6 +355,54 @@ class LocalConversationHistoryPostgresE2ETest {
     }
 
     @Test
+    @DisplayName("F17-A1：公开历史读面回传当前用户的反馈（vote）——他人行不计入、取消后回到 null")
+    void thePublicHistoryRouteCarriesTheCurrentUsersVote() throws Exception {
+        ACTIVE.set(MEMBER_T1);
+        String assistantId = String.valueOf(persistedMessages.get(1).get("id"));
+        String mine = "f17fb-e2e-mine";
+        String other = "f17fb-e2e-other";
+        try {
+            // 当前用户（T1/U1）对助手消息的有效赞
+            jdbc.update("INSERT INTO platform.ai_message_feedback (id, message_id, conversation_id, user_id,"
+                            + " vote, create_time, update_time, deleted, tenant_id, member_id)"
+                            + " VALUES (?,?,?,?,?, now(), now(), 0, ?, ?)",
+                    mine, assistantId, CONV, U1, 1, T1, M1);
+            // 对抗性负例：同租户、同成员维度、另一个 user_id 的行（冻结 schema 允许：
+            // FK 只约束 tenant+message，user 是投票人维度）——不得计入 U1 的读面。
+            jdbc.update("INSERT INTO platform.ai_message_feedback (id, message_id, conversation_id, user_id,"
+                            + " vote, create_time, update_time, deleted, tenant_id, member_id)"
+                            + " VALUES (?,?,?,?,?, now(), now(), 0, ?, ?)",
+                    other, assistantId, CONV, U2, -1, T1, M1);
+
+            HttpResponse<String> response = exchange("GET", "/api/ai/v1/conversations/" + CONV + "/messages",
+                    null, true, null);
+            JsonNode data = JSON.readTree(response.body()).path("data");
+            evidence("F17-A1 GET (owner, with vote) -> " + response.statusCode()
+                    + " assistantVote=" + data.get(1).path("vote"));
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(data.get(1).path("vote").asInt())
+                    .as("助手消息必须回传当前用户自己的有效反馈；实际=%s", response.body())
+                    .isEqualTo(1);
+            assertThat(data.get(0).path("vote").isMissingNode() || data.get(0).path("vote").isNull())
+                    .as("无反馈的消息不得伪造 vote；实际=%s", response.body())
+                    .isTrue();
+
+            // 取消占位（vote=0, deleted=1）：读面回到"无反馈"（与旧链 getUserVotes 的 deleted=0 口径一致）
+            jdbc.update("UPDATE platform.ai_message_feedback SET vote = 0, deleted = 1, update_time = now()"
+                    + " WHERE id = ?", mine);
+            HttpResponse<String> afterCancel = exchange("GET", "/api/ai/v1/conversations/" + CONV + "/messages",
+                    null, true, null);
+            JsonNode cancelledVote = JSON.readTree(afterCancel.body()).path("data").get(1).path("vote");
+            evidence("F17-A1 GET (owner, cancelled) -> " + afterCancel.statusCode() + " assistantVote=" + cancelledVote);
+            assertThat(cancelledVote.isMissingNode() || cancelledVote.isNull())
+                    .as("取消后的助手消息不得再回传 vote；实际=%s", afterCancel.body())
+                    .isTrue();
+        } finally {
+            jdbc.update("DELETE FROM platform.ai_message_feedback WHERE id IN (?, ?)", mine, other);
+        }
+    }
+
+    @Test
     @DisplayName("跨租户不可见：另一租户用同一个 conversationId 读不到这一轮")
     void anotherTenantCannotSeeTheRound() throws Exception {
         ACTIVE.set(MEMBER_T2);
