@@ -28,6 +28,7 @@ import com.mzt.logapi.starter.annotation.LogRecord;
 import com.nageoffer.ai.ragent.audit.constant.BizChangeBizType;
 import com.nageoffer.ai.ragent.audit.constant.BizChangeOperationType;
 import com.nageoffer.ai.ragent.audit.support.BizChangeLogContext;
+import com.nageoffer.ai.ragent.authorization.AiDomainWriteIdentity;
 import com.nageoffer.ai.ragent.ingestion.controller.request.IngestionPipelineCreateRequest;
 import com.nageoffer.ai.ragent.ingestion.controller.request.IngestionPipelineNodeRequest;
 import com.nageoffer.ai.ragent.ingestion.controller.request.IngestionPipelineUpdateRequest;
@@ -37,6 +38,7 @@ import com.nageoffer.ai.ragent.ingestion.dao.entity.IngestionPipelineDO;
 import com.nageoffer.ai.ragent.ingestion.dao.entity.IngestionPipelineNodeDO;
 import com.nageoffer.ai.ragent.ingestion.dao.mapper.IngestionPipelineMapper;
 import com.nageoffer.ai.ragent.ingestion.dao.mapper.IngestionPipelineNodeMapper;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.ingestion.domain.enums.IngestionNodeType;
@@ -58,10 +60,29 @@ import java.util.List;
 @RequiredArgsConstructor
 public class IngestionPipelineServiceImpl implements IngestionPipelineService {
 
+    /**
+     * S2-F06-A1：既有查询补租户条件的统一谓词（{0} 绑定当前主体的 tenantId）。
+     * 代理主键全局唯一可以保留，但访问路径必须带租户条件（与 `KnowledgeBaseServiceImpl`
+     * 的 P1.3a 谓词同一纪律；不依赖行拦截器是否被某个上下文启用）。
+     */
+    private static final String TENANT_PREDICATE = "tenant_id = {0}";
+
     private final IngestionPipelineMapper pipelineMapper;
     private final IngestionPipelineNodeMapper nodeMapper;
     private final ObjectMapper objectMapper;
     private final BizChangeLogContext bizChangeLogContext;
+
+    /** 当前主体租户；缺失即拒绝（不降级到默认租户）。 */
+    private static String requireTenantId() {
+        return PrincipalContext.require().tenantId();
+    }
+
+    /** 按租户读管线行：替代裸 selectById，跨租户 id 与不存在同外显。 */
+    private IngestionPipelineDO selectTenantPipeline(String pipelineId) {
+        return pipelineMapper.selectOne(new LambdaQueryWrapper<IngestionPipelineDO>()
+                .eq(IngestionPipelineDO::getId, pipelineId)
+                .apply(TENANT_PREDICATE, requireTenantId()));
+    }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -82,6 +103,10 @@ public class IngestionPipelineServiceImpl implements IngestionPipelineService {
                 .createdBy(UserContext.getUsername())
                 .updatedBy(UserContext.getUsername())
                 .build();
+        // 身份只来自执行主体（E5/WP-025）：ai_ingestion_pipeline.tenant_id / owner_member_id
+        // 是 V7 NOT NULL，取值由 AiDomainWriteIdentity 从主体写入（缺主体 fail-closed 拒绝），
+        // 不靠列默认值——那会把不同租户的行静默写进同一个桶。
+        AiDomainWriteIdentity.apply(pipeline);
         try {
             pipelineMapper.insert(pipeline);
         } catch (DuplicateKeyException dke) {
@@ -105,7 +130,7 @@ public class IngestionPipelineServiceImpl implements IngestionPipelineService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public IngestionPipelineVO update(String pipelineId, IngestionPipelineUpdateRequest request) {
-        IngestionPipelineDO pipeline = pipelineMapper.selectById(pipelineId);
+        IngestionPipelineDO pipeline = selectTenantPipeline(pipelineId);
         Assert.notNull(pipeline, () -> new ClientException("未找到流水线"));
         IngestionPipelineVO before = toVO(BeanUtil.copyProperties(pipeline, IngestionPipelineDO.class), fetchNodes(pipeline.getId()));
 
@@ -121,14 +146,14 @@ public class IngestionPipelineServiceImpl implements IngestionPipelineService {
         if (request.getNodes() != null) {
             upsertNodes(pipeline.getId(), request.getNodes());
         }
-        IngestionPipelineVO result = toVO(pipelineMapper.selectById(pipelineId), fetchNodes(pipeline.getId()));
+        IngestionPipelineVO result = toVO(selectTenantPipeline(pipelineId), fetchNodes(pipeline.getId()));
         bizChangeLogContext.put(pipelineId, before, result);
         return result;
     }
 
     @Override
     public IngestionPipelineVO get(String pipelineId) {
-        IngestionPipelineDO pipeline = pipelineMapper.selectById(pipelineId);
+        IngestionPipelineDO pipeline = selectTenantPipeline(pipelineId);
         Assert.notNull(pipeline, () -> new ClientException("未找到流水线"));
         return toVO(pipeline, fetchNodes(pipeline.getId()));
     }
@@ -138,6 +163,7 @@ public class IngestionPipelineServiceImpl implements IngestionPipelineService {
         Page<IngestionPipelineDO> mpPage = new Page<>(page.getCurrent(), page.getSize());
         LambdaQueryWrapper<IngestionPipelineDO> qw = new LambdaQueryWrapper<IngestionPipelineDO>()
                 .eq(IngestionPipelineDO::getDeleted, 0)
+                .apply(TENANT_PREDICATE, requireTenantId())
                 .like(StringUtils.hasText(keyword), IngestionPipelineDO::getName, keyword)
                 .orderByDesc(IngestionPipelineDO::getUpdateTime);
         IPage<IngestionPipelineDO> result = pipelineMapper.selectPage(mpPage, qw);
@@ -160,7 +186,7 @@ public class IngestionPipelineServiceImpl implements IngestionPipelineService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public void delete(String pipelineId) {
-        IngestionPipelineDO pipeline = pipelineMapper.selectById(pipelineId);
+        IngestionPipelineDO pipeline = selectTenantPipeline(pipelineId);
         Assert.notNull(pipeline, () -> new ClientException("未找到流水线"));
         IngestionPipelineVO before = toVO(BeanUtil.copyProperties(pipeline, IngestionPipelineDO.class), fetchNodes(pipeline.getId()));
         pipeline.setDeleted(1);
@@ -175,7 +201,10 @@ public class IngestionPipelineServiceImpl implements IngestionPipelineService {
 
     @Override
     public PipelineDefinition getDefinition(String pipelineId) {
-        IngestionPipelineDO pipeline = pipelineMapper.selectById(pipelineId);
+        // S2-F06-A1：与非 CRUD 读路径同一口径——缺主体 fail-closed 拒绝，
+        // 跨租户 id 与不存在同外显（本方法当前唯一调用方是知识文档处理链，
+        // 该面未装配；装配时必须由调用链携带执行主体）。
+        IngestionPipelineDO pipeline = selectTenantPipeline(pipelineId);
         Assert.notNull(pipeline, () -> new ClientException("未找到流水线"));
 
         List<NodeConfig> nodes = fetchNodes(pipeline.getId()).stream()
@@ -213,9 +242,12 @@ public class IngestionPipelineServiceImpl implements IngestionPipelineService {
     }
 
     private List<IngestionPipelineNodeDO> fetchNodes(String pipelineId) {
+        // S2-F06-A1：节点行同样带租户谓词（pipelineId 已经过租户校验，这里做纵深防御；
+        // 节点行的 tenant_id 由平台行拦截器在插入时按登录租户写入，非本服务显式赋值）。
         LambdaQueryWrapper<IngestionPipelineNodeDO> qw = new LambdaQueryWrapper<IngestionPipelineNodeDO>()
                 .eq(IngestionPipelineNodeDO::getPipelineId, pipelineId)
-                .eq(IngestionPipelineNodeDO::getDeleted, 0);
+                .eq(IngestionPipelineNodeDO::getDeleted, 0)
+                .apply(TENANT_PREDICATE, requireTenantId());
         return nodeMapper.selectList(qw);
     }
 

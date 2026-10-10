@@ -16,6 +16,7 @@ com.nageoffer.ai.ragent.mcp.config.McpEmbeddedServerConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedAgentCatalogConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedKnowledgeAdminConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedIntentConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedIngestionConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedObservabilityConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedAdminDeliveryConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedRecommendationConfiguration

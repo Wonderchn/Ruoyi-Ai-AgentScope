@@ -308,6 +308,24 @@ public class AiGatewayController {
             new Route("POST", "/sample-questions", "config.publish"),
             new Route("PUT", "/sample-questions/{id}", "config.publish"),
             new Route("DELETE", "/sample-questions/{id}", "config.publish"),
+            // S2-F06-A1（2026-10-10）：F06 摄取**管线 CRUD** 5 条。内层 handler =
+            // IngestionPipelineController（类级 /internal/ai/v1，由
+            // AiEmbeddedIngestionConfiguration 显式装配、in AutoConfiguration.imports）。
+            // 逐条登记（不用通配 `/ingestion/**`）：通配会把同一前缀下任何将来新增的端点
+            // （尤其**未装配**的任务面 /ingestion/tasks**）一起放行，等于取消白名单——
+            // 登记了却没有 handler 会让 LocalWhitelistHandlerCoverageTest 的
+            // "放行了但没人接"护栏变红。
+            // 动作复用既有两条（config.read / config.publish）：**不新增 canonical 动作、
+            // 不新增权限行、不新增迁移**（P1CurrentAuthorizationTest 的动作条数护栏不变）。
+            // 两条 GET 在网关走字节分支，故内层同时给整数 ApiEnvelope 与两个回执头
+            // （控制器已并入 AiEmbeddedAdminDeliveryConfiguration assignableTypes，config.read）。
+            // 段数不冲突：GET/POST /ingestion/pipelines 为 2 段，
+            // GET/PUT/DELETE /ingestion/pipelines/{id} 为 3 段。
+            new Route("GET", "/ingestion/pipelines", "config.read"),
+            new Route("GET", "/ingestion/pipelines/{id}", "config.read"),
+            new Route("POST", "/ingestion/pipelines", "config.publish"),
+            new Route("PUT", "/ingestion/pipelines/{id}", "config.publish"),
+            new Route("DELETE", "/ingestion/pipelines/{id}", "config.publish"),
             new Route("GET", "/dashboard/overview", "run.get"),
             new Route("GET", "/dashboard/performance", "run.get"),
             new Route("GET", "/dashboard/trends", "run.get"),

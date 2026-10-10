@@ -240,30 +240,38 @@ export const AI_ADMIN_PAIRS: readonly PermissionPagePair[] = [
     note: 'POST /agents/{id}/activate（agent.activate，唯一激活语义）',
   },
 
+  // ---- 摄取管线（S2-F06-A1，2026-10-10）：**有页有行且有可达端点**（复用既有行，零新增）----
+  // 管线 CRUD 5 条由 AiEmbeddedIngestionConfiguration 装配 + AiGatewayController.ROUTES
+  // 逐条放行（/api/ai/v1/ingestion/pipelines**）。动作复用既有 config.read/config.publish
+  // ⇒ 权限行复用 V28-7150（ai:config:read），**不新增权限行/菜单号/迁移**（D1 默认裁定）。
+  // 写操作（create/update/delete → config.publish）由 V28-7151 行覆盖；
+  // 页面当前只接只读列表（写按钮不在本切片），故只登记读行。
+  {
+    permission: 'ai:config:read',
+    rowSource: 'V28__runtime_config_permissions.sql 菜单 7150（复用既有行）',
+    route: '/ai/ingestion',
+    page: '摄取流水线（管线 CRUD 列表）',
+    status: 'live',
+    endpoint: 'live',
+    note: 'GET /api/ai/v1/ingestion/pipelines（config.read，IPage records/total）；写 4 条走 config.publish（V28-7151 行），真机 CRUD 全链由 T0 环境相位实测',
+  },
+
   // ---- ragent 管理面（有页面、**无权限行** ⇒ PAIR-GAP-NO-ROW）----
   // 【T0 裁决 2026-10-06，team-message-d1d39727 ②】C 行**现在不播种**：
   // 判则 =「扩套餐/播权限的唯一依据是端点真实可达」（G-36b trace 教训同形）。
-  // 这两族端点 BLOCKED-BY-EMBEDDED-REGISTRY（装配未登记），现在播 C 行 =
+  // 该族端点 BLOCKED-BY-EMBEDDED-REGISTRY（装配未登记），现在播 C 行 =
   // 制造"有权限无端点"的假公开面。处置：页面保留 + blocked 标注，
   // **C 行播种与端点落地绑定同一个批次**（进维护者决策批次 + 下一迭代，
-  // 迁移号届时由 T0 分配）。测试把"2 gap 未播种"如实钉住。
+  // 迁移号届时由 T0 分配）。测试把"1 gap 未播种"如实钉住。
   // （/ai/agents 已于 2026-10-07 由 RW-03 移出本清单：端点落地 ⇒ 上表 live 行；
-  //   /ai/settings 已于 2026-10-07 由 RW-07 移出：改由 runtime-config/settings 服务。）
+  //   /ai/settings 已于 2026-10-07 由 RW-07 移出：改由 runtime-config/settings 服务；
+  //   /ai/ingestion 已于 2026-10-10 由 S2-F06-A1 移出：管线 CRUD 装配落地 ⇒ 上表 live 行
+  //   ——任务面（/ingestion/tasks**）仍未装配，其阻断标注保留在页面任务卡片内。）
   {
     permission: '',
     rowSource: '（无；同上裁决）',
     route: '/ai/skills',
     page: 'Skills',
-    status: 'pair-gap',
-    gapKind: 'NO-ROW',
-    endpoint: 'BLOCKED-BY-EMBEDDED-REGISTRY',
-    note: '同上',
-  },
-  {
-    permission: '',
-    rowSource: '（无；同上裁决）',
-    route: '/ai/ingestion',
-    page: '摄取流水线/任务详情',
     status: 'pair-gap',
     gapKind: 'NO-ROW',
     endpoint: 'BLOCKED-BY-EMBEDDED-REGISTRY',
