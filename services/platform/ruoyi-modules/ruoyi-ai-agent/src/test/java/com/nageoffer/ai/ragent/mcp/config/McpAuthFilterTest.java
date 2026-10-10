@@ -39,6 +39,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 过滤器是修法本体，本判据把"无凭证必须精确拒（举证 errorCode 判决）、
  * 服务凭证或登录令牌二者之一有效才放行、空配置一律拒绝（fail-closed）"钉死；
  * 少了它，任何人把拒绝分支改回放行（最典型：注释掉 writeReject）都不会变红。
+ *
+ * <p><b>F12-A1 增补</b>：认证通过时按凭证类型写 {@code ATTR_AUTH_MODE} 交接
+ * （逐工具授权过滤器据此只判登录令牌路径）；被拒请求不写交接属性。
  */
 @Tag("dev")
 class McpAuthFilterTest {
@@ -200,5 +203,49 @@ class McpAuthFilterTest {
 
         assertThat(passed).isTrue();
         assertThat(response.getStatus()).isEqualTo(200);
+    }
+
+    // ------------------------------------------------------------ F12-A1：认证结果交接
+
+    @Test
+    @DisplayName("F12-A1：服务凭证通过时写 ATTR_AUTH_MODE=service-credential（authZ 侧据此不介入）")
+    void serviceCredentialAuthModeHandoff() throws Exception {
+        MockHttpServletRequest request = request();
+        request.addHeader(McpAuthFilter.SERVICE_CREDENTIAL_HEADER, CONFIGURED);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        new McpAuthFilter(CONFIGURED, NO_TOKENS)
+                .doFilter(request, response, (req, res) -> { });
+
+        assertThat(request.getAttribute(McpAuthFilter.ATTR_AUTH_MODE))
+                .isEqualTo(McpAuthFilter.AUTH_MODE_SERVICE_CREDENTIAL);
+    }
+
+    @Test
+    @DisplayName("F12-A1：登录令牌通过时写 ATTR_AUTH_MODE=login-token（authZ 侧据此逐工具判定）")
+    void loginTokenAuthModeHandoff() throws Exception {
+        MockHttpServletRequest request = request();
+        request.addHeader("Authorization", "Bearer token-ok");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        Function<String, Object> tokens = token -> "token-ok".equals(token) ? 1001L : null;
+
+        new McpAuthFilter(CONFIGURED, tokens)
+                .doFilter(request, response, (req, res) -> { });
+
+        assertThat(request.getAttribute(McpAuthFilter.ATTR_AUTH_MODE))
+                .isEqualTo(McpAuthFilter.AUTH_MODE_LOGIN_TOKEN);
+    }
+
+    @Test
+    @DisplayName("F12-A1：被拒请求（401）不写交接属性——authZ 不得对未认证请求做判定")
+    void rejectedRequestsCarryNoAuthMode() throws Exception {
+        MockHttpServletRequest request = request();
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        new McpAuthFilter(CONFIGURED, NO_TOKENS)
+                .doFilter(request, response, (req, res) -> { });
+
+        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(request.getAttribute(McpAuthFilter.ATTR_AUTH_MODE)).isNull();
     }
 }

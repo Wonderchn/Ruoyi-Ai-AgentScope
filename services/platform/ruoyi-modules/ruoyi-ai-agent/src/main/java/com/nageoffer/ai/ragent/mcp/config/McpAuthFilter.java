@@ -68,11 +68,28 @@ import java.util.function.Function;
  * <p><b>不读 body、不动响应。</b>MCP streamable-http 的请求体是流式协议载体，过滤器
  * 只读请求头；通过时原样透传 request/response，不打断 SSE 与异步收尾。仅接管
  * {@code REQUEST} 分派（注册方已限，运行时再兜底判一次）。
+ *
+ * <p><b>书面边界（F12-A1 · D3）：本过滤器＝仅认证（authN），不是完整 authZ。</b>
+ * 卡1 的复核残留#1 即"认证≠授权：任意有效登录令牌可达 10 工具"。本类只负责
+ * 建立/拒绝身份（401 形状由本类独占），<b>不判任何工具权限</b>；认证通过后
+ * "这个身份能不能调这个工具"由 {@link McpToolAuthzFilter} 在逐工具调用
+ * （{@code tools/call}）请求路径上按 {@link McpToolAccessPolicy} 的冻结映射判定
+ * （403 形状归它）。两个过滤器通过请求属性
+ * {@link #ATTR_AUTH_MODE} 交接"本请求由哪种凭证通过认证"，判定逻辑各管一段。
  */
 public class McpAuthFilter implements Filter {
 
     /** 与 platform 侧内部端点同名（{@code X-P04-Service-Credential}）。 */
     public static final String SERVICE_CREDENTIAL_HEADER = "X-P04-Service-Credential";
+
+    /** 认证结果交接属性：值取 {@link #AUTH_MODE_SERVICE_CREDENTIAL} 或 {@link #AUTH_MODE_LOGIN_TOKEN}。 */
+    public static final String ATTR_AUTH_MODE = "mcp.auth.mode";
+
+    /** 服务凭证通过认证（authZ 侧不介入：服务凭证路径与卡1 语义连续）。 */
+    public static final String AUTH_MODE_SERVICE_CREDENTIAL = "service-credential";
+
+    /** 登录令牌通过认证（authZ 侧须逐工具判定）。 */
+    public static final String AUTH_MODE_LOGIN_TOKEN = "login-token";
 
     private static final Logger log = LoggerFactory.getLogger(McpAuthFilter.class);
 
@@ -118,6 +135,8 @@ public class McpAuthFilter implements Filter {
         String presentedCredential = servletRequest.getHeader(SERVICE_CREDENTIAL_HEADER);
         if (presentedCredential != null && !presentedCredential.isBlank()
                 && serviceCredentialMatches(presentedCredential)) {
+            // 交接给逐工具授权过滤器：服务凭证路径不在 F12-A1 的 authZ 判定范围内
+            servletRequest.setAttribute(ATTR_AUTH_MODE, AUTH_MODE_SERVICE_CREDENTIAL);
             chain.doFilter(request, response);
             return;
         }
@@ -127,6 +146,8 @@ public class McpAuthFilter implements Filter {
                 && authorization.regionMatches(true, 0, BEARER_PREFIX, 0, BEARER_PREFIX.length())) {
             String token = authorization.substring(BEARER_PREFIX.length()).trim();
             if (!token.isEmpty() && loginIdByToken.apply(token) != null) {
+                // 交接给逐工具授权过滤器：登录令牌路径须逐工具判定（本类不判权限）
+                servletRequest.setAttribute(ATTR_AUTH_MODE, AUTH_MODE_LOGIN_TOKEN);
                 chain.doFilter(request, response);
                 return;
             }
@@ -149,8 +170,12 @@ public class McpAuthFilter implements Filter {
                         presentedCredential.getBytes(StandardCharsets.UTF_8));
     }
 
-    /** 失败响应：HTTP status == body.code，符号码在 {@code data.errorCode}（与 DelegatedPrincipalFilter 同形）。 */
-    private static void writeReject(HttpServletResponse response, P04AiErrorCode errorCode) throws IOException {
+    /**
+     * 失败响应：HTTP status == body.code，符号码在 {@code data.errorCode}
+     * （与 DelegatedPrincipalFilter 同形）；401 由本类用，403 由
+     * {@link McpToolAuthzFilter} 复用，保持"/mcp 通道拒绝形状"单一出处。
+     */
+    static void writeReject(HttpServletResponse response, P04AiErrorCode errorCode) throws IOException {
         response.setStatus(errorCode.httpStatus());
         response.setContentType(CONTENT_TYPE_JSON);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());

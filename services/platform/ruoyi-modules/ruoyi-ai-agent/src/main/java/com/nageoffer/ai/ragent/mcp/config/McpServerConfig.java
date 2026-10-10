@@ -22,6 +22,7 @@ import io.modelcontextprotocol.server.McpServerFeatures;
 import io.modelcontextprotocol.server.McpSyncServer;
 import io.modelcontextprotocol.server.transport.HttpServletStreamableServerTransportProvider;
 import jakarta.servlet.DispatcherType;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.boot.web.servlet.ServletRegistrationBean;
@@ -29,6 +30,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.util.List;
+import java.util.Set;
+import java.util.function.Function;
 
 /**
  * MCP Server 配置类
@@ -69,6 +72,34 @@ public class McpServerConfig {
         registration.setName("mcpAuthFilter");
         registration.setDispatcherTypes(DispatcherType.REQUEST);
         registration.setOrder(Integer.MIN_VALUE + 150);
+        return registration;
+    }
+
+    /**
+     * /mcp 逐工具授权过滤器注册（F12-A1 · 卡1 残留#1）。
+     *
+     * <p>认证之后、进入 /mcp servlet 之前，登录令牌路径的 {@code tools/call} 按
+     * {@link McpToolAccessPolicy} 的冻结映射逐工具判定（判定与拒绝形状见
+     * {@link McpToolAuthzFilter}）。与鉴权过滤器同门控、同 URL 模式、只接管
+     * {@code REQUEST}；顺序排在鉴权过滤器（{@code Integer.MIN_VALUE + 150}）<b>之后</b>，
+     * 依赖它写入的 {@link McpAuthFilter#ATTR_AUTH_MODE} 交接认证结果。
+     *
+     * <p>登录令牌 → 身份 scope 的权威事实经 {@link McpLoginTokenScopes} 注入；
+     * 未装配实现时按空集处理（登录令牌路径默认拒绝，服务凭证路径不受影响）。
+     */
+    @Bean
+    public FilterRegistrationBean<McpToolAuthzFilter> mcpToolAuthzFilterRegistration(
+            ObjectProvider<McpLoginTokenScopes> loginTokenScopes) {
+        Function<String, Set<String>> scopesOfToken = token -> {
+            McpLoginTokenScopes source = loginTokenScopes.getIfAvailable();
+            return source == null ? Set.of() : source.scopesOf(token);
+        };
+        FilterRegistrationBean<McpToolAuthzFilter> registration =
+                new FilterRegistrationBean<>(new McpToolAuthzFilter(scopesOfToken));
+        registration.addUrlPatterns("/mcp", "/mcp/*");
+        registration.setName("mcpToolAuthzFilter");
+        registration.setDispatcherTypes(DispatcherType.REQUEST);
+        registration.setOrder(Integer.MIN_VALUE + 200);
         return registration;
     }
 
