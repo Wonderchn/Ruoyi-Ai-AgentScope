@@ -217,10 +217,18 @@ public class RunLedgerDao {
         return min == null ? 0 : min;
     }
 
-    public Instant oldestEventAt(String tenantId, String runId) {
-        return jdbc.queryForObject(
-                "SELECT min(created_at) FROM ai_run_event WHERE tenant_id=? AND run_id=?",
-                (rs, rowNum) -> toInstant(rs.getTimestamp(1)), tenantId, runId);
+    /**
+     * 保留期判定（P0.3 §3.3）：游标之后首个待回放事件是否已早于保留窗口。
+     *
+     * <p>返回 true = 该回放请求涉及保留期外历史，调用方以 410 + 已持久化快照收口，不得静默回放。
+     * 时间窗比较全部在 SQL 内以 DB {@code now()} 完成——app/VM 时钟与 DB 差 +8h（D4），
+     * 不得用应用时钟折算 DB 落库的 {@code created_at}；游标已追平（无待回放事件）不算超期。
+     */
+    public boolean retentionExpired(String tenantId, String runId, long afterSeq, int retentionHours) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT coalesce(min(created_at) <= now() - (? * interval '1 hour'), false) "
+                        + "FROM ai_run_event WHERE tenant_id=? AND run_id=? AND seq>?",
+                Boolean.class, retentionHours, tenantId, runId, afterSeq));
     }
 
     // ---------------------------------------------------------------- status transitions
