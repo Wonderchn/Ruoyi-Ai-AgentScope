@@ -20,17 +20,23 @@ package org.ruoyi.aiweb.embedded;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
+import com.nageoffer.ai.ragent.framework.integration.SaasBoundaryProperties;
+import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
+import com.nageoffer.ai.ragent.framework.mq.MessageWrapper;
 import com.nageoffer.ai.ragent.framework.mq.producer.MessageQueueProducer;
 import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
 import com.nageoffer.ai.ragent.rag.controller.request.MessageFeedbackRequest;
 import com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMessageMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.MessageFeedbackMapper;
 import com.nageoffer.ai.ragent.rag.mq.MessageFeedbackConsumer;
+import com.nageoffer.ai.ragent.rag.mq.event.MessageFeedbackEvent;
 import com.nageoffer.ai.ragent.rag.service.MessageFeedbackService;
+import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.http.ResponseEntity;
 
@@ -38,12 +44,15 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 /**
  * W3-5-BE-1 / WP-043 F05⑥：消息反馈面内嵌装配的判据（T3，@Tag("dev") 门禁 15）。
@@ -357,6 +366,210 @@ class AiEmbeddedFeedbackConfigurationTest {
                     assertThat(context).hasSingleBean(MessageFeedbackConsumer.class);
                     assertThat(context).hasSingleBean(MessageQueueProducer.class);
                 });
+    }
+
+    // ------------------------------------------------------------------ 6. F17-MQ：受控边界 + 消费者接线（B 面真链第一件）
+
+    /**
+     * legacy 打开后的整组装配台架（真实入口）：外层 {@link AiEmbeddedFeedbackConfiguration}
+     * 自动配置被整体加载，各嵌套组的门控按真实形态生效。{@code ai.integration.transport}
+     * 不给 ⇒ {@code LocalTransportAssembly}（含 F03 会话历史写面与受理面）不装，反馈服务用替身供料。
+     *
+     * <p>生产者组的三件协作者按既有测试同款供料：{@code RocketMQTemplate}（starter 装配物的替身）、
+     * {@code PlatformTransactionManager}、{@code ObjectMapper}（回查路径真的要反序列化
+     * {@code MessageWrapper}，替身会把它藏掉）。
+     */
+    private ApplicationContextRunner legacyWiringRunner() {
+        return new ApplicationContextRunner()
+                .withUserConfiguration(AiEmbeddedFeedbackConfiguration.class)
+                .withPropertyValues("ai.integration.enabled=true",
+                        "ai.integration.legacy-listeners-enabled=true")
+                .withBean(org.apache.rocketmq.spring.core.RocketMQTemplate.class,
+                        () -> mock(org.apache.rocketmq.spring.core.RocketMQTemplate.class))
+                .withBean(org.springframework.transaction.PlatformTransactionManager.class,
+                        () -> mock(org.springframework.transaction.PlatformTransactionManager.class))
+                .withBean(com.fasterxml.jackson.databind.ObjectMapper.class,
+                        com.fasterxml.jackson.databind.ObjectMapper::new);
+    }
+
+    /** 只登记两个 legacy 组（不装边界组）：模拟"只开监听开关、无人提供边界"的最坏装配。 */
+    private ApplicationContextRunner legacyAssembliesWithoutBoundaryRunner() {
+        return new ApplicationContextRunner()
+                .withUserConfiguration(
+                        AiEmbeddedFeedbackConfiguration.LegacyFeedbackConsumerAssembly.class,
+                        AiEmbeddedFeedbackConfiguration.LegacyFeedbackProducerAssembly.class)
+                .withPropertyValues("ai.integration.enabled=true",
+                        "ai.integration.legacy-listeners-enabled=true")
+                .withBean(org.apache.rocketmq.spring.core.RocketMQTemplate.class,
+                        () -> mock(org.apache.rocketmq.spring.core.RocketMQTemplate.class))
+                .withBean(org.springframework.transaction.PlatformTransactionManager.class,
+                        () -> mock(org.springframework.transaction.PlatformTransactionManager.class))
+                .withBean(com.fasterxml.jackson.databind.ObjectMapper.class,
+                        com.fasterxml.jackson.databind.ObjectMapper::new);
+    }
+
+    private static MessageWrapper<MessageFeedbackEvent> feedbackMessage(String messageId) {
+        return MessageWrapper.<MessageFeedbackEvent>builder()
+                .keys("2101:" + messageId)
+                .body(MessageFeedbackEvent.builder()
+                        .messageId(messageId).userId("2101").vote(1).submitTime(1000L).build())
+                .build();
+    }
+
+    @Test
+    @DisplayName("F17-MQ①：legacy 显式打开 ⇒ 注册受控边界（开放），消费者第一行判定通过并派发服务")
+    void legacyOpenRegistersAnOpenBoundaryAndTheConsumerDispatches() {
+        MessageFeedbackService service = mock(MessageFeedbackService.class);
+        legacyWiringRunner()
+                .withBean(MessageFeedbackService.class, () -> service)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context)
+                            .as("legacy 打开但没有边界 bean ⇒ 消费者首行恒拒（R4）；"
+                                    + "接线必须提供受控边界，而不是只开监听开关")
+                            .hasSingleBean(SaasCapabilityBoundary.class);
+                    SaasCapabilityBoundary boundary = context.getBean(SaasCapabilityBoundary.class);
+                    assertThat(boundary.isLegacyOpen())
+                            .as("边界真值与装配开关同源（SaasBoundaryProperties.legacyListenersEnabled）")
+                            .isTrue();
+
+                    MessageFeedbackEvent event = MessageFeedbackEvent.builder()
+                            .messageId("msg-1").userId("2101").vote(1).submitTime(1000L).build();
+                    context.getBean(MessageFeedbackConsumer.class).onMessage(
+                            MessageWrapper.<MessageFeedbackEvent>builder()
+                                    .keys("2101:msg-1").body(event).build());
+
+                    verify(service).submitFeedbackByEvent(event);
+                });
+    }
+
+    @Test
+    @DisplayName("F17-MQ①：开关打开但无人提供边界 ⇒ 首行受控拒绝、业务零交互（『不能只开监听开关』负例）")
+    void consumerRejectsBeforeAnyBusinessCallWhenTheBoundaryIsAbsent() {
+        MessageFeedbackService service = mock(MessageFeedbackService.class);
+        legacyAssembliesWithoutBoundaryRunner()
+                .withBean(MessageFeedbackService.class, () -> service)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context)
+                            .as("本台架刻意不装边界组：证实消费者是真的在'边界缺席'状态下被调用")
+                            .doesNotHaveBean(SaasCapabilityBoundary.class);
+
+                    SaasCapabilityBoundary.ClosedCapabilityException failure = assertThrows(
+                            SaasCapabilityBoundary.ClosedCapabilityException.class,
+                            () -> context.getBean(MessageFeedbackConsumer.class).onMessage(feedbackMessage("msg-1")),
+                            "边界缺席时消息必须在任何业务写之前被受控拒绝");
+                    assertThat(failure.capability())
+                            .isEqualTo(SaasCapabilityBoundary.LegacyCapability.MESSAGE_FEEDBACK_CONSUMER);
+                    verifyNoInteractions(service);
+                });
+    }
+
+    @Test
+    @DisplayName("F17-MQ①：注入关闭态边界 ⇒ 同样首行拒绝（拒绝来自开关状态，不是『该类只会拒绝』）")
+    void consumerRejectsWhenTheProvidedBoundaryIsClosed() {
+        MessageFeedbackService service = mock(MessageFeedbackService.class);
+        legacyAssembliesWithoutBoundaryRunner()
+                .withBean(SaasCapabilityBoundary.class, () -> new SaasCapabilityBoundary(
+                        new SaasBoundaryProperties(false, true,
+                                new SaasBoundaryProperties.CustomerApi(false), false)))
+                .withBean(MessageFeedbackService.class, () -> service)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    SaasCapabilityBoundary.ClosedCapabilityException failure = assertThrows(
+                            SaasCapabilityBoundary.ClosedCapabilityException.class,
+                            () -> context.getBean(MessageFeedbackConsumer.class).onMessage(feedbackMessage("msg-1")));
+                    assertThat(failure.capability())
+                            .isEqualTo(SaasCapabilityBoundary.LegacyCapability.MESSAGE_FEEDBACK_CONSUMER);
+                    verifyNoInteractions(service);
+                });
+    }
+
+    @Test
+    @DisplayName("F17-MQ①：shipped 默认（legacy 缺省）不注册边界 bean——默认交付零变化")
+    void noBoundaryBeanWithoutTheLegacySwitch() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(AiEmbeddedFeedbackConfiguration.class)
+                .withPropertyValues("ai.integration.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(SaasCapabilityBoundary.class);
+                    assertThat(context).doesNotHaveBean(MessageFeedbackConsumer.class);
+                });
+    }
+
+    @Test
+    @DisplayName("F17-MQ③：starter 注解后处理器把消费者交给容器注册器（mock registrar 捕获；不建真容器、不连 broker）")
+    void starterAnnotationPostProcessorRegistersAContainerForTheConsumer() {
+        org.apache.rocketmq.spring.support.RocketMQMessageListenerContainerRegistrar registrar =
+                mock(org.apache.rocketmq.spring.support.RocketMQMessageListenerContainerRegistrar.class);
+        MessageFeedbackConsumer consumer = new MessageFeedbackConsumer(mock(MessageFeedbackService.class),
+                providerOf((SaasCapabilityBoundary) null));
+
+        org.apache.rocketmq.spring.annotation.RocketMQMessageListenerBeanPostProcessor postProcessor =
+                new org.apache.rocketmq.spring.annotation.RocketMQMessageListenerBeanPostProcessor(
+                        java.util.List.<org.apache.rocketmq.spring.annotation
+                                .RocketMQMessageListenerBeanPostProcessor.AnnotationEnhancer>of(),
+                        providerOf(registrar));
+
+        Object returned = postProcessor.postProcessAfterInitialization(consumer, "messageFeedbackConsumer");
+
+        assertThat(returned)
+                .as("后处理器必须把原 bean 原样放回（注册容器是副作用，不是替换）")
+                .isSameAs(consumer);
+        org.mockito.ArgumentCaptor<RocketMQMessageListener> annotation =
+                org.mockito.ArgumentCaptor.forClass(RocketMQMessageListener.class);
+        verify(registrar).registerContainer(eq("messageFeedbackConsumer"), same(consumer), annotation.capture());
+        assertThat(annotation.getValue().topic())
+                .as("注册用的注解必须是消费者类上的那一个（topic 由它决定订阅）")
+                .isEqualTo("message-feedback_topic${unique-name:}");
+    }
+
+    @Test
+    @DisplayName("F17-MQ③：消费者注解 topic/group 与生产者默认主题逐字匹配（防『发出去了没人订阅』静默故障）")
+    void consumerSubscriptionMatchesTheProducerDefaultTopic() {
+        RocketMQMessageListener annotation =
+                MessageFeedbackConsumer.class.getAnnotation(RocketMQMessageListener.class);
+        assertThat(annotation)
+                .as("消费者必须持有 @RocketMQMessageListener——starter 的注解后处理器依此建容器")
+                .isNotNull();
+        // 内嵌部署没有 unique-name 属性 ⇒ ${unique-name:} 解析为空 ⇒ 实际订阅主题必须与生产者的
+        // 默认主题（内嵌装配显式 new 时的字段值）逐字相等；组名同理。
+        assertThat(annotation.topic()).contains("${unique-name:");
+        assertThat(annotation.topic().replace("${unique-name:}", ""))
+                .isEqualTo(com.nageoffer.ai.ragent.rag.service.impl.MessageFeedbackServiceImpl.DEFAULT_FEEDBACK_TOPIC);
+        assertThat(annotation.consumerGroup()).isEqualTo("message-feedback_cg${unique-name:}");
+    }
+
+    /**
+     * 最小 {@link ObjectProvider} 替身（与 runtime 侧 {@code SaasCapabilityBoundaryTest} 的
+     * {@code FixedBoundaryProvider} 同形）：只回答"取不取得到"。
+     */
+    private static <T> ObjectProvider<T> providerOf(T value) {
+        return new ObjectProvider<>() {
+            @Override
+            public T getObject() {
+                if (value == null) {
+                    throw new IllegalStateException("no bean available");
+                }
+                return value;
+            }
+
+            @Override
+            public T getObject(Object... args) {
+                return getObject();
+            }
+
+            @Override
+            public T getIfAvailable() {
+                return value;
+            }
+
+            @Override
+            public T getIfUnique() {
+                return value;
+            }
+        };
     }
 
     private static ExecutionPrincipal principal(String tenant, String user) {
