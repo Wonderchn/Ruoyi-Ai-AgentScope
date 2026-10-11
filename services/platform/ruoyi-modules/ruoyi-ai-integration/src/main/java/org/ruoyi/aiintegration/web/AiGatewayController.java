@@ -233,9 +233,10 @@ public class AiGatewayController {
             // 动作与权限全部**复用既有已播种行**，不新增 canonical 动作、不新增迁移：
             //   run.cancel    -> ai:run:cancel     (V5)
             //   agent.execute -> ai:agent:execute  (V6)
-            // 权威值以 P1CurrentAuthorizationTest:245/:252 为准：旧 34 条逐项集合相等 +
-            // F13-SLICE-1 增量 4 条 + F13-A1 增量 1 条（flow.node.write）= 39；
-            // 本批（F13-A1）只经立项批注批准了这 1 条，本条路由不新增动作。
+            // 权威值以 P1CurrentAuthorizationTest 为准：旧 34 条逐项集合相等 +
+            // F13-SLICE-1 批准的 flow.* 4 条 + F13-A1 批准的 flow.node.write 1 条 +
+            // F11-A1 批准的 skill.* 4 条 = 43，
+            // 故不得新增动作（**不得新增第 44 个动作**）。
             // （注：本条注释曾长期写作"26"、后写作"34"并引用过期行号 209，均为过期信息；
             //   此处按实测权威更正并保留说明。）
             new Route("GET", "/memories", "memory.read"),
@@ -260,9 +261,10 @@ public class AiGatewayController {
             // /internal/ai/v1/agent-catalog/**（由 AiEmbeddedAgentCatalogConfiguration 装配）。
             // 逐条登记、不用通配，与本文件上文"不登记 /agent/v1/**"的纪律一致；全部为 JSON。
             // 每个 action 的权限串见 AiCanonicalAction，权限行由 V27__agent_catalog_permissions.sql 播种。
-            // F11（Skills）本批**未装**：其闭包经 IntentNodeRegistry → DefaultIntentClassifier →
-            // LLMService/PromptTemplateLoader/IntentTreeCacheManager 均未装配（task-13 / W4-T0-46），
-            // 故此处不登记 /agent-catalog/agent-skills 的任何路径。
+            // F11（Skills）曾因闭包经 IntentNodeRegistry → DefaultIntentClassifier →
+            // LLMService/PromptTemplateLoader/IntentTreeCacheManager 未装配（task-13 / W4-T0-46）
+            // 而**不登记** /agent-catalog/agent-skills 的任何路径；
+            // 该缺口已由 S2-F11-A1 接管——7 条见本表末尾的 agent-skills 段（同一前缀家族）。
             new Route("GET", "/agent-catalog/agents", "agent.list"),
             new Route("POST", "/agent-catalog/agents", "agent.write"),
             new Route("PUT", "/agent-catalog/agents/{id}", "agent.write"),
@@ -319,7 +321,7 @@ public class AiGatewayController {
             //   document.list → ai:document:read（复用读，AiCanonicalAction:36 既有映射）；
             //   document.upload / document.ingest ← V5 已播种；
             //   文档删除复用 kb.delete（与 POST /documents/{id}/tombstone 同口径——
-            //   仓内没有 document.delete 这个动作，且不新增第 39 个动作）；
+            //   仓内没有 document.delete 这个动作，且不新增第 44 个动作）；
             //   摄取 schema 复用 config.read（控制器自铸许可用的也是它）。
             //
             // 段数与顺序（matchRoute 为**声明序首个命中**）：三条 3 段字面量
@@ -444,7 +446,30 @@ public class AiGatewayController {
             new Route("GET", "/flow-components", "flow.read"),
             new Route("POST", "/flow-components", "flow.node.write"),
             new Route("PUT", "/flow-components/{uuid}", "flow.node.write"),
-            new Route("DELETE", "/flow-components/{uuid}", "flow.node.write"));
+            new Route("DELETE", "/flow-components/{uuid}", "flow.node.write"),
+            // S2-F11-A1（2026-10-11）：Skills 管理面（7 handler → 4 动作）。
+            // 内层 handler = AgentSkillController（类级 /internal/ai/v1/agent-catalog，
+            // 三件套已归位：前缀＋整数 ApiEnvelope＋GET 交付回执），由
+            // AiEmbeddedAgentSkillConfiguration 显式装配（随 S1 引擎闭包门——admin 服务依赖
+            // IntentNodeRegistry，闭包未闭合不装、fail-closed，与 Flow 面同纪律）。
+            // 逐条登记、不用通配 `/agent-catalog/agent-skills/**`——通配会把同一前缀下
+            // 任何将来新增的端点一起放行，等于取消白名单。
+            // 动作映射（Spec §6-P3）：list/tool-options → skill.list；detail → skill.read；
+            // create/update/toggle → skill.write；delete → skill.delete。
+            // 四条动作**全部**进 PLATFORM_ADMIN_ACTIONS 第二道门（Spec §6-P4 默认"进"，
+            // T0 合并终裁维持"进"、从严方向），
+            // 权限行由 V33 注册（沿用 V27 预留 7137-7140 动作行 + 7142 页面 C 行，不占新号）。
+            // 三条 GET 在网关走字节分支，故内层同时给整数 ApiEnvelope 与两个回执头；
+            // 写面走 JSON 分支、内层**不铸**回执（JSON 分支铸造 = 永久 ACTIVE 许可泄漏）。
+            // 段级匹配为声明序首个命中：GET tool-options（3 段字面量）必须排在
+            // GET {id}（3 段变量）之前，否则 tool-options 会被 {id} 吃掉。
+            new Route("GET", "/agent-catalog/agent-skills", "skill.list"),
+            new Route("GET", "/agent-catalog/agent-skills/tool-options", "skill.list"),
+            new Route("GET", "/agent-catalog/agent-skills/{id}", "skill.read"),
+            new Route("POST", "/agent-catalog/agent-skills", "skill.write"),
+            new Route("PUT", "/agent-catalog/agent-skills/{id}", "skill.write"),
+            new Route("DELETE", "/agent-catalog/agent-skills/{id}", "skill.delete"),
+            new Route("POST", "/agent-catalog/agent-skills/{id}/enabled", "skill.write"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;
