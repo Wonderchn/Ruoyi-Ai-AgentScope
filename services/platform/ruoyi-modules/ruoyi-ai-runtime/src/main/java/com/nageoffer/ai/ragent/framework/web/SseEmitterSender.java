@@ -17,6 +17,8 @@
 
 package com.nageoffer.ai.ragent.framework.web;
 
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.runtime.web.DeliveryPermits;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -43,10 +45,34 @@ public class SseEmitterSender {
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
     /**
+     * 交付许可（ENV-B5b 许可接线，2026-10-11）：非空时每个数据帧按
+     * {@code RunEventStreamService:131} 同型包装 {@code : ai-delivery <permit> <op>}
+     * 元数据——本地/远程网关传输对含数据帧 fail-closed（"unprotected stream frame"），
+     * 裸帧会被逐帧拒收（agent chat 首经本地传输实证）；帧级回执由传输侧统一释放。
+     * 端口缺席（独立应用/无许可链）时为 null，按原形态发送。
+     */
+    private final DeliveryPermits permits;
+    private final ExecutionPrincipal permitPrincipal;
+    private final String permitAction;
+    private final String permitResourceRef;
+
+    /**
      * Spring 的 SseEmitter 实例，用于实际的 SSE 通信
      */
     public SseEmitterSender(SseEmitter emitter) {
+        this(emitter, null, null, null, null);
+    }
+
+    /**
+     * 带交付许可的构造（帧级 {@code : ai-delivery} 元数据；见 {@link #permits}）。
+     */
+    public SseEmitterSender(SseEmitter emitter, DeliveryPermits permits, ExecutionPrincipal principal,
+                            String permitAction, String permitResourceRef) {
         this.emitter = emitter;
+        this.permits = permits;
+        this.permitPrincipal = principal;
+        this.permitAction = permitAction;
+        this.permitResourceRef = permitResourceRef;
         emitter.onCompletion(() -> closed.set(true));
         emitter.onTimeout(() -> closed.set(true));
         emitter.onError(e -> closed.set(true));
@@ -69,11 +95,25 @@ public class SseEmitterSender {
             return;
         }
         try {
-            if (eventName == null) {
-                emitter.send(data);
+            if (permits == null || permitPrincipal == null) {
+                if (eventName == null) {
+                    emitter.send(data);
+                    return;
+                }
+                emitter.send(SseEmitter.event().name(eventName).data(data));
                 return;
             }
-            emitter.send(SseEmitter.event().name(eventName).data(data));
+            // 每帧一许可（与 run-events 同型）：元数据打头，传输侧剥离并逐帧回执释放；
+            // 发送失败帧不在此处释放——未确认交付按契约保留（B4 口径），由传输/到期兜底。
+            DeliveryPermits.Permit permit = permits.enter(permitPrincipal, permitAction, permitResourceRef);
+            // 注意：Spring 的 comment() 渲染为 ":<text>"（冒号后无空格），而传输侧按
+            // ": ai-delivery " 前缀逐行解析——文本前导空格是契约的一部分（测试钉住）
+            SseEmitter.SseEventBuilder builder = SseEmitter.event()
+                    .comment(" ai-delivery " + permit.permitId() + " " + permit.operationId());
+            if (eventName != null) {
+                builder.name(eventName);
+            }
+            emitter.send(builder.data(data));
         } catch (Exception e) {
             fail(e);
         }
