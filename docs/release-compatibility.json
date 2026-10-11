@@ -1,7 +1,7 @@
 {
   "document": "release-compatibility",
   "version": 2,
-  "updated": "2026-10-10",
+  "updated": "2026-10-11",
   "basis": "Versions below are read from the shipped migration files and the product contracts that tests and the native-runtime matrix verify. Nothing here promises an unverified upgrade or downgrade path.",
   "schema": {
     "platform": {
@@ -36,7 +36,7 @@
       "verifiedBy": "scripts/ci/verify-ai-migrations.sh"
     },
     "unifiedPlatform": {
-      "migrations": 28,
+      "migrations": 29,
       "versionList": [
         1,
         2,
@@ -65,7 +65,8 @@
         28,
         29,
         30,
-        31
+        31,
+        32
       ],
       "verifiedBy": "scripts/ci/verify-unified-migrations.sh; scripts/ci/check-unified-contract.py"
     }
