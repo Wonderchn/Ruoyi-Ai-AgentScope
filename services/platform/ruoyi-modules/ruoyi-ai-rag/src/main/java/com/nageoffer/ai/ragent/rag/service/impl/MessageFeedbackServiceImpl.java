@@ -90,6 +90,25 @@ public class MessageFeedbackServiceImpl implements MessageFeedbackService {
     }
 
     /**
+     * 事件所属租户（ENV-BATCH-5b 修，2026-10-11）：受理线程必须把租户显式写进事件——
+     * 消费者线程没有登录主体，内嵌平台侧的 MyBatis 租户行拦截器（tenant.enable）对
+     * 业务表 fail-closed，没有该字段时整条落库链会被容器"操作前拒绝"
+     * （真 broker 首跑实证：tenant.context.missing）。
+     * 取值口径与 {@link #acceptanceUserId()} 同源：执行主体优先；无主体时留空
+     * （独立/旧形态没有租户拦截器；内嵌形态的消费者在存在租户绑定端口时对空租户响亮拒绝，
+     * 见 {@code MessageFeedbackConsumer} 的 fail-closed 分支）。
+     */
+    private static String acceptanceTenantId() {
+        if (PrincipalContext.hasPrincipal()) {
+            String tenantId = PrincipalContext.require().tenantId();
+            if (StrUtil.isNotBlank(tenantId)) {
+                return tenantId;
+            }
+        }
+        return null;
+    }
+
+    /**
      * 异步发送前的生产者复核：消息链缺席时<b>响亮拒绝</b>。
      *
      * <p>独立应用恒非空（{@code RocketMQAutoConfiguration} 装配）；内嵌 legacy 消息链
@@ -116,6 +135,7 @@ public class MessageFeedbackServiceImpl implements MessageFeedbackService {
         Assert.isTrue(vote == 1 || vote == -1, () -> new ClientException("反馈值必须为 1 或 -1"));
 
         MessageFeedbackEvent event = MessageFeedbackEvent.builder()
+                .tenantId(acceptanceTenantId())
                 .messageId(messageId)
                 .userId(userId)
                 .vote(vote)
@@ -133,6 +153,7 @@ public class MessageFeedbackServiceImpl implements MessageFeedbackService {
         Assert.notBlank(messageId, () -> new ClientException("消息ID不能为空"));
 
         MessageFeedbackEvent event = MessageFeedbackEvent.builder()
+                .tenantId(acceptanceTenantId())
                 .messageId(messageId)
                 .userId(userId)
                 .cancelled(true)

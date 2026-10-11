@@ -155,7 +155,7 @@ class P1TriggerBoundaryTest {
     void feedbackConsumerRejectsDirectInvocationBeforeAnyServiceCall() {
         MessageFeedbackService feedbackService = mock(MessageFeedbackService.class);
         MessageFeedbackConsumer consumer = new MessageFeedbackConsumer(
-                feedbackService, providerOf(CLOSED_BOUNDARY));
+                feedbackService, providerOf(CLOSED_BOUNDARY), providerOf(null));
 
         SaasCapabilityBoundary.ClosedCapabilityException failure = assertThrows(
                 SaasCapabilityBoundary.ClosedCapabilityException.class,
