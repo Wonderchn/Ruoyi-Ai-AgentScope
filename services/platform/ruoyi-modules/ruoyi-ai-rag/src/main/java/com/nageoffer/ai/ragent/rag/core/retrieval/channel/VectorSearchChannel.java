@@ -25,6 +25,7 @@ import com.nageoffer.ai.ragent.rag.core.retrieval.RetrieveRequest;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorRetrieverService;
 import com.nageoffer.ai.ragent.rag.core.vector.strategy.CollectionParallelRetriever;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -51,9 +52,14 @@ public class VectorSearchChannel implements SearchChannel {
     private final CollectionParallelRetriever globalRetriever;
     private final Executor retrievalExecutor;
 
+    /**
+     * 显式构造（S1 装配批 R1）：{@code innerRetrievalExecutor} 带 {@code @Qualifier}
+     * <b>按名注入</b>——platform 侧两个 {@code @Primary} 的 {@code Executor}
+     * （{@code ThreadPoolConfig}）会让按类型注入以"多个 primary"启动期失败。
+     */
     public VectorSearchChannel(VectorRetrieverService retrieverService,
                                SearchChannelProperties properties,
-                               Executor innerRetrievalExecutor) {
+                               @Qualifier("innerRetrievalExecutor") Executor innerRetrievalExecutor) {
         this.properties = properties;
         this.retrieverService = retrieverService;
         this.globalRetriever = new CollectionParallelRetriever(retrieverService, innerRetrievalExecutor);

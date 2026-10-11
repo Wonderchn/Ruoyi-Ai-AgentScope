@@ -29,8 +29,8 @@ import com.nageoffer.ai.ragent.rag.core.prompt.PromptTemplateLoader;
 import com.nageoffer.ai.ragent.rag.dto.KbResult;
 import com.nageoffer.ai.ragent.rag.dto.RetrievalContext;
 import com.nageoffer.ai.ragent.rag.dto.SubQuestionIntent;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -51,7 +51,6 @@ import static com.nageoffer.ai.ragent.rag.constant.RAGConstant.MULTI_CHANNEL_KEY
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class RetrievalEngine {
 
     private final SearchChannelProperties searchProperties;
@@ -59,6 +58,30 @@ public class RetrievalEngine {
     private final PromptTemplateLoader templateLoader;
     private final MultiChannelRetrievalEngine multiChannelRetrievalEngine;
     private final Executor ragContextExecutor;
+
+    /**
+     * 显式构造（替代 {@code @RequiredArgsConstructor}，S1 装配批 R1）：{@code Executor} 参数
+     * 带 {@code @Qualifier} <b>按名注入</b>——platform 侧存在两个 {@code @Primary} 的
+     * {@code Executor}（{@code ThreadPoolConfig} 的 {@code scheduledExecutorService}/
+     * {@code mainExecutor}），按类型注入会以"多个 primary"启动期失败。
+     *
+     * <p>刻意用<b>显式构造参数</b>而不是"final 字段 + 字段注解"：platform 树没有
+     * {@code services/ai/lombok.config}（该文件才把 {@code @Qualifier} 加入
+     * {@code lombok.copyableAnnotations}），Lombok 生成的构造参数上不会带字段注解；
+     * 手写构造则注解就在参数上，语义不依赖编译树差异。参数顺序与生成形态逐位一致，
+     * 既有测试的手工构造（{@code RetrievalEngineTest}）不受影响。
+     */
+    public RetrievalEngine(SearchChannelProperties searchProperties,
+                           ContextFormatter contextFormatter,
+                           PromptTemplateLoader templateLoader,
+                           MultiChannelRetrievalEngine multiChannelRetrievalEngine,
+                           @Qualifier("ragContextExecutor") Executor ragContextExecutor) {
+        this.searchProperties = searchProperties;
+        this.contextFormatter = contextFormatter;
+        this.templateLoader = templateLoader;
+        this.multiChannelRetrievalEngine = multiChannelRetrievalEngine;
+        this.ragContextExecutor = ragContextExecutor;
+    }
 
     @RagTraceNode(name = "retrieval-engine", type = "RETRIEVE")
     public RetrievalContext retrieve(List<SubQuestionIntent> subIntents) {

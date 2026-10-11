@@ -135,6 +135,12 @@ class AiEmbeddedDualDeclarationCoexistenceTest {
     /**
      * 两配置同容器的最小上下文：只把<b>业务协作者</b>换成替身，
      * 网关/控制器/配置类本身都是真实实现。
+     *
+     * <p><b>S1（引擎闭包）后本夹具补齐了闭包叶依赖。</b>{@code EngineEnabled} 现在
+     * {@code @Import} 引擎最小闭包（{@code AiEmbeddedAgentEngineClosureConfiguration}），
+     * 引擎门开 ⇒ 闭包的真实件随容器一起装配，它们的叶依赖（LLM/Redis/各 Mapper/缓存管理器）
+     * 必须在本夹具满足构造。仍守"只满足构造依赖、不做行为断言"的口径：替身不参与任何断言，
+     * 断言对象仍是 {@code pgAgentStateStore}/{@code agentRunGate} 的双声明收敛。
      */
     private ApplicationContextRunner runner(Class<?>... autoConfigurations) {
         return new ApplicationContextRunner()
@@ -156,16 +162,60 @@ class AiEmbeddedDualDeclarationCoexistenceTest {
                 .withBean(TransactionOperations.class, () -> mock(TransactionOperations.class))
                 .withBean(AgentChatService.class, () -> mock(AgentChatService.class))
                 .withBean(AgentToolCatalog.class, () -> mock(AgentToolCatalog.class))
-                // ---- EngineChainReadiness 的类型点名：只登记"类型在场"的定义，不实例化、不断言行为
-                .withBean(ReActAgentProvider.class, () -> null)
-                .withBean(AgentPromptResolver.class, () -> null)
+                // ---- S1 引擎闭包的叶依赖（只满足构造，不做行为断言）
+                .withBean(com.nageoffer.ai.ragent.infra.chat.LLMService.class,
+                        () -> mock(com.nageoffer.ai.ragent.infra.chat.LLMService.class))
+                .withBean(org.springframework.data.redis.core.StringRedisTemplate.class,
+                        () -> mock(org.springframework.data.redis.core.StringRedisTemplate.class))
+                .withBean(com.fasterxml.jackson.databind.ObjectMapper.class,
+                        () -> new com.fasterxml.jackson.databind.ObjectMapper())
+                .withBean("syncHttpClient", okhttp3.OkHttpClient.class, () -> mock(okhttp3.OkHttpClient.class))
+                .withBean(com.nageoffer.ai.ragent.rag.dao.mapper.AgentSkillMapper.class,
+                        () -> mock(com.nageoffer.ai.ragent.rag.dao.mapper.AgentSkillMapper.class))
+                .withBean(com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryMapper.class,
+                        () -> mock(com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryMapper.class))
+                .withBean(com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryExtractionMapper.class,
+                        () -> mock(com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryExtractionMapper.class))
+                .withBean(com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryControlMapper.class,
+                        () -> mock(com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryControlMapper.class))
+                .withBean(com.nageoffer.ai.ragent.agent.dao.mapper.AgentContextCompactionMapper.class,
+                        () -> mock(com.nageoffer.ai.ragent.agent.dao.mapper.AgentContextCompactionMapper.class))
+                .withBean(com.nageoffer.ai.ragent.rag.dao.mapper.IntentNodeMapper.class,
+                        () -> mock(com.nageoffer.ai.ragent.rag.dao.mapper.IntentNodeMapper.class))
+                .withBean(com.nageoffer.ai.ragent.rag.core.intent.IntentTreeCacheManager.class,
+                        () -> mock(com.nageoffer.ai.ragent.rag.core.intent.IntentTreeCacheManager.class))
+                .withBean(com.nageoffer.ai.ragent.rag.dao.mapper.QueryTermMappingMapper.class,
+                        () -> mock(com.nageoffer.ai.ragent.rag.dao.mapper.QueryTermMappingMapper.class))
+                .withBean(com.nageoffer.ai.ragent.rag.core.rewrite.QueryTermMappingCacheManager.class,
+                        () -> mock(com.nageoffer.ai.ragent.rag.core.rewrite.QueryTermMappingCacheManager.class))
+                .withBean(com.nageoffer.ai.ragent.rag.config.OrchestrationProperties.class,
+                        () -> mock(com.nageoffer.ai.ragent.rag.config.OrchestrationProperties.class))
+                .withBean(com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeBaseMapper.class,
+                        () -> mock(com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeBaseMapper.class))
+                .withBean(com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeChunkMapper.class,
+                        () -> mock(com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeChunkMapper.class))
+                .withBean(com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeDocumentMapper.class,
+                        () -> mock(com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeDocumentMapper.class))
+                .withBean(com.nageoffer.ai.ragent.infra.rerank.RerankService.class,
+                        () -> mock(com.nageoffer.ai.ragent.infra.rerank.RerankService.class))
+                .withBean(com.nageoffer.ai.ragent.rag.core.vector.VectorRetrieverService.class,
+                        () -> mock(com.nageoffer.ai.ragent.rag.core.vector.VectorRetrieverService.class))
+                // ---- EngineChainReadiness 的类型点名：只登记"类型在场"的定义，不实例化、不断言行为。
+                // 注意 S1 后 IntentNodeRegistry（DefaultIntentClassifier 同体两型）改为按名 mock：
+                // 真实的 IntentResolver/IntentGuidanceService 会注入它，null 定义不再可注入。
+                .withBean("defaultIntentClassifier", com.nageoffer.ai.ragent.rag.core.intent.DefaultIntentClassifier.class,
+                        () -> mock(com.nageoffer.ai.ragent.rag.core.intent.DefaultIntentClassifier.class))
+                .withBean(AgentPromptResolver.class, () -> mock(AgentPromptResolver.class))
                 .withBean(KnowledgeSearchFacade.class, () -> null)
-                .withBean(IntentNodeRegistry.class, () -> null)
+                .withBean(ReActAgentProvider.class, () -> null)
                 .withBean(AgentMcpClients.class, () -> null)
-                .withBean(AgentSkillRegistry.class, () -> null)
                 .withBean(AgentMemoryPipeline.class, () -> null)
-                .withBean(AgentMemoryRepository.class, () -> null)
-                .withBean(OpenAIChatModel.class, () -> null);
+                .withBean(OpenAIChatModel.class, () -> null)
+                // 被闭包真实件注入的"根"改为可注入替身（mock），其余仍以 null 定义占"类型在场"
+                .withBean(com.nageoffer.ai.ragent.agent.memory.AgentMemoryRepository.class,
+                        () -> mock(com.nageoffer.ai.ragent.agent.memory.AgentMemoryRepository.class))
+                .withBean(com.nageoffer.ai.ragent.rag.core.skill.AgentSkillRegistry.class,
+                        () -> mock(com.nageoffer.ai.ragent.rag.core.skill.AgentSkillRegistry.class));
     }
 
     @Test
