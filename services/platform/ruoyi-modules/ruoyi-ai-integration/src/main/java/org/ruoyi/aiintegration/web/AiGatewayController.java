@@ -182,7 +182,8 @@ public class AiGatewayController {
             // `POST /conversations/messages/{messageId}/feedback`（同样是"对会话消息的写"）**同一口径**：
             // **不新增 canonical 动作、不新增权限行、不新增迁移**（权威值以
             // P1CurrentAuthorizationTest:245/:252 为准：旧 34 条逐项保留 +
-            // F13 批准的 flow.* 4 条 = 38，**不得新增第 39 个动作**）。
+            // F13-SLICE-1 批准的 flow.* 4 条 + F13-A1 批准的 flow.node.write 1 条 = 39；
+            // 本条路由不涉及任何动作的增改——再新增动作须走维护者立项批注 + 三断言同步）。
             // 判据两侧都钉住：持 `ai:conversation:write` 才 200；**只持 `ai:conversation:read` 必须 403**。
             // 未采用"读权限时只读缓存、不落库"的折中：那会让同一端点出现两种成功形状，
             // 与 RW-22-R1"同一控制器不分裂成两种成功形状"的既定纪律冲突。
@@ -233,7 +234,8 @@ public class AiGatewayController {
             //   run.cancel    -> ai:run:cancel     (V5)
             //   agent.execute -> ai:agent:execute  (V6)
             // 权威值以 P1CurrentAuthorizationTest:245/:252 为准：旧 34 条逐项集合相等 +
-            // 总数 = 34 + F13 批准的 flow.* 4 条 = 38，故不得新增动作（不得新增第 39 个动作）。
+            // F13-SLICE-1 增量 4 条 + F13-A1 增量 1 条（flow.node.write）= 39；
+            // 本批（F13-A1）只经立项批注批准了这 1 条，本条路由不新增动作。
             // （注：本条注释曾长期写作"26"、后写作"34"并引用过期行号 209，均为过期信息；
             //   此处按实测权威更正并保留说明。）
             new Route("GET", "/memories", "memory.read"),
@@ -417,7 +419,32 @@ public class AiGatewayController {
             new Route("GET", "/flows/{uuid}", "flow.read"),
             new Route("POST", "/flows", "flow.write"),
             new Route("PUT", "/flows/{uuid}", "flow.write"),
-            new Route("DELETE", "/flows/{uuid}", "flow.delete"));
+            new Route("DELETE", "/flows/{uuid}", "flow.delete"),
+            // F13-A1（2026-10-11，维护者立项批注「spec开始立项」）：op0 图 CRUD 12 条。
+            // 内层 handler = FlowGraphController（类级 /internal/ai/v1；由
+            // AiEmbeddedFlowConfiguration 显式装配、随 AutoConfiguration.imports 生效），
+            // 复用 V9 既有四表（节点/边/组件+工作流；**零表迁移**）。
+            // 动作映射（本批**恰好一条新动作**，获批增量见
+            // P1CurrentAuthorizationTest 的 F13-A1 增量集）：
+            //   读图（三条 GET）→ 既有 `flow.read`（读图即读工作流定义）；
+            //   写图（POST/PUT/DELETE）→ 新动作 `flow.node.write`（→ `ai:flow:design`，
+            //   权限行由 V32 注册，menu_id 7203，默认不分配）。
+            // 逐条登记不用通配；三条 GET 在网关走字节分支，故内层必须同时给整数
+            // ApiEnvelope 与两个回执头（控制器自铸，动作=flow.read）。
+            // 段数互不遮蔽：/flows/{uuid}/nodes 为 4 段、{nodeUuid} 为 5 段，与既有
+            // 3 段 /flows/{uuid} 不同形；/flow-components 两条为 1/2 段。
+            new Route("GET", "/flows/{uuid}/nodes", "flow.read"),
+            new Route("POST", "/flows/{uuid}/nodes", "flow.node.write"),
+            new Route("PUT", "/flows/{uuid}/nodes/{nodeUuid}", "flow.node.write"),
+            new Route("DELETE", "/flows/{uuid}/nodes/{nodeUuid}", "flow.node.write"),
+            new Route("GET", "/flows/{uuid}/edges", "flow.read"),
+            new Route("POST", "/flows/{uuid}/edges", "flow.node.write"),
+            new Route("PUT", "/flows/{uuid}/edges/{edgeUuid}", "flow.node.write"),
+            new Route("DELETE", "/flows/{uuid}/edges/{edgeUuid}", "flow.node.write"),
+            new Route("GET", "/flow-components", "flow.read"),
+            new Route("POST", "/flow-components", "flow.node.write"),
+            new Route("PUT", "/flow-components/{uuid}", "flow.node.write"),
+            new Route("DELETE", "/flow-components/{uuid}", "flow.node.write"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;

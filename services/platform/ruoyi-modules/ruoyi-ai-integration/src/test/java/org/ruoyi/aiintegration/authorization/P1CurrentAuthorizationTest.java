@@ -221,6 +221,10 @@ class P1CurrentAuthorizationTest {
         // 旧 34 条**逐项集合相等**（不是只比数量），批准增量**逐项集合相等**（恰好这 4 条），
         // 总数等于完整清单。**不得退化成 assertTrue(size >= 34)** —— 那会让"删掉一条再偷偷加两条"
         // 通过；也不得只调大那个数字。
+        // F13-A1（2026-10-11，维护者立项批注）：op0 图 CRUD（节点/边/组件）批再增
+        // **恰好 1 条**：flow.node.write → ai:flow:design（E6-RW17 §5 清单第 6 条）。
+        // 两个增量**分开登记**：F13-SLICE-1 的 4 条与 F13-A1 的 1 条各自逐项相等，
+        // diff 必须等于两者之并集——"增量集合"从此是两个已批准批次的并，不再混成一个数。
         Set<String> oldFrozen = Set.of(
                 "kb.list", "kb.read", "kb.write", "kb.delete", "kb.acl.manage", "kb.retrieve",
                 "document.read", "document.download", "document.list", "document.upload",
@@ -236,8 +240,12 @@ class P1CurrentAuthorizationTest {
                 "tool.sandbox.write");
         Set<String> approvedIncrement = Set.of(
                 "flow.list", "flow.read", "flow.write", "flow.delete");
+        Set<String> approvedA1Increment = Set.of(
+                "flow.node.write");
+        Set<String> approvedAllIncrements = new LinkedHashSet<>(approvedIncrement);
+        approvedAllIncrements.addAll(approvedA1Increment);
         Set<String> fullList = new LinkedHashSet<>(oldFrozen);
-        fullList.addAll(approvedIncrement);
+        fullList.addAll(approvedAllIncrements);
 
         Set<String> actual = AiActionRegistry.knownActions();
 
@@ -246,8 +254,8 @@ class P1CurrentAuthorizationTest {
         assertTrue(actual.containsAll(oldFrozen),
                 "old frozen actions must be fully preserved; missing=" + diff(oldFrozen, actual));
         // ② 批准增量逐项集合相等：多的、少的、改名的都要红
-        assertEquals(approvedIncrement, diff(new LinkedHashSet<>(actual), oldFrozen),
-                "approved increment must equal the F13-SLICE-1 set exactly");
+        assertEquals(approvedAllIncrements, diff(new LinkedHashSet<>(actual), oldFrozen),
+                "approved increments must equal the union of F13-SLICE-1 + F13-A1 sets exactly");
         // ③ 总数等于完整清单（作为 ①② 的推论，仍显式断言）
         assertEquals(fullList.size(), actual.size(),
                 "total must equal the complete list, not merely be >= 34");
@@ -256,7 +264,7 @@ class P1CurrentAuthorizationTest {
         // ④ (动作 -> 权限) 逐项相等。Spec §5.1 第 1 条要求的是"映射"逐项相等，不只是动作名集合相等。
         // 只比名字会漏掉"值替换"这一类变异：例如把 kb.read 的权限改成 ai:kb:list，
         // 动作名集合不变、总数不变，①②③ 全绿，P1AiPermissionContractTest 也拦不住
-        // （新值同样在 sys_menu 里有行）。所以这里把全部 38 条映射钉死：
+        // （新值同样在 sys_menu 里有行）。所以这里把全部 39 条映射钉死：
         // 任何一条的值被改动，都必须显式修改本清单，否则本判据红。
         Map<String, String> expectedPairs = new LinkedHashMap<>();
         expectedPairs.put("agent.activate", "ai:agent:activate");
@@ -279,6 +287,7 @@ class P1CurrentAuthorizationTest {
         expectedPairs.put("document.upload", "ai:document:upload");
         expectedPairs.put("flow.delete", "ai:flow:delete");
         expectedPairs.put("flow.list", "ai:flow:list");
+        expectedPairs.put("flow.node.write", "ai:flow:design");
         expectedPairs.put("flow.read", "ai:flow:read");
         expectedPairs.put("flow.write", "ai:flow:write");
         expectedPairs.put("kb.acl.manage", "ai:kb:acl");
@@ -303,6 +312,7 @@ class P1CurrentAuthorizationTest {
         }
         assertEquals(expectedPairs, actualPairs,
                 "every (action -> permission) pair must match exactly; a swapped value must go red");
+        assertEquals(Optional.of("ai:flow:design"), AiActionRegistry.permissionOf("flow.node.write"));
         assertEquals(Optional.of("ai:config:read"), AiActionRegistry.permissionOf("config.read"));
         assertEquals(Optional.of("ai:config:publish"), AiActionRegistry.permissionOf("config.publish"));
         assertEquals(Optional.of("ai:config:revoke"), AiActionRegistry.permissionOf("config.revoke"));
