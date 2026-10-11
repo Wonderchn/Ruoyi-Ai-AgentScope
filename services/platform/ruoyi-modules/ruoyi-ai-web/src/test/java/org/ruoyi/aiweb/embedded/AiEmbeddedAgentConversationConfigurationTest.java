@@ -136,7 +136,8 @@ class AiEmbeddedAgentConversationConfigurationTest {
                         assertThat(context).hasNotFailed();
                         AgentRunGate gate = context.getBean(AgentRunGate.class);
                         AgentRunGate peer = new AgentRunGate(second,
-                                context.getBean(com.nageoffer.ai.ragent.agent.config.AgentProperties.class));
+                                context.getBean(com.nageoffer.ai.ragent.agent.config.AgentProperties.class),
+                                context.getBeanProvider(com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder.class));
                         Runnable release = gate.acquire(userId, "task-a", "conv-a");
                         try {
                             assertThat(peer.runningTaskId(userId, "conv-a")).isEqualTo("task-a");

@@ -148,8 +148,11 @@ public class AiEmbeddedAgentConversationConfiguration {
             @ConditionalOnMissingBean
             public com.nageoffer.ai.ragent.agent.service.handler.AgentRunGate agentRunGate(
                     org.redisson.api.RedissonClient redissonClient,
-                    com.nageoffer.ai.ragent.agent.config.AgentProperties agentProperties) {
-                return new com.nageoffer.ai.ragent.agent.service.handler.AgentRunGate(redissonClient, agentProperties);
+                    com.nageoffer.ai.ragent.agent.config.AgentProperties agentProperties,
+                    org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder> tenantScopeBinder) {
+                // ENV-B5b 泄漏修复：释放钩子线程无租户上下文，需经端口重绑定（键前缀对称）
+                return new com.nageoffer.ai.ragent.agent.service.handler.AgentRunGate(
+                        redissonClient, agentProperties, tenantScopeBinder);
             }
 
             @Bean
