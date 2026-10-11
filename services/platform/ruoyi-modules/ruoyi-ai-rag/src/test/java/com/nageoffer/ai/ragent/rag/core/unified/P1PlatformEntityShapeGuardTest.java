@@ -168,7 +168,8 @@ class P1PlatformEntityShapeGuardTest {
                 .containsOnlyKeys(
                         "AgentContextCompactionDO", "AgentConversationDO", "AgentMemoryDO",
                         "AgentMemoryExtractionDO", "AgentMessageDO", "AgentProfileDO",
-                        "AgentPromptDO", "AgentSkillDO", "AiFlowWorkflowDO", "BizChangeLogDO",
+                        "AgentPromptDO", "AgentSkillDO", "AiFlowComponentDO", "AiFlowEdgeDO",
+                        "AiFlowNodeDO", "AiFlowWorkflowDO", "BizChangeLogDO",
                         "ChatConfig", "ChatMessage", "ChatModel",
                         "ConversationDO", "ConversationMessageDO", "ConversationSummaryDO",
                         "IngestionPipelineDO", "IngestionPipelineNodeDO", "IngestionTaskDO",
