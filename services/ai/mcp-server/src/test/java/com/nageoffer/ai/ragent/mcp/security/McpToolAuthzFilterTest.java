@@ -190,15 +190,27 @@ class McpToolAuthzFilterTest {
     }
 
     @Test
-    @DisplayName("主体缺席（验签过滤器未先行）：503 fail-closed，事实源零调用")
-    void missingPrincipalRejected503() throws Exception {
+    @DisplayName("主体闸门（A1 复核 F1）：任何形态请求主体缺席=401，事实源零调用")
+    void missingPrincipalRejected401ForEveryRequestShape() throws Exception {
         PrincipalContext.clear();
+        String initialize = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}";
+        String toolsList = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}";
 
-        Outcome outcome = run(post(toolCall("current_date")));
-
-        assertThat(outcome.status()).isEqualTo(503);
-        assertThat(outcome.errorCode()).isEqualTo("AUTHORIZATION_UNAVAILABLE");
-        assertThat(outcome.chainInvoked()).isFalse();
+        for (var request : new org.springframework.mock.web.MockHttpServletRequest[]{
+                post(toolCall("current_date")),
+                post("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"pay_order\"}}"),
+                post(initialize),
+                post(toolsList),
+                post("not-json-at-all"),
+                new org.springframework.mock.web.MockHttpServletRequest("GET", "/internal/ai/v1/mcp")}) {
+            Outcome outcome = run(request);
+            assertThat(outcome.status())
+                    .as("request-shape %d (%s)", request.hashCode(), request.getMethod())
+                    .isEqualTo(401);
+            assertThat(outcome.errorCode()).isEqualTo("AUTH_REQUIRED");
+            assertThat(outcome.chainInvoked()).isFalse();
+        }
+        // 白名单工具也一视同仁：闸门先于体解析与策略判定
         verify(checker, never()).check(any(), anyString(), anyString());
     }
 
