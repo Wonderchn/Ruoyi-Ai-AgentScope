@@ -22,9 +22,9 @@ import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
 import com.nageoffer.ai.ragent.knowledge.config.KnowledgeScheduleProperties;
 import com.nageoffer.ai.ragent.knowledge.dao.entity.KnowledgeDocumentScheduleDO;
 import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeDocumentScheduleMapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -45,7 +45,6 @@ import java.util.concurrent.RejectedExecutionException;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class KnowledgeDocumentScheduleJob {
 
     private final KnowledgeDocumentScheduleMapper scheduleMapper;
@@ -58,6 +57,35 @@ public class KnowledgeDocumentScheduleJob {
      * 旧能力关闭判定；缺席按关闭处理（不默认放行）。
      */
     private final ObjectProvider<SaasCapabilityBoundary> capabilityBoundary;
+
+    /**
+     * 显式构造（ENV-BATCH-5b 修，2026-10-11；同 S1 装配批 R1 四处先例的"构造参数带
+     * {@code @Qualifier} 按名注入"形态）：{@code knowledgeChunkExecutor} 必须按名钉住——
+     * 全应用上下文里类型为 {@code Executor} 的候选有十个，且 platform 侧存在两个
+     * {@code @Primary}（{@code mainExecutor}/{@code scheduledExecutorService}）：
+     * 多主候选会让容器在"按参数名回退匹配"之前直接抛
+     * {@code NoUniqueBeanDefinitionException}（"more than one 'primary' bean found"），
+     * 名字回退根本不可达。本组只在 {@code ai.integration.legacy-listeners-enabled=true}
+     * 且 FullAdmin 门开时装配，此前从未在全应用里启动过——本批引擎+MQ 冒烟首跑实证
+     * （boot 日志 `app-6044.log`，before 形态）。组内 {@code ScheduleEnabled} 本就以同名
+     * bean 提供该池（其注释亦声明此注入点"按名字解析"），本构造把该假设显式化；
+     * 独立应用侧同名 bean（{@code ThreadPoolExecutorConfig#knowledgeChunkExecutor}）不受影响。
+     */
+    public KnowledgeDocumentScheduleJob(KnowledgeDocumentScheduleMapper scheduleMapper,
+                                        @Qualifier("knowledgeChunkExecutor") Executor knowledgeChunkExecutor,
+                                        KnowledgeScheduleProperties scheduleProperties,
+                                        ScheduleLockManager lockManager,
+                                        ScheduleRefreshProcessor scheduleRefreshProcessor,
+                                        DocumentStatusHelper documentStatusHelper,
+                                        ObjectProvider<SaasCapabilityBoundary> capabilityBoundary) {
+        this.scheduleMapper = scheduleMapper;
+        this.knowledgeChunkExecutor = knowledgeChunkExecutor;
+        this.scheduleProperties = scheduleProperties;
+        this.lockManager = lockManager;
+        this.scheduleRefreshProcessor = scheduleRefreshProcessor;
+        this.documentStatusHelper = documentStatusHelper;
+        this.capabilityBoundary = capabilityBoundary;
+    }
 
     /**
      * 恢复长时间卡在 RUNNING 状态的文档（进程崩溃等异常场景）
