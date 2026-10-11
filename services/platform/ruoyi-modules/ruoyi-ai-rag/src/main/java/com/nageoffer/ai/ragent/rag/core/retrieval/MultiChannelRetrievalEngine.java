@@ -30,8 +30,8 @@ import com.nageoffer.ai.ragent.rag.core.retrieval.channel.SearchChannelResult;
 import com.nageoffer.ai.ragent.rag.core.retrieval.channel.SearchContext;
 import com.nageoffer.ai.ragent.rag.core.retrieval.postprocessor.SearchResultPostProcessor;
 import com.nageoffer.ai.ragent.rag.dto.SubQuestionIntent;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.Comparator;
@@ -58,7 +58,6 @@ import java.util.stream.Collectors;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class MultiChannelRetrievalEngine {
 
     private final List<SearchChannel> searchChannels;
@@ -66,6 +65,26 @@ public class MultiChannelRetrievalEngine {
     private final RetrievalScopeResolver retrievalScopeResolver;
     private final Executor ragRetrievalExecutor;
     private final SearchChannelProperties searchProperties;
+
+    /**
+     * 显式构造（替代 {@code @RequiredArgsConstructor}，S1 装配批 R1）：{@code Executor} 参数
+     * 带 {@code @Qualifier} <b>按名注入</b>——platform 侧两个 {@code @Primary} 的 {@code Executor}
+     * （{@code ThreadPoolConfig}）会让按类型注入以"多个 primary"启动期失败。
+     * 用显式构造参数而非字段注解：platform 树无 {@code lombok.config}，
+     * Lombok 生成的构造参数不会带上 final 字段的 {@code @Qualifier}；
+     * 参数顺序与生成形态逐位一致，既有测试的手工构造（{@code MultiChannelRetrievalEngineTest}）不受影响。
+     */
+    public MultiChannelRetrievalEngine(List<SearchChannel> searchChannels,
+                                       List<SearchResultPostProcessor> postProcessors,
+                                       RetrievalScopeResolver retrievalScopeResolver,
+                                       @Qualifier("ragRetrievalExecutor") Executor ragRetrievalExecutor,
+                                       SearchChannelProperties searchProperties) {
+        this.searchChannels = searchChannels;
+        this.postProcessors = postProcessors;
+        this.retrievalScopeResolver = retrievalScopeResolver;
+        this.ragRetrievalExecutor = ragRetrievalExecutor;
+        this.searchProperties = searchProperties;
+    }
 
     /**
      * 执行多通道检索（仅 KB 场景）
