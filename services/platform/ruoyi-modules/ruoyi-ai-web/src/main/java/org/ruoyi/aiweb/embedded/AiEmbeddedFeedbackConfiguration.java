@@ -290,8 +290,11 @@ public class AiEmbeddedFeedbackConfiguration {
         @Bean
         @ConditionalOnMissingBean
         public MessageFeedbackConsumer messageFeedbackConsumer(MessageFeedbackService feedbackService,
-                                                               ObjectProvider<SaasCapabilityBoundary> capabilityBoundary) {
-            return new MessageFeedbackConsumer(feedbackService, capabilityBoundary);
+                                                               ObjectProvider<SaasCapabilityBoundary> capabilityBoundary,
+                                                               ObjectProvider<com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder> tenantScopeBinder) {
+            // 租户作用域端口（ENV-B5b 修）：平台侧（ruoyi-admin 的 RuoYiTenantScopeBinder，
+            // ai.integration.enabled=true 装配）提供实现；缺席时消费者按无租户拦截器形态直执。
+            return new MessageFeedbackConsumer(feedbackService, capabilityBoundary, tenantScopeBinder);
         }
     }
 

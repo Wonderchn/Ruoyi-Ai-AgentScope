@@ -69,6 +69,17 @@ import static org.mockito.Mockito.when;
 @Tag("dev")
 class MessageFeedbackConsumerTest {
 
+    @Test
+    @DisplayName("ENV-B5b 修：事件缺租户标识 → 响亮拒绝；不触库、不落默认租户（租户行拦截器 fail-closed 口径）")
+    void rejectsEventWithoutTenantBeforeAnyDatabaseAccess() {
+        MessageFeedbackEvent event = MessageFeedbackEvent.builder()
+                .messageId(MESSAGE_ID).userId(USER).vote(1).submitTime(1700000000000L).build();
+        assertThatThrownBy(() -> consumer(boundary(true)).onMessage(wrapperOf(event)))
+                .isInstanceOf(ClientException.class)
+                .hasMessageContaining("缺少租户标识");
+        verifyNoInteractions(messageMapper, feedbackMapper);
+    }
+
     private static final String TENANT = "000000";
 
     private static final String MEMBER = "platform:000000:910101";
@@ -109,6 +120,7 @@ class MessageFeedbackConsumerTest {
         when(feedbackMapper.selectOne(any())).thenReturn(null);
 
         MessageFeedbackEvent event = MessageFeedbackEvent.builder()
+                .tenantId(TENANT)
                 .messageId(MESSAGE_ID).userId(USER).vote(1).reason("引用准确")
                 .submitTime(1700000000000L).build();
         consumer(boundary(true)).onMessage(wrapperOf(event));
@@ -136,6 +148,7 @@ class MessageFeedbackConsumerTest {
         when(feedbackMapper.selectOne(any())).thenReturn(MessageFeedbackDO.builder().id("fb-1").build());
 
         MessageFeedbackEvent event = MessageFeedbackEvent.builder()
+                .tenantId(TENANT)
                 .messageId(MESSAGE_ID).userId(USER).vote(1).submitTime(2000L).build();
         consumer(boundary(true)).onMessage(wrapperOf(event));
 
@@ -155,6 +168,7 @@ class MessageFeedbackConsumerTest {
 
         // 乱序到货：事件的 submitTime 比既有行见过的时间早（真实判定在 SQL：update_time < submitTime 为假 ⇒ 0 行）
         MessageFeedbackEvent older = MessageFeedbackEvent.builder()
+                .tenantId(TENANT)
                 .messageId(MESSAGE_ID).userId(USER).vote(-1).submitTime(1L).build();
         consumer(boundary(true)).onMessage(wrapperOf(older));
 
@@ -174,6 +188,7 @@ class MessageFeedbackConsumerTest {
         when(messageMapper.selectOne(any())).thenReturn(assistantMessage());
 
         MessageFeedbackEvent event = MessageFeedbackEvent.builder()
+                .tenantId(TENANT)
                 .messageId(MESSAGE_ID).userId(USER).cancelled(true).submitTime(3000L).build();
         consumer(boundary(true)).onMessage(wrapperOf(event));
 
@@ -196,6 +211,7 @@ class MessageFeedbackConsumerTest {
         when(messageMapper.selectOne(any())).thenReturn(null);
 
         MessageFeedbackEvent event = MessageFeedbackEvent.builder()
+                .tenantId(TENANT)
                 .messageId(MESSAGE_ID).userId("910999").vote(1).submitTime(4000L).build();
 
         assertThatThrownBy(() -> consumer(boundary(true)).onMessage(wrapperOf(event)))
@@ -212,6 +228,7 @@ class MessageFeedbackConsumerTest {
         when(messageMapper.selectOne(any())).thenReturn(userMessage);
 
         MessageFeedbackEvent event = MessageFeedbackEvent.builder()
+                .tenantId(TENANT)
                 .messageId(MESSAGE_ID).userId(USER).vote(1).submitTime(5000L).build();
 
         assertThatThrownBy(() -> consumer(boundary(true)).onMessage(wrapperOf(event)))
@@ -226,6 +243,7 @@ class MessageFeedbackConsumerTest {
     @DisplayName("关闭边界：第一行拒绝，连消息查询都不发生（关闭 = 零副作用）")
     void closedBoundaryRejectsBeforeAnyMapperAccess() {
         MessageFeedbackEvent event = MessageFeedbackEvent.builder()
+                .tenantId(TENANT)
                 .messageId(MESSAGE_ID).userId(USER).vote(1).submitTime(6000L).build();
 
         SaasCapabilityBoundary.ClosedCapabilityException failure = assertThrows(
@@ -239,7 +257,38 @@ class MessageFeedbackConsumerTest {
     // ------------------------------------------------------------------ 夹具
 
     private MessageFeedbackConsumer consumer(SaasCapabilityBoundary boundary) {
-        return new MessageFeedbackConsumer(service, providerOf(boundary));
+        return new MessageFeedbackConsumer(service, providerOf(boundary), binderProvider());
+    }
+
+    /**
+     * 租户绑定端口代理（ENV-B5b 修）：测试里绑定即直通执行——单测没有租户行拦截器，
+     * 端口存在的语义只影响"空租户是否响亮拒绝"（见缺租户负例）。
+     */
+    private static ObjectProvider<com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder>
+    binderProvider() {
+        com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder binder =
+                (tenantId, handle) -> handle.run();
+        return new ObjectProvider<>() {
+            @Override
+            public com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder getObject() {
+                return binder;
+            }
+
+            @Override
+            public com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder getObject(Object... args) {
+                return binder;
+            }
+
+            @Override
+            public com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder getIfAvailable() {
+                return binder;
+            }
+
+            @Override
+            public com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder getIfUnique() {
+                return binder;
+            }
+        };
     }
 
     private static ConversationMessageDO assistantMessage() {
