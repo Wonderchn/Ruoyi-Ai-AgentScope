@@ -264,9 +264,11 @@ public class AiEmbeddedAgentEngineClosureConfiguration {
                                              StreamTaskManager taskManager,
                                              AgentRunGate runGate,
                                              AgentMemoryProperties memoryProperties,
-                                             AgentMemoryPipeline memoryPipeline) {
+                                             AgentMemoryPipeline memoryPipeline,
+                                             org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.runtime.web.DeliveryPermits> deliveryPermits) {
+        // ENV-B5b 许可接线：帧级 : ai-delivery 元数据（本地传输对裸数据帧 fail-closed）
         return new AgentChatServiceImpl(agentProvider, conversationService, taskManager, runGate,
-                memoryProperties, memoryPipeline);
+                memoryProperties, memoryPipeline, deliveryPermits);
     }
 
     /** ReAct 供给器（A1 #3）：5 个中间件为硬依赖；OTel/trace 两件走 ObjectProvider，缺席合法。 */

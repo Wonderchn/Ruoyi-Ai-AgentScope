@@ -109,7 +109,28 @@ class AgentChatServiceImplTest {
         memoryProperties.setLongTermEnabled(false);
         memoryPipeline = mock(AgentMemoryPipeline.class);
         service = new AgentChatServiceImpl(agentProvider, conversationService, taskManager, runGate,
-                memoryProperties, memoryPipeline);
+                memoryProperties, memoryPipeline,
+                new org.springframework.beans.factory.ObjectProvider<>() {
+                    @Override
+                    public com.nageoffer.ai.ragent.runtime.web.DeliveryPermits getObject() {
+                        throw new IllegalStateException("no permits");
+                    }
+
+                    @Override
+                    public com.nageoffer.ai.ragent.runtime.web.DeliveryPermits getObject(Object... args) {
+                        return getObject();
+                    }
+
+                    @Override
+                    public com.nageoffer.ai.ragent.runtime.web.DeliveryPermits getIfAvailable() {
+                        return null;
+                    }
+
+                    @Override
+                    public com.nageoffer.ai.ragent.runtime.web.DeliveryPermits getIfUnique() {
+                        return null;
+                    }
+                });
 
         gateReleased = new AtomicInteger();
         when(runGate.acquire(anyString(), anyString(), anyString())).thenReturn(gateReleased::incrementAndGet);

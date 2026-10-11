@@ -35,10 +35,13 @@ import com.nageoffer.ai.ragent.agent.service.handler.AgentRunHandle;
 import com.nageoffer.ai.ragent.agent.service.handler.AgentStreamEventBridge;
 import com.nageoffer.ai.ragent.agent.tool.AgentToolExecutionFacts;
 import com.nageoffer.ai.ragent.agent.trace.AgentTraceContextKeys;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.framework.web.SseEmitterSender;
 import com.nageoffer.ai.ragent.framework.web.StreamTaskManager;
+import com.nageoffer.ai.ragent.runtime.web.DeliveryPermits;
 import com.nageoffer.ai.ragent.agent.tool.AgentMcpMeta;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
@@ -53,6 +56,7 @@ import io.agentscope.core.tool.mcp.McpMeta;
 import lombok.Builder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.Disposable;
@@ -80,6 +84,12 @@ public class AgentChatServiceImpl implements AgentChatService {
     private final AgentRunGate runGate;
     private final AgentMemoryProperties memoryProperties;
     private final AgentMemoryPipeline memoryPipeline;
+    /**
+     * 交付许可（ENV-B5b 许可接线，2026-10-11）：内嵌形态帧经本地/远程网关传输，
+     * 含数据帧必须带 {@code : ai-delivery} 元数据（fail-closed"unprotected stream frame"）；
+     * 端口缺席（独立应用）按原形态裸帧发送。
+     */
+    private final ObjectProvider<DeliveryPermits> deliveryPermits;
 
     @Override
     public void streamChat(String question, String conversationId, SseEmitter emitter) {
@@ -231,7 +241,12 @@ public class AgentChatServiceImpl implements AgentChatService {
         AgentToolExecutionFacts facts = new AgentToolExecutionFacts(taskId, clock);
         // 上下文传到底，中断时句柄从这里取根 span
         RuntimeContext runtimeContext = buildRuntimeContext(scope, facts);
-        SseEmitterSender sender = new SseEmitterSender(scope.emitter());
+        // 许可接线：请求线程可取到执行主体；缺席（独立应用）退回裸帧形态
+        DeliveryPermits permits = deliveryPermits.getIfAvailable();
+        ExecutionPrincipal permitPrincipal = PrincipalContext.get();
+        SseEmitterSender sender = (permits == null || permitPrincipal == null)
+                ? new SseEmitterSender(scope.emitter())
+                : new SseEmitterSender(scope.emitter(), permits, permitPrincipal, "run.stream", "chat:" + taskId);
         AgentRunHandle runHandle = new AgentRunHandle(taskId, sender, taskManager, facts, runtimeContext);
         bindReleaseHooks(runHandle, agent, scope);
         try {
