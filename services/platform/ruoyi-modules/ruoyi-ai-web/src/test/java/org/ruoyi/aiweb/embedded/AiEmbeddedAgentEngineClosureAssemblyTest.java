@@ -134,6 +134,11 @@ class AiEmbeddedAgentEngineClosureAssemblyTest {
                 .withBean(StringRedisTemplate.class, () -> mock(StringRedisTemplate.class))
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(AgentSkillMapper.class, () -> mock(AgentSkillMapper.class))
+                // ENGINE-CHAT-ACCOUNTING：agentChatModel 的计量信封两依赖（mock 直通）
+                .withBean(com.nageoffer.ai.ragent.runtime.usage.EgressPolicy.class,
+                        () -> mock(com.nageoffer.ai.ragent.runtime.usage.EgressPolicy.class))
+                .withBean(com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope.class,
+                        () -> mock(com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope.class))
                 .withBean(AgentMemoryMapper.class, () -> mock(AgentMemoryMapper.class))
                 .withBean(AgentMemoryExtractionMapper.class, () -> mock(AgentMemoryExtractionMapper.class))
                 .withBean(AgentMemoryControlMapper.class, () -> mock(AgentMemoryControlMapper.class))

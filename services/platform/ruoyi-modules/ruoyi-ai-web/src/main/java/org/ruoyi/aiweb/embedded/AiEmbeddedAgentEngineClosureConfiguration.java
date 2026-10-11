@@ -155,8 +155,11 @@ import java.util.concurrent.TimeUnit;
  *   <li>P2/P3 的 {@code agent.run} 执行器族与 rag 会话记忆线
  *       （{@code memoryLoadExecutor}/{@code memorySummaryExecutor} 等）：与 AgentScope ReAct 面
  *       是两条独立链，不在本闭包；</li>
- *   <li><b>egress（R2 登记）</b>：{@code OpenAIChatModel} 的外发不经 {@code EgressPolicy}
- *       封套——这是已知边界而非缺陷，若加闸门属新面另批。</li>
+ *   <li><b>egress（R2 登记 → ENGINE-CHAT-ACCOUNTING 切片收敛，2026-10-11）</b>：
+ *       {@code OpenAIChatModel} 的外发经 {@link MeteredEngineModelTransport} 套入
+ *       {@code EgressPolicy}+{@code ProviderSpendEnvelope}（与 p2 RealChatGateway 同口径；
+ *       发送前校验/预占、逐行嗅探 usage 结算；拒绝即不出站）。原"不经封套"边界由本切片
+ *       按复核建议收敛；精确 usage 的全链口径（引擎请求是否开 include_usage）单列。</li>
  * </ul>
  *
  * <p><b>线程池四件按名注册（R1）</b>：镜像 {@code com.nageoffer...rag.config.ThreadPoolExecutorConfig}
@@ -226,7 +229,9 @@ public class AiEmbeddedAgentEngineClosureConfiguration {
     @Bean
     @ConditionalOnMissingBean(OpenAIChatModel.class)
     public OpenAIChatModel agentChatModel(AgentProperties agentProperties,
-                                          AIModelProperties aiModelProperties) {
+                                          AIModelProperties aiModelProperties,
+                                          com.nageoffer.ai.ragent.runtime.usage.EgressPolicy engineEgressPolicy,
+                                          com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope engineProviderSpendEnvelope) {
         AgentProperties.Chat chat = agentProperties.getChat();
         if (chat == null || StrUtil.isBlank(chat.getProvider()) || StrUtil.isBlank(chat.getModel())) {
             throw new IllegalStateException("agent.chat.provider / agent.chat.model 未配置");
@@ -242,12 +247,19 @@ public class AiEmbeddedAgentEngineClosureConfiguration {
             throw new IllegalStateException("供应商缺少 url 或 endpoints.chat: " + chat.getProvider());
         }
 
+        // ENGINE-CHAT-ACCOUNTING（2026-10-11 T0；复核建议收敛项）：引擎外发套入与 p2
+        // RealChatGateway 同口径的 egress+预占+usage 结算信封（MeteredEngineModelTransport）。
+        // 两依赖 bean 直接注入 = 缺即启动期响亮失败（本组的失败语义：不静默降级）；
+        // 信封自身的启用/预算/供应商白名单拒绝照常上抛（fail-closed）。
         OpenAIChatModel.Builder builder = OpenAIChatModel.builder()
                 .baseUrl(provider.getUrl())
                 .endpointPath(endpointPath)
                 .apiKey(provider.getApiKey())
                 .modelName(chat.getModel())
                 .stream(true)
+                .httpTransport(new MeteredEngineModelTransport(
+                        io.agentscope.core.model.transport.JdkHttpTransport.builder().build(),
+                        engineEgressPolicy, engineProviderSpendEnvelope, chat.getProvider(), chat.getModel()))
                 // 兼容端点普遍无法同时处理 response_format 与工具调用，统一走 generate_response 兜底
                 .nativeStructuredOutputWithTools(false);
         if (ModelProvider.DEEP_SEEK.matches(chat.getProvider())) {
