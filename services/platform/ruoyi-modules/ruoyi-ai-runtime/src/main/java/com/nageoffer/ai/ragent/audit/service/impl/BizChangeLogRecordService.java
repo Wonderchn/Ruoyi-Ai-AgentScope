@@ -26,7 +26,8 @@ import com.mzt.logapi.beans.LogRecord;
 import com.mzt.logapi.service.ILogRecordService;
 import com.nageoffer.ai.ragent.audit.dao.entity.BizChangeLogDO;
 import com.nageoffer.ai.ragent.audit.dao.mapper.BizChangeLogMapper;
-import com.nageoffer.ai.ragent.framework.context.UserContext;
+import com.nageoffer.ai.ragent.authorization.AiDomainWriteIdentity;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -61,9 +62,10 @@ public class BizChangeLogRecordService implements ILogRecordService {
                 .beforeSnapshot(jsonNodeToString(extra.get("beforeSnapshot")))
                 .afterSnapshot(jsonNodeToString(extra.get("afterSnapshot")))
                 .changeDiff(jsonNodeToString(extra.get("changeDiff")))
-                .operatorId(limit(resolveOperatorId(logRecord), 64))
-                .operatorName(limit(UserContext.getUsername(), 128))
-                .operatorRole(limit(UserContext.getRole(), 64))
+                .operatorId(limit(PrincipalContext.require().userId(), 64))
+                // The execution principal has no display name/role; never borrow a legacy user's identity.
+                .operatorName(null)
+                .operatorRole(null)
                 .success(!logRecord.isFail())
                 .errorMessage(logRecord.isFail() ? logRecord.getAction() : null)
                 .className(limit(resolveClassName(logRecord.getCodeVariable()), 255))
@@ -72,6 +74,7 @@ public class BizChangeLogRecordService implements ILogRecordService {
                 .userAgent(limit(request == null ? null : request.getHeader("User-Agent"), 512))
                 .createTime(logRecord.getCreateTime())
                 .build();
+        AiDomainWriteIdentity.apply(record);
         bizChangeLogMapper.insert(record);
     }
 
@@ -116,14 +119,6 @@ public class BizChangeLogRecordService implements ILogRecordService {
             return null;
         }
         return node.toString();
-    }
-
-    private String resolveOperatorId(LogRecord logRecord) {
-        String userId = UserContext.getUserId();
-        if (StringUtils.hasText(userId)) {
-            return userId;
-        }
-        return StringUtils.hasText(logRecord.getOperator()) ? logRecord.getOperator() : "SYSTEM";
     }
 
     private String resolveClassName(Map<CodeVariableType, Object> codeVariable) {

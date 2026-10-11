@@ -23,6 +23,7 @@ import com.nageoffer.ai.ragent.sample.service.impl.SampleQuestionServiceImpl;
 import com.nageoffer.ai.ragent.user.dao.mapper.UserMapper;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.springframework.aop.support.AopUtils;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
@@ -59,7 +60,7 @@ class AiEmbeddedAdminActivationTest {
                     IntentTreeServiceImpl.class, QueryTermMappingAdminServiceImpl.class,
                     SampleQuestionServiceImpl.class, RagTraceQueryServiceImpl.class, BizChangeLogServiceImpl.class}) {
                 assertThat(context.getBeansOfType(type)).hasSize(1);
-                assertThat(context.getBean(type).getClass()).isEqualTo(type);
+                assertThat(AopUtils.getTargetClass(context.getBean(type))).isEqualTo(type);
             }
             assertThat(context).doesNotHaveBean(EvalController.class);
         });
@@ -76,7 +77,13 @@ class AiEmbeddedAdminActivationTest {
 
     @Test void everyGateClosesTheNewSurfacesWithoutRequiringCollaborators() {
         for (String property : new String[]{"ai.integration.enabled=false", "ai.integration.transport=http", "p2.enabled=false"}) {
-            configurations.withPropertyValues(property).run(context -> {
+            var gated = configurations.withPropertyValues(property);
+            if ("p2.enabled=false".equals(property)) {
+                // P2 closes read surfaces; the audit sink covers all embedded writers independently.
+                gated = gated.withBean(ObjectMapper.class, ObjectMapper::new)
+                        .withBean(BizChangeLogMapper.class, () -> mock(BizChangeLogMapper.class));
+            }
+            gated.run(context -> {
                 assertThat(context).hasNotFailed();
                 assertThat(context).doesNotHaveBean(IntentTreeController.class)
                         .doesNotHaveBean(RagTraceController.class).doesNotHaveBean(BizChangeLogController.class);
