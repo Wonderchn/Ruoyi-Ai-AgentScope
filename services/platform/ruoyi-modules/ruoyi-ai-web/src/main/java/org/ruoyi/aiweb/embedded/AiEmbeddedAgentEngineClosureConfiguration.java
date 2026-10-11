@@ -159,7 +159,11 @@ import java.util.concurrent.TimeUnit;
  *       {@code OpenAIChatModel} 的外发经 {@link MeteredEngineModelTransport} 套入
  *       {@code EgressPolicy}+{@code ProviderSpendEnvelope}（与 p2 RealChatGateway 同口径；
  *       发送前校验/预占、逐行嗅探 usage 结算；拒绝即不出站）。原"不经封套"边界由本切片
- *       按复核建议收敛；精确 usage 的全链口径（引擎请求是否开 include_usage）单列。</li>
+ *       按复核建议收敛；精确 usage 的全链口径（引擎请求是否开 include_usage）单列。
+ *       <b>配置矩阵（复核 f3132d9e 登记）</b>：计量信封的 bean 注册点在 p2 工作组
+ *       （{@code p2.enabled} + {@code p2.worker.enabled} 双门）——"引擎开而工作组关"
+ *       的组合将在启动期以 agentChatModel 缺依赖**响亮失败**（fail-fast：引擎面与
+ *       p2 工作组同进退）；如需解耦另批。</li>
  * </ul>
  *
  * <p><b>线程池四件按名注册（R1）</b>：镜像 {@code com.nageoffer...rag.config.ThreadPoolExecutorConfig}
