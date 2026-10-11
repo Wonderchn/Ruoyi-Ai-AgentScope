@@ -18,6 +18,10 @@
 package com.nageoffer.ai.ragent.agent.service.handler;
 
 import com.nageoffer.ai.ragent.agent.config.AgentProperties;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
+import org.springframework.beans.factory.ObjectProvider;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,6 +29,9 @@ import org.redisson.api.RBucket;
 import org.redisson.api.RedissonClient;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -53,7 +60,7 @@ class AgentRunGateTest {
         bucket = mock(RBucket.class);
         redissonClient = mock(RedissonClient.class);
         when(redissonClient.<String>getBucket(anyString())).thenReturn(bucket);
-        gate = new AgentRunGate(redissonClient, new AgentProperties());
+        gate = new AgentRunGate(redissonClient, new AgentProperties(), nullBinderProvider());
     }
 
     @Test
@@ -87,6 +94,30 @@ class AgentRunGateTest {
     }
 
     @Test
+    void releaseMustRebindAcquireTenantSoTheSlotKeyPrefixIsSymmetric() {
+        // ENV-B5b 泄漏修复判据：运行位 key 经 TenantKeyPrefixHandler 按租户上下文加前缀——
+        // acquire 在请求线程（有租户）写前缀键；释放钩子在 agent 回调线程（无租户）执行，
+        // 必须经 TenantScopeBinder 重绑定同一租户，否则解析成无前缀键、CAS 静默打空、槽位
+        // 泄漏到 TTL（真机实证：expected 一致但 actual=null）。
+        PrincipalContext.set(new ExecutionPrincipal("T-A", "1", "platform:T-A:1", 1, 1,
+                Set.of(), "gate-test", "test", 1, Long.MAX_VALUE));
+        try {
+            List<String> bound = new ArrayList<>();
+            ObjectProvider<TenantScopeBinder> binder = binderProvider(
+                    (tenantId, handle) -> { bound.add(tenantId); handle.run(); });
+            when(bucket.setIfAbsent(anyString(), any(Duration.class))).thenReturn(true);
+
+            new AgentRunGate(redissonClient, new AgentProperties(), binder)
+                    .acquire(USER_ID, TASK_ID, CONVERSATION_ID).run();
+
+            assertThat(bound).as("释放必须在 acquire 侧租户作用域内执行").containsExactly("T-A");
+            verify(bucket).compareAndSet(SLOT_VALUE, null);
+        } finally {
+            PrincipalContext.clear();
+        }
+    }
+
+    @Test
     void shouldReportRunningTaskOfSameConversation() {
         when(bucket.get()).thenReturn(SLOT_VALUE);
 
@@ -107,5 +138,37 @@ class AgentRunGateTest {
         when(bucket.get()).thenReturn(null);
 
         assertThat(gate.runningTaskId(USER_ID, CONVERSATION_ID)).isNull();
+    }
+
+    /** 端口缺席形态（原行为直执） */
+    private static ObjectProvider<TenantScopeBinder> nullBinderProvider() {
+        return binderProvider(null);
+    }
+
+    private static ObjectProvider<TenantScopeBinder> binderProvider(TenantScopeBinder binder) {
+        return new ObjectProvider<>() {
+            @Override
+            public TenantScopeBinder getObject() {
+                if (binder == null) {
+                    throw new IllegalStateException("no binder");
+                }
+                return binder;
+            }
+
+            @Override
+            public TenantScopeBinder getObject(Object... args) {
+                return getObject();
+            }
+
+            @Override
+            public TenantScopeBinder getIfAvailable() {
+                return binder;
+            }
+
+            @Override
+            public TenantScopeBinder getIfUnique() {
+                return binder;
+            }
+        };
     }
 }
