@@ -74,6 +74,14 @@ public final class AiCanonicalAction {
         actions.put("flow.read", "ai:flow:read");
         actions.put("flow.write", "ai:flow:write");
         actions.put("flow.delete", "ai:flow:delete");
+        // F13-A1（2026-10-11，维护者立项批注「spec开始立项」）：op0 图 CRUD
+        // （节点/边/组件的写面）新增**恰一条**动作——E6-RW17 §5 清单第 6 条
+        // `flow.node.write` → `ai:flow:design`。图读（GET）复用 flow.read，
+        // 不另立 flow.node.read；不按节点/边/组件拆三条（授权清单只给了一条，
+        // 拆分=超清单增量）。资源仍是 ai_flow_workflow（带 tenant_id ⇒ 租户级，
+        // 不适用 PLATFORM_ADMIN_ACTIONS）。权限行由 V32 注册（menu_id 7203，
+        // 默认不分配，由 provisioning 逐码授予）。
+        actions.put("flow.node.write", "ai:flow:design");
         return Collections.unmodifiableMap(actions);
     }
 
