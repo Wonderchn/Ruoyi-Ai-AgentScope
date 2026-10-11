@@ -16,6 +16,39 @@
             <artifactId>spring-boot-starter-webmvc</artifactId>
         </dependency>
 
+        <!-- 受保护模式（ai.integration.security.enabled，SPEC-9099 §7）复用生产委托链：
+             DelegatedPrincipalFilter/ServiceIdentityVerifier/PlatformAuthorizationClient 等
+             全部来自 framework，一行不改。framework 是整套 AI 框架的聚合依赖，本模块只用
+             其 security/context 子集，故排除会引入无关连接型自动装配的 starter
+             （redisson/redis/sa-token/rocketmq）——本模块不起 Redis/MQ。 -->
+        <dependency>
+            <groupId>com.nageoffer.ai</groupId>
+            <artifactId>framework</artifactId>
+            <version>${project.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-starter-data-redis</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.redisson</groupId>
+                    <artifactId>redisson-spring-boot-starter</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>cn.dev33</groupId>
+                    <artifactId>sa-token-spring-boot4-starter</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>cn.dev33</groupId>
+                    <artifactId>sa-token-redis-template</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.apache.rocketmq</groupId>
+                    <artifactId>rocketmq-spring-boot-starter</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
         <dependency>
             <groupId>io.modelcontextprotocol.sdk</groupId>
             <artifactId>mcp</artifactId>
