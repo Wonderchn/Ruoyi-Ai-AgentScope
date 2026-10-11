@@ -17,6 +17,7 @@
 
 package com.nageoffer.ai.ragent.rag.mq;
 
+import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
 import com.nageoffer.ai.ragent.framework.mq.MessageWrapper;
 import com.nageoffer.ai.ragent.rag.mq.event.MessageFeedbackEvent;
@@ -27,6 +28,8 @@ import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
 import org.apache.rocketmq.spring.core.RocketMQListener;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import cn.hutool.core.util.StrUtil;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import org.springframework.stereotype.Component;
 
 /**
@@ -48,6 +51,11 @@ public class MessageFeedbackConsumer implements RocketMQListener<MessageWrapper<
 
     private final MessageFeedbackService feedbackService;
     private final ObjectProvider<SaasCapabilityBoundary> capabilityBoundary;
+    /**
+     * 租户作用域绑定端口（ENV-BATCH-5b 修，2026-10-11）：内嵌平台侧提供实现
+     * （{@code TenantHelper.dynamic}），独立应用无租户拦截器时缺席。
+     */
+    private final ObjectProvider<TenantScopeBinder> tenantScopeBinder;
 
     @Override
     public void onMessage(MessageWrapper<MessageFeedbackEvent> message) {
@@ -57,8 +65,22 @@ public class MessageFeedbackConsumer implements RocketMQListener<MessageWrapper<
 
         MessageFeedbackEvent event = message.getBody();
 
-        log.info("[消费者] 开始处理反馈事件，messageId: {}, userId: {}, vote: {}, cancelled: {}, keys: {}",
-                event.getMessageId(), event.getUserId(), event.getVote(), event.isCancelled(), message.getKeys());
-        feedbackService.submitFeedbackByEvent(event);
+        // ENV-BATCH-5b 修（2026-10-11，真 broker 首验实证）：内嵌平台侧存在 MyBatis
+        // 租户行拦截器（tenant.enable=true），消费者线程没有登录主体 ⇒ 必须在任何 DB
+        // 访问之前把事件携带的租户绑定到当前线程；缺租户的事件**响亮拒绝**
+        // （不落默认租户、不静默跳过、不进"假成功"路径），由 MQ 重试/死信兜底可见。
+        // 独立应用没有拦截器 ⇒ 端口缺席，按直接执行（原形态）。
+        log.info("[消费者] 开始处理反馈事件，messageId: {}, userId: {}, vote: {}, cancelled: {}, tenant: {}, keys: {}",
+                event.getMessageId(), event.getUserId(), event.getVote(), event.isCancelled(),
+                event.getTenantId(), message.getKeys());
+        TenantScopeBinder binder = tenantScopeBinder.getIfAvailable();
+        if (binder == null) {
+            feedbackService.submitFeedbackByEvent(event);
+            return;
+        }
+        if (StrUtil.isBlank(event.getTenantId())) {
+            throw new ClientException("反馈事件缺少租户标识，拒绝处理（不落默认租户）");
+        }
+        binder.runWithTenant(event.getTenantId(), () -> feedbackService.submitFeedbackByEvent(event));
     }
 }

@@ -38,6 +38,14 @@ public class MessageFeedbackEvent implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
+     * 租户ID（ENV-BATCH-5b 修，2026-10-11）：消费者线程没有登录主体，
+     * MyBatis 租户行拦截器对业务表（ai_message 等）fail-closed——缺本字段时
+     * 消费者必须**响亮拒绝**（不落默认租户、不静默跳过）；生产者受理线程从
+     * 执行主体（退路：旧 UserContext 租户）显式带上。
+     */
+    private String tenantId;
+
+    /**
      * 消息ID
      */
     private String messageId;

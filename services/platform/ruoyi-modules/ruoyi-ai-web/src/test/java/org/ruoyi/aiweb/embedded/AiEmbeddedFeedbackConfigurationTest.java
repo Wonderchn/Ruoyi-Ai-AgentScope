@@ -504,7 +504,8 @@ class AiEmbeddedFeedbackConfigurationTest {
         org.apache.rocketmq.spring.support.RocketMQMessageListenerContainerRegistrar registrar =
                 mock(org.apache.rocketmq.spring.support.RocketMQMessageListenerContainerRegistrar.class);
         MessageFeedbackConsumer consumer = new MessageFeedbackConsumer(mock(MessageFeedbackService.class),
-                providerOf((SaasCapabilityBoundary) null));
+                providerOf((SaasCapabilityBoundary) null),
+                providerOf((com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder) null));
 
         org.apache.rocketmq.spring.annotation.RocketMQMessageListenerBeanPostProcessor postProcessor =
                 new org.apache.rocketmq.spring.annotation.RocketMQMessageListenerBeanPostProcessor(
