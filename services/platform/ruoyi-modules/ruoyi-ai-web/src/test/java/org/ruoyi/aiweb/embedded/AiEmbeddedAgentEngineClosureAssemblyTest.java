@@ -82,8 +82,10 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.when;
 
 /**
@@ -114,6 +116,10 @@ import static org.mockito.Mockito.when;
 class AiEmbeddedAgentEngineClosureAssemblyTest {
 
     private ApplicationContextRunner runner() {
+        return runner(mock(com.nageoffer.ai.ragent.runtime.usage.EgressPolicy.class));
+    }
+
+    private ApplicationContextRunner runner(com.nageoffer.ai.ragent.runtime.usage.EgressPolicy engineEgressPolicy) {
         return new ApplicationContextRunner()
                 .withAllowBeanDefinitionOverriding(false)
                 .withConfiguration(AutoConfigurations.of(AiEmbeddedAgentEngineConfiguration.class))
@@ -135,8 +141,7 @@ class AiEmbeddedAgentEngineClosureAssemblyTest {
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(AgentSkillMapper.class, () -> mock(AgentSkillMapper.class))
                 // ENGINE-CHAT-ACCOUNTING：agentChatModel 的计量信封两依赖（mock 直通）
-                .withBean(com.nageoffer.ai.ragent.runtime.usage.EgressPolicy.class,
-                        () -> mock(com.nageoffer.ai.ragent.runtime.usage.EgressPolicy.class))
+                .withBean(com.nageoffer.ai.ragent.runtime.usage.EgressPolicy.class, () -> engineEgressPolicy)
                 .withBean(com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope.class,
                         () -> mock(com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope.class))
                 .withBean(AgentMemoryMapper.class, () -> mock(AgentMemoryMapper.class))
@@ -234,6 +239,27 @@ class AiEmbeddedAgentEngineClosureAssemblyTest {
             assertThat(context.getBean(SearchChannelProperties.class).getChannels().getWebSearch().isEnabled())
                     .as("WebSearch 真链默认关（shipped 无 web-search.enabled）⇒ 通道在场但空转不外出（R2）")
                     .isFalse();
+        });
+    }
+
+    @Test
+    @DisplayName("ENGINE-CHAT-ACCOUNTING：闭包装配的引擎模型真挂在计量链上——egress 拒绝时模型流以拒绝错误上行（删接线行本判据红）")
+    void engineModelIsWiredToTheMeteredTransport() {
+        com.nageoffer.ai.ragent.runtime.usage.EgressPolicy denied =
+                mock(com.nageoffer.ai.ragent.runtime.usage.EgressPolicy.class);
+        doThrow(new IllegalStateException("egress denied by test")).when(denied).requireAllowed(anyString());
+
+        runner(denied).run(context -> {
+            assertThat(context).hasNotFailed();
+            io.agentscope.extensions.model.openai.OpenAIChatModel model =
+                    context.getBean(io.agentscope.extensions.model.openai.OpenAIChatModel.class);
+            reactor.core.publisher.Flux<io.agentscope.core.model.ChatResponse> flux = model.stream(
+                    java.util.List.of(io.agentscope.core.message.Msg.builder()
+                            .role(io.agentscope.core.message.MsgRole.USER).textContent("ping").build()),
+                    java.util.List.of(),
+                    io.agentscope.core.model.GenerateOptions.builder().build());
+            assertThatThrownBy(() -> flux.collectList().block())
+                    .hasMessageContaining("egress denied by test");
         });
     }
 
