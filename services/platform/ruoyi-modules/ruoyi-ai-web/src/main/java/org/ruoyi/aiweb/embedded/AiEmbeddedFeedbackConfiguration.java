@@ -17,6 +17,7 @@
 
 package org.ruoyi.aiweb.embedded;
 
+import com.nageoffer.ai.ragent.framework.integration.SaasBoundaryProperties;
 import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
 import com.nageoffer.ai.ragent.framework.mq.producer.MessageQueueProducer;
 import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
@@ -32,6 +33,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.ResponseEntity;
@@ -254,21 +256,31 @@ public class AiEmbeddedFeedbackConfiguration {
      *
      * <p><b>门控与既有形态逐字一致。</b>独立应用里该消费者由
      * {@code @ConditionalOnProperty(ai.integration.legacy-listeners-enabled=true)} 注册——
-     * 而产品配置出现该属性会让启动失败（{@code SaasBoundaryConfiguration} 启动自检），
-     * 消息入口第一行再由 {@code SaasCapabilityBoundary.requireOpenOrClosed} 做一次关闭判定。
+     * 独立应用的产品配置出现该属性会让启动失败（{@code SaasBoundaryConfiguration} 启动自检；
+     * 该配置类不在内嵌装配清单里，故内嵌形态不受此自检约束），消息入口第一行再由
+     * {@code SaasCapabilityBoundary.requireOpenOrClosed} 做一次关闭判定。
      * 内嵌形态沿用**同一组门控**：装配开关同值 + 运行期同一关闭判定 + {@code SaasCapabilityBoundary}
      * bean 缺席时按关闭处理（{@code requireOpenOrClosed} 的既有语义）。
+     * 边界本体由同门控的 {@link LegacyCapabilityBoundaryAssembly} 提供（见该类注释）：
+     * shipped 默认两组都不在（零变化）；显式打开 legacy 时两组同时成立，
+     * 而"只开监听开关、缺边界/边界关闭"的拒绝语义在任何装配下都不弱化。
      *
      * <p><b>为什么仍要登记而不是只等 legacy 开关。</b>登记让"内嵌侧有一个现成的、
      * 带完整去重/授权消费链的反馈持久化组件"成为事实（W3-5-BE-1 的判据对象），
      * 同时把"开关关着 = 连 bean 都不是"（W3-T0-5 同族口径）作为运行期行为钉进测试：
      * 默认交付下它不装配，不产生任何公开面或副作用。
      *
-     * <p><b>消费依赖诚实声明。</b>旧消费者 {@code @RequiredArgsConstructor} 注入
-     * {@code MessageFeedbackService}；它只服务独立应用（RocketMQ starter 的注解处理器在那边
-     * 才会为 {@code @RocketMQMessageListener} 建容器）。内嵌登记的是同一个类：真要开启
-     * legacy 能力时，仍需消息总线/传输装配在位（broker 链）——那是显式的部署决策
-     * （C12.5-5：验证通过后由 T0 决定开启），不在本装配里静默补齐。
+     * <p><b>消费依赖诚实声明（F17-MQ 接线口径更正）。</b>旧消费者
+     * {@code @RequiredArgsConstructor} 注入 {@code MessageFeedbackService}。旧注释曾称
+     * "starter 的注解处理器只在独立应用为 {@code @RocketMQMessageListener} 建容器"——与
+     * rocketmq-spring-boot 2.3.6 的事实不符：{@code RocketMQMessageListenerBeanPostProcessor}
+     * 对**任何 bean**（不区分组件扫描还是 {@code @Bean} 登记）按类注解注册容器，只要
+     * starter 在 classpath 且 {@code RocketMQAutoConfiguration} 激活（{@code rocketmq.name-server}
+     * 缺省也激活，producer group 只约束生产者侧）。因此内嵌形态下容器接线不是缺口；真跑需要
+     * 本开关（消费者成为 bean）+ broker 配置（{@code rocketmq.name-server} 与
+     * {@code rocketmq.producer.group}，后者缺失时生产者组以启动期 NoSuchBean 响亮失败）
+     * 同时成立——那是显式的部署决策（C12.5-5：验证通过后由 T0 决定开启），
+     * 不在本装配里静默补齐。
      */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
@@ -310,6 +322,48 @@ public class AiEmbeddedFeedbackConfiguration {
         public com.nageoffer.ai.ragent.framework.mq.producer.DelegatingTransactionListener
         delegatingTransactionListener() {
             return new com.nageoffer.ai.ragent.framework.mq.producer.DelegatingTransactionListener();
+        }
+    }
+
+    /**
+     * 内嵌形态的旧能力边界（受控实现；F17-MQ 接线第一件，2026-10-11）。
+     *
+     * <p><b>为什么必须有这一组。</b>消息消费者第一行调用
+     * {@code SaasCapabilityBoundary.requireOpenOrClosed(...)}；
+     * 该方法对"取不到边界 bean"按<b>关闭</b>处理（P1 成文语义，
+     * {@code SaasCapabilityBoundaryTest} 钉住，不得弱化）。独立 ragent 应用由
+     * {@code SaasBoundaryConfiguration} 提供边界 bean；该类不在 platform 扫描根、也不在
+     * 任何 {@code AutoConfiguration.imports}，因此<b>此前内嵌形态即使把
+     * {@code ai.integration.legacy-listeners-enabled=true} 打开，也只是"消费者是 bean、
+     * 每条消息首行拒绝"（R4：ClosedCapabilityException + broker 重投循环，且无启动自检兜底）</b>
+     * ——这正是文档告诫的"不能只开监听开关"。本组是那条链在内嵌形态的受控实现。
+     *
+     * <p><b>门控与生产者/消费者装配逐字同值。</b>三组 legacy Assembly 都由
+     * {@code ai.integration.enabled=true} × {@code ai.integration.legacy-listeners-enabled=true}
+     * 门控 ⇒ "消费者是 bean"与"边界存在于容器"同时成立、或同时不成立；不存在"消费者在、
+     * 边界不在"的中间装配（shipped 默认：都不在，零变化）。边界本体以
+     * {@link SaasBoundaryProperties} 为唯一真值来源（与独立应用同一个类、同一个属性），
+     * 不新增放行开关，也不改动运行期判定逻辑。
+     *
+     * <p><b>打开仍然不是"只开监听开关"。</b>消费者第一行的关闭判定依旧执行：边界缺席
+     * （本组被摘掉）或以关闭态边界注入时，消息在任何业务写之前被拒（判据见
+     * {@code AiEmbeddedFeedbackConfigurationTest} 的 F17-MQ 组）。且生产者组在缺
+     * {@code RocketMQTemplate} 时启动期响亮失败（NoSuchBean），"开关开着但没有 broker 配置"
+     * 不可能静默成立。旧能力族是<b>整族</b>共享一组开关与一个边界（{@code SaasBoundaryProperties}
+     * 单布尔真值）：本组生效时，同部署里其它已装配的 legacy 链（如 F06 文档计划任务，
+     * 另有自己的 knowledge-admin.full 门）也会通过各自的关闭判定——这是族语义的既有形态，
+     * 不在此处按能力拆分。
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
+    @ConditionalOnProperty(name = "ai.integration.legacy-listeners-enabled", havingValue = "true")
+    @EnableConfigurationProperties(SaasBoundaryProperties.class)
+    public static class LegacyCapabilityBoundaryAssembly {
+
+        @Bean
+        @ConditionalOnMissingBean
+        public SaasCapabilityBoundary saasCapabilityBoundary(SaasBoundaryProperties properties) {
+            return new SaasCapabilityBoundary(properties);
         }
     }
 }
