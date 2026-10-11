@@ -45,6 +45,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -98,6 +99,9 @@ public abstract class AbstractOpenAIStyleChatClient implements ChatClient {
     private Executor modelStreamExecutor;
     @Autowired
     private RagStreamTraceSupport streamTraceSupport;
+
+    @Autowired(required = false)
+    private ChatEgressPort chatEgressPort = ChatEgressPort.DENY;
 
     protected Gson gson = new Gson();
 
@@ -156,9 +160,12 @@ public abstract class AbstractOpenAIStyleChatClient implements ChatClient {
                 .post(RequestBody.create(reqBody.toString(), HttpMediaTypes.JSON))
                 .build();
 
-        Call httpCall = resolveSyncClient(target.timeoutMs()).newCall(requestHttp);
+        ChatEgressPort.Lease lease = authorize(requestHttp, reqBody);
+        Call httpCall = resolveSyncClient(target.timeoutMs()).newBuilder()
+                .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build().newCall(requestHttp);
 
         JsonObject respJson;
+        lease.beforeSend();
         try (Response response = httpCall.execute()) {
             if (!response.isSuccessful()) {
                 String body = HttpResponseHelper.readBody(response.body());
@@ -176,7 +183,9 @@ public abstract class AbstractOpenAIStyleChatClient implements ChatClient {
                     ModelClientErrorType.NETWORK_ERROR, null, e);
         }
 
-        return extractChatContent(respJson);
+        String content = extractChatContent(respJson);
+        lease.received(OpenAIStyleSseParser.providerId(respJson), OpenAIStyleSseParser.usage(respJson));
+        return content;
     }
 
     /**
@@ -208,7 +217,9 @@ public abstract class AbstractOpenAIStyleChatClient implements ChatClient {
                 .addHeader("Accept", "text/event-stream")
                 .build();
 
-        Call call = streamingHttpClient.newCall(streamRequest);
+        ChatEgressPort.Lease lease = authorize(streamRequest, reqBody);
+        Call call = streamingHttpClient.newBuilder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
+                .build().newCall(streamRequest);
         boolean reasoningEnabled = isReasoningEnabledForStream(request);
 
         // 在调用线程开 stream span，使后续 first-packet 子节点能正确归属父节点；
@@ -221,7 +232,7 @@ public abstract class AbstractOpenAIStyleChatClient implements ChatClient {
                     modelStreamExecutor,
                     call,
                     wrappedCallback,
-                    cancelled -> doStream(call, wrappedCallback, cancelled, reasoningEnabled)
+                    cancelled -> doStream(call, wrappedCallback, cancelled, reasoningEnabled, lease)
             );
             return () -> {
                 try {
@@ -236,58 +247,52 @@ public abstract class AbstractOpenAIStyleChatClient implements ChatClient {
         }
     }
 
-    private void doStream(Call call, StreamCallback callback, AtomicBoolean cancelled, boolean reasoningEnabled) {
-        try (Response response = call.execute()) {
-            if (!response.isSuccessful()) {
-                String body = HttpResponseHelper.readBody(response.body());
-                throw new ModelClientException(
-                        provider() + " 流式请求失败: HTTP " + response.code() + " - " + body,
-                        ModelClientErrorType.fromHttpStatus(response.code()),
-                        response.code()
-                );
-            }
-            ResponseBody body = response.body();
-            BufferedSource source = body.source();
-            boolean completed = false;
-            while (!cancelled.get()) {
-                String line = source.readUtf8Line();
-                if (line == null) {
-                    break;
+    private void doStream(Call call, StreamCallback callback, AtomicBoolean cancelled, boolean reasoningEnabled,
+                          ChatEgressPort.Lease lease) {
+        AtomicBoolean terminalCallback = new AtomicBoolean();
+        try {
+            if (cancelled.get()) { return; }
+            lease.beforeSend();
+            if (cancelled.get()) { return; }
+            try (Response response = call.execute()) {
+                if (!response.isSuccessful()) {
+                    throw new ModelClientException(provider() + " stream HTTP " + response.code(),
+                            ModelClientErrorType.fromHttpStatus(response.code()), response.code());
                 }
-                if (line.isBlank()) {
-                    continue;
+                ResponseBody body = response.body();
+                if (body == null) { throw new ModelClientException("stream body absent", ModelClientErrorType.INVALID_RESPONSE, null); }
+                BufferedSource source = body.source();
+                boolean finished = false, terminal = false;
+                String providerId = null;
+                Map<String,Object> usage = null;
+                while (!cancelled.get()) {
+                    String line = source.readUtf8Line();
+                    if (line == null) { break; }
+                    if (line.isBlank() || !line.trim().startsWith("data:")) { continue; }
+                    OpenAIStyleSseParser.ParsedEvent event;
+                    try { event = OpenAIStyleSseParser.parseLine(line, gson, reasoningEnabled); }
+                    catch (RuntimeException invalid) { throw new ModelClientException("invalid stream event", ModelClientErrorType.INVALID_RESPONSE, null, invalid); }
+                    if (event.providerId() != null) { providerId = event.providerId(); }
+                    if (event.usage() != null) { usage = event.usage(); }
+                    if (event.hasReasoning()) { callback.onThinking(event.reasoning()); }
+                    if (event.hasContent()) { callback.onContent(event.content()); }
+                    finished |= event.completed();
+                    if (event.terminal()) { terminal = true; break; }
                 }
-                try {
-                    OpenAIStyleSseParser.ParsedEvent event = OpenAIStyleSseParser.parseLine(line, gson, reasoningEnabled);
-                    if (event.hasReasoning()) {
-                        callback.onThinking(event.reasoning());
-                    }
-                    if (event.hasContent()) {
-                        callback.onContent(event.content());
-                    }
-                    if (event.completed()) {
-                        callback.onComplete();
-                        completed = true;
-                        break;
-                    }
-                } catch (Exception parseEx) {
-                    log.warn("{} 流式响应解析失败: line={}", provider(), line, parseEx);
-                }
+                if (cancelled.get()) { return; }
+                if (!terminal && !finished) { throw new ModelClientException("stream ended before completion", ModelClientErrorType.INVALID_RESPONSE, null); }
+                if (providerId != null && usage != null) { lease.received(providerId, usage); }
+                if (terminalCallback.compareAndSet(false, true)) { callback.onComplete(); }
             }
-            if (cancelled.get()) {
-                log.info("{} 流式响应已被取消", provider());
-                return;
-            }
-            if (!completed) {
-                throw new ModelClientException(provider() + " 流式响应异常结束", ModelClientErrorType.INVALID_RESPONSE, null);
-            }
-        } catch (Exception e) {
-            if (!cancelled.get()) {
-                callback.onError(e);
-            } else {
-                log.info("{} 流式响应取消期间产生异常（可忽略）: {}", provider(), e.getMessage());
-            }
+        } catch (Exception error) {
+            if (!cancelled.get() && terminalCallback.compareAndSet(false, true)) { callback.onError(error); }
         }
+    }
+
+    private ChatEgressPort.Lease authorize(Request httpRequest, JsonObject body) {
+        return chatEgressPort.authorize(new ChatEgressPort.CallSpec(provider(),
+                body.get("model").getAsString(), httpRequest.url().uri(),
+                body.toString().getBytes(StandardCharsets.UTF_8).length, body.get("max_tokens").getAsInt()));
     }
 
     // ==================== 公共构建方法 ====================
@@ -297,6 +302,9 @@ public abstract class AbstractOpenAIStyleChatClient implements ChatClient {
         body.addProperty("model", HttpResponseHelper.requireModel(target, provider()));
         if (stream) {
             body.addProperty("stream", true);
+            JsonObject streamOptions = new JsonObject();
+            streamOptions.addProperty("include_usage", true);
+            body.add("stream_options", streamOptions);
         }
 
         body.add("messages", buildMessages(request));
@@ -310,9 +318,11 @@ public abstract class AbstractOpenAIStyleChatClient implements ChatClient {
         if (request.getTopK() != null) {
             body.addProperty("top_k", request.getTopK());
         }
-        if (request.getMaxTokens() != null) {
-            body.addProperty("max_tokens", request.getMaxTokens());
+        int outputTokens = request.getMaxTokens() == null ? 2048 : request.getMaxTokens();
+        if (outputTokens < 1 || outputTokens > 8192) {
+            throw new ChatEgressDeniedException("invalid chat output limit");
         }
+        body.addProperty("max_tokens", outputTokens);
 
         customizeRequestBody(body, request);
         return body;

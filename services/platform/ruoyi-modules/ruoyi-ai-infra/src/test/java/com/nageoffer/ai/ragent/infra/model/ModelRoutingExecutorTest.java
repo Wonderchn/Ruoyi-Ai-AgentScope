@@ -39,6 +39,18 @@ import org.junit.jupiter.api.Tag;
 
 @Tag("dev")
 class ModelRoutingExecutorTest {
+    @Test void securityDenialNeverFallsBackOrMarksProviderUnhealthy() {
+        ModelHealthStore health=mock(ModelHealthStore.class);ModelRoutingExecutor routing=new ModelRoutingExecutor(health);
+        ModelTarget first=target("first","bailian"),next=target("next","deepseek");
+        ModelHealthStore.CallPermit permit=new ModelHealthStore.CallPermit(first.id(),0L);when(health.allowCall(first.id())).thenReturn(permit);
+        when(health.allowCall(next.id())).thenReturn(new ModelHealthStore.CallPermit(next.id(),0L));
+        AtomicInteger calls=new AtomicInteger();
+        assertThatThrownBy(()->routing.executeWithFallback(ModelCapability.CHAT,List.of(first,next),ModelTarget::id,(client,t)->{
+            calls.incrementAndGet();if(t==first)throw new IllegalStateException("wrapped",new com.nageoffer.ai.ragent.infra.chat.ChatEgressDeniedException("denied"));return "fallback";
+        })).isInstanceOf(com.nageoffer.ai.ragent.infra.chat.ChatEgressDeniedException.class);
+        assertThat(calls).hasValue(1);verify(health).releaseHalfOpenPermit(permit);verify(health,never()).markFailure(first.id());verify(health,never()).allowCall(next.id());
+    }
+
 
     @Test
     void shouldStopFallbackAndKeepHealthUnchangedWhenThreadIsInterrupted() {

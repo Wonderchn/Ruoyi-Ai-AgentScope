@@ -22,6 +22,12 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import lombok.NoArgsConstructor;
+import java.math.BigDecimal;
+import java.util.Map;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.Collections;
 
 /**
  * OpenAI 协议风格 SSE 解析器
@@ -49,7 +55,7 @@ public final class OpenAIStyleSseParser {
         JsonObject obj = gson.fromJson(payload, JsonObject.class);
         JsonArray choices = obj.getAsJsonArray("choices");
         if (choices == null || choices.isEmpty()) {
-            return ParsedEvent.empty();
+            return new ParsedEvent(null, null, false, false, providerId(obj), usage(obj));
         }
 
         JsonObject choice0 = choices.get(0).getAsJsonObject();
@@ -57,7 +63,7 @@ public final class OpenAIStyleSseParser {
         String reasoning = reasoningEnabled ? extractText(choice0, "reasoning_content") : null;
         boolean completed = hasFinishReason(choice0);
 
-        return new ParsedEvent(content, reasoning, completed);
+        return new ParsedEvent(content, reasoning, completed, false, providerId(obj), usage(obj));
     }
 
     private static boolean hasFinishReason(JsonObject choice) {
@@ -93,14 +99,45 @@ public final class OpenAIStyleSseParser {
         return null;
     }
 
-    record ParsedEvent(String content, String reasoning, boolean completed) {
+    static String providerId(JsonObject root) {
+        JsonElement value = root == null ? null : root.get("id");
+        return value != null && value.isJsonPrimitive() && value.getAsJsonPrimitive().isString()
+                && !value.getAsString().isBlank() ? value.getAsString() : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String,Object> usage(JsonObject root) {
+        JsonElement value = root == null ? null : root.get("usage");
+        return value != null && value.isJsonObject() && value.getAsJsonObject().size() > 0
+                ? (Map<String,Object>) rawValue(value) : null;
+    }
+
+    private static Object rawValue(JsonElement value) {
+        if (value == null || value.isJsonNull()) { return null; }
+        if (value.isJsonObject()) {
+            Map<String,Object> result = new LinkedHashMap<>();
+            value.getAsJsonObject().entrySet().forEach(entry -> result.put(entry.getKey(),rawValue(entry.getValue())));
+            return Collections.unmodifiableMap(result);
+        }
+        if (value.isJsonArray()) {
+            List<Object> result = new ArrayList<>();
+            value.getAsJsonArray().forEach(item -> result.add(rawValue(item)));
+            return Collections.unmodifiableList(result);
+        }
+        if (value.getAsJsonPrimitive().isBoolean()) { return value.getAsBoolean(); }
+        if (value.getAsJsonPrimitive().isNumber()) { return new BigDecimal(value.getAsString()); }
+        return value.getAsString();
+    }
+
+    record ParsedEvent(String content, String reasoning, boolean completed, boolean terminal,
+                       String providerId, Map<String,Object> usage) {
 
         static ParsedEvent empty() {
-            return new ParsedEvent(null, null, false);
+            return new ParsedEvent(null, null, false, false, null, null);
         }
 
         static ParsedEvent done() {
-            return new ParsedEvent(null, null, true);
+            return new ParsedEvent(null, null, true, true, null, null);
         }
 
         boolean hasContent() {

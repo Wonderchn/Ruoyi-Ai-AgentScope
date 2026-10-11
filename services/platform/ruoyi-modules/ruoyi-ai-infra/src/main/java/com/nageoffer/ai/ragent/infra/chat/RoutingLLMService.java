@@ -137,6 +137,8 @@ public class RoutingLLMService implements LLMService {
             try {
                 handle = client.streamChat(request, bridge, target);
             } catch (Exception e) {
+                ChatEgressDeniedException denied = ChatEgressDeniedException.find(e);
+                if (denied != null) { healthStore.releaseHalfOpenPermit(permit); throw denied; }
                 healthStore.markFailure(target.id());
                 lastError = e;
                 log.warn("{} 流式请求启动失败，切换下一个模型。modelId：{}，provider：{}",
@@ -157,6 +159,13 @@ public class RoutingLLMService implements LLMService {
             if (result.isSuccess()) {
                 healthStore.markSuccess(target.id());
                 return handle;
+            }
+
+            ChatEgressDeniedException denied = ChatEgressDeniedException.find(result.getError());
+            if (denied != null) {
+                handle.cancel();
+                healthStore.releaseHalfOpenPermit(permit);
+                throw denied;
             }
 
             // 失败处理

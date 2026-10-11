@@ -27,6 +27,17 @@ import org.junit.jupiter.api.Tag;
 
 @Tag("dev")
 class OpenAIStyleSseParserTest {
+    @Test void usageOnlyTailCarriesOriginalNestedFactsAndIsNotATerminalMarker() {
+        var event=OpenAIStyleSseParser.parseLine("data: {\"id\":\"provider-id\",\"choices\":[],\"usage\":{\"total_tokens\":9,\"prompt_tokens_details\":{\"cached_tokens\":3},\"optional\":null}}",new Gson(),false);
+        assertEquals("provider-id",event.providerId());assertFalse(event.terminal());assertFalse(event.completed());
+        assertEquals("9",event.usage().get("total_tokens").toString());assertTrue(event.usage().containsKey("optional"));
+        assertEquals("3",((java.util.Map<?,?>)event.usage().get("prompt_tokens_details")).get("cached_tokens").toString());
+    }
+    @Test void finishReasonKeepsCompatibilityButDoesNotTerminateBeforeUsageTail() {
+        var event=OpenAIStyleSseParser.parseLine("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}",new Gson(),false);
+        assertTrue(event.completed());assertFalse(event.terminal());assertTrue(OpenAIStyleSseParser.parseLine("data: [DONE]",new Gson(),false).terminal());
+    }
+
 
     private static final Gson GSON = new Gson();
 
