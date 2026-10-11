@@ -33,13 +33,14 @@ import java.util.concurrent.TimeUnit;
  * 技能缓存管理器
  * 缓存已启用技能的全量清单，每轮对话都要读，不宜每次落库
  *
- * <p><b>契约（S1 引擎闭包批定稿，与 F09-A1 的 {@code AgentPromptCacheManager} 同构）</b>：
+ * <p><b>契约（F11-A1 / S1 引擎闭包批同构定稿，与 F09-A1 的 {@code AgentPromptCacheManager} 同构）</b>：
  * <ul>
  *   <li><b>key 命名空间</b>：{@code ragent:agent:enabled-skills:v1:{tenantId}}，一租户一 key；
  *       租户取自当前执行主体（{@link ExecutionPrincipal#tenantId()}，下同）。技能行
  *       {@code ai_agent_skill} 带 {@code tenant_id}，缓存必须与之同口径——此前全租户共享
- *       一个固定 key {@code ragent:agent:enabled-skills:v1}，引擎闭包装配后租户 A 的已启用
- *       技能清单会被租户 B 读到（跨租户串读），故禁止任何跨租户共享 key；</li>
+ *       一个固定 key {@code ragent:agent:enabled-skills:v1}，管理面接线/引擎闭包装配后
+ *       租户 A 的已启用技能清单会被租户 B 读到（跨租户串读，Spec §2.3 O-2 / 引擎审计 R4），
+ *       故禁止任何跨租户共享 key；</li>
  *   <li><b>缺主体即拒绝（fail-closed）</b>：无执行主体时读/写/清一律抛
  *       {@link com.nageoffer.ai.ragent.framework.exception.ClientException}
  *       （{@link PrincipalContext#require()} 统一入口），绝不回落到全局 key 或默认租户；
@@ -48,8 +49,13 @@ import java.util.concurrent.TimeUnit;
  *   <li><b>读侧回填</b>：{@code AgentSkillRegistry#listEnabled} 缓存优先，miss 才查库并回填，
  *       空列表也是有效快照（"确实一个技能都没配"）；</li>
  *   <li><b>错误语义</b>：Redis I/O 失败吞异常——读返回 {@code null}（退化为查库）、写与清
- *       仅记日志，缓存故障不阻断读端；但"缺主体"不是 I/O 故障，任何方法都不吞。</li>
+ *       仅记日志，缓存故障不阻断管理面；但"缺主体"不是 I/O 故障，任何方法都不吞。</li>
  * </ul>
+ *
+ * <p><b>共享面合并记录</b>：本文件曾由并行分支 S1（{@code feat/s2-engine-s1-assembly}）
+ * 与 F11-A1 同步改造，实现形状逐字对齐（key 前缀、fail-closed 位置、错误语义一致）；
+ * 合并时按该一致形状收敛，注释取 F11-A1 详版（T0 裁决）。树内红→绿证据见
+ * {@code AgentSkillCacheTenantScopeTest}（F11-A1）与 {@code AgentSkillCacheTenantContractTest}（S1）。
  */
 @Slf4j
 @Component
@@ -62,7 +68,8 @@ public class AgentSkillCacheManager {
     /**
      * key 前缀，完整 key 为 {@code ragent:agent:enabled-skills:v1:{tenantId}}；
      * 缓存结构随技能数据面变化时递增版本，避免旧缓存形状漂移；
-     * key 形状变更必须同步本契约注释与用例判据（{@code AgentSkillCacheTenantContractTest}）。
+     * key 形状变更必须同步本契约注释与用例判据（{@code AgentSkillCacheTenantScopeTest} /
+     * {@code AgentSkillCacheTenantContractTest}）。
      */
     private static final String CACHE_KEY_PREFIX = "ragent:agent:enabled-skills:v1:";
 

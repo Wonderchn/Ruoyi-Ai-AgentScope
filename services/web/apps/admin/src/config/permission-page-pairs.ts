@@ -259,26 +259,51 @@ export const AI_ADMIN_PAIRS: readonly PermissionPagePair[] = [
     note: 'GET /api/ai/v1/ingestion/pipelines（config.read，IPage records/total）；写 4 条走 config.publish（V28-7151 行），真机 CRUD 全链由 T0 环境相位实测',
   },
 
-  // ---- ragent 管理面（有页面、**无权限行** ⇒ PAIR-GAP-NO-ROW）----
-  // 【T0 裁决 2026-10-06，team-message-d1d39727 ②】C 行**现在不播种**：
-  // 判则 =「扩套餐/播权限的唯一依据是端点真实可达」（G-36b trace 教训同形）。
-  // 该族端点 BLOCKED-BY-EMBEDDED-REGISTRY（装配未登记），现在播 C 行 =
-  // 制造"有权限无端点"的假公开面。处置：页面保留 + blocked 标注，
-  // **C 行播种与端点落地绑定同一个批次**（进维护者决策批次 + 下一迭代，
-  // 迁移号届时由 T0 分配）。测试把"1 gap 未播种"如实钉住。
-  // （/ai/agents 已于 2026-10-07 由 RW-03 移出本清单：端点落地 ⇒ 上表 live 行；
-  //   /ai/settings 已于 2026-10-07 由 RW-07 移出：改由 runtime-config/settings 服务；
-  //   /ai/ingestion 已于 2026-10-10 由 S2-F06-A1 移出：管线 CRUD 装配落地 ⇒ 上表 live 行
-  //   ——任务面（/ingestion/tasks**）仍未装配，其阻断标注保留在页面任务卡片内。）
+  // ---- Skills 管理面（S2-F11-A1，2026-10-11）：**有行有页**（接线解除阻断）----
+  // 【T0 裁决 2026-10-06，team-message-d1d39727 ②】的履行：该页此前登记为
+  // PAIR-GAP-NO-ROW——「C 行播种与端点落地绑定同一批次」。F11-A1 即该批次：
+  // V33 播 4 条动作行（7137-7140）+ 1 条页面 C 行（7142，**沿用 V27 预留号，不占新号**），
+  // 端点经网关白名单 /api/ai/v1/agent-catalog/agent-skills/** 逐条放行（7 条）。
+  // 装配随 S1 引擎闭包门（ragent.engine.type=agent，见 AiEmbeddedAgentSkillConfiguration）：
+  // 引擎关的部署形态下内层未命中 fail-closed 503；浏览器/真机联调记 NOT_RUN
+  // （待引擎相位或 T8 实例窗口，与 F09 浏览器 E2E 同款口径）。
+  // 四条动作全部要求平台管理身份（Spec §6-P4 第二道门），租户成员即使误持 scope 也 403。
+  // 页面 A1 只接列表 + 单条启停；CRUD 表单/详情视图属 F11-A2（可选后置）。
   {
-    permission: '',
-    rowSource: '（无；同上裁决）',
+    permission: 'ai:skill:list',
+    rowSource: 'V33__agent_skill_permissions.sql 菜单 7137（页面 C 行 7142；沿用 V27 预留号）',
     route: '/ai/skills',
-    page: 'Skills',
-    status: 'pair-gap',
-    gapKind: 'NO-ROW',
-    endpoint: 'BLOCKED-BY-EMBEDDED-REGISTRY',
-    note: '同上',
+    page: 'Skills（列表 + 单条启停）',
+    status: 'live',
+    endpoint: 'live',
+    note: 'GET /api/ai/v1/agent-catalog/agent-skills 与 .../tool-options（skill.list）；装配随 S1 引擎闭包门（ragent.engine.type=agent），引擎关时内层未命中 fail-closed 503',
+  },
+  {
+    permission: 'ai:skill:read',
+    rowSource: 'V33__agent_skill_permissions.sql 菜单 7138',
+    route: '/ai/skills',
+    page: 'Skills（详情，含正文）',
+    status: 'live',
+    endpoint: 'live',
+    note: 'GET /agent-catalog/agent-skills/{id}（skill.read）；详情表单渲染属 F11-A2',
+  },
+  {
+    permission: 'ai:skill:write',
+    rowSource: 'V33__agent_skill_permissions.sql 菜单 7139',
+    route: '/ai/skills',
+    page: 'Skills（单条启停；新建/编辑表单属 F11-A2）',
+    status: 'live',
+    endpoint: 'live',
+    note: 'POST /agent-catalog/agent-skills（创建）、PUT .../{id}（更新）、POST .../{id}/enabled?enabled=（单条启停，query 参数）——均为 skill.write',
+  },
+  {
+    permission: 'ai:skill:delete',
+    rowSource: 'V33__agent_skill_permissions.sql 菜单 7140',
+    route: '/ai/skills',
+    page: 'Skills（删除；页面按钮属 F11-A2）',
+    status: 'live',
+    endpoint: 'live',
+    note: 'DELETE /agent-catalog/agent-skills/{id}（skill.delete）',
   },
 
   // ---- 裁决行（双向断言跳过）----
@@ -318,7 +343,11 @@ export function assertablePairs(): readonly PermissionPagePair[] {
   return AI_ADMIN_PAIRS.filter(pair => pair.status === 'live' && pair.permission !== '');
 }
 
-/** PAIR-GAP（页面有但权限行无）清单——交付时点名，等 T0 补行。 */
+/**
+ * PAIR-GAP（页面有但权限行无）清单——交付时点名，等 T0 补行。
+ * 2026-10-11 S2-F11-A1 起**归零**：最后一条（/ai/skills）已随管理面接线接到
+ * ai:skill:list（V33 沿用 V27 预留 7137-7140 + 7142），C 行播种与端点落地同批次履行。
+ */
 export function pairGapNoRows(): readonly PermissionPagePair[] {
   return AI_ADMIN_PAIRS.filter(pair => pair.status === 'pair-gap' && pair.gapKind === 'NO-ROW');
 }

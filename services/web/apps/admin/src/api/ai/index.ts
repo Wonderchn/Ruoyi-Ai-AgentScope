@@ -43,7 +43,15 @@
  *    `IngestionPipelineController` 并逐条放行进白名单，信封整数 `ApiEnvelope`
  *    （读=config.read，写=config.publish；GET 交付回执同分块面）。
  *    **任务面（`/ingestion/tasks**`）仍未装配，随 `ingestionTasks` 子域登记为 404。**
- *    **其余 rag 旧族（agent-skills / 旧 knowledge-base）仍是 404，本节其余描述不变。**
+ *
+ *    ⚠️ **第五处例外（S2-F11-A1 装配，2026-10-11）**：Skills 管理面 7 条
+ *    `/api/ai/v1/agent-catalog/agent-skills**` 已由 `AiEmbeddedAgentSkillConfiguration` 登记
+ *    `AgentSkillController`（三件套：类级前缀 + 整数 `ApiEnvelope` + GET 交付回执）并逐条
+ *    放行进白名单（读=skill.list/skill.read，写=skill.write/skill.delete；四条动作全部要求
+ *    平台管理身份）。装配随 S1 引擎闭包门（`ragent.engine.type=agent`）——引擎关的形态下
+ *    该族内层未命中，fail-closed 503（不是"没接线"的 404）。旧的 `/agent-skills` 裸路径与
+ *    ragent `Result` 信封对**这一族**已作废（形状断言见 `tests/skills-admin.test.ts`）。
+ *    **旧 knowledge-base 族的其余描述不变。**
  * 3. **知识库族 8 条白名单路由活着**（`AiGatewayController` ROUTES，M19/M20 实测
  *    200/400/404 分布健康）——经 `/api/ai/v1` 前缀。
  *
@@ -129,17 +137,51 @@ export interface KnowledgeBaseQuery {
 
 // ---------------------------------------------------------------------------
 // ragent 管理面（分母登记；本形态 BLOCKED-BY-EMBEDDED-REGISTRY）
-// 例外：IngestionPipelineRow/Page/Query 已随 S2-F06-A1 迁到活族
-// （见 createAiApi().ingestion 的契约注释）；此处类型保留并更新为活族形状。
+// 例外：IngestionPipelineRow/Page/Query 已随 S2-F06-A1 迁到活族、
+// AgentSkill* 已随 S2-F11-A1 迁到活族（`/api/ai/v1/agent-catalog/agent-skills**`，
+// 见 createAiApi().agentSkills 的契约注释）；此处类型保留并更新为活族形状。
 // ---------------------------------------------------------------------------
 
-/** `AgentSkillController`（`/agent-skills`）行分母。 */
+/** `AgentSkillVO`（`AgentSkillController` 行；列表不返回 content，详情带回）。 */
 export interface AgentSkillRow {
   id?: string;
+  skillCode?: string;
   name?: string;
   description?: string;
+  /** 技能正文 Markdown；列表接口不填充。 */
+  content?: string;
+  /** 加载本技能后解锁的 MCP 工具 ID（⊆ 意图树已启用节点）。 */
+  toolIds?: string[];
+  sortOrder?: number;
   enabled?: boolean;
-  toolOptions?: unknown[];
+  createTime?: string;
+  updateTime?: string;
+  [key: string]: unknown;
+}
+
+/** `IPage<AgentSkillVO>` 的 JSON 形状（`ApiEnvelope` 解包后的 `data`）。 */
+export interface AgentSkillPage {
+  records?: AgentSkillRow[];
+  total?: number;
+  current?: number;
+  size?: number;
+  [key: string]: unknown;
+}
+
+/** 技能列表查询（内层 `AgentSkillPageRequest extends Page`；参数走 query）。 */
+export interface AgentSkillPageQuery {
+  current?: number;
+  size?: number;
+  keyword?: string;
+}
+
+/** `AgentSkillToolOptionVO`（`GET .../agent-skills/tool-options` 的元素）。 */
+export interface AgentSkillToolOption {
+  toolId?: string;
+  name?: string;
+  description?: string;
+  /** 已被哪个技能收为解锁项（多技能共用时报第一个）。 */
+  referencedBySkillName?: string;
   [key: string]: unknown;
 }
 
@@ -220,6 +262,9 @@ export interface McpMarketRow {
 // 工厂
 // ---------------------------------------------------------------------------
 
+/** 网关白名单公开前缀（`AiGatewayController` `@RequestMapping` + ROUTES 逐字拼接）。 */
+const AGENT_SKILLS_PATH = '/api/ai/v1/agent-catalog/agent-skills';
+
 export function createAiApi(client: PlatformClient) {
   return {
     /**
@@ -279,23 +324,41 @@ export function createAiApi(client: PlatformClient) {
     knowledgeChunks: createKnowledgeChunksApi(client),
 
     /**
-     * ragent 管理面其余族（Skills/Ingestion）。⚠️ BLOCKED-BY-EMBEDDED-REGISTRY：
-     * 内嵌装配未登记这些控制器，本形态调用会 404。路径是分母
-     * （02-api-map.json ai_reference_only 组），信封是 ragent `Result`（`code:"0"`）
-     * ——**将来装配后也不能直接用 client.get**，见 `ragResultEnvelopeOf` 的注释。
+     * Skills 管理面（S2-F11-A1，2026-10-11）—— **本形态活族**（随引擎闭包门
+     * `ragent.engine.type=agent`：F11-A1 的装配与 S1 引擎闭包同门，引擎关时内层未命中
+     * fail-closed 503；引擎开的部署形态下真实可达）。
+     *
+     * 7 条 `/api/ai/v1/agent-catalog/agent-skills**` 白名单路由（`AiGatewayController.ROUTES` 逐条登记）：
+     * 读=skill.list（列表/tool-options）/ skill.read（详情），写=skill.write（创建/更新/单条启停）/
+     * skill.delete（删除）；内层 handler = `AgentSkillController`（类级
+     * `/internal/ai/v1/agent-catalog`）。信封 = 整数 `ApiEnvelope`（code=200），走共享
+     * `PlatformClient`；**四条动作全部要求平台管理身份**（P4 第二道门），租户成员即使误持
+     * scope 也会 403——前端不推断这条门，只在 403 时如实显示服务端结论。
+     * 列表 `data` 是 `IPage`（`records/total/current/size`）；GET 走网关字节分支
+     * （响应带 `X-AI-Delivery-Permit`/`X-AI-Delivery-Operation`，回执由网关自行消费，
+     * **前端不得追加任何 ACK/release 请求**）。
      */
     agentSkills: {
-      /** `GET /agent-skills` → `Result<List<AgentSkillVO>>`。 */
-      list: () => client.get<RagResultEnvelope<AgentSkillRow[]>>('/agent-skills'),
-      toolOptions: () => client.get<RagResultEnvelope<unknown[]>>('/agent-skills/tool-options'),
-      get: (id: string) => client.get<RagResultEnvelope<AgentSkillRow>>(`/agent-skills/${encodeURIComponent(id)}`),
-      create: (body: Record<string, unknown>) => client.post<RagResultEnvelope<string>>('/agent-skills', { body }),
+      /** `GET /api/ai/v1/agent-catalog/agent-skills`（skill.list）→ `ApiEnvelope<IPage<…>>`。 */
+      list: (query?: AgentSkillPageQuery) =>
+        client.get<AgentSkillPage>(AGENT_SKILLS_PATH, {
+          query: { current: query?.current, size: query?.size, keyword: query?.keyword },
+        }),
+      /** `GET .../agent-skills/tool-options`（skill.list）→ `ApiEnvelope<AgentSkillToolOption[]>`。 */
+      toolOptions: () => client.get<AgentSkillToolOption[]>(`${AGENT_SKILLS_PATH}/tool-options`),
+      /** `GET .../agent-skills/{id}`（skill.read；详情含正文 content）。 */
+      get: (id: string) => client.get<AgentSkillRow>(`${AGENT_SKILLS_PATH}/${encodeURIComponent(id)}`),
+      /** `POST .../agent-skills`（skill.write）→ `data` 是新技能 id 字符串。 */
+      create: (body: Record<string, unknown>) => client.post<string>(AGENT_SKILLS_PATH, { body }),
+      /** `PUT .../agent-skills/{id}`（skill.write；技能标识 skillCode 不可改）。 */
       update: (id: string, body: Record<string, unknown>) =>
-        client.put<RagResultEnvelope<string>>(`/agent-skills/${encodeURIComponent(id)}`, { body }),
-      remove: (id: string) => client.del<RagResultEnvelope<string>>(`/agent-skills/${encodeURIComponent(id)}`),
-      /** 启停是 POST + `{enabled}`（不是 PUT changeStatus）。 */
+        client.put<unknown>(`${AGENT_SKILLS_PATH}/${encodeURIComponent(id)}`, { body }),
+      /** `DELETE .../agent-skills/{id}`（skill.delete）。 */
+      remove: (id: string) =>
+        client.del<unknown>(`${AGENT_SKILLS_PATH}/${encodeURIComponent(id)}`),
+      /** 启停是 POST `.../{id}/enabled` + **query** `enabled`（后端 `@RequestParam`，不是 body/PUT changeStatus）。 */
       setEnabled: (id: string, enabled: boolean) =>
-        client.post<RagResultEnvelope<unknown>>(`/agent-skills/${encodeURIComponent(id)}/enabled`, { body: { enabled } }),
+        client.post<unknown>(`${AGENT_SKILLS_PATH}/${encodeURIComponent(id)}/enabled`, { query: { enabled } }),
     },
 
     /**
