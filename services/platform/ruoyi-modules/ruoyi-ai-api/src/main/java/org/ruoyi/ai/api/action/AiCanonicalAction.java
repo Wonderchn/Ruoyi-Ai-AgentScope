@@ -56,7 +56,8 @@ public final class AiCanonicalAction {
         // W4-9（收窄为 F09 only）：Agent 目录 8 个 handler 的规范动作。
         // 权限行由 V27__agent_catalog_permissions.sql 播种（7132-7136）；
         // 公开路由见 AiGatewayController.ROUTES 的 /agent-catalog/agents/**。
-        // F11（Skills）未装，故此处不登记 skill.*（task-13 / W4-T0-46）。
+        // F11（Skills）曾因闭包未装配而**刻意不登记** skill.*（task-13 / W4-T0-46）；
+        // 现已由 F11-A1（2026-10-11）接管——见下方 skill.* 四条登记块。
         actions.put("agent.list", "ai:agent:list");
         actions.put("agent.read", "ai:agent:read");
         actions.put("agent.write", "ai:agent:write");
@@ -76,12 +77,27 @@ public final class AiCanonicalAction {
         actions.put("flow.delete", "ai:flow:delete");
         // F13-A1（2026-10-11，维护者立项批注「spec开始立项」）：op0 图 CRUD
         // （节点/边/组件的写面）新增**恰一条**动作——E6-RW17 §5 清单第 6 条
-        // `flow.node.write` → `ai:flow:design`。图读（GET）复用 flow.read，
+        // `flow.node.write` → `ai:flow:design`（第 39 条）。图读（GET）复用 flow.read，
         // 不另立 flow.node.read；不按节点/边/组件拆三条（授权清单只给了一条，
         // 拆分=超清单增量）。资源仍是 ai_flow_workflow（带 tenant_id ⇒ 租户级，
         // 不适用 PLATFORM_ADMIN_ACTIONS）。权限行由 V32 注册（menu_id 7203，
         // 默认不分配，由 provisioning 逐码授予）。
         actions.put("flow.node.write", "ai:flow:design");
+        // F11-A1（2026-10-11，维护者批"新建最小样本＋安全约束＋本期范围"）：Skills 管理面
+        // 接线批新增**恰四条**动作——skill.list / skill.read / skill.write / skill.delete
+        // → ai:skill:*（第 40-43 条）。七条既有端点对号：列表与 tool-options 归 skill.list（Spec §6-P3），
+        // 详情归 skill.read，新增/更新/单条启停归 skill.write，删除归 skill.delete；
+        // 不新增批量/导入导出动作（无实现，NOT_RUN 具名）。**全部四条进
+        // PLATFORM_ADMIN_ACTIONS 第二道门（Spec §6-P4 默认"进"）**——resource 是
+        // ai_agent_skill（平台管理的 Agent 目录面，F09-A2-ter 同族；两先例口径张力已如实登记）。
+        // T0 终裁（合并时）：维持"进"（从严方向——两道门同时成立才放行）；
+        // F13-A1 的 flow.node.write"不进"口径保留，差异继续登记，待后续统一裁决。
+        // 权限行由 V33__agent_skill_permissions.sql 注册（沿用 V27 预留 7137-7140 的动作行
+        // 与 7142 页面 C 行，不占新号；默认不分配，由 provisioning 逐码授予）。
+        actions.put("skill.list", "ai:skill:list");
+        actions.put("skill.read", "ai:skill:read");
+        actions.put("skill.write", "ai:skill:write");
+        actions.put("skill.delete", "ai:skill:delete");
         return Collections.unmodifiableMap(actions);
     }
 
@@ -119,9 +135,16 @@ public final class AiCanonicalAction {
      * <p>因此本集合里的动作要求<b>两个独立条件同时成立</b>：
      * ① 身份显式持有该 scope；② 调用方是平台管理身份。
      * <b>本集合以外的动作行为不变</b>（仍只按 scope 判定），避免扩大改动面。
+     *
+     * <p><b>F11-A1 增补（2026-10-11，Spec §6-P4 默认"进"）</b>：{@code skill.*} 四条随
+     * Skills 管理面接线一并进本集合——{@code ai_agent_skill} 与 profile/prompt 同属
+     * 平台管理的 Agent 目录面（本类 javadoc 上文已明列）。<b>口径张力如实登记</b>：
+     * F13-A1 的 {@code flow.node.write} 用"资源带 tenant_id ⇒ 租户级、不适用本集合"的口径，
+     * 而本批按 F09 A2-ter 目录面口径"进"；两者并存，最终口径由 T0 裁决（本切片按 P4 默认执行）。
      */
     private static final Set<String> PLATFORM_ADMIN_ACTIONS = Set.of(
-            "agent.list", "agent.read", "agent.write", "agent.delete", "agent.activate");
+            "agent.list", "agent.read", "agent.write", "agent.delete", "agent.activate",
+            "skill.list", "skill.read", "skill.write", "skill.delete");
 
     /**
      * @param action 规范动作标识

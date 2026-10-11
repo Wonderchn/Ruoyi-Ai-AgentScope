@@ -33,8 +33,9 @@ const staticMenus = [
   { path: '/monitor/online', title: '在线用户', icon: 'Monitor', permission: 'monitor:online:list' },
   { path: '/monitor/server', title: '服务监控', icon: 'Monitor', permission: 'monitor:admin:list' },
   // W3-5 AI 管理域（成对核对表：src/config/permission-page-pairs.ts）。
-  // skills 无权限行（ragent 管理面未播种 C 行 ⇒ PAIR-GAP-NO-ROW），
-  // permission 留空 = 菜单恒显。agents 随 V27-7141 接 ai:agent:list；
+  // skills 已于 S2-F11-A1（2026-10-11）随管理面接线接 ai:skill:list
+  // （V33 沿用 V27 预留 7137-7140 + 7142）——PAIR-GAP-NO-ROW 归零。
+  // agents 随 V27-7141 接 ai:agent:list；
   // models/settings 随 V28-7150/7151/7152 接 ai:config:read；ingestion 随
   // S2-F06-A1 管线装配接既有 ai:config:read（V28-7150，复用）——各项均与路由 meta
   // 逐字一致（S2-F02-α 修正：此前 models 误挂已退役 system:model:list、
@@ -42,7 +43,7 @@ const staticMenus = [
   { path: '/ai/knowledge', title: '知识库', icon: 'Reading', permission: 'ai:kb:list' },
   { path: '/ai/models', title: '模型与提供方', icon: 'Cpu', permission: 'ai:config:read' },
   { path: '/ai/agents', title: 'Agent 定义', icon: 'ChatDotRound', permission: 'ai:agent:list' },
-  { path: '/ai/skills', title: 'Skills', icon: 'MagicStick', permission: '' },
+  { path: '/ai/skills', title: 'Skills', icon: 'MagicStick', permission: 'ai:skill:list' },
   { path: '/ai/mcp', title: 'MCP 工具目录', icon: 'SetUp', permission: 'mcp:tool:list' },
   { path: '/ai/ingestion', title: '摄取流水线', icon: 'Box', permission: 'ai:config:read' },
   { path: '/ai/settings', title: '系统设置', icon: 'Tools', permission: 'ai:config:read' },

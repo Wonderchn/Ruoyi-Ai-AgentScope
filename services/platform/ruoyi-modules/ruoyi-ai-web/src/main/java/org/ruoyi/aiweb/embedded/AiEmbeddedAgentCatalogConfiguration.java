@@ -29,12 +29,13 @@ import org.springframework.context.annotation.Import;
  * 运行期组件一并登记，否则 {@code AgentProfileAdminServiceImpl} 构造参数会找不到
  * {@code AgentPromptResolver}，应用 {@code APPLICATION FAILED TO START}。
  *
- * <p><b>F11（Skills）本批刻意不装</b>：{@code AgentSkillAdminServiceImpl} 依赖
- * {@code IntentNodeRegistry}，其唯一实现 {@code DefaultIntentClassifier} 又需要
- * {@code LLMService} / {@code PromptTemplateLoader} / {@code IntentTreeCacheManager} 等，
- * 该闭包同样未装配；盲装会反复重启试错。已另立卡（task-13 结论 / W4-T0-46），
- * 届时算清闭包再装。因此本类<b>不</b> import {@code AgentSkillController}、
- * {@code AgentSkillAdminServiceImpl}、{@code AgentSkillCacheManager}。
+ * <p><b>F11（Skills）本类仍不装（S2-F11-A1 起由独立配置接管）</b>：{@code AgentSkillAdminServiceImpl}
+ * 依赖 {@code IntentNodeRegistry}（唯一实现 {@code DefaultIntentClassifier} 的闭包由
+ * S1 引擎批装配）——S2-F11-A1 据此另开 {@code AiEmbeddedAgentSkillConfiguration}
+ * （与引擎闭包同门三元门控），<b>刻意不放进本类</b>：本类门控只有
+ * {@code ai.integration.enabled}，若在此盲装技能面会让"引擎关"的形态下缺
+ * {@code IntentNodeRegistry} 直接启动失败。因此本类依然<b>不</b> import
+ * {@code AgentSkillController}、{@code AgentSkillAdminServiceImpl}、{@code AgentSkillCacheManager}。
  *
  * <p><b>授权不在本层</b>：内层前缀 {@code /internal/ai/v1/**} 对外由
  * {@code AiInternalAccessBoundaryFilter} 关成 404；公开面必须经 {@code AiGatewayController}
