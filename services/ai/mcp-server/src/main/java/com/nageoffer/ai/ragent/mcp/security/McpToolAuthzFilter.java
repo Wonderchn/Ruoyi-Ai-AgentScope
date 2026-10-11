@@ -63,6 +63,11 @@ import java.util.Set;
  *
  * <p><b>判定语义（fail-closed，无默认放行）。</b>
  * <ul>
+ *   <li><b>主体闸门</b>：到达受保护端点的每个 REQUEST 分派请求都要求主体已由委托验签链建立
+ *       （{@link PrincipalContext#get()} 非空）；缺席一律 401 {@code AUTH_REQUIRED}——
+ *       容器按归一化路径做映射、而 framework 内部前缀自检用 raw URI，路径变体
+ *       （{@code //}、{@code /./}、{@code %2e}、{@code ;} 路径参数）会绕过后者但<b>不会</b>
+ *       绕过本过滤器注册面，本闸门即在该处兜住（A1 复核 F1 修复，2026-10-11）；</li>
  *   <li>只有 {@code POST} 的 JSON-RPC 消息带工具调用语义；仅 {@code tools/call} 判定，
  *       其余方法（initialize / tools/list / notifications）原样放行；</li>
  *   <li>工具名取自请求体（协议载体，非业务数据），随后把请求体<b>原字节</b>重新暴露给
@@ -130,6 +135,22 @@ public class McpToolAuthzFilter implements Filter {
             return;
         }
 
+        // ===== 主体闸门（A1 复核 F1 修复）：到达受保护端点的【每个】请求都必须已有主体。 =====
+        // 背景：容器按"解码+归一化"后的路径做过滤器/servlet 映射，而 framework 委托验签过滤器
+        // 的内部前缀自检用 raw getRequestURI()（DelegatedPrincipalFilter.isProtectedPath）——
+        // `//internal/ai/v1/mcp`、`/./…`、`/%2e/…` 等变体虽命中映射（本过滤器照常执行），
+        // 却在 framework 自检处被判"非前缀"而整链跳过鉴权。本闸门在注册面内兜住该缺口：
+        // 主体缺席（无论请求形态：initialize / tools/list / GET SSE / DELETE / tools/call）
+        // 一律 401 AUTH_REQUIRED，与"无凭据"同形；工具执行面的判定在其后照旧。
+        ExecutionPrincipal gatedPrincipal = PrincipalContext.get();
+        if (gatedPrincipal == null) {
+            log.warn("mcp principal gate rejected errorCode={} method={} path={}",
+                    P04AiErrorCode.AUTH_REQUIRED.name(), servletRequest.getMethod(),
+                    servletRequest.getRequestURI());
+            writeReject(servletResponse, P04AiErrorCode.AUTH_REQUIRED);
+            return;
+        }
+
         // 工具身份只存在于 POST 的 JSON-RPC 消息里；GET（SSE）/DELETE（会话终止）无工具调用语义
         if (!POST_METHOD.equalsIgnoreCase(servletRequest.getMethod())) {
             chain.doFilter(request, response);
@@ -162,16 +183,6 @@ public class McpToolAuthzFilter implements Filter {
             return;
         }
 
-        ExecutionPrincipal principal = PrincipalContext.get();
-        if (principal == null) {
-            // 受保护前缀上委托验签过滤器必须先行：主体缺席 = 装配错误，fail-closed
-            log.warn("mcp tool authz rejected errorCode={} reason=principal-missing method={} path={}",
-                    P04AiErrorCode.AUTHORIZATION_UNAVAILABLE.name(),
-                    servletRequest.getMethod(), servletRequest.getRequestURI());
-            writeReject(servletResponse, P04AiErrorCode.AUTHORIZATION_UNAVAILABLE);
-            return;
-        }
-
         Set<String> requiredActions = McpDelegatedToolPolicy.requiredActions(toolName).orElse(null);
         if (requiredActions == null) {
             // 未登记工具（白名单外，含写类/出网/未知名字）：与无权同形拒绝，不泄露差异
@@ -179,9 +190,9 @@ public class McpToolAuthzFilter implements Filter {
             return;
         }
 
-        DelegatedPrincipal delegated = new DelegatedPrincipal(principal.issuer(), principal.tenantId(),
-                principal.userId(), principal.membershipId(), principal.policyVersion(),
-                principal.scopes(), principal.jti());
+        DelegatedPrincipal delegated = new DelegatedPrincipal(gatedPrincipal.issuer(), gatedPrincipal.tenantId(),
+                gatedPrincipal.userId(), gatedPrincipal.membershipId(), gatedPrincipal.policyVersion(),
+                gatedPrincipal.scopes(), gatedPrincipal.jti());
         String resourceRef = RESOURCE_REF_PREFIX + toolName;
         for (String action : requiredActions) {
             AuthorizationChecker.AuthorizeResult result;
