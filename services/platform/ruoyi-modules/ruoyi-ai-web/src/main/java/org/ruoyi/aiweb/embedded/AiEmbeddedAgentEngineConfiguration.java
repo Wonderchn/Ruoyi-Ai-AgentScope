@@ -159,8 +159,10 @@ public class AiEmbeddedAgentEngineConfiguration {
             /** 引擎运行的在途流闸门（Redisson 支撑；无 Redis 时以缺依赖响亮失败，不降级）。 */
             @Bean
             @ConditionalOnMissingBean
-            public AgentRunGate agentRunGate(RedissonClient redissonClient, AgentProperties agentProperties) {
-                return new AgentRunGate(redissonClient, agentProperties);
+            public AgentRunGate agentRunGate(RedissonClient redissonClient, AgentProperties agentProperties,
+                                             org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder> tenantScopeBinder) {
+                // ENV-B5b 泄漏修复：释放钩子线程无租户上下文，需经端口重绑定（键前缀对称）
+                return new AgentRunGate(redissonClient, agentProperties, tenantScopeBinder);
             }
 
             /**
