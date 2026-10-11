@@ -1,21 +1,25 @@
 <!--
   Skills（04-page-map「Skills」admin /ai/skills）。
 
-  ## 分母（02-api-map.json AgentSkillController，ai_reference_only）
+  ## 可达性（S2-F11-A1，2026-10-11 更正：解除 BLOCKED-BY-EMBEDDED-REGISTRY）
 
-  GET /agent-skills、GET /agent-skills/tool-options、GET /agent-skills/{id}、
-  POST /agent-skills、PUT /agent-skills/{id}、DELETE /agent-skills/{id}、
-  POST /agent-skills/{id}/enabled（启停是 POST + body，不是 PUT changeStatus）。
+  7 条白名单路由已随 F11-A1 接线：`AiEmbeddedAgentSkillConfiguration` 登记
+  `AgentSkillController`（三件套：类级 /internal/ai/v1/agent-catalog + 整数
+  `ApiEnvelope` + GET 交付回执），`AiGatewayController.ROUTES` 逐条放行
+  `/api/ai/v1/agent-catalog/agent-skills**`（读=skill.list/skill.read，
+  写=skill.write/skill.delete；四条动作全部要求平台管理身份）。
+  **装配随 S1 引擎闭包门（ragent.engine.type=agent）**：引擎关的形态下内层未命中
+  fail-closed 503（页面如实显示服务端结论，不假装成功）。
+  列表 `data` 是 `IPage`（records/total）——页面按此解析（整数信封，非 ragent Result）。
 
-  ## ⚠️ BLOCKED-BY-EMBEDDED-REGISTRY
+  ## 本切片范围（A1）
 
-  未进内嵌装配 ⇒ 本形态 404。页面照分母先行（列表 + 启停按钮契约形），
-  联调判据 NOT_RUN；信封 ragent Result（code:"0"）。
+  仅**列表 + 单条启停**（启停 = POST `.../{id}/enabled` + query `enabled`，不是 PUT
+  changeStatus）。新增/编辑/删除表单与详情视图属 F11-A2（可选后置），页面不放按钮。
 -->
 <script setup lang="ts">
 import { ref } from 'vue';
 import { aiApi } from '@/api';
-import BlockedBy from '@/components/BlockedBy.vue';
 import { errorMessageOf } from '@/utils';
 
 const rows = ref<Record<string, unknown>[]>([]);
@@ -27,20 +31,15 @@ async function load() {
   loading.value = true;
   error.value = '';
   try {
-    const envelope = await aiApi.agentSkills.list();
-    if (envelope && typeof envelope === 'object' && 'data' in envelope) {
-      const data = (envelope as { data?: unknown }).data;
-      rows.value = Array.isArray(data) ? data : [];
-      loaded.value = true;
-    }
-    else {
-      rows.value = [];
-      loaded.value = false;
-      error.value = '端点未装配或返回形状不符合 ragent Result 契约';
-    }
+    // 活族形态：共享 client 解包 `ApiEnvelope`（code===200 才返回 data），
+    // data 是 `IPage`（records/total/current/size）——**不是数组**。
+    const page = await aiApi.agentSkills.list({ current: 1, size: 20 });
+    rows.value = Array.isArray(page.records) ? page.records : [];
+    loaded.value = true;
   }
   catch (e) {
     error.value = errorMessageOf(e);
+    rows.value = [];
     loaded.value = false;
   }
   finally {
@@ -48,7 +47,7 @@ async function load() {
   }
 }
 
-/** 启停（POST /agent-skills/{id}/enabled + {enabled}）。 */
+/** 启停（POST /agent-catalog/agent-skills/{id}/enabled + query `enabled`）。 */
 const toggling = ref('');
 
 async function toggleEnabled(row: Record<string, unknown>) {
@@ -75,15 +74,10 @@ function str(row: Record<string, unknown>, key: string): string {
 
 <template>
   <div>
-    <BlockedBy
-      reason="EMBEDDED-REGISTRY"
-      detail="AgentSkillController（/agent-skills 7 条，02-api-map 分母）未进本形态内嵌装配，调用将 404。页面按分母与 ragent Result 契约先行开发；联调判据 NOT_RUN。启停契约：POST /agent-skills/{id}/enabled + {enabled}（不是平台式 PUT changeStatus）。"
-    />
-
     <ElCard>
       <template #header>
         <div class="toolbar">
-          <span>Skills（GET /agent-skills）</span>
+          <span>Skills（GET /api/ai/v1/agent-catalog/agent-skills）</span>
           <ElButton data-testid="skills-reload" :loading="loading" @click="load()">
             加载
           </ElButton>
@@ -102,7 +96,7 @@ function str(row: Record<string, unknown>, key: string): string {
         正在加载…
       </div>
       <div v-else-if="!loaded" data-testid="skills-idle" class="state-block">
-        尚未加载（本形态端点未装配，按 NOT_RUN 口径不自动发起）。
+        尚未加载（点击「加载」读取技能列表）。
       </div>
       <div v-else-if="rows.length === 0" data-testid="skills-empty" class="state-block">
         成功响应，没有 Skill。
@@ -113,6 +107,7 @@ function str(row: Record<string, unknown>, key: string): string {
             {{ str(row, 'id') }}
           </template>
         </ElTableColumn>
+        <ElTableColumn prop="skillCode" label="标识" min-width="140" />
         <ElTableColumn prop="name" label="名称" min-width="160" />
         <ElTableColumn prop="description" label="描述" min-width="240" show-overflow-tooltip />
         <ElTableColumn label="启用" width="110">

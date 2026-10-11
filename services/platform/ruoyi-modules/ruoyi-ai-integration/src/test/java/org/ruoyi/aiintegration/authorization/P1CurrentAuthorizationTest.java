@@ -221,6 +221,12 @@ class P1CurrentAuthorizationTest {
         // 旧 34 条**逐项集合相等**（不是只比数量），批准增量**逐项集合相等**（恰好这 4 条），
         // 总数等于完整清单。**不得退化成 assertTrue(size >= 34)** —— 那会让"删掉一条再偷偷加两条"
         // 通过；也不得只调大那个数字。
+        // F11-A1（2026-10-11，维护者批"新建最小样本+安全约束+本期范围"）：Skills 管理面接线批
+        // 再增**恰好 4 条**：skill.list / skill.read / skill.write / skill.delete → ai:skill:*。
+        // 各批增量**分开登记**：F13-SLICE-1 的 4 条与 F11-A1 的 4 条各自逐项相等，
+        // diff 必须等于两者之并集——"增量集合"是已批准批次的并，不再混成一个数。
+        // 本树口径：34 + 4 + 4 = 42（F13-A1 的 flow.node.write 第 39 条尚未并入本树分支
+        // feat/s2-f13-a1-graph-crud；并入后合并口径为 43，F11-A1 四条即第 40-43 条）。
         Set<String> oldFrozen = Set.of(
                 "kb.list", "kb.read", "kb.write", "kb.delete", "kb.acl.manage", "kb.retrieve",
                 "document.read", "document.download", "document.list", "document.upload",
@@ -236,8 +242,12 @@ class P1CurrentAuthorizationTest {
                 "tool.sandbox.write");
         Set<String> approvedIncrement = Set.of(
                 "flow.list", "flow.read", "flow.write", "flow.delete");
+        Set<String> approvedF11Increment = Set.of(
+                "skill.list", "skill.read", "skill.write", "skill.delete");
+        Set<String> approvedAllIncrements = new LinkedHashSet<>(approvedIncrement);
+        approvedAllIncrements.addAll(approvedF11Increment);
         Set<String> fullList = new LinkedHashSet<>(oldFrozen);
-        fullList.addAll(approvedIncrement);
+        fullList.addAll(approvedAllIncrements);
 
         Set<String> actual = AiActionRegistry.knownActions();
 
@@ -246,8 +256,8 @@ class P1CurrentAuthorizationTest {
         assertTrue(actual.containsAll(oldFrozen),
                 "old frozen actions must be fully preserved; missing=" + diff(oldFrozen, actual));
         // ② 批准增量逐项集合相等：多的、少的、改名的都要红
-        assertEquals(approvedIncrement, diff(new LinkedHashSet<>(actual), oldFrozen),
-                "approved increment must equal the F13-SLICE-1 set exactly");
+        assertEquals(approvedAllIncrements, diff(new LinkedHashSet<>(actual), oldFrozen),
+                "approved increments must equal the union of F13-SLICE-1 + F11-A1 sets exactly");
         // ③ 总数等于完整清单（作为 ①② 的推论，仍显式断言）
         assertEquals(fullList.size(), actual.size(),
                 "total must equal the complete list, not merely be >= 34");
@@ -256,7 +266,8 @@ class P1CurrentAuthorizationTest {
         // ④ (动作 -> 权限) 逐项相等。Spec §5.1 第 1 条要求的是"映射"逐项相等，不只是动作名集合相等。
         // 只比名字会漏掉"值替换"这一类变异：例如把 kb.read 的权限改成 ai:kb:list，
         // 动作名集合不变、总数不变，①②③ 全绿，P1AiPermissionContractTest 也拦不住
-        // （新值同样在 sys_menu 里有行）。所以这里把全部 38 条映射钉死：
+        // （新值同样在 sys_menu 里有行）。所以这里把全部 42 条映射钉死
+        //（本树口径 = 34 + flow.*4 + F11-A1 skill.*4；F13-A1 并入后为 43 条）：
         // 任何一条的值被改动，都必须显式修改本清单，否则本判据红。
         Map<String, String> expectedPairs = new LinkedHashMap<>();
         expectedPairs.put("agent.activate", "ai:agent:activate");
@@ -296,6 +307,12 @@ class P1CurrentAuthorizationTest {
         expectedPairs.put("run.resume", "ai:run:resume");
         expectedPairs.put("run.stream", "ai:run:stream");
         expectedPairs.put("run.submit", "ai:run:submit");
+        // F11-A1（Skills 管理面）：4 条新动作 → ai:skill:*（权限行由 V33 注册，
+        // 沿用 V27 预留的 7137-7140 + 7142，不占新号）。
+        expectedPairs.put("skill.delete", "ai:skill:delete");
+        expectedPairs.put("skill.list", "ai:skill:list");
+        expectedPairs.put("skill.read", "ai:skill:read");
+        expectedPairs.put("skill.write", "ai:skill:write");
         expectedPairs.put("tool.sandbox.write", "ai:tool:sandbox:write");
         Map<String, String> actualPairs = new LinkedHashMap<>();
         for (String action : actual) {
@@ -319,6 +336,11 @@ class P1CurrentAuthorizationTest {
         assertEquals(Optional.of("ai:run:approve"), AiActionRegistry.permissionOf("run.approve"));
         assertEquals(Optional.of("ai:run:reconcile"), AiActionRegistry.permissionOf("run.reconcile"));
         assertEquals(Optional.of("ai:tool:sandbox:write"), AiActionRegistry.permissionOf("tool.sandbox.write"));
+        // F11-A1：四条 skill.* 映射逐条钉死（值替换同样会被本节抓到）
+        assertEquals(Optional.of("ai:skill:list"), AiActionRegistry.permissionOf("skill.list"));
+        assertEquals(Optional.of("ai:skill:read"), AiActionRegistry.permissionOf("skill.read"));
+        assertEquals(Optional.of("ai:skill:write"), AiActionRegistry.permissionOf("skill.write"));
+        assertEquals(Optional.of("ai:skill:delete"), AiActionRegistry.permissionOf("skill.delete"));
         assertTrue(AiActionRegistry.permissionOf("tool.sandbox.admin").isEmpty());
         assertTrue(AiActionRegistry.permissionOf("mcp.custom.write").isEmpty());
         assertTrue(AiActionRegistry.permissionOf("rag.chat").isEmpty());

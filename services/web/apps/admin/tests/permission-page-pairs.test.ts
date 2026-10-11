@@ -157,7 +157,7 @@ describe('双向断言二：有页面 ⇒ 必须有权限行（或显式登记�
     }
   });
 
-  it('无权限行的 AI 页面（ragent 管理面）必须全部登记在 PAIR-GAP 清单里，数量为 1', () => {
+  it('无权限行的 AI 页面（ragent 管理面）必须全部登记在 PAIR-GAP 清单里，数量为 0', () => {
     const routers = readRoutersSource();
     const gaps = pairGapNoRows();
     const gapRoutes = new Set(gaps.map(pair => pair.route));
@@ -174,9 +174,10 @@ describe('双向断言二：有页面 ⇒ 必须有权限行（或显式登记�
     // 2026-10-07 RW-03：/ai/agents 已随端点落地接到 ai:agent:list（V27-7141）；
     // 2026-10-07 RW-07：/ai/settings 改由 runtime-config/settings 服务（V28-7150）；
     // 2026-10-10 S2-F06-A1：/ai/ingestion 随管线 CRUD 装配接既有 ai:config:read
-    // （V28-7150 复用，零新增行；任务面仍未装配，但页面路由权限取管线面）
-    // ⇒ 余下 skills 一条。
-    assert.equal(gaps.length, 1, `PAIR-GAP-NO-ROW 应为 1（skills），实际 ${gaps.length}`);
+    // （V28-7150 复用，零新增行；任务面仍未装配，但页面路由权限取管线面）；
+    // 2026-10-11 S2-F11-A1：/ai/skills 随 Skills 管理面接线接 ai:skill:list
+    // （V33 沿用 V27 预留 7137-7140 + 7142）⇒ PAIR-GAP-NO-ROW 归零。
+    assert.equal(gaps.length, 0, `PAIR-GAP-NO-ROW 应为 0（skills 已随 F11-A1 接线），实际 ${gaps.length}`);
   });
 });
 

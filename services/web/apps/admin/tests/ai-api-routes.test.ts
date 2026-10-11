@@ -9,10 +9,11 @@
  * - **已迁移族不在此文件**：Agent 目录（RW-03）见 `agents-admin.test.ts`，
  *   运行配置权威（RW-07，承接旧 `/system/model|provider` 与 `/rag/settings`）见
  *   `runtime-config-admin.test.ts`，摄取**管线 CRUD**（S2-F06-A1，迁到
- *   `/api/ai/v1/ingestion/pipelines**` 活族）见 `ingestion-admin.test.ts`。
+ *   `/api/ai/v1/ingestion/pipelines**` 活族）见 `ingestion-admin.test.ts`，
+ *   Skills 管理面（S2-F11-A1，迁到 `/api/ai/v1/agent-catalog/agent-skills**` 活族，
+ *   启停改 query）见 `skills-admin.test.ts`。
  *
- * 另钉两个契约差异（防"照模板写"回归）：
- * - `agentSkills.setEnabled` 是 **POST** `/agent-skills/{id}/enabled`（不是 PUT）；
+ * 另钉一个契约差异（防"照模板写"回归）：
  * - ragent 信封 `code:'0'`（字符串）必须经 `ragResultEnvelopeOf` 判别，
  *   `classifyResponse('0')` 会把它当 business-error —— 这是**显式登记**的坑。
  */
@@ -135,21 +136,15 @@ describe('MCP 目录：分母路径（BLOCKED-BY-G-22，形状先行）', () => 
 });
 
 describe('ragent 管理面（未装配族）：分母路径与信封差异（BLOCKED-BY-EMBEDDED-REGISTRY）', () => {
-  it('skills 与摄取任务面路径逐字', async () => {
+  it('摄取任务面路径逐字（仍未装配：裸分母路径 + ragent 字符串信封）', async () => {
     const { calls, client } = harness();
     const api = createAiApi(client);
 
-    await api.agentSkills.list();
-    assert.equal(last(calls).method, 'GET');
-    assert.equal(last(calls).url, '/agent-skills');
-
-    await api.agentSkills.toolOptions();
-    assert.equal(last(calls).method, 'GET');
-    assert.equal(last(calls).url, '/agent-skills/tool-options');
-
     // 摄取**管线**面已于 S2-F06-A1 迁到活族（`/api/ai/v1/ingestion/pipelines**`，
     // 整数信封 + 共享 client）——契约断言见 `ingestion-admin.test.ts`。
-    // 此处只留**仍未装配**的任务面（裸分母路径 + ragent 字符串信封）。
+    // Skills 面已于 S2-F11-A1 迁到活族（`/api/ai/v1/agent-catalog/agent-skills**`）
+    // ——契约断言见 `skills-admin.test.ts`。
+    // 此处只留**仍未装配**的任务面。
     await api.ingestionTasks.listTasks();
     assert.equal(last(calls).method, 'GET');
     assert.equal(last(calls).url, '/ingestion/tasks');
@@ -162,15 +157,6 @@ describe('ragent 管理面（未装配族）：分母路径与信封差异（BLO
   // RW-07（2026-10-07）：`ragSettings` 子域（旧 `/rag/settings`，ragent 内层未进内嵌装配
   // 且不在网关白名单）已从工厂**移除**——设置面由 `/runtime-config/settings` 承接
   // （见 `runtime-config-admin.test.ts`）。
-
-  it('⚠️ 启停契约是 POST /agent-skills/{id}/enabled + {enabled}（不是 PUT changeStatus）', async () => {
-    const { calls, client } = harness();
-    const api = createAiApi(client);
-    await api.agentSkills.setEnabled('s1', true);
-    assert.equal(last(calls).method, 'POST');
-    assert.equal(last(calls).url, '/agent-skills/s1/enabled');
-    assert.deepEqual(JSON.parse(last(calls).body ?? '{}'), { enabled: true });
-  });
 
   it('⚠️ ragent Result 信封：code 是字符串 "0"，classifyResponse 会判错——必须用 ragResultEnvelopeOf', () => {
     // 平台共享层的语义：code 必须是 200（数值）——字符串 '0' 不是成功。

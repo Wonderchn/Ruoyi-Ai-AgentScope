@@ -155,9 +155,10 @@ export const layoutRouter: RouteRecordRaw[] = [
       },
       {
         // W3-5：AI 管理域页面族（成对核对表见 src/config/permission-page-pairs.ts）。
-        // permission 串逐字取自 sys_menu 分母（V2/V4/V14/V16/V19/V27/V28）；
-        // skills 页**没有**对应权限行（端点未装配，T0 裁决不播 C 行）——成对表里
-        // 登记为 PAIR-GAP-NO-ROW；ai/ingestion 已于 S2-F06-A1（2026-10-10）随
+        // permission 串逐字取自 sys_menu 分母（V2/V4/V14/V16/V19/V27/V28/V33）；
+        // skills 页已于 S2-F11-A1（2026-10-11）随管理面接线接到 ai:skill:list
+        // （V33 沿用 V27 预留 7137-7140 + 7142 C 行）——不再是 PAIR-GAP-NO-ROW；
+        // ai/ingestion 已于 S2-F06-A1（2026-10-10）随
         // 管线 CRUD 装配接到既有 ai:config:read（V28-7150，不新增权限行）。
         // ai/agents 已由 V27（7132-7136 权限行 + 7141 C 行）与 RW-03 成对，权限串逐字 ai:agent:list。
         // ai/models 与 ai/settings 已由 V28（7150-7152）与 RW-07 成对，权限串逐字 ai:config:read。
@@ -198,10 +199,14 @@ export const layoutRouter: RouteRecordRaw[] = [
         meta: { title: 'Agent 定义', icon: 'ChatDotRound', permission: 'ai:agent:list' },
       },
       {
+        // S2-F11-A1（2026-10-11）：Skills 管理面 7 条已装配并进白名单
+        // （AiEmbeddedAgentSkillConfiguration + AiGatewayController.ROUTES，
+        // 读=skill.list/skill.read，写=skill.write/skill.delete，四条均过平台管理身份第二道门），
+        // 权限行 V33 沿用 V27 预留 7137-7140（动作）+ 7142（页面 C 行）⇒ 与成对表 live 行一致。
         path: 'ai/skills',
         name: 'aiSkills',
         component: () => import('@/pages/ai/skills/index.vue'),
-        meta: { title: 'Skills', icon: 'MagicStick', permission: '' },
+        meta: { title: 'Skills', icon: 'MagicStick', permission: 'ai:skill:list' },
       },
       {
         path: 'ai/mcp',
