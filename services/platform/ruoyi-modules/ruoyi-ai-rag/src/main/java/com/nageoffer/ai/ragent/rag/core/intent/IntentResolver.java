@@ -22,7 +22,6 @@ import com.nageoffer.ai.ragent.rag.dto.IntentCandidate;
 import com.nageoffer.ai.ragent.rag.dto.SubQuestionIntent;
 import com.nageoffer.ai.ragent.framework.trace.RagTraceNode;
 import com.nageoffer.ai.ragent.rag.core.rewrite.RewriteResult;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
@@ -40,12 +39,29 @@ import static com.nageoffer.ai.ragent.rag.enums.IntentKind.SYSTEM;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class IntentResolver {
 
-    @Qualifier("defaultIntentClassifier")
     private final IntentClassifier intentClassifier;
     private final Executor intentClassifyExecutor;
+
+    /**
+     * 显式构造（替代 {@code @RequiredArgsConstructor}，S1 装配批 R1）：两处限定符都写在
+     * <b>构造参数</b>上——platform 树没有 {@code services/ai/lombok.config}，字段上的
+     * {@code @Qualifier} 不会进入 Lombok 生成的构造参数（原形态只是"接口恰有一个实现"侥幸可用，
+     * RW-08 已登记该潜伏地雷）。
+     *
+     * <ul>
+     *   <li>{@code defaultIntentClassifier}：按名钉住唯一实现（闭包以该名注册
+     *       {@code DefaultIntentClassifier}）；</li>
+     *   <li>{@code intentClassifyExecutor}：platform 侧两个 {@code @Primary} 的 {@code Executor}
+     *       （{@code ThreadPoolConfig}）会让按类型注入以"多个 primary"启动期失败，必须按名注入。</li>
+     * </ul>
+     */
+    public IntentResolver(@Qualifier("defaultIntentClassifier") IntentClassifier intentClassifier,
+                          @Qualifier("intentClassifyExecutor") Executor intentClassifyExecutor) {
+        this.intentClassifier = intentClassifier;
+        this.intentClassifyExecutor = intentClassifyExecutor;
+    }
 
     @RagTraceNode(name = "intent-resolve", type = "INTENT")
     public List<SubQuestionIntent> resolve(RewriteResult rewriteResult) {

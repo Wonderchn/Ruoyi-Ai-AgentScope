@@ -52,9 +52,10 @@ import java.util.concurrent.TimeUnit;
  *       仅记日志，缓存故障不阻断管理面；但"缺主体"不是 I/O 故障，任何方法都不吞。</li>
  * </ul>
  *
- * <p><b>共享面独占声明</b>：同一文件/同一键由并行分支 S1（{@code feat/s2-engine-s1-assembly}）
- * 同步改造，实现形状刻意逐字对齐（key 前缀、fail-closed 位置、错误语义一致），
- * 合并时由 T0 裁决取舍；本改造的树内红→绿证据见 {@code AgentSkillCacheTenantScopeTest}。
+ * <p><b>共享面合并记录</b>：本文件曾由并行分支 S1（{@code feat/s2-engine-s1-assembly}）
+ * 与 F11-A1 同步改造，实现形状逐字对齐（key 前缀、fail-closed 位置、错误语义一致）；
+ * 合并时按该一致形状收敛，注释取 F11-A1 详版（T0 裁决）。树内红→绿证据见
+ * {@code AgentSkillCacheTenantScopeTest}（F11-A1）与 {@code AgentSkillCacheTenantContractTest}（S1）。
  */
 @Slf4j
 @Component
@@ -67,7 +68,8 @@ public class AgentSkillCacheManager {
     /**
      * key 前缀，完整 key 为 {@code ragent:agent:enabled-skills:v1:{tenantId}}；
      * 缓存结构随技能数据面变化时递增版本，避免旧缓存形状漂移；
-     * key 形状变更必须同步本契约注释与用例判据。
+     * key 形状变更必须同步本契约注释与用例判据（{@code AgentSkillCacheTenantScopeTest} /
+     * {@code AgentSkillCacheTenantContractTest}）。
      */
     private static final String CACHE_KEY_PREFIX = "ragent:agent:enabled-skills:v1:";
 
@@ -125,3 +127,4 @@ public class AgentSkillCacheManager {
         }
     }
 }
+

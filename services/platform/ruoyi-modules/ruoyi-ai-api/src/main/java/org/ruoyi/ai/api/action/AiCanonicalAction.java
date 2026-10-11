@@ -75,13 +75,23 @@ public final class AiCanonicalAction {
         actions.put("flow.read", "ai:flow:read");
         actions.put("flow.write", "ai:flow:write");
         actions.put("flow.delete", "ai:flow:delete");
+        // F13-A1（2026-10-11，维护者立项批注「spec开始立项」）：op0 图 CRUD
+        // （节点/边/组件的写面）新增**恰一条**动作——E6-RW17 §5 清单第 6 条
+        // `flow.node.write` → `ai:flow:design`（第 39 条）。图读（GET）复用 flow.read，
+        // 不另立 flow.node.read；不按节点/边/组件拆三条（授权清单只给了一条，
+        // 拆分=超清单增量）。资源仍是 ai_flow_workflow（带 tenant_id ⇒ 租户级，
+        // 不适用 PLATFORM_ADMIN_ACTIONS）。权限行由 V32 注册（menu_id 7203，
+        // 默认不分配，由 provisioning 逐码授予）。
+        actions.put("flow.node.write", "ai:flow:design");
         // F11-A1（2026-10-11，维护者批"新建最小样本＋安全约束＋本期范围"）：Skills 管理面
         // 接线批新增**恰四条**动作——skill.list / skill.read / skill.write / skill.delete
-        // → ai:skill:*。七条既有端点对号：列表与 tool-options 归 skill.list（Spec §6-P3），
+        // → ai:skill:*（第 40-43 条）。七条既有端点对号：列表与 tool-options 归 skill.list（Spec §6-P3），
         // 详情归 skill.read，新增/更新/单条启停归 skill.write，删除归 skill.delete；
         // 不新增批量/导入导出动作（无实现，NOT_RUN 具名）。**全部四条进
         // PLATFORM_ADMIN_ACTIONS 第二道门（Spec §6-P4 默认"进"）**——resource 是
         // ai_agent_skill（平台管理的 Agent 目录面，F09-A2-ter 同族；两先例口径张力已如实登记）。
+        // T0 终裁（合并时）：维持"进"（从严方向——两道门同时成立才放行）；
+        // F13-A1 的 flow.node.write"不进"口径保留，差异继续登记，待后续统一裁决。
         // 权限行由 V33__agent_skill_permissions.sql 注册（沿用 V27 预留 7137-7140 的动作行
         // 与 7142 页面 C 行，不占新号；默认不分配，由 provisioning 逐码授予）。
         actions.put("skill.list", "ai:skill:list");

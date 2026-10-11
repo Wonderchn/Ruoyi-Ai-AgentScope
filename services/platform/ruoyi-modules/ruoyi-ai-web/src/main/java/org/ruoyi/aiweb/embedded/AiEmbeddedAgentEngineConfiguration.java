@@ -38,6 +38,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.redisson.api.RedissonClient;
 
@@ -77,23 +78,21 @@ import java.util.List;
  * C3.2 与 {@code LocalWhitelistHandlerCoverageTest} 的教训是同一件事：
  * "放行了但没人接"必须被结构性排除，而不是靠人工记得。
  *
- * <p><b>当前仍然缺失的前置（NOT_COMPLETE，逐条点名）。</b>
- * 引擎面完整可跑还需要下面前置，它们属 <b>WP-032</b>（知识/向量/检索链，T3 租约）
- * 与 WP-033 的 ReAct 装配部分：
- * <ul>
- *   <li>{@code KnowledgeSearchFacade} 及其链
- *       （{@code QueryRewriteService}/{@code IntentResolver}/{@code IntentGuidanceService}/
- *       {@code RetrievalEngine}/{@code CitationContextEnricher}/{@code RAGPromptService}）
- *       —— {@code AgentToolCatalog} 的构造依赖；</li>
- *   <li>{@code AgentPromptResolver}（{@code AgentProfileMapper}/{@code AgentPromptMapper}/
- *       {@code AgentPromptCacheManager}）、{@code IntentNodeRegistry}、
- *       {@code AgentSkillRegistry}、{@code AgentMcpClients}、
- *       {@code AgentMemoryRepository}/{@code AgentMemoryJudge}/{@code AgentMemoryConsolidator}、
- *       {@code AgentContextTrimmer}/{@code AgentContextCompactor}、
- *       {@code ReActAgentProvider}、{@code AgentChatServiceImpl}、{@code OpenAIChatModel}。</li>
- * </ul>
- * 这些不是"配置漏了一行"，而是**整个检索/记忆/人设链尚未装配**。本组刻意
- * <b>不</b>用替身/空实现把它们补齐：替身会让"引擎可用"这个结论变成假的
+ * <p><b>引擎链装配已在 S1 批落地（2026-10-11）。</b>
+ * {@link #EngineEnabled} 通过 {@code @Import(AiEmbeddedAgentEngineClosureConfiguration.class)}
+ * 在门内挂入最小闭包（A1–A5 四组注册点）：检索链
+ * （{@code KnowledgeSearchFacade}/{@code QueryRewriteService}/{@code IntentResolver}/
+ * {@code IntentGuidanceService}/{@code RetrievalEngine}/{@code CitationContextEnricher}/
+ * {@code RAGPromptService} 等）、记忆链（{@code AgentMemoryRepository}/{@code AgentMemoryJudge}/
+ * {@code AgentMemoryConsolidator}/中间件三件）、技能读端（{@code AgentSkillRegistry} + 租户化缓存）、
+ * {@code AgentMcpClients}、{@code ReActAgentProvider}/{@code AgentChatServiceImpl} 与
+ * {@code OpenAIChatModel}（复刻 {@code agentChatModel} 构造，避免引入
+ * {@code AgentEngineConfiguration} 的顺序敏感二重声明）。逐项清单与边界见该类的类注释。
+ * {@code AgentPromptResolver} 仍由 F09 目录面（{@code AiEmbeddedAgentCatalogConfiguration}）提供，
+ * 本组不重复声明。
+ *
+ * <p><b>依旧不放松失败语义：缺前置就响亮失败。</b>本组刻意
+ * <b>不</b>用替身/空实现补齐闭包缺口：替身会让"引擎可用"这个结论变成假的
  * （返回空检索结果、没有工具目录），而 {@code AgentMetaController} 会把
  * 空能力清单当真事实对外声明。宁可启动期点名失败。
  *
@@ -125,6 +124,7 @@ public class AiEmbeddedAgentEngineConfiguration {
         @ConditionalOnProperty(name = "ragent.engine.type", havingValue = "agent")
         @EnableConfigurationProperties({AgentProperties.class, AgentMemoryProperties.class,
                 AgentMcpProperties.class})
+        @Import(AiEmbeddedAgentEngineClosureConfiguration.class)
         public static class EngineEnabled {
 
             // ---------------------------------------------------------- 配置权威（D02/C1）
@@ -183,10 +183,17 @@ public class AiEmbeddedAgentEngineConfiguration {
              * <p>依赖直接写在方法签名上，是刻意的：{@code AgentChatService} 缺席时容器
              * <b>启动失败</b>而不是"少一条路由"。先由
              * {@link #engineChainReadiness} 给出点名清单，再落到容器异常。
+             *
+             * <p>{@code engineChainReadiness} 作为<b>首位参数存在</b>（不读其返回值）：
+             * 方法参数按序解析，把它排在第一位才能让点名判据先于 {@code AgentChatService} 被解析。
+             * 否则容器会先在这条控制器上撞到第一个缺失的 bean
+             * （{@code NoSuchBeanDefinitionException}），"缺失前置一次性列全"的清单
+             * 在启动日志里根本看不到（S1 实测口径：参数排在后面时即如此）。
              */
             @Bean
             @ConditionalOnMissingBean
-            public AgentChatController agentChatController(AgentChatService agentChatService,
+            public AgentChatController agentChatController(EngineChainReadiness engineChainReadiness,
+                                                           AgentChatService agentChatService,
                                                            AgentProperties agentProperties) {
                 return new AgentChatController(agentChatService, agentProperties);
             }
@@ -196,10 +203,13 @@ public class AiEmbeddedAgentEngineConfiguration {
              *
              * <p>{@code EngineModelAuthority} 使这里的模型名来自数据库发布版本而不是 YAML
              * （C13.6 / C1.4）；读不到权威时端点返回 503，<b>不回退 YAML</b>。
+             * {@code engineChainReadiness} 排首位参数的存在理由同 {@link #agentChatController}
+             * （参数按序解析，点名必须先落地）。
              */
             @Bean
             @ConditionalOnMissingBean
-            public AgentMetaController agentMetaController(AgentProperties agentProperties,
+            public AgentMetaController agentMetaController(EngineChainReadiness engineChainReadiness,
+                                                           AgentProperties agentProperties,
                                                            AgentToolCatalog agentToolCatalog,
                                                            EngineModelAuthority engineModelAuthority) {
                 return new AgentMetaController(agentProperties, agentToolCatalog, engineModelAuthority);
@@ -218,6 +228,10 @@ public class AiEmbeddedAgentEngineConfiguration {
              *
              * <p>刻意用 {@link ObjectProvider} 而不是把依赖写成方法参数：写成参数会让本 bean
              * 在任何一种缺失下直接变成 {@code NoSuchBeanDefinitionException}，回到"只报第一个"。
+             *
+             * <p>两个公开面控制器把本 bean 收为参数（不读其值）：点名必须先于消费者解析执行，
+             * 缺前置时启动日志里看到的就是下面这条"缺失前置一次性列全"的异常，而不是容器
+             * 撞到的第一个缺 bean。
              */
             @Bean
             public EngineChainReadiness engineChainReadiness(ApplicationContext context) {
@@ -234,7 +248,11 @@ public class AiEmbeddedAgentEngineConfiguration {
      */
     public static final class EngineChainReadiness {
 
-        /** 引擎面运行所必需、且当前不在 platform 内嵌扫描/装配范围内的类型。 */
+        /**
+         * 引擎面运行所必需的类型（S1 闭包后：除 {@code AgentPromptResolver} 由 F09 目录面提供外，
+         * 其余由 {@code AiEmbeddedAgentEngineClosureConfiguration} 装配；类型在场 ≠ 行为可用，
+         * 行为由各链自证）。
+         */
         private static final List<Class<?>> REQUIRED = List.of(
                 AgentChatService.class,
                 AgentToolCatalog.class,

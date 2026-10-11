@@ -182,7 +182,8 @@ public class AiGatewayController {
             // `POST /conversations/messages/{messageId}/feedback`（同样是"对会话消息的写"）**同一口径**：
             // **不新增 canonical 动作、不新增权限行、不新增迁移**（权威值以
             // P1CurrentAuthorizationTest:245/:252 为准：旧 34 条逐项保留 +
-            // F13 批准的 flow.* 4 条 = 38，**不得新增第 39 个动作**）。
+            // F13-SLICE-1 批准的 flow.* 4 条 + F13-A1 批准的 flow.node.write 1 条 = 39；
+            // 本条路由不涉及任何动作的增改——再新增动作须走维护者立项批注 + 三断言同步）。
             // 判据两侧都钉住：持 `ai:conversation:write` 才 200；**只持 `ai:conversation:read` 必须 403**。
             // 未采用"读权限时只读缓存、不落库"的折中：那会让同一端点出现两种成功形状，
             // 与 RW-22-R1"同一控制器不分裂成两种成功形状"的既定纪律冲突。
@@ -233,9 +234,9 @@ public class AiGatewayController {
             //   run.cancel    -> ai:run:cancel     (V5)
             //   agent.execute -> ai:agent:execute  (V6)
             // 权威值以 P1CurrentAuthorizationTest 为准：旧 34 条逐项集合相等 +
-            // F13-SLICE-1 批准的 flow.* 4 条 + F11-A1 批准的 skill.* 4 条 = 42，
-            // 故不得新增动作（不得新增第 43 个动作；F13-A1 的 flow.node.write 第 39 条
-            // 并入后为 43，届时不得新增第 44 个）。
+            // F13-SLICE-1 批准的 flow.* 4 条 + F13-A1 批准的 flow.node.write 1 条 +
+            // F11-A1 批准的 skill.* 4 条 = 43，
+            // 故不得新增动作（**不得新增第 44 个动作**）。
             // （注：本条注释曾长期写作"26"、后写作"34"并引用过期行号 209，均为过期信息；
             //   此处按实测权威更正并保留说明。）
             new Route("GET", "/memories", "memory.read"),
@@ -320,7 +321,7 @@ public class AiGatewayController {
             //   document.list → ai:document:read（复用读，AiCanonicalAction:36 既有映射）；
             //   document.upload / document.ingest ← V5 已播种；
             //   文档删除复用 kb.delete（与 POST /documents/{id}/tombstone 同口径——
-            //   仓内没有 document.delete 这个动作，且不新增第 43 个动作）；
+            //   仓内没有 document.delete 这个动作，且不新增第 44 个动作）；
             //   摄取 schema 复用 config.read（控制器自铸许可用的也是它）。
             //
             // 段数与顺序（matchRoute 为**声明序首个命中**）：三条 3 段字面量
@@ -421,6 +422,31 @@ public class AiGatewayController {
             new Route("POST", "/flows", "flow.write"),
             new Route("PUT", "/flows/{uuid}", "flow.write"),
             new Route("DELETE", "/flows/{uuid}", "flow.delete"),
+            // F13-A1（2026-10-11，维护者立项批注「spec开始立项」）：op0 图 CRUD 12 条。
+            // 内层 handler = FlowGraphController（类级 /internal/ai/v1；由
+            // AiEmbeddedFlowConfiguration 显式装配、随 AutoConfiguration.imports 生效），
+            // 复用 V9 既有四表（节点/边/组件+工作流；**零表迁移**）。
+            // 动作映射（本批**恰好一条新动作**，获批增量见
+            // P1CurrentAuthorizationTest 的 F13-A1 增量集）：
+            //   读图（三条 GET）→ 既有 `flow.read`（读图即读工作流定义）；
+            //   写图（POST/PUT/DELETE）→ 新动作 `flow.node.write`（→ `ai:flow:design`，
+            //   权限行由 V32 注册，menu_id 7203，默认不分配）。
+            // 逐条登记不用通配；三条 GET 在网关走字节分支，故内层必须同时给整数
+            // ApiEnvelope 与两个回执头（控制器自铸，动作=flow.read）。
+            // 段数互不遮蔽：/flows/{uuid}/nodes 为 4 段、{nodeUuid} 为 5 段，与既有
+            // 3 段 /flows/{uuid} 不同形；/flow-components 两条为 1/2 段。
+            new Route("GET", "/flows/{uuid}/nodes", "flow.read"),
+            new Route("POST", "/flows/{uuid}/nodes", "flow.node.write"),
+            new Route("PUT", "/flows/{uuid}/nodes/{nodeUuid}", "flow.node.write"),
+            new Route("DELETE", "/flows/{uuid}/nodes/{nodeUuid}", "flow.node.write"),
+            new Route("GET", "/flows/{uuid}/edges", "flow.read"),
+            new Route("POST", "/flows/{uuid}/edges", "flow.node.write"),
+            new Route("PUT", "/flows/{uuid}/edges/{edgeUuid}", "flow.node.write"),
+            new Route("DELETE", "/flows/{uuid}/edges/{edgeUuid}", "flow.node.write"),
+            new Route("GET", "/flow-components", "flow.read"),
+            new Route("POST", "/flow-components", "flow.node.write"),
+            new Route("PUT", "/flow-components/{uuid}", "flow.node.write"),
+            new Route("DELETE", "/flow-components/{uuid}", "flow.node.write"),
             // S2-F11-A1（2026-10-11）：Skills 管理面（7 handler → 4 动作）。
             // 内层 handler = AgentSkillController（类级 /internal/ai/v1/agent-catalog，
             // 三件套已归位：前缀＋整数 ApiEnvelope＋GET 交付回执），由
@@ -430,7 +456,8 @@ public class AiGatewayController {
             // 任何将来新增的端点一起放行，等于取消白名单。
             // 动作映射（Spec §6-P3）：list/tool-options → skill.list；detail → skill.read；
             // create/update/toggle → skill.write；delete → skill.delete。
-            // 四条动作**全部**进 PLATFORM_ADMIN_ACTIONS 第二道门（Spec §6-P4 默认"进"），
+            // 四条动作**全部**进 PLATFORM_ADMIN_ACTIONS 第二道门（Spec §6-P4 默认"进"，
+            // T0 合并终裁维持"进"、从严方向），
             // 权限行由 V33 注册（沿用 V27 预留 7137-7140 动作行 + 7142 页面 C 行，不占新号）。
             // 三条 GET 在网关走字节分支，故内层同时给整数 ApiEnvelope 与两个回执头；
             // 写面走 JSON 分支、内层**不铸**回执（JSON 分支铸造 = 永久 ACTIVE 许可泄漏）。
