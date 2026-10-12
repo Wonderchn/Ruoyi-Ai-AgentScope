@@ -252,7 +252,15 @@ public abstract class AbstractOpenAIStyleChatClient implements ChatClient {
                 if (terminalCallback.compareAndSet(false, true)) { callback.onComplete(); }
             }
         } catch (Exception error) {
-            if (!cancelled.get() && terminalCallback.compareAndSet(false, true)) { callback.onError(error); }
+            if (ChatEgressDeniedException.find(error) != null) {
+                // 安全拒绝是终止语义，不受取消影响（F-C2-8）：并发取消不得吞掉它，否则路由层
+                // 收不到拒绝，会把拒绝误记成 provider 健康失败并触发下一候选（与
+                // ModelRoutingExecutor 的 find(e) 守卫同形）；terminalCallback 的 CAS
+                // 仍保证至多一次终态回调。
+                if (terminalCallback.compareAndSet(false, true)) { callback.onError(error); }
+            } else if (!cancelled.get() && terminalCallback.compareAndSet(false, true)) {
+                callback.onError(error);
+            }
         }
     }
 
