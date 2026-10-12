@@ -153,6 +153,28 @@ class AgentChatServiceImplTest {
                         return null;
                     }
                 },
+                // s2-f16egress-a1：抽取出站重建事实端口（本类不铺出站判据，缺席＝退回捕获形态）
+                new org.springframework.beans.factory.ObjectProvider<>() {
+                    @Override
+                    public com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts getObject() {
+                        throw new IllegalStateException("no egress facts");
+                    }
+
+                    @Override
+                    public com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts getObject(Object... args) {
+                        return getObject();
+                    }
+
+                    @Override
+                    public com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts getIfAvailable() {
+                        return null;
+                    }
+
+                    @Override
+                    public com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts getIfUnique() {
+                        return null;
+                    }
+                },
                 // s2-tenant-cmp-a1：完成链登记表只需真实实例（本类不铺完成链双门判据）
                 new com.nageoffer.ai.ragent.agent.identity.AgentRunScopeRegistry());
 

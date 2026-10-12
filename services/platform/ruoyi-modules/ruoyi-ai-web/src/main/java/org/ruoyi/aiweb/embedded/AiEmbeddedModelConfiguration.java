@@ -176,6 +176,20 @@ public class AiEmbeddedModelConfiguration {
                 };
             }
 
+            /**
+             * 后台记忆抽取的出站身份重建事实端口（F16 出站，s2-f16egress-a1，2026-10-12）：
+             * 复用与 {@link #chatEgressPort} 同一对在线事实源（{@code PlatformIdentitySource}＋
+             * {@code ResourceAuthorizationService}），经 AI 侧只读端口暴露给抽取任务作用域。
+             * 端口缺席（身份源未装配）时调用方拒绝重建、退回捕获形态——出站照旧 fail-closed。
+             */
+            @Bean
+            @ConditionalOnMissingBean(com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts.class)
+            public com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts memoryEgressSubjectFacts(
+                    org.springframework.beans.factory.ObjectProvider<org.ruoyi.aiintegration.identity.PlatformIdentitySource> identities,
+                    org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService> acl) {
+                return new org.ruoyi.aiweb.embedded.EmbeddedMemoryEgressSubjectFacts(identities, acl);
+            }
+
             // ---------------------------------------------------------- HTTP / 线程池基础设施
 
             /**

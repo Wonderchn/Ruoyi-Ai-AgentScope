@@ -21,8 +21,11 @@ import com.nageoffer.ai.ragent.framework.context.AsyncPrincipalReference;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
+import org.ruoyi.ai.api.action.AiCanonicalAction;
 import org.springframework.beans.factory.ObjectProvider;
 
+import java.time.Instant;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -53,8 +56,10 @@ import java.util.function.Supplier;
  *   <li>无捕获（无主体形态）直跑、不新增默认身份。</li>
  * </ul>
  *
- * <p><b>边界。</b>恢复出的主体 scopes 恒为空集、无同步起源——任何 scope/出站判定照旧
- * fail-closed（「后台抽取是否允许出站」属 P3 未决裁决，本类不做授权，也不给 origin）。
+ * <p><b>边界。</b>除 {@link #callWithRebuiltEgress} 外，本类恢复出的主体 scopes 恒为空集、
+ * 无同步起源——任何 scope/出站判定照旧 fail-closed，不回落环境身份或捕获 scopes。
+ * 唯一例外是 {@link #callWithRebuiltEgress}：维护者裁决⑤具名授权——仅后台抽取任务作用域、
+ * 仅在线重建成真实当前主体后才以配对 {@code set()/restore()} 授予同步起源（契约见该方法）。
  */
 public final class AsyncMemoryTaskScope {
 
@@ -117,6 +122,112 @@ public final class AsyncMemoryTaskScope {
             return runInTenant(tenantId, tenantScopeBinder, body);
         } finally {
             PrincipalContext.restore(previous);
+        }
+    }
+
+    /**
+     * 后台记忆抽取的「出站身份重建」变体（F16 出站，s2-f16egress-a1，2026-10-12）。
+     *
+     * <p>在受理期捕获的引用作用域内执行 {@code body}：先按在线事实重建出站主体（裁决⑤），
+     * 重建成功则以配对 {@code set()/restore()} 授予同步起源；退出时无条件恢复线程原主体。
+     *
+     * <p><b>重建序列（仅在此任务体、只按捕获引用定位；不读环境身份、不复用捕获 scopes）。</b>
+     * <ol>
+     *   <li>facts 端口缺席 → 拒绝重建；</li>
+     *   <li>租户必须在线事实 ENABLED；</li>
+     *   <li>成员事实必须存在且启用，tenant/user/membership 三键回等；</li>
+     *   <li>pv 取 {@code identity.policyVersion()≥1}；av 取在线 {@code currentAclVersion}（≥1；
+     *       缺行/读错即拒绝，不默认）；</li>
+     *   <li>对声明的动作集逐个 {@code AiCanonicalAction.permissionOf} 可解且 identity.scopes 包含，
+     *       否则拒绝（早于出站、零 provider 请求；出站 verifier 仍最终权威）；</li>
+     *   <li>构造 {@code ExecutionPrincipal(..., scopes=声明动作集, jti="memory-egress:"+issuedAt,
+     *       issuer="platform", issuedAt=now, expiresAt=now+300s)}（覆盖 STANDARD 档预算）。</li>
+     * </ol>
+     *
+     * <p><b>拒绝重建（任一项不满足或事实不可用）＝退化为捕获形态</b>：非配对 {@code restore}
+     * 只授 holder、不授起源，出站照旧 fail-closed；绝不回落环境身份、捕获 scopes 或默认版本。
+     * 无捕获（{@code principalRef == null}）按原形态直跑、不新增默认身份。
+     *
+     * <p><b>裁决⑤具名例外边界。</b>配对 {@code set()/restore()} 仅限本后台抽取任务作用域、
+     * 仅在线重建成真实当前主体后才开、且配对恢复；其余异步链（完成链三处、注入链）维持
+     * 非配对 restore 纪律不变。
+     *
+     * @param principalRef      受理期捕获的身份引用；{@code null}＝无主体形态，直跑
+     * @param tenantId          从同一捕获派生的租户；{@code null}＝不绑租户
+     * @param tenantScopeBinder 租户绑定端口（可缺席；缺席按直跑）
+     * @param egressFacts       只读出站事实端口（可缺席；缺席＝拒绝重建）
+     * @param declaredActions   本次出站声明的动作集（重建后即为主体 scopes；不得全量或加宽）
+     * @return {@code body} 的返回值；{@code body} 抛出时异常原样上抛
+     */
+    public static <T> T callWithRebuiltEgress(AsyncPrincipalReference principalRef, String tenantId,
+                                              ObjectProvider<TenantScopeBinder> tenantScopeBinder,
+                                              ObjectProvider<MemoryEgressSubjectFacts> egressFacts,
+                                              Set<String> declaredActions, Supplier<T> body) {
+        if (principalRef == null) {
+            return runInTenant(tenantId, tenantScopeBinder, body);
+        }
+        ExecutionPrincipal rebuilt = rebuildEgressPrincipal(principalRef, egressFacts, declaredActions);
+        ExecutionPrincipal previous = PrincipalContext.get();
+        if (rebuilt == null) {
+            // 拒绝重建：退化为捕获形态（非配对 restore——只授 holder、不授同步起源）
+            PrincipalContext.restore(principalRef.toExecutionPrincipal());
+        } else {
+            // 裁决⑤具名例外：仅本后台抽取任务、仅在线重建成真实当前主体后 set()（配对恢复见 finally）
+            PrincipalContext.set(rebuilt);
+        }
+        try {
+            return runInTenant(tenantId, tenantScopeBinder, body);
+        } finally {
+            PrincipalContext.restore(previous);
+        }
+    }
+
+    /** 出站主体有效期（秒）：覆盖 STANDARD 档 120s 调用预算并留余量；与出站端口时钟同为 UTC 时刻语义。 */
+    private static final long EGRESS_SUBJECT_TTL_SECONDS = 300;
+
+    /**
+     * 按在线事实重建出站主体；任一项不满足或事实不可用返回 {@code null}（调用方拒绝重建）。
+     * 刻意不抛异常：事实不可用是 fail-closed 的常态路径，不是错误传播路径；
+     * 只按捕获引用定位（不读环境身份）、只声明动作集（不复制成员全量权限）。
+     */
+    private static ExecutionPrincipal rebuildEgressPrincipal(AsyncPrincipalReference principalRef,
+                                                             ObjectProvider<MemoryEgressSubjectFacts> egressFacts,
+                                                             Set<String> declaredActions) {
+        MemoryEgressSubjectFacts facts = egressFacts == null ? null : egressFacts.getIfAvailable();
+        if (facts == null || declaredActions == null || declaredActions.isEmpty()) {
+            return null;
+        }
+        try {
+            if (facts.tenantState(principalRef.tenantId()) != MemoryEgressSubjectFacts.TenantState.ENABLED) {
+                return null;
+            }
+            MemoryEgressSubjectFacts.CurrentSubject subject = facts.currentSubject(
+                    principalRef.tenantId(), principalRef.userId(), principalRef.membershipId());
+            if (subject == null || !subject.enabled()
+                    || !principalRef.tenantId().equals(subject.tenantId())
+                    || !principalRef.userId().equals(subject.subject())
+                    || !principalRef.membershipId().equals(subject.membershipId())
+                    || subject.policyVersion() < 1) {
+                return null;
+            }
+            for (String action : declaredActions) {
+                String permission = AiCanonicalAction.permissionOf(action).orElse(null);
+                if (permission == null || subject.scopes() == null || !subject.scopes().contains(permission)) {
+                    return null;
+                }
+            }
+            int aclVersion = facts.currentAclVersion(principalRef.tenantId());
+            if (aclVersion < 1) {
+                return null;
+            }
+            long issuedAt = Instant.now().getEpochSecond();
+            return new ExecutionPrincipal(principalRef.tenantId(), principalRef.userId(),
+                    principalRef.membershipId(), subject.policyVersion(), aclVersion,
+                    Set.copyOf(declaredActions), "memory-egress:" + issuedAt, "platform",
+                    issuedAt, issuedAt + EGRESS_SUBJECT_TTL_SECONDS);
+        } catch (RuntimeException unavailableFacts) {
+            // 事实源不可用（含 ACL 缺行/读错/身份源缺席）：拒绝重建，不新增默认身份
+            return null;
         }
     }
 

@@ -404,7 +404,9 @@ class AgentCompletionChainsIdentityBindingTest {
         properties.setLongTermEnabled(false);
         AgentMemoryPipeline pipeline = mock(AgentMemoryPipeline.class);
         return new AgentChatServiceImpl(agentProvider, conversationService, taskManager, runGate,
-                properties, pipeline, noPermits(), binderProvider(gate.binder()), registry);
+                properties, pipeline, noPermits(), binderProvider(gate.binder()),
+                // s2-f16egress-a1：抽取出站重建端口缺席＝退回捕获形态（完成链判据不涉出站）
+                absentFacts(), registry);
     }
 
     private PgAgentStateStore newStore(AgentStateMapper mapper) {
@@ -519,6 +521,14 @@ class AgentCompletionChainsIdentityBindingTest {
     @SuppressWarnings("unchecked")
     private static ObjectProvider<com.nageoffer.ai.ragent.runtime.web.DeliveryPermits> noPermits() {
         ObjectProvider<com.nageoffer.ai.ragent.runtime.web.DeliveryPermits> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(null);
+        return provider;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ObjectProvider<com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts> absentFacts() {
+        ObjectProvider<com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts> provider =
+                mock(ObjectProvider.class);
         when(provider.getIfAvailable()).thenReturn(null);
         return provider;
     }

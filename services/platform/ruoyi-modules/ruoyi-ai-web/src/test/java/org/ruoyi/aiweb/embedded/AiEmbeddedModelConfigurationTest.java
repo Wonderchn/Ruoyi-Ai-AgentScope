@@ -128,6 +128,9 @@ class AiEmbeddedModelConfigurationTest {
                     // 档位校验器必须参与装配，否则结构性错误无从 fail-fast
                     assertThat(context).hasSingleBean(
                             com.nageoffer.ai.ragent.infra.model.ChatTierConfigValidator.class);
+                    // F16 出站（s2-f16egress-a1）：抽取重建事实端口与出站门同组装配
+                    assertThat(context).hasSingleBean(
+                            com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts.class);
                 });
     }
 
@@ -141,6 +144,9 @@ class AiEmbeddedModelConfigurationTest {
                     assertThat(context).doesNotHaveBean(ModelSelector.class);
                     assertThat(context).doesNotHaveBean(ChatClient.class);
                     assertThat(context).doesNotHaveBean("streamingHttpClient");
+                    // F16 出站事实端口随模型链门控缺席（缺席＝调用方拒绝重建）
+                    assertThat(context).doesNotHaveBean(
+                            com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts.class);
                 });
         runner.withPropertyValues("ai.model.enabled=true")
                 .run(context -> assertThat(context).doesNotHaveBean(LLMService.class));

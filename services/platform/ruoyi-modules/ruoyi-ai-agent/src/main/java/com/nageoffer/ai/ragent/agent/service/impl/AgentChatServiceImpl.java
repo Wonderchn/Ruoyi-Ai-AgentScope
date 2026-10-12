@@ -31,6 +31,7 @@ import com.nageoffer.ai.ragent.agent.identity.AgentRunScopeRegistry;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryPipeline;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryProperties;
 import com.nageoffer.ai.ragent.agent.memory.AsyncMemoryTaskScope;
+import com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts;
 import com.nageoffer.ai.ragent.agent.service.AgentChatService;
 import com.nageoffer.ai.ragent.agent.service.AgentConversationService;
 import com.nageoffer.ai.ragent.agent.service.handler.AgentRunGate;
@@ -72,6 +73,7 @@ import reactor.core.scheduler.Schedulers;
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -82,6 +84,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @ConditionalOnAgentEngine
 @RequiredArgsConstructor
 public class AgentChatServiceImpl implements AgentChatService {
+
+    /**
+     * 后台记忆抽取出站的声明动作集（F16 出站最小 scopes）：记忆域唯一注册动作
+     * {@code memory.read}→{@code ai:memory:read}（{@code AiCanonicalAction:46}；菜单 7111）。
+     * 刻意只声明抽取所需的最小集合——不得用全量 canonicalActions 或追加动作制造放行；
+     * 重建序列逐动作预检、出站 verifier 逐动作重判。
+     */
+    private static final Set<String> MEMORY_EXTRACTION_EGRESS_ACTIONS = Set.of("memory.read");
 
     private final ReActAgentProvider agentProvider;
     private final AgentConversationService conversationService;
@@ -102,6 +112,12 @@ public class AgentChatServiceImpl implements AgentChatService {
      * 受理期捕获的租户经本端口在任务体内重绑；端口缺席（独立应用）按原形态直跑。
      */
     private final ObjectProvider<TenantScopeBinder> tenantScopeBinder;
+    /**
+     * 后台抽取出站身份重建的只读在线事实端口（F16 出站，s2-f16egress-a1，2026-10-12）：轮次结束后台
+     * 抽取任务体内按受理期捕获的引用在线重建出站主体（裁决⑤）。端口缺席或事实不满足时拒绝重建、
+     * 退回捕获形态——出站照旧 fail-closed，不新增默认身份、不复用捕获 scopes。
+     */
+    private final ObjectProvider<MemoryEgressSubjectFacts> memoryEgressFacts;
     /**
      * 轮次身份作用域登记表（s2-tenant-cmp-a1，2026-10-12）：轮末状态保存由框架在共享池上
      * 回调 {@code AgentStateStore}，闭包只剩 {@code (userId, sessionId)}；受理期捕获登记到
@@ -408,15 +424,20 @@ public class AgentChatServiceImpl implements AgentChatService {
      *
      * <p>抽取跳上共享 boundedElastic 线程后，落库链要先过 {@code PrincipalContext.require()}
      * 再过 MyBatis 租户行拦截器两道门——两道门都只认受理期捕获的事实：任务体用捕获的
-     * 身份引用（非配对 restore，不授出站起源）与同源派生的租户重绑，finally 恢复线程原主体。
-     * 无捕获（无主体形态）按原形态直跑，不新增默认身份。
+     * 身份引用与同源派生的租户重绑，finally 恢复线程原主体。无捕获（无主体形态）按原形态直跑，
+     * 不新增默认身份。
+     *
+     * <p>F16 出站（s2-f16egress-a1）：抽取体两处出站（judge 与 consolidator）需要合法出站身份——
+     * 任务体按在线事实重建出站主体（裁决⑤，facts 端口在线读取、声明最小动作集），
+     * 重建不满足即退回捕获形态（非配对 restore、无起源，出站照旧可见拒绝）。
      */
     private void scheduleMemoryExtraction(String userId, String conversationId,
                                           AsyncPrincipalReference principalRef, String tenantId) {
         if (!memoryProperties.isLongTermEnabled()) {
             return;
         }
-        Mono.fromCallable(() -> AsyncMemoryTaskScope.callWithCapture(principalRef, tenantId, tenantScopeBinder,
+        Mono.fromCallable(() -> AsyncMemoryTaskScope.callWithRebuiltEgress(principalRef, tenantId,
+                        tenantScopeBinder, memoryEgressFacts, MEMORY_EXTRACTION_EGRESS_ACTIONS,
                         () -> memoryPipeline.extract(userId, conversationId, AgentMemoryTriggerType.BACKGROUND)))
                 .subscribeOn(Schedulers.boundedElastic())
                 .subscribe(outcome -> {

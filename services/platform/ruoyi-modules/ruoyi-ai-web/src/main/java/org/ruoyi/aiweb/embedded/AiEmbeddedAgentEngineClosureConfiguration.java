@@ -296,12 +296,15 @@ public class AiEmbeddedAgentEngineClosureConfiguration {
                                              AgentMemoryPipeline memoryPipeline,
                                              AgentRunScopeRegistry runScopeRegistry,
                                              org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.runtime.web.DeliveryPermits> deliveryPermits,
-                                             org.springframework.beans.factory.ObjectProvider<TenantScopeBinder> tenantScopeBinder) {
+                                             org.springframework.beans.factory.ObjectProvider<TenantScopeBinder> tenantScopeBinder,
+                                             org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts> memoryEgressFacts) {
         // ENV-B5b 许可接线：帧级 : ai-delivery 元数据（本地传输对裸数据帧 fail-closed）
         // F16 op1 管线修复（2026-10-12）：后台记忆抽取的租户重绑端口（独立/旧形态缺席时合法）
         // s2-tenant-cmp-a1（2026-10-12）：完成链三处（轮末状态保存/终答落库/工具检索）受理期捕获登记
+        // s2-f16egress-a1（2026-10-12）：抽取出站身份的在线重建事实端口（缺席＝拒绝重建、退回捕获形态）
         return new AgentChatServiceImpl(agentProvider, conversationService, taskManager, runGate,
-                memoryProperties, memoryPipeline, deliveryPermits, tenantScopeBinder, runScopeRegistry);
+                memoryProperties, memoryPipeline, deliveryPermits, tenantScopeBinder, memoryEgressFacts,
+                runScopeRegistry);
     }
 
     /** ReAct 供给器（A1 #3）：5 个中间件为硬依赖；OTel/trace 两件走 ObjectProvider，缺席合法。 */

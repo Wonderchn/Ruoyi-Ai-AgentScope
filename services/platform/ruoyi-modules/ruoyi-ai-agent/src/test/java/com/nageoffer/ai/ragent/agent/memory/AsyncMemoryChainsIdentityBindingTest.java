@@ -30,6 +30,11 @@ import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.framework.web.StreamTaskManager;
+import com.nageoffer.ai.ragent.infra.chat.ChatEgressDeniedException;
+import com.nageoffer.ai.ragent.infra.chat.ChatEgressPort;
+import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
+import com.nageoffer.ai.ragent.runtime.usage.EnvelopeChatEgressPort;
+import com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.middleware.ReasoningInput;
@@ -43,6 +48,8 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Flux;
 
+import java.net.URI;
+import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -50,14 +57,18 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -277,13 +288,214 @@ class AsyncMemoryChainsIdentityBindingTest {
                 .startsWith("failed:");
     }
 
+    // ==================== 链一 · F16 出站（s2-f16egress-a1）：在线重建 ====================
+
+    /**
+     * 释放钩子在"流终止线程"形态（无主体、无租户）上触发；抽取任务体内出站必须按在线事实
+     * 重建主体并经真出站门放行恰一次（真 {@code EnvelopeChatEgressPort}＋与内嵌 verifier 同形判定）；
+     * 出站瞬间同步起源成立、scopes 精确等于声明集、pv/av 取在线事实。
+     */
+    @Test
+    void extractionEgressIsRebuiltOnlineAndAuthorizedOnce() throws Exception {
+        CountDownLatch observed = new CountDownLatch(1);
+        AtomicReference<String> egressOutcome = new AtomicReference<>();
+        AtomicReference<Boolean> originInBody = new AtomicReference<>();
+        MemoryEgressSubjectFacts facts = mock(MemoryEgressSubjectFacts.class);
+        when(facts.tenantState("T-F10P3A")).thenReturn(MemoryEgressSubjectFacts.TenantState.ENABLED);
+        when(facts.currentSubject("T-F10P3A", "910101", "platform:T-F10P3A:910101")).thenReturn(
+                new MemoryEgressSubjectFacts.CurrentSubject("T-F10P3A", "910101", "platform:T-F10P3A:910101",
+                        true, Set.of("ai:memory:read"), 7));
+        when(facts.currentAclVersion("T-F10P3A")).thenReturn(9);
+        ProviderSpendEnvelope spend = mock(ProviderSpendEnvelope.class);
+        when(spend.reserve(anyString(), anyString(), anyLong(), anyInt())).thenReturn("call-1");
+        EgressPolicy policy = new EgressPolicy();
+        policy.setEnabled(true);
+        policy.setAllowedProviders("deepseek,dashscope");
+        AtomicReference<EnvelopeChatEgressPort.SubjectReference> egressSubject = new AtomicReference<>();
+        EnvelopeChatEgressPort port = new EnvelopeChatEgressPort(policy, spend, reference -> {
+            egressSubject.set(reference);
+            if (facts.tenantState(reference.tenantId()) != MemoryEgressSubjectFacts.TenantState.ENABLED) {
+                throw new ChatEgressDeniedException("chat subject unavailable");
+            }
+            MemoryEgressSubjectFacts.CurrentSubject member = facts.currentSubject(
+                    reference.tenantId(), reference.userId(), reference.membershipId());
+            if (member == null || !member.enabled()
+                    || !reference.tenantId().equals(member.tenantId())
+                    || !reference.userId().equals(member.subject())
+                    || !reference.membershipId().equals(member.membershipId())
+                    || member.policyVersion() != reference.policyVersion()
+                    || facts.currentAclVersion(reference.tenantId()) != reference.aclVersion()
+                    || member.scopes() == null || reference.scopes().isEmpty()) {
+                throw new ChatEgressDeniedException("chat subject unavailable");
+            }
+            for (String action : reference.scopes()) {
+                String permission = org.ruoyi.ai.api.action.AiCanonicalAction.permissionOf(action).orElse(null);
+                if (permission == null || !member.scopes().contains(permission)) {
+                    throw new ChatEgressDeniedException("chat scope unavailable");
+                }
+            }
+        }, Clock.systemUTC());
+
+        AgentMemoryPipeline pipeline = mock(AgentMemoryPipeline.class);
+        when(pipeline.extract(anyString(), anyString(), any())).thenAnswer(invocation -> {
+            originInBody.set(PrincipalContext.isSynchronousOrigin());
+            try {
+                ChatEgressPort.Lease lease = port.authorize(new ChatEgressPort.CallSpec("deepseek", "model",
+                        URI.create("https://api.deepseek.com/chat/completions"), 4096, 512));
+                lease.beforeSend();
+                lease.received("provider-id", Map.of("total_tokens", 9));
+                egressOutcome.set("authorized");
+            } catch (Exception e) {
+                egressOutcome.set("denied:" + e.getClass().getSimpleName());
+            }
+            observed.countDown();
+            return new AgentMemoryOutcome(AgentMemoryOutcome.Status.BELOW_THRESHOLD, 0, 1, false);
+        });
+        AgentChatServiceImpl service = newService(pipeline, facts);
+        login("910101");
+        when(agent.streamEvents(any(Msg.class), any(RuntimeContext.class))).thenReturn(Flux.never());
+
+        setPrincipal("T-F10P3A", "910101");
+        service.streamChat("问题", CONVERSATION_ID, new SseEmitter());
+        ArgumentCaptor<Runnable> finalizer = ArgumentCaptor.forClass(Runnable.class);
+        verify(taskManager).register(anyString(), anyString(), finalizer.capture());
+
+        // 收尾线程：无主体、无租户（池化残留不是可信身份）
+        PrincipalContext.clear();
+        gate.setCurrentTenant(null);
+        finalizer.getValue().run();
+
+        assertThat(observed.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(egressOutcome.get()).as("抽取任务体内出站必须放行（在线重建主体）").isEqualTo("authorized");
+        assertThat(originInBody.get()).as("出站瞬间必须是同步起源（裁决⑤配对 set）").isTrue();
+        assertThat(egressSubject.get().tenantId()).isEqualTo("T-F10P3A");
+        assertThat(egressSubject.get().membershipId()).isEqualTo("platform:T-F10P3A:910101");
+        assertThat(egressSubject.get().scopes()).as("scopes 精确等于声明集").containsExactly("memory.read");
+        assertThat(egressSubject.get().policyVersion()).isEqualTo(7);
+        assertThat(egressSubject.get().aclVersion()).isEqualTo(9);
+        verify(spend).reserve("deepseek", "model", 4096L, 512);
+    }
+
+    /**
+     * facts 端口缺席（独立/旧形态）：退回捕获形态——租户照旧绑定、出站 origin 门可见拒绝、
+     * 零预占（缺席不得悄悄放行）。
+     */
+    @Test
+    void extractionEgressWithoutFactsStaysDeniedWithZeroReserve() throws Exception {
+        CountDownLatch observed = new CountDownLatch(1);
+        AtomicReference<String> egressOutcome = new AtomicReference<>();
+        AtomicReference<Boolean> originInBody = new AtomicReference<>();
+        AtomicReference<String> tenantInBody = new AtomicReference<>();
+        ProviderSpendEnvelope spend = mock(ProviderSpendEnvelope.class);
+        EnvelopeChatEgressPort port = new EnvelopeChatEgressPort(enabledPolicy(), spend,
+                reference -> {
+                    throw new ChatEgressDeniedException("chat subject unavailable");
+                }, Clock.systemUTC());
+
+        AgentMemoryPipeline pipeline = newEgressProbingPipeline(observed, originInBody, tenantInBody,
+                egressOutcome, port);
+        AgentChatServiceImpl service = newService(pipeline, null);
+        login("910101");
+        when(agent.streamEvents(any(Msg.class), any(RuntimeContext.class))).thenReturn(Flux.never());
+
+        setPrincipal("T-F10P3A", "910101");
+        service.streamChat("问题", CONVERSATION_ID, new SseEmitter());
+        ArgumentCaptor<Runnable> finalizer = ArgumentCaptor.forClass(Runnable.class);
+        verify(taskManager).register(anyString(), anyString(), finalizer.capture());
+
+        PrincipalContext.clear();
+        gate.setCurrentTenant(null);
+        finalizer.getValue().run();
+
+        assertThat(observed.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(egressOutcome.get()).as("facts 缺席＝拒绝重建，出站必须 fail-closed")
+                .isEqualTo("denied:ChatEgressDeniedException");
+        assertThat(originInBody.get()).as("缺 facts 不得授予起源（可见拒绝保持）").isFalse();
+        assertThat(tenantInBody.get()).as("捕获形态的租户门不受影响").isEqualTo("T-F10P3A");
+        verifyNoInteractions(spend);
+    }
+
+    /** 撤权（在线事实不含 ai:memory:read）：重建被拒 → 出站可见拒绝、零预占。 */
+    @Test
+    void extractionEgressWithRevokedPermissionStaysDeniedWithZeroReserve() throws Exception {
+        CountDownLatch observed = new CountDownLatch(1);
+        AtomicReference<String> egressOutcome = new AtomicReference<>();
+        AtomicReference<Boolean> originInBody = new AtomicReference<>();
+        MemoryEgressSubjectFacts facts = mock(MemoryEgressSubjectFacts.class);
+        when(facts.tenantState("T-F10P3A")).thenReturn(MemoryEgressSubjectFacts.TenantState.ENABLED);
+        when(facts.currentSubject("T-F10P3A", "910101", "platform:T-F10P3A:910101")).thenReturn(
+                new MemoryEgressSubjectFacts.CurrentSubject("T-F10P3A", "910101", "platform:T-F10P3A:910101",
+                        true, Set.of("ai:kb:read"), 7));
+        when(facts.currentAclVersion("T-F10P3A")).thenReturn(9);
+        ProviderSpendEnvelope spend = mock(ProviderSpendEnvelope.class);
+        EnvelopeChatEgressPort port = new EnvelopeChatEgressPort(enabledPolicy(), spend,
+                reference -> {
+                    throw new ChatEgressDeniedException("chat subject unavailable");
+                }, Clock.systemUTC());
+
+        AgentMemoryPipeline pipeline = newEgressProbingPipeline(observed, originInBody, new AtomicReference<>(),
+                egressOutcome, port);
+        AgentChatServiceImpl service = newService(pipeline, facts);
+        login("910101");
+        when(agent.streamEvents(any(Msg.class), any(RuntimeContext.class))).thenReturn(Flux.never());
+
+        setPrincipal("T-F10P3A", "910101");
+        service.streamChat("问题", CONVERSATION_ID, new SseEmitter());
+        ArgumentCaptor<Runnable> finalizer = ArgumentCaptor.forClass(Runnable.class);
+        verify(taskManager).register(anyString(), anyString(), finalizer.capture());
+
+        PrincipalContext.clear();
+        gate.setCurrentTenant(null);
+        finalizer.getValue().run();
+
+        assertThat(observed.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(egressOutcome.get()).isEqualTo("denied:ChatEgressDeniedException");
+        assertThat(originInBody.get()).as("撤权后不得授予起源").isFalse();
+        verifyNoInteractions(spend);
+    }
+
+    /** 出站探针管线：任务体内记录起源/租户并尝试一次真出站门调用（judge 出站同形）。 */
+    private AgentMemoryPipeline newEgressProbingPipeline(CountDownLatch observed, AtomicReference<Boolean> originInBody,
+                                                         AtomicReference<String> tenantInBody,
+                                                         AtomicReference<String> egressOutcome,
+                                                         EnvelopeChatEgressPort port) {
+        AgentMemoryPipeline pipeline = mock(AgentMemoryPipeline.class);
+        when(pipeline.extract(anyString(), anyString(), any())).thenAnswer(invocation -> {
+            originInBody.set(PrincipalContext.isSynchronousOrigin());
+            tenantInBody.set(gate.currentTenant());
+            try {
+                ChatEgressPort.Lease lease = port.authorize(new ChatEgressPort.CallSpec("deepseek", "model",
+                        URI.create("https://api.deepseek.com/chat/completions"), 4096, 512));
+                lease.beforeSend();
+                lease.received("provider-id", Map.of("total_tokens", 9));
+                egressOutcome.set("authorized");
+            } catch (Exception e) {
+                egressOutcome.set("denied:" + e.getClass().getSimpleName());
+            }
+            observed.countDown();
+            return new AgentMemoryOutcome(AgentMemoryOutcome.Status.BELOW_THRESHOLD, 0, 1, false);
+        });
+        return pipeline;
+    }
+
+    private static EgressPolicy enabledPolicy() {
+        EgressPolicy policy = new EgressPolicy();
+        policy.setEnabled(true);
+        policy.setAllowedProviders("deepseek,dashscope");
+        return policy;
+    }
+
     // ==================== 夹具 ====================
 
     private AgentChatServiceImpl newService(AgentMemoryPipeline pipeline) {
+        return newService(pipeline, null);
+    }
+
+    private AgentChatServiceImpl newService(AgentMemoryPipeline pipeline, MemoryEgressSubjectFacts egressFacts) {
         AgentMemoryProperties properties = new AgentMemoryProperties();
         properties.setLongTermEnabled(true);
         return new AgentChatServiceImpl(agentProvider, conversationService, taskManager, runGate,
-                properties, pipeline, noPermits(), binderProvider(gate.binder()),
+                properties, pipeline, noPermits(), binderProvider(gate.binder()), factsProvider(egressFacts),
                 // s2-tenant-cmp-a1 完成链登记表：本判据只走记忆链，构造参数保持真实实例
                 new com.nageoffer.ai.ragent.agent.identity.AgentRunScopeRegistry());
     }
@@ -372,6 +584,13 @@ class AsyncMemoryChainsIdentityBindingTest {
     private static ObjectProvider<com.nageoffer.ai.ragent.runtime.web.DeliveryPermits> noPermits() {
         ObjectProvider<com.nageoffer.ai.ragent.runtime.web.DeliveryPermits> provider = mock(ObjectProvider.class);
         when(provider.getIfAvailable()).thenReturn(null);
+        return provider;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ObjectProvider<MemoryEgressSubjectFacts> factsProvider(MemoryEgressSubjectFacts facts) {
+        ObjectProvider<MemoryEgressSubjectFacts> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(facts);
         return provider;
     }
 }
