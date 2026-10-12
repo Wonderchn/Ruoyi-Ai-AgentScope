@@ -20,6 +20,8 @@ package com.nageoffer.ai.ragent.framework.web;
 import cn.hutool.core.util.StrUtil;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
+import com.nageoffer.ai.ragent.framework.context.AsyncPrincipalReference;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
@@ -48,6 +50,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 否则收尾落库被 MyBatis 租户行拦截器 fail-closed 拒绝（{@code tenant.context.missing}、
  * 取消消息丢失），且 unregister 的键删除会解析成无前缀键、把写入侧的带前缀键残留到 TTL。
  * 端口缺席（独立应用）时按原形态直接执行。
+ *
+ * <p><b>执行主体重绑定（F10 op2 债务 i）。</b>register 在请求线程同时捕获身份引用
+ * （{@link AsyncPrincipalReference}，冻结口径「异步只传身份引用」，绝不传 bearer/完整主体）；
+ * 取消收尾链的落库门是 {@code PrincipalContext.require()}——缺即 {@code no execution principal}
+ * （真机 A000001 根因），监听线程上先用<b>非配对</b> {@code restore()} 恢复引用（只授 holder、
+ * 不授同步起源，勿用 {@code set()}，见 P2-SCOUT §3 (a′)），外层 {@code finally} 无条件恢复
+ * 线程原主体；租户重绑在内层，两段收尾包在同一个 Runnable 里。用户 stop 与系统断连
+ * 都汇入本方法，同一修复一并覆盖。
  */
 @Slf4j
 @Component
@@ -122,9 +132,14 @@ public class StreamTaskManager {
         // 属主必须先于收尾回调落地：反过来的话，两条赋值之间到达的广播能拿本地回调杀掉一条无主的流
         taskInfo.ownerUserId = ownerUserId;
         taskInfo.finalizer = onCancelFinalizer;
-        // 捕获注册侧租户（请求线程）：取消收尾在监听线程上执行，落库与键删除都要重绑回它
-        // 捕获来源同 AgentRunGate（ENV-B5b）：执行主体的 tenantId，无主体（独立应用）则留空直跑
-        taskInfo.tenantId = PrincipalContext.hasPrincipal() ? PrincipalContext.require().tenantId() : null;
+        // 捕获注册侧身份引用与租户（请求线程）：取消收尾在监听线程上执行，落库链先吃
+        // PrincipalContext.require()（缺即 no execution principal，fail-closed）、再吃 MyBatis
+        // 租户行拦截器——身份按冻结口径只传引用（无 scopes/无原 jti/无签发方材料，不可当 bearer
+        // 重放），租户从同一捕获派生防两处来源漂移；无主体（独立应用）则留空直跑
+        taskInfo.principalRef = PrincipalContext.hasPrincipal()
+                ? AsyncPrincipalReference.from(PrincipalContext.require())
+                : null;
+        taskInfo.tenantId = taskInfo.principalRef == null ? null : taskInfo.principalRef.tenantId();
         // 属主进 Redis 而非只留本地：停止请求可能落在没跑这条流的节点上
         if (StrUtil.isNotBlank(ownerUserId)) {
             RBucket<String> owner = redissonClient.getBucket(ownerKey(taskId));
@@ -273,13 +288,29 @@ public class StreamTaskManager {
                 taskInfo.finalizer.run();
             }
         };
-        // 监听线程没有登录主体：收尾链要落库（MyBatis 租户行拦截器 fail-closed），
-        // 其中的键删除也要命中写入侧（请求线程）的带前缀键——先重绑捕获租户再执行
-        TenantScopeBinder tenantBinder = tenantScopeBinder.getIfAvailable();
-        if (tenantBinder != null && taskInfo.tenantId != null) {
-            tenantBinder.runWithTenant(taskInfo.tenantId, cancelActions);
-        } else {
-            cancelActions.run();
+        // 监听线程没有执行主体：收尾链的落库门是 PrincipalContext.require()（真机 A000001
+        // 根因），先恢复注册侧捕获的身份引用——用非配对 restore（只授 holder、不授同步起源；
+        // 勿用 set，它会在共享监听线程上临时打开 chat egress 闸）；租户重绑在内层，两段收尾
+        // 同包在一个 Runnable 里。外层 finally 无条件恢复线程原主体（线程池共享，泄漏=跨租户污染）。
+        Runnable tenantBound = () -> {
+            TenantScopeBinder tenantBinder = tenantScopeBinder.getIfAvailable();
+            if (tenantBinder != null && taskInfo.tenantId != null) {
+                tenantBinder.runWithTenant(taskInfo.tenantId, cancelActions);
+            } else {
+                cancelActions.run();
+            }
+        };
+        AsyncPrincipalReference principalRef = taskInfo.principalRef;
+        if (principalRef == null) {
+            tenantBound.run();
+            return;
+        }
+        ExecutionPrincipal previous = PrincipalContext.get();
+        PrincipalContext.restore(principalRef.toExecutionPrincipal());
+        try {
+            tenantBound.run();
+        } finally {
+            PrincipalContext.restore(previous);
         }
     }
 
@@ -322,6 +353,11 @@ public class StreamTaskManager {
     private static final class StreamTaskInfo {
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private volatile String ownerUserId;
+        /**
+         * register 侧捕获的身份引用（F10 op2 债务 i）：收尾链在监听线程上恢复它，
+         * 只用于租户定位与归属记录，不是授权证据（恢复体无 scopes、无同步起源）。
+         */
+        private volatile AsyncPrincipalReference principalRef;
         private volatile String tenantId;
         private volatile boolean pendingSystemCancel;
         private volatile Runnable cancelAction;
