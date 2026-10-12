@@ -20,8 +20,10 @@ package com.nageoffer.ai.ragent.framework.web;
 import cn.hutool.core.util.StrUtil;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.SneakyThrows;
@@ -29,6 +31,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RBucket;
 import org.redisson.api.RTopic;
 import org.redisson.api.RedissonClient;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -39,6 +42,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>
  * 机制层与引擎无关：注册表 + Redis 标记 + 广播主题构成统一的取消协议，
  * 各引擎的个性化收尾动作（补发事件、中断上游流等）以回调形式注入
+ *
+ * <p><b>租户重绑定（ENV-B5b 同型，F10 op1）。</b>register 在请求线程捕获租户存进任务记录；
+ * 取消收尾跑在监听线程（无租户）上，必须经 {@link TenantScopeBinder} 重绑定同一租户——
+ * 否则收尾落库被 MyBatis 租户行拦截器 fail-closed 拒绝（{@code tenant.context.missing}、
+ * 取消消息丢失），且 unregister 的键删除会解析成无前缀键、把写入侧的带前缀键残留到 TTL。
+ * 端口缺席（独立应用）时按原形态直接执行。
  */
 @Slf4j
 @Component
@@ -67,10 +76,18 @@ public class StreamTaskManager {
             .build();
 
     private final RedissonClient redissonClient;
+
+    /**
+     * 租户作用域绑定端口（ENV-B5b 同型，F10 op1）：监听线程无租户，取消收尾里的
+     * 落库与键删除都要重绑 register 侧捕获的租户。端口缺席（独立应用）时按原形态直接执行。
+     */
+    private final ObjectProvider<TenantScopeBinder> tenantScopeBinder;
+
     private int listenerId = -1;
 
-    public StreamTaskManager(RedissonClient redissonClient) {
+    public StreamTaskManager(RedissonClient redissonClient, ObjectProvider<TenantScopeBinder> tenantScopeBinder) {
         this.redissonClient = redissonClient;
+        this.tenantScopeBinder = tenantScopeBinder;
     }
 
     @PostConstruct
@@ -105,6 +122,9 @@ public class StreamTaskManager {
         // 属主必须先于收尾回调落地：反过来的话，两条赋值之间到达的广播能拿本地回调杀掉一条无主的流
         taskInfo.ownerUserId = ownerUserId;
         taskInfo.finalizer = onCancelFinalizer;
+        // 捕获注册侧租户（请求线程）：取消收尾在监听线程上执行，落库与键删除都要重绑回它
+        // 捕获来源同 AgentRunGate（ENV-B5b）：执行主体的 tenantId，无主体（独立应用）则留空直跑
+        taskInfo.tenantId = PrincipalContext.hasPrincipal() ? PrincipalContext.require().tenantId() : null;
         // 属主进 Redis 而非只留本地：停止请求可能落在没跑这条流的节点上
         if (StrUtil.isNotBlank(ownerUserId)) {
             RBucket<String> owner = redissonClient.getBucket(ownerKey(taskId));
@@ -139,6 +159,12 @@ public class StreamTaskManager {
      * 系统侧回收（SSE 超时、客户端断连），容器回调线程上没有登录用户可比对
      */
     public void cancel(String taskId) {
+        // 断连可能早于 register：那一刻本方法跑在无租户的容器回调线程上，Redis 标记会落在
+        // 无前缀键上，而 register 在租户线程只能读到带前缀键——预埋标记读不到（窄竞态）。
+        // emitter 与 register 同节点同实例，故未登记时先在本地记下这一形态，register 复核时补收。
+        if (tasks.getIfPresent(taskId) == null) {
+            getOrCreate(taskId).pendingSystemCancel = true;
+        }
         publishCancel(taskId, SYSTEM_REQUESTER);
     }
 
@@ -160,8 +186,17 @@ public class StreamTaskManager {
 
     private void publishCancel(String taskId, String requester) {
         // 先设置 Redis 标记，再发布消息
-        RBucket<String> bucket = redissonClient.getBucket(cancelKey(taskId));
-        bucket.set(requester, CANCEL_TTL);
+        // 标记要和 register 的读取侧保持同一键形态：已登记的任务按捕获租户重绑后再写，
+        // 免得无租户的系统路径把标记落到裸键上（read 侧在租户线程读带前缀键）且收尾侧删不掉
+        Runnable writeMarker = () -> redissonClient.getBucket(cancelKey(taskId)).set(requester, CANCEL_TTL);
+        StreamTaskInfo taskInfo = tasks.getIfPresent(taskId);
+        String tenantId = taskInfo == null ? null : taskInfo.tenantId;
+        TenantScopeBinder tenantBinder = tenantScopeBinder.getIfAvailable();
+        if (tenantBinder != null && tenantId != null) {
+            tenantBinder.runWithTenant(tenantId, writeMarker);
+        } else {
+            writeMarker.run();
+        }
 
         // 发布消息通知所有节点（包括本地）
         // 本地节点也通过监听器统一处理，避免重复调用 cancelLocal
@@ -178,6 +213,14 @@ public class StreamTaskManager {
             return true;
         }
 
+        // 预埋取消的两种形态都要复核。形态一：系统断连在 register 之前到达，已记在本地——
+        // 它写在无租户线程上，Redis 标记落的是无前缀键，本方法在租户线程读的是带前缀键，只能内存里认。
+        if (taskInfo.pendingSystemCancel) {
+            taskInfo.cancelled.set(true);
+            return true;
+        }
+
+        // 形态二：Redis 标记（属主/系统在租户线程写入，键形态与上方读取侧一致）
         RBucket<String> bucket = redissonClient.getBucket(cancelKey(taskId));
         String requester = bucket.get();
         if (requester == null) {
@@ -220,23 +263,47 @@ public class StreamTaskManager {
             return;
         }
 
-        if (taskInfo.cancelAction != null) {
-            taskInfo.cancelAction.run();
-        }
+        Runnable cancelActions = () -> {
+            if (taskInfo.cancelAction != null) {
+                taskInfo.cancelAction.run();
+            }
 
-        // 在取消时执行收尾回调，保存已累积的内容
-        if (taskInfo.finalizer != null) {
-            taskInfo.finalizer.run();
+            // 在取消时执行收尾回调，保存已累积的内容
+            if (taskInfo.finalizer != null) {
+                taskInfo.finalizer.run();
+            }
+        };
+        // 监听线程没有登录主体：收尾链要落库（MyBatis 租户行拦截器 fail-closed），
+        // 其中的键删除也要命中写入侧（请求线程）的带前缀键——先重绑捕获租户再执行
+        TenantScopeBinder tenantBinder = tenantScopeBinder.getIfAvailable();
+        if (tenantBinder != null && taskInfo.tenantId != null) {
+            tenantBinder.runWithTenant(taskInfo.tenantId, cancelActions);
+        } else {
+            cancelActions.run();
         }
     }
 
     public void unregister(String taskId) {
+        // 捕获租户必须在失效本地缓存之前取出
+        StreamTaskInfo taskInfo = tasks.getIfPresent(taskId);
+        String tenantId = taskInfo == null ? null : taskInfo.tenantId;
+
         // 清理本地缓存
         tasks.invalidate(taskId);
 
-        // 清理Redis
-        redissonClient.getBucket(cancelKey(taskId)).deleteAsync();
-        redissonClient.getBucket(ownerKey(taskId)).deleteAsync();
+        // 清理Redis：写入侧（register / stop 请求线程）的键带租户前缀，而收尾链（监听/回调线程）
+        // 没有租户，直接删会解析成无前缀键，把带前缀键残留到 TTL（30m）——按捕获租户重绑后删。
+        // 无捕获租户（启动即失败、独立应用）时按原形态直接删。
+        Runnable deleteKeys = () -> {
+            redissonClient.getBucket(cancelKey(taskId)).deleteAsync();
+            redissonClient.getBucket(ownerKey(taskId)).deleteAsync();
+        };
+        TenantScopeBinder tenantBinder = tenantScopeBinder.getIfAvailable();
+        if (tenantBinder != null && tenantId != null) {
+            tenantBinder.runWithTenant(tenantId, deleteKeys);
+        } else {
+            deleteKeys.run();
+        }
     }
 
     private String cancelKey(String taskId) {
@@ -255,6 +322,8 @@ public class StreamTaskManager {
     private static final class StreamTaskInfo {
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private volatile String ownerUserId;
+        private volatile String tenantId;
+        private volatile boolean pendingSystemCancel;
         private volatile Runnable cancelAction;
         private volatile Runnable finalizer;
     }
