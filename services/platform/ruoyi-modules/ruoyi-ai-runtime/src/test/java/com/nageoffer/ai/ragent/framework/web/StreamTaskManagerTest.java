@@ -30,7 +30,12 @@ import org.redisson.api.RedissonClient;
 import org.redisson.api.listener.MessageListener;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -49,7 +54,7 @@ class StreamTaskManagerTest {
     private static final String TASK_ID = "t-1001";
     private static final String OWNER_ID = "u-1";
     private static final String OTHER_ID = "u-2";
-    private static final String CANCEL_TOPIC = "ragent:stream:cancel";
+    private static final String CANCEL_TOPIC = "global:ragent:stream:cancel";
     private static final String CANCEL_KEY = "ragent:stream:cancel:" + TASK_ID;
     private static final String OWNER_KEY = "ragent:stream:owner:" + TASK_ID;
 
@@ -198,6 +203,60 @@ class StreamTaskManagerTest {
 
         assertThat(taskManager.isCancelled(TASK_ID)).isFalse();
         assertThat(cancelled.get()).isZero();
+    }
+
+    // ===== F10 op2：订阅名==发布名 调用点不变式（platform 专属；ai 独立运行无 NameMapper，按设计不复制） =====
+    @Test
+    void subscribeChannelMustEqualPublishChannelUnderTenantMapper() {
+        // 平台 TenantKeyPrefixHandler 的等价镜像：含 global: 短路；无租户不加前缀；有租户加 "<tenantId>:"。
+        // 钉调用点不变式：订阅线程（无租户）与发布线程（租户 000000）必须落到同一条频道名。
+        AtomicReference<String> currentTenant = new AtomicReference<>();
+        Function<String, String> tenantMapper = name -> {
+            if (name == null || name.isBlank()) {
+                return null;
+            }
+            if (name.contains("global:")) {
+                return name;
+            }
+            String tenantId = currentTenant.get();
+            if (tenantId == null || tenantId.isBlank() || name.startsWith(tenantId)) {
+                return name;
+            }
+            return tenantId + ":" + name;
+        };
+
+        // 自检：镜像不是恒等映射，否则下面的等式没有鉴别力
+        assertThat(tenantMapper.apply("ragent:stream:cancel")).isEqualTo("ragent:stream:cancel");
+        currentTenant.set("000000");
+        assertThat(tenantMapper.apply("ragent:stream:cancel")).isEqualTo("000000:ragent:stream:cancel");
+        currentTenant.set(null);
+
+        List<String> subscribeChannels = new ArrayList<>();
+        List<String> publishChannels = new ArrayList<>();
+        AtomicBoolean publishing = new AtomicBoolean(false);
+
+        RTopic mappedTopic = mock(RTopic.class);
+        RedissonClient mappedClient = mock(RedissonClient.class);
+        when(mappedClient.<String>getBucket(anyString())).thenReturn(cancelBucket);
+        when(mappedClient.getTopic(anyString())).thenAnswer(invocation -> {
+            String mappedChannel = tenantMapper.apply(invocation.getArgument(0));
+            (publishing.get() ? publishChannels : subscribeChannels).add(mappedChannel);
+            return mappedTopic;
+        });
+
+        StreamTaskManager manager = new StreamTaskManager(mappedClient);
+        // 订阅：@PostConstruct 容器启动线程，无租户
+        manager.subscribe();
+        // 发布：stop 请求线程，租户 000000
+        publishing.set(true);
+        currentTenant.set("000000");
+        manager.cancel(TASK_ID);
+
+        assertThat(subscribeChannels).as("订阅只应挂一条频道").hasSize(1);
+        assertThat(publishChannels).as("发布只应广播一条频道").hasSize(1);
+        assertThat(subscribeChannels.get(0))
+                .as("F10 op2：发布名必须等于订阅名，否则 stop 到不了执行节点")
+                .isEqualTo(publishChannels.get(0));
     }
 
     /**

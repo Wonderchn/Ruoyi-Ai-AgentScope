@@ -44,7 +44,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Component
 public class StreamTaskManager {
 
-    private static final String CANCEL_TOPIC = "ragent:stream:cancel";
+    // 跨节点取消频道必须带 global: 前缀：订阅发生在容器启动线程（无租户），发布发生在 stop 请求线程（有租户），
+    // 只有 global: 能让 TenantKeyPrefixHandler 短路租户前缀，两端才映射到同一条频道；与 global:sse / global:websocket 同款
+    private static final String CANCEL_TOPIC = "global:ragent:stream:cancel";
     private static final String CANCEL_KEY_PREFIX = "ragent:stream:cancel:";
     private static final String OWNER_KEY_PREFIX = "ragent:stream:owner:";
     private static final Duration CANCEL_TTL = Duration.ofMinutes(30);

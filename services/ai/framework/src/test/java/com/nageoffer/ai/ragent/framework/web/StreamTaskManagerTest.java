@@ -47,7 +47,7 @@ class StreamTaskManagerTest {
     private static final String TASK_ID = "t-1001";
     private static final String OWNER_ID = "u-1";
     private static final String OTHER_ID = "u-2";
-    private static final String CANCEL_TOPIC = "ragent:stream:cancel";
+    private static final String CANCEL_TOPIC = "global:ragent:stream:cancel";
     private static final String CANCEL_KEY = "ragent:stream:cancel:" + TASK_ID;
     private static final String OWNER_KEY = "ragent:stream:owner:" + TASK_ID;
 
