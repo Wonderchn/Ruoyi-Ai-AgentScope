@@ -613,6 +613,10 @@ public class RagChatExecutor implements RunExecutor {
      * 缺陷类型。载荷没带 {@code conversationId} 时本方法不写（没有会话可归属），
      * 这是唯一的合法跳过。
      *
+     * <p><b>conversationId 的来源（D7a，s2-chathist-a1）。</b>受理 DTO 的顶层显式字段由
+     * 受理侧折入所存 input 子树（{@code RunAdmissionService.runPayloadOf}）；本方法只读
+     * run 行的 input —— 与 RunWorker/恢复路径同面，不读请求体、不另存状态。
+     *
      * <p><b>重复投递。</b>以 run 步骤 {@code conversation-history} 做幂等栅栏：
      * 恢复/重试时该步已提交则跳过。顺序是"先写、后提交步骤"，因此极端情况下
      * （写入成功但提交步骤前进程死掉）重试可能重复写一轮历史——选择偏向"至多可见重复"
