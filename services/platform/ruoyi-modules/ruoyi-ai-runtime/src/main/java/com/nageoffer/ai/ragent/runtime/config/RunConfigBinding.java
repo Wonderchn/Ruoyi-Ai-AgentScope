@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.runtime.config;
 
 import java.time.Instant;
+import java.util.Map;
 
 /**
  * 某个 **run** 受理时绑定的配置版本事实（C1.2 / C1.3）。
@@ -49,6 +50,11 @@ import java.time.Instant;
  * @param credentialRef 密钥引用/掩码（**不是**明文）
  * @param operatorId    该版本的发布操作者
  * @param publishedAt   该版本的发布时间
+ * @param params        该版本声明的生成参数（F03 op6，如 {@code {"temperature":0.7}}）。
+ *                      执行侧由 {@code JdbcRunConfigBindingPort} 从版本行 {@code params_json} 解析；
+ *                      受理侧装配 run 行时**不带实际参数**（run 行只固定 {@code params_hash}，
+ *                      C1.2 既有形态不变）—— 因此受理写路径传空 Map 是预期形态，不是漏填。
+ *                      {@code null} 与空 Map 同义（"无参数"）。
  */
 public record RunConfigBinding(
         String tenantId,
@@ -62,5 +68,6 @@ public record RunConfigBinding(
         String paramsHash,
         String credentialRef,
         String operatorId,
-        Instant publishedAt) {
+        Instant publishedAt,
+        Map<String, Object> params) {
 }

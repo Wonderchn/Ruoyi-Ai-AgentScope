@@ -32,6 +32,7 @@ import com.nageoffer.ai.ragent.ingest.EmbeddingGateway;
 import com.nageoffer.ai.ragent.runtime.P2FaultInjector;
 import com.nageoffer.ai.ragent.runtime.RunApiException;
 import com.nageoffer.ai.ragent.runtime.RunEventAppender;
+import com.nageoffer.ai.ragent.runtime.port.ConversationTurnMeta;
 import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
 import com.nageoffer.ai.ragent.runtime.usage.PlatformFactsClient;
 import com.nageoffer.ai.ragent.runtime.usage.UsageLedgerService;
@@ -285,7 +286,9 @@ public class RagChatExecutor implements RunExecutor {
             guard.commitAtomic(()->{
                 usageLedger.finalizeReservation(execution.tenantId(), execution.runId());
                 persistMessage(execution, result.get("answer").toString(), List.of(), 1);
-                persistConversationHistory(execution, guard, historyPrincipal, input, question, result.get("answer").toString());
+                // 无模型调用的轮次：没有模型名/用量/耗时可写（EMPTY 不是"漏填"，见 ConversationTurnMeta）
+                persistConversationHistory(execution, guard, historyPrincipal, input, question,
+                        result.get("answer").toString(), ConversationTurnMeta.EMPTY);
                 return null;
             });
             return Outcome.succeeded(result);
@@ -329,6 +332,8 @@ public class RagChatExecutor implements RunExecutor {
             StringBuilder pending = new StringBuilder();
             final boolean[] cancelled = {false};
             ChatPort.ChatResult chatResult;
+            // F03 op3：模型步墙钟起点（成功路径把它落成历史里的"耗时"，见 ConversationTurnMeta）
+            long modelStartedNanos = System.nanoTime();
             try {
                 chatResult = chatGateway.stream(binding, chatMessages(question, chunks), maxTokens(execution),
                         delta -> {
@@ -367,6 +372,8 @@ public class RagChatExecutor implements RunExecutor {
                 throw e;
             }
             operation.close();
+            // 耗时在成功路径计算（失败/取消路径不落历史，也就没有"耗时"可写）
+            long modelDurationMs = Math.max(0L, (System.nanoTime() - modelStartedNanos) / 1_000_000L);
             fault(P2FaultInjector.CHAT_AFTER_PROVIDER);
             if (pending.length() > 0) {
                 access.current(execution.run(),Set.of("kb.read"));
@@ -394,9 +401,14 @@ public class RagChatExecutor implements RunExecutor {
             ref.put("provider", binding.providerId());
             ref.put("model", binding.modelId());
             final ExecutionPrincipal historyPrincipal = principal;
+            // F03 op3 写侧：模型名来自 run 绑定事实（不是"当前默认模型"）；tokens 来自提供方 usage；
+            // 拿不到即 null（不编 0）。三者仅随助手消息落库。
+            final ConversationTurnMeta historyMeta = new ConversationTurnMeta(
+                    binding.modelId(), totalTokensOf(chatResult.usageRaw()),
+                    (int) Math.min(Integer.MAX_VALUE, modelDurationMs));
             guard.commitAtomic(()->{
                 persistMessage(execution,answer.toString(),citations,1);
-                persistConversationHistory(execution, guard, historyPrincipal, input, question, answer.toString());
+                persistConversationHistory(execution, guard, historyPrincipal, input, question, answer.toString(), historyMeta);
                 return guard.commitStep("model", "model", toJson(ref), null, toJson(Map.of("calls", 1)));
             });
             guard.appendEvent(RunEventAppender.EVENT_STEP_COMPLETED, Map.of(
@@ -422,6 +434,12 @@ public class RagChatExecutor implements RunExecutor {
         result.put("answer", modelRef.get("answer"));
         guard.commitAtomic(()->{usageLedger.finalizeReservation(execution.tenantId(), execution.runId());return null;});
         return Outcome.succeeded(result);
+    }
+
+    /** 提供方 usage 的 total_tokens；拿不到（缺失/非数值）就是 null —— 不把"没记录"写成 0。 */
+    static Integer totalTokensOf(Map<String, Object> usageRaw) {
+        Object value = usageRaw == null ? null : usageRaw.get("total_tokens");
+        return value instanceof Number number ? number.intValue() : null;
     }
 
     private int maxTokens(RunExecution execution) {
@@ -602,7 +620,7 @@ public class RagChatExecutor implements RunExecutor {
      */
     private void persistConversationHistory(RunExecution execution, RunExecutionGuard guard,
                                             ExecutionPrincipal principal, JsonNode input,
-                                            String question, String answer) {
+                                            String question, String answer, ConversationTurnMeta meta) {
         String conversationId = input == null ? "" : input.path("conversationId").asText("");
         if (conversationId.isBlank()) {
             return;
@@ -617,7 +635,7 @@ public class RagChatExecutor implements RunExecutor {
                             + conversationId + " (runId=" + execution.runId() + ")");
         }
         history.appendTurn(execution.tenantId(), principal.membershipId(), principal.userId(),
-                conversationId, question, answer);
+                conversationId, question, answer, meta);
         guard.commitStep("conversation-history", "conversation-history",
                 toJson(Map.of("conversationId", conversationId)), null, toJson(Map.of("calls", 0)));
     }

@@ -144,7 +144,10 @@ public class RunAdmissionService {
                 tenantId, runId, action, published.revisionId(), published.revisionNo(),
                 published.providerId(), published.modelId(), published.catalogVersion(),
                 published.paramsHash(), published.credentialRef(), published.operatorId(),
-                published.publishedAt());
+                published.publishedAt(),
+                // 受理侧只把 hash 固定到 run 行（C1.2 既有形态）；实际参数由执行侧
+                // JdbcRunConfigBindingPort 从版本行 params_json 解析（F03 op6）。
+                java.util.Map.of());
     }
 
     /**

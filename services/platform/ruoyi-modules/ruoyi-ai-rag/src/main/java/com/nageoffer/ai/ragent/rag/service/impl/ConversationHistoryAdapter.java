@@ -24,6 +24,7 @@ import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.rag.service.ConversationMessageService;
 import com.nageoffer.ai.ragent.rag.service.bo.ConversationMessageBO;
 import com.nageoffer.ai.ragent.runtime.port.ConversationHistoryPort;
+import com.nageoffer.ai.ragent.runtime.port.ConversationTurnMeta;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -66,6 +67,12 @@ public class ConversationHistoryAdapter implements ConversationHistoryPort {
     @Override
     public void appendTurn(String tenantId, String memberId, String userId, String conversationId,
                            String question, String answer) {
+        appendTurn(tenantId, memberId, userId, conversationId, question, answer, ConversationTurnMeta.EMPTY);
+    }
+
+    @Override
+    public void appendTurn(String tenantId, String memberId, String userId, String conversationId,
+                           String question, String answer, ConversationTurnMeta meta) {
         if (StrUtil.isBlank(tenantId) || StrUtil.isBlank(memberId) || StrUtil.isBlank(userId)) {
             throw new IllegalStateException(
                     "conversation history requires run-scoped identity (tenant/member/user); "
@@ -80,22 +87,23 @@ public class ConversationHistoryAdapter implements ConversationHistoryPort {
                     "conversation " + conversationId + " is not owned by the run subject; refusing to write history");
         }
 
+        ConversationTurnMeta facts = meta == null ? ConversationTurnMeta.EMPTY : meta;
         ExecutionPrincipal previous = PrincipalContext.get();
         PrincipalContext.set(new ExecutionPrincipal(tenantId, userId, memberId, 1, 1, Set.of(),
                 "run-history-" + conversationId, "platform",
                 Instant.now().getEpochSecond(), Instant.now().getEpochSecond() + 60));
         try {
             String userMessageId = conversationMessageService.addMessage(
-                    message(conversationId, userId, "user", question, null));
+                    message(conversationId, userId, "user", question, null, null));
             conversationMessageService.addMessage(
-                    message(conversationId, userId, "assistant", answer, userMessageId));
+                    message(conversationId, userId, "assistant", answer, userMessageId, facts));
         } finally {
             PrincipalContext.restore(previous);
         }
     }
 
     private ConversationMessageBO message(String conversationId, String userId, String role,
-                                          String content, String replyToMessageId) {
+                                          String content, String replyToMessageId, ConversationTurnMeta meta) {
         ConversationMessageBO message = new ConversationMessageBO();
         message.setConversationId(conversationId);
         message.setUserId(userId);
@@ -103,6 +111,15 @@ public class ConversationHistoryAdapter implements ConversationHistoryPort {
         message.setContent(content);
         message.setMessageStatus("NORMAL");
         message.setReplyToMessageId(replyToMessageId);
+        if (meta != null && "assistant".equals(role)) {
+            // F03 op3 写侧收口：模型绑定 / 逐消息用量 / 耗时随助手消息落库；
+            // 用户消息不写这三列（它不是模型调用的产物）。
+            // 注意 thinkingDuration → 冻结列 thinking_duration：普通聊天 thinking 为 disabled，
+            // 该列在本读取面（thinkingDuration）承载"消息耗时"，值=模型步墙钟毫秒，见 ConversationTurnMeta。
+            message.setModelName(meta.modelName());
+            message.setTotalTokens(meta.totalTokens());
+            message.setThinkingDuration(meta.durationMs());
+        }
         return message;
     }
 }

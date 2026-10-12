@@ -339,3 +339,26 @@ describe('模板：错误与提示必须可见（静态判据 + 绑定判据）'
     assert.match(PAGE_SOURCE, /onMounted\(\(\) => \{[\s\S]*?loadKnowledgeBases\(\)/);
   });
 });
+
+describe('F03 op3：复制与状态/耗时渲染位', () => {
+  it('用户与助手气泡都提供整条复制（助手侧此前缺失）', () => {
+    const copies = PAGE_SOURCE.match(/copyToClipboard\(item\.content, item\.key\)/g) ?? [];
+    assert.ok(copies.length >= 2, `用户+助手各一处复制绑定；实际 ${copies.length} 处`);
+    assert.match(PAGE_SOURCE, /data-testid="chat-msg-copy"/);
+  });
+
+  it('助手复制按钮绑定在非用户分支上（不是只画了个图标）', () => {
+    assert.match(PAGE_SOURCE, /item\.role !== 'user'[\s\S]{0,600}data-testid="chat-msg-copy"/);
+  });
+
+  it('消息详情组件渲染状态位与耗时位（纯函数映射由 details.test.ts 覆盖）', () => {
+    const detailsSource = fs.readFileSync(
+      new URL('../src/pages/chat/layouts/chatWithId/components/MessageDetails.vue', import.meta.url),
+      'utf8',
+    );
+    assert.match(detailsSource, /data-testid="msg-status"/);
+    assert.match(detailsSource, /data-testid="msg-duration"/);
+    // 状态/耗时不得只在"深度思考"块的 v-if 之内（普通聊天没有 thinking_content）
+    assert.match(detailsSource, /data-testid="msg-status"/);
+  });
+});

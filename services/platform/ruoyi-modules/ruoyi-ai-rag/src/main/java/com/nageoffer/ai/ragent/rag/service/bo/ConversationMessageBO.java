@@ -84,4 +84,14 @@ public class ConversationMessageBO {
      * 消息结束状态：NORMAL=正常完成，INTERRUPTED=用户中断，REJECTED=限流拒绝
      */
     private String messageStatus;
+
+    /**
+     * 模型绑定（F03 op3 写侧收口）：该 run 受理时绑定的模型名（platform.ai_message.model_name）
+     */
+    private String modelName;
+
+    /**
+     * 逐消息用量（F03 op3 写侧收口）：提供方 usage 的 total_tokens；未拿到时为 null，不写 0
+     */
+    private Integer totalTokens;
 }

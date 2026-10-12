@@ -17,6 +17,9 @@
 
 package com.nageoffer.ai.ragent.runtime.config;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -54,6 +57,7 @@ public class JdbcRunConfigBindingPort implements RunConfigBindingPort {
                     + "       c.model_id        AS revision_model_id, "
                     + "       c.catalog_version AS revision_catalog_version, "
                     + "       c.params_hash     AS revision_params_hash, "
+                    + "       c.params_json     AS revision_params_json, "
                     + "       c.credential_ref, c.operator_id AS revision_operator, "
                     + "       c.published_at    AS revision_published_at "
                     + "FROM platform.ai_run r "
@@ -119,8 +123,33 @@ public class JdbcRunConfigBindingPort implements RunConfigBindingPort {
                 asString(row.get("revision_params_hash")),
                 asString(row.get("credential_ref")),
                 asString(row.get("revision_operator")),
-                asInstant(row.get("revision_published_at")));
+                asInstant(row.get("revision_published_at")),
+                // F03 op6：生成参数随绑定事实一起带出（调用方不必再回头查一次库——
+                // 每一次"回头再读"都是一个可能读到新版本的窗口，见 RunConfigBinding 类注释）。
+                parseParams(row.get("revision_params_json")));
     }
+
+    /**
+     * 版本行声明的生成参数（{@code params_json}）。
+     *
+     * <p>缺失/空白 ⇒ 空 Map（"无参数"是合法形态：不是每个版本都声明采样参数）。
+     * 非法 JSON ⇒ {@link ConfigAuthorityUnavailable} fail-closed：版本行是自己写的
+     * （发布器从 Map 序列化），读不出来说明这一行被外部改写/损坏——此时**不静默当空**，
+     * 否则一个被篡改成坏 JSON 的版本会表现为"参数悄悄不生效"而不是可见的拒绝。
+     */
+    private static Map<String, Object> parseParams(Object raw) {
+        String json = asString(raw);
+        if (json == null || json.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return JSON.readValue(json, new TypeReference<Map<String, Object>>() { });
+        } catch (JsonProcessingException e) {
+            throw new ConfigAuthorityUnavailable("bound config revision params are unreadable");
+        }
+    }
+
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private static void requireAgrees(String field, Object runValue, Object revisionValue) {
         if (!Objects.equals(asString(runValue), asString(revisionValue))) {

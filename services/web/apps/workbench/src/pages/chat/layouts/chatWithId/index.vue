@@ -549,6 +549,25 @@ function sendMessageByKey(key: number) {
             MessageDetails 内部对空数据返回 null，因此这里的 v-if 可以省略。
           -->
           <MessageDetails :message="item" />
+          <!--
+            F03 op3：助手消息的整条复制（此前只有用户气泡可复制；助手正文走 XMarkdown，
+            库内只保证代码块级别的复制动作）。与用户侧共用 copyToClipboard 与同一份图标状态。
+          -->
+          <div
+            v-if="item.content && item.role !== 'user'"
+            class="assistant-copy-row"
+            data-testid="assistant-copy-row"
+          >
+            <el-tooltip content="复制" placement="bottom">
+              <el-button
+                class="copy-btn"
+                :icon="copyIconMap[item.key] || 'CopyDocument'"
+                size="small"
+                data-testid="chat-msg-copy"
+                @click="copyToClipboard(item.content, item.key)"
+              />
+            </el-tooltip>
+          </div>
           <div v-if="item.content && item.role === 'user'" class="userContent">
             <div class="user-bubble" :class="{ editing: editingMessageKeys.includes(item.key) }">
               <template v-if="!editingMessageKeys.includes(item.key)">
@@ -689,6 +708,32 @@ function sendMessageByKey(key: number) {
     font-size: 16px;
     cursor: pointer;
     pointer-events: auto;
+    border: none !important;
+    color: #91949a;
+    :deep(svg) {
+      stroke-width: 3 !important;
+    }
+
+    &:hover {
+      border-radius: 50%;
+      transition: background-color 0.2s;
+      background-color: #f1efef;
+    }
+  }
+}
+
+/* F03 op3：助手气泡的整条复制行（用户侧是悬浮在气泡外侧的 absolute 布局，助手侧不适用） */
+.assistant-copy-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 4px;
+
+  .copy-btn {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    font-size: 16px;
+    cursor: pointer;
     border: none !important;
     color: #91949a;
     :deep(svg) {

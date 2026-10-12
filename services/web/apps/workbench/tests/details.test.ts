@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  formatMessageStatus,
   formatScore,
   formatThinkingDuration,
   formatUsage,
@@ -251,5 +252,48 @@ describe('toMessageDetails', () => {
 
   it('空串思考内容不算有详情（空串是"没内容"，不是内容）', () => {
     assert.equal(hasDetails(toMessageDetails({ thinkingContent: '' })), false);
+  });
+});
+
+describe('formatMessageStatus（F03 op3：逐消息状态展示）', () => {
+  it('未知形态返回空串（没有状态就不渲染）', () => {
+    assert.equal(formatMessageStatus(undefined), '');
+    assert.equal(formatMessageStatus(null), '');
+    assert.equal(formatMessageStatus(''), '');
+    assert.equal(formatMessageStatus('   '), '');
+  });
+
+  it('NORMAL 不展示：它是"正常完成"的存储态，给每条正常消息挂标签是噪声', () => {
+    assert.equal(formatMessageStatus('NORMAL'), '');
+  });
+
+  it('终态/异常必须可见（本地化标签）', () => {
+    assert.equal(formatMessageStatus('SUCCEEDED'), '已完成');
+    assert.equal(formatMessageStatus('FAILED'), '失败');
+    assert.equal(formatMessageStatus('CANCELLED'), '已取消');
+    assert.equal(formatMessageStatus('INTERRUPTED'), '已中断');
+    assert.equal(formatMessageStatus('REJECTED'), '已拒绝');
+  });
+
+  it('未登记的状态原样透出（不改写服务端事实）', () => {
+    assert.equal(formatMessageStatus('SUSPENDED_V2'), 'SUSPENDED_V2');
+  });
+});
+
+describe('toMessageDetails：状态/耗时独立于思考块（F03 op3）', () => {
+  it('只有状态（无 thinking）也能形成详情并展示', () => {
+    const details = toMessageDetails({ messageStatus: 'INTERRUPTED' });
+    assert.equal(details.status, '已中断');
+    assert.equal(hasDetails(details), true);
+  });
+
+  it('只有耗时（无 thinking）也能形成详情——普通聊天 thinking 为 disabled，耗时不藏在思考块里', () => {
+    const details = toMessageDetails({ thinkingDuration: 2300 });
+    assert.equal(details.thinkingDuration, '2.3 秒');
+    assert.equal(hasDetails(details), true);
+  });
+
+  it('NORMAL 状态 + 无其它字段 ⇒ 不渲染空详情区', () => {
+    assert.equal(hasDetails(toMessageDetails({ messageStatus: 'NORMAL' })), false);
   });
 });
