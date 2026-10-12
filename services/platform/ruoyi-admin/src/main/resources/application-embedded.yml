@@ -137,7 +137,8 @@ ai:
     # 同步下是整段调用上限。Tier 枚举（fast/standard/deep）必须各有档位，否则启动失败。
     tiers:
       fast:
-        candidates: [ qwen-flash, qwen-plus, qwen3-local ]
+        # 首候选=deepseek-flash（已授权、C2/F10 窗口有真机正向证据）；来源=裁决④（r17-delegated-decisions §4）。
+        candidates: [ deepseek-flash, qwen-flash, qwen-plus, qwen3-local ]
         timeout-ms: 5000
       standard:
         candidates: [ qwen3-max, qwen-plus, deepseek-flash, qwen3-local, gpt-5.4 ]

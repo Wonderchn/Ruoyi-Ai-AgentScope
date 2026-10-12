@@ -397,6 +397,20 @@ class AiEmbeddedModelConfigurationTest {
     }
 
     @Test
+    @DisplayName("shipped FAST 档首候选＝deepseek-flash（裁决④：默认路径不再先经历额度耗尽的候选）")
+    void fastTierLeadsWithDeepseekFlash() {
+        AIModelProperties properties = bindEmbeddedCatalog();
+        List<String> fastCandidates = properties.getChat().getTiers().get("fast").getCandidates();
+        assertThat(fastCandidates)
+                .as("裁决④：FAST 首候选必须是 deepseek-flash——已获授权且已有真机正向证据的 provider；"
+                        + "默认首候选落在额度耗尽的 bailian 会让 shipped 路径先走失败候选")
+                .startsWith("deepseek-flash");
+        assertThat(fastCandidates)
+                .as("改指只调整首候选：其余候选保持原有相对顺序且不删除")
+                .containsExactly("deepseek-flash", "qwen-flash", "qwen-plus", "qwen3-local");
+    }
+
+    @Test
     @DisplayName("内嵌 profile 的每个候选都能按自己的能力类型解析出调用 URL")
     void embeddedCatalogResolvesEveryCandidateForItsOwnCapability() {
         AIModelProperties properties = bindEmbeddedCatalog();
