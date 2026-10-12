@@ -107,6 +107,10 @@ class LocalSseStreamingDispatchTest {
     /** 交付回执记录（permit, operation 二元组）。 */
     private static final List<String> deliveryAcks = new CopyOnWriteArrayList<>();
 
+    /** F23 op7 收口：令指定 permit 的回执失败（"未知 ACK"负分支夹具），null=全部成功。 */
+    private static final java.util.concurrent.atomic.AtomicReference<String> failAckPermit =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
     @BeforeAll
     static void startContainer() throws Exception {
         AnnotationConfigWebApplicationContext context = new AnnotationConfigWebApplicationContext();
@@ -155,6 +159,7 @@ class LocalSseStreamingDispatchTest {
     void baselineStubs() {
         reset(jdbc, namedJdbc, transactions, transactionManager, revocations, platformPermits);
         deliveryAcks.clear();
+        failAckPermit.set(null);
     }
 
     private static HttpResponse<String> getEvents(String runId) throws Exception {
@@ -197,6 +202,31 @@ class LocalSseStreamingDispatchTest {
         assertThat(response.statusCode()).isEqualTo(404);
         assertThat(response.body()).contains("RESOURCE_NOT_FOUND_OR_FORBIDDEN");
         assertThat(deliveryAcks).isEmpty();
+    }
+
+    /**
+     * F23 op7 收口：**未知 ACK 的负分支**——某一帧的交付回执无法确认时：
+     * ①绝不自动重试（该 permit 恰一次回执尝试）；②订阅就此停止，后续帧不再投递、
+     * 不再产生回执（permit 保持 ACTIVE 的语义边界即"未确认即不释放"，
+     * 由下游释放器失败隐含）；③绝不静默放过当作投递成功。
+     */
+    @Test
+    void unconfirmedFrameAckStopsStreamWithoutRetryOrSilentSuccess() throws Exception {
+        failAckPermit.set("permit-1");
+
+        HttpResponse<String> response = null;
+        try {
+            response = getEvents("ok");
+        } catch (java.io.IOException clientSideAbort) {
+            // 帧 1 的公共部分已 flush 之后才失败：服务端中止连接属承诺内的可观察形态；
+            // 承重判据落在回执账上（见下），与 HTTP 层是否优雅收尾无关。
+        }
+
+        // 恰一次回执尝试（失败不自动重试），且帧 2 从未进入投递（无 permit-2 回执）
+        assertThat(deliveryAcks).containsExactly("permit-1 operation-1");
+        if (response != null) {
+            assertThat(response.body()).doesNotContain("id: 2");
+        }
     }
 
     // ------------------------------------------------------------------ fixture
@@ -295,6 +325,10 @@ class LocalSseStreamingDispatchTest {
                 assertThat(tenantId).isEqualTo(TENANT);
                 assertThat(memberId).isEqualTo(MEMBER);
                 deliveryAcks.add(permitId + " " + operationId);
+                if (permitId.equals(failAckPermit.get())) {
+                    // F23 op7 收口：回执未确认（fail-closed；绝不当作投递成功）
+                    throw new IllegalStateException("synthetic unconfirmed delivery acknowledgement");
+                }
             };
         }
 
