@@ -49,6 +49,7 @@ import com.nageoffer.ai.ragent.agent.tool.AgentToolBatchMiddleware;
 import com.nageoffer.ai.ragent.agent.tool.AgentToolCatalog;
 import com.nageoffer.ai.ragent.agent.trace.AgentTraceEnrichmentMiddleware;
 import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.framework.web.StreamTaskManager;
 import com.nageoffer.ai.ragent.infra.chat.LLMService;
 import com.nageoffer.ai.ragent.infra.config.AIModelProperties;
@@ -281,10 +282,12 @@ public class AiEmbeddedAgentEngineClosureConfiguration {
                                              AgentRunGate runGate,
                                              AgentMemoryProperties memoryProperties,
                                              AgentMemoryPipeline memoryPipeline,
-                                             org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.runtime.web.DeliveryPermits> deliveryPermits) {
+                                             org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.runtime.web.DeliveryPermits> deliveryPermits,
+                                             org.springframework.beans.factory.ObjectProvider<TenantScopeBinder> tenantScopeBinder) {
         // ENV-B5b 许可接线：帧级 : ai-delivery 元数据（本地传输对裸数据帧 fail-closed）
+        // F16 op1 管线修复（2026-10-12）：后台记忆抽取的租户重绑端口（独立/旧形态缺席时合法）
         return new AgentChatServiceImpl(agentProvider, conversationService, taskManager, runGate,
-                memoryProperties, memoryPipeline, deliveryPermits);
+                memoryProperties, memoryPipeline, deliveryPermits, tenantScopeBinder);
     }
 
     /** ReAct 供给器（A1 #3）：5 个中间件为硬依赖；OTel/trace 两件走 ObjectProvider，缺席合法。 */

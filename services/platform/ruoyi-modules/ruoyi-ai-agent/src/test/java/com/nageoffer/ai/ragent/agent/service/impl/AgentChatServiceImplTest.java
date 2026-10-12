@@ -130,6 +130,28 @@ class AgentChatServiceImplTest {
                     public com.nageoffer.ai.ragent.runtime.web.DeliveryPermits getIfUnique() {
                         return null;
                     }
+                },
+                // 本类用例不铺租户门（双门合测在 AsyncMemoryChainsIdentityBindingTest）
+                new org.springframework.beans.factory.ObjectProvider<>() {
+                    @Override
+                    public com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder getObject() {
+                        throw new IllegalStateException("no binder");
+                    }
+
+                    @Override
+                    public com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder getObject(Object... args) {
+                        return getObject();
+                    }
+
+                    @Override
+                    public com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder getIfAvailable() {
+                        return null;
+                    }
+
+                    @Override
+                    public com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder getIfUnique() {
+                        return null;
+                    }
                 });
 
         gateReleased = new AtomicInteger();

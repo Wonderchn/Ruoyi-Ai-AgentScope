@@ -28,6 +28,7 @@ import com.nageoffer.ai.ragent.agent.enums.AgentMemoryTriggerType;
 import com.nageoffer.ai.ragent.agent.enums.AgentSSEEventType;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryPipeline;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryProperties;
+import com.nageoffer.ai.ragent.agent.memory.AsyncMemoryTaskScope;
 import com.nageoffer.ai.ragent.agent.service.AgentChatService;
 import com.nageoffer.ai.ragent.agent.service.AgentConversationService;
 import com.nageoffer.ai.ragent.agent.service.handler.AgentRunGate;
@@ -35,10 +36,12 @@ import com.nageoffer.ai.ragent.agent.service.handler.AgentRunHandle;
 import com.nageoffer.ai.ragent.agent.service.handler.AgentStreamEventBridge;
 import com.nageoffer.ai.ragent.agent.tool.AgentToolExecutionFacts;
 import com.nageoffer.ai.ragent.agent.trace.AgentTraceContextKeys;
+import com.nageoffer.ai.ragent.framework.context.AsyncPrincipalReference;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.framework.web.SseEmitterSender;
 import com.nageoffer.ai.ragent.framework.web.StreamTaskManager;
 import com.nageoffer.ai.ragent.runtime.web.DeliveryPermits;
@@ -90,6 +93,13 @@ public class AgentChatServiceImpl implements AgentChatService {
      * 端口缺席（独立应用）按原形态裸帧发送。
      */
     private final ObjectProvider<DeliveryPermits> deliveryPermits;
+    /**
+     * 租户作用域绑定端口（F16 op1 管线修复，2026-10-12）：轮次结束后台抽取经
+     * {@code subscribeOn(boundedElastic)} 跳到共享池线程——池线程上没有动态租户，
+     * MyBatis 租户行拦截器对记忆表 fail-closed（真机 tenant.context.missing）。
+     * 受理期捕获的租户经本端口在任务体内重绑；端口缺席（独立应用）按原形态直跑。
+     */
+    private final ObjectProvider<TenantScopeBinder> tenantScopeBinder;
 
     @Override
     public void streamChat(String question, String conversationId, SseEmitter emitter) {
@@ -296,8 +306,17 @@ public class AgentChatServiceImpl implements AgentChatService {
         });
         // 最后再放行同一用户的下一轮，避免新流加载状态后被本轮收尾清掉
         runHandle.onRelease(scope.releaseGate());
+        // 抽取链的身份/租户在这里（受理期、请求线程）捕获：释放钩子可能跑在流终止线程或
+        // redisson 监听线程上，那里的主体是池化残留、租户为空——在钩子执行时才读就晚了
+        // （F16 op1 真机根因）。只认同步起源：残留拷贝不是可信在场主体，绝不作为绑定来源。
+        AsyncPrincipalReference extractionPrincipal = PrincipalContext.isSynchronousOrigin()
+                ? AsyncPrincipalReference.from(PrincipalContext.require())
+                : null;
+        // tenantId 从同一捕获派生，两处来源不许各自读一遍（漂移＝跨租户写归属）
+        String extractionTenantId = extractionPrincipal == null ? null : extractionPrincipal.tenantId();
         // 放在释放并发锁之后，确保记忆抽取时名额已归还
-        runHandle.onRelease(() -> scheduleMemoryExtraction(userId, conversationId));
+        runHandle.onRelease(() -> scheduleMemoryExtraction(userId, conversationId,
+                extractionPrincipal, extractionTenantId));
     }
 
     /**
@@ -357,12 +376,19 @@ public class AgentChatServiceImpl implements AgentChatService {
 
     /**
      * 轮次结束后异步抽取长期记忆
+     *
+     * <p>抽取跳上共享 boundedElastic 线程后，落库链要先过 {@code PrincipalContext.require()}
+     * 再过 MyBatis 租户行拦截器两道门——两道门都只认受理期捕获的事实：任务体用捕获的
+     * 身份引用（非配对 restore，不授出站起源）与同源派生的租户重绑，finally 恢复线程原主体。
+     * 无捕获（无主体形态）按原形态直跑，不新增默认身份。
      */
-    private void scheduleMemoryExtraction(String userId, String conversationId) {
+    private void scheduleMemoryExtraction(String userId, String conversationId,
+                                          AsyncPrincipalReference principalRef, String tenantId) {
         if (!memoryProperties.isLongTermEnabled()) {
             return;
         }
-        Mono.fromCallable(() -> memoryPipeline.extract(userId, conversationId, AgentMemoryTriggerType.BACKGROUND))
+        Mono.fromCallable(() -> AsyncMemoryTaskScope.callWithCapture(principalRef, tenantId, tenantScopeBinder,
+                        () -> memoryPipeline.extract(userId, conversationId, AgentMemoryTriggerType.BACKGROUND)))
                 .subscribeOn(Schedulers.boundedElastic())
                 .subscribe(outcome -> {
                             if (outcome.idle()) {
