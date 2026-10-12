@@ -295,6 +295,66 @@ describe('确认卡（F15 op2）', () => {
     assert.notEqual(card?.status, 'approved');
     assert.match(h.chat.error.value, /没有审批权限/);
   });
+
+  it('**BD-1 回归：续跑流 meta 后断流** —— 裁决已被受理，卡片落 approved，绝不称"已失效未曾执行"', async () => {
+    // 场景：POST confirm 已被服务端受理（meta 是受理首帧），续跑中段连接断掉（没有 finish/done）。
+    // 参考实现同口径："此后即使流中途断了，裁决在库里也是实的"。
+    // 旧实现对所有 AgentChatFailure（含 status=-1）一律落 expired ⇒ 卡片谎称"未执行"，
+    // 用户重发即重复写 —— 本用例钉死三分流的第一支。
+    const h = harness({
+      chat: [sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-1' }), CONFIRM_FRAME(), done()])],
+      confirm: [sseResponse([
+        frame('meta', { conversationId: 'c-1', taskId: 't-2' }),
+        frame('block', { kind: 'tool', toolCallId: 'tc1', name: 'mcp_write', displayName: '写操作', status: 'running' }),
+        // 没有 finish / done：连接在续跑中段断掉
+      ])],
+    });
+    await untilConfirm(h);
+    await h.chat.resolveConfirm(true);
+
+    const card = h.chat.turns.value[0].assistants[0].blocks?.find(block => block.kind === 'confirm');
+    assert.equal(card?.status, 'approved', 'meta 已到：裁决在库里是实的，断流不改判');
+    assert.equal(h.chat.hasPendingConfirm.value, false, '挂起必须解除（否则一次重发变成重复执行）');
+    assert.match(h.chat.error.value, /中断/, '断流本身要如实显示，不静默');
+  });
+
+  it('无 meta 的断流：不擅自落"已失效"，回查以服务端为准（挂起卡复原、可重试）', async () => {
+    // 场景：confirm 请求在收到任何帧之前就断了（网络层失败，status=-1）——
+    // 这一击有没有送达服务端**不可知**，唯一正确动作是回查。
+    const h = harness(
+      {
+        chat: [sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-1' }), CONFIRM_FRAME(), done()])],
+        confirm: [sseResponse([])],
+      },
+      [{
+        body: {
+          code: 200,
+          msg: 'success',
+          data: [
+            { id: 'm1', role: 'user', content: '写点什么', createTime: '2026-10-12T10:00:00', messageStatus: 'NORMAL' },
+            {
+              id: 'm77',
+              role: 'assistant',
+              content: '',
+              createTime: '2026-10-12T10:00:01',
+              messageStatus: 'AWAITING_CONFIRM',
+              blocks: [
+                { kind: 'tool', name: 'mcp_write', displayName: '写操作', status: 'awaiting', toolCallId: 'tc1' },
+                { kind: 'confirm', status: 'pending', calls: [{ toolCallId: 'tc1', name: 'mcp_write', displayName: '写操作', fields: [{ name: 'id', label: '编号', value: '7' }], arguments: '{"id":7}' }] },
+              ],
+            },
+          ],
+        },
+      }],
+    );
+    await untilConfirm(h);
+    await h.chat.resolveConfirm(true);
+
+    // 回查结果：服务端仍是待批（这一击确实没送到）⇒ 卡片复原为 pending 可重试，不得是 expired
+    const card = h.chat.turns.value[0].assistants[0].blocks?.find(block => block.kind === 'confirm');
+    assert.equal(card?.status, 'pending', '服务端仍是待批：不擅自改判');
+    assert.equal(h.chat.hasPendingConfirm.value, true, '挂起复原，用户可重新裁决');
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -324,24 +324,31 @@ function createChat(options: UseAgentChatBaseOptions) {
       messageId: pending.messageId,
       approved,
     });
-    let rejected = false;
+    // 只先记下"服务端以 HTTP 状态明确拒绝"这一事实（非 SSE 失败体），三分流统一在下面判 ——
+    // 失败回调里直接落状态会把"流断"误落成"已失效"（BD-1）。
+    let rejectedByServer = false;
     await consume(conn, (failure) => {
-      // 服务端明确拒绝（业务失败体）：卡片不得停在"提交中"，也不得装已同意
-      setConfirmStatus('expired');
-      state.value = { ...state.value, pendingConfirm: null };
-      error.value = failure.message;
-      rejected = true;
+      rejectedByServer = failure.status >= 0;
     });
-    if (rejected)
-      return;
 
+    // —— 裁决收尾三分流（BD-1）——
+    // ① meta 是后端受理续跑的首帧：收到它说明裁决已被受理，"此后即使流中途断了，
+    //    裁决在库里也是实的"（参考实现同口径）。此支必须先判 —— mid-break（status=-1）
+    //    若被落成"已失效未曾执行"，用户重发就会变成重复执行。
     if (conn.frames.some(frame => frame.name === 'meta')) {
-      // 后端已受理：此后即使流中途断了，裁决在库里也是实的
       setConfirmStatus(approved ? 'approved' : 'denied');
       state.value = { ...state.value, pendingConfirm: null };
       return;
     }
-    // 没收到 meta 也没抛错（连接被中止）：回查一次以服务端为准
+    // ② 非 SSE 失败体（HTTP 状态 ≥ 0）：服务端**明确拒绝**（已失效 / 不存在 / 无权），
+    //    卡片转 expired 并保留服务端原文（consume 已写入 error）。
+    if (rejectedByServer) {
+      setConfirmStatus('expired');
+      state.value = { ...state.value, pendingConfirm: null };
+      return;
+    }
+    // ③ 其余（网络层失败 / 连接被中止 / 正常收尾却没有 meta）：这一击有没有送达**不可知**，
+    //    唯一正确动作是回查，以服务端说法为准。
     await refresh(pending.conversationId);
   }
 
