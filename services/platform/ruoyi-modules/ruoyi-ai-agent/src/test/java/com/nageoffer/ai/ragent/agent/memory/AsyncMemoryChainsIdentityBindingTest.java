@@ -283,7 +283,9 @@ class AsyncMemoryChainsIdentityBindingTest {
         AgentMemoryProperties properties = new AgentMemoryProperties();
         properties.setLongTermEnabled(true);
         return new AgentChatServiceImpl(agentProvider, conversationService, taskManager, runGate,
-                properties, pipeline, noPermits(), binderProvider(gate.binder()));
+                properties, pipeline, noPermits(), binderProvider(gate.binder()),
+                // s2-tenant-cmp-a1 完成链登记表：本判据只走记忆链，构造参数保持真实实例
+                new com.nageoffer.ai.ragent.agent.identity.AgentRunScopeRegistry());
     }
 
     private static ReasoningInput emptyReasoningInput() {

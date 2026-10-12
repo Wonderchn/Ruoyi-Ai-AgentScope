@@ -152,7 +152,9 @@ class AgentChatServiceImplTest {
                     public com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder getIfUnique() {
                         return null;
                     }
-                });
+                },
+                // s2-tenant-cmp-a1：完成链登记表只需真实实例（本类不铺完成链双门判据）
+                new com.nageoffer.ai.ragent.agent.identity.AgentRunScopeRegistry());
 
         gateReleased = new AtomicInteger();
         when(runGate.acquire(anyString(), anyString(), anyString())).thenReturn(gateReleased::incrementAndGet);

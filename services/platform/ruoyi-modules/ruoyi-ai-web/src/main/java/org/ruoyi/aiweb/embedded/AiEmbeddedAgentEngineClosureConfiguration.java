@@ -27,6 +27,7 @@ import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryControlMapper;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryExtractionMapper;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryMapper;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMessageMapper;
+import com.nageoffer.ai.ragent.agent.identity.AgentRunScopeRegistry;
 import com.nageoffer.ai.ragent.agent.memory.AgentContextCompactionMiddleware;
 import com.nageoffer.ai.ragent.agent.memory.AgentContextCompactor;
 import com.nageoffer.ai.ragent.agent.memory.AgentContextTrimmer;
@@ -273,6 +274,17 @@ public class AiEmbeddedAgentEngineClosureConfiguration {
         return builder.build();
     }
 
+    /**
+     * 轮次身份作用域登记表（s2-tenant-cmp-a1，2026-10-12）：轮末状态保存链在共享池上回调
+     * AgentStateStore，受理期捕获经它按 (userId, sessionId) 取回重绑；AgentChatServiceImpl
+     * 受理时登记、释放钩子第 2 位注销。存储侧经 @Autowired configureRunScope 取用同型 bean。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public AgentRunScopeRegistry agentRunScopeRegistry() {
+        return new AgentRunScopeRegistry();
+    }
+
     /** 引擎会话服务（A1 #1）：ReAct 供给 + 会话 + 在途任务/闸门 + 记忆管线。 */
     @Bean
     @ConditionalOnMissingBean(AgentChatService.class)
@@ -282,12 +294,14 @@ public class AiEmbeddedAgentEngineClosureConfiguration {
                                              AgentRunGate runGate,
                                              AgentMemoryProperties memoryProperties,
                                              AgentMemoryPipeline memoryPipeline,
+                                             AgentRunScopeRegistry runScopeRegistry,
                                              org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.runtime.web.DeliveryPermits> deliveryPermits,
                                              org.springframework.beans.factory.ObjectProvider<TenantScopeBinder> tenantScopeBinder) {
         // ENV-B5b 许可接线：帧级 : ai-delivery 元数据（本地传输对裸数据帧 fail-closed）
         // F16 op1 管线修复（2026-10-12）：后台记忆抽取的租户重绑端口（独立/旧形态缺席时合法）
+        // s2-tenant-cmp-a1（2026-10-12）：完成链三处（轮末状态保存/终答落库/工具检索）受理期捕获登记
         return new AgentChatServiceImpl(agentProvider, conversationService, taskManager, runGate,
-                memoryProperties, memoryPipeline, deliveryPermits, tenantScopeBinder);
+                memoryProperties, memoryPipeline, deliveryPermits, tenantScopeBinder, runScopeRegistry);
     }
 
     /** ReAct 供给器（A1 #3）：5 个中间件为硬依赖；OTel/trace 两件走 ObjectProvider，缺席合法。 */

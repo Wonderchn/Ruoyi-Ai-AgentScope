@@ -26,6 +26,8 @@ import com.nageoffer.ai.ragent.agent.dto.AgentConfirmSettlement;
 import com.nageoffer.ai.ragent.agent.dto.AgentMetaPayload;
 import com.nageoffer.ai.ragent.agent.enums.AgentMemoryTriggerType;
 import com.nageoffer.ai.ragent.agent.enums.AgentSSEEventType;
+import com.nageoffer.ai.ragent.agent.identity.AgentRunScope;
+import com.nageoffer.ai.ragent.agent.identity.AgentRunScopeRegistry;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryPipeline;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryProperties;
 import com.nageoffer.ai.ragent.agent.memory.AsyncMemoryTaskScope;
@@ -100,6 +102,13 @@ public class AgentChatServiceImpl implements AgentChatService {
      * 受理期捕获的租户经本端口在任务体内重绑；端口缺席（独立应用）按原形态直跑。
      */
     private final ObjectProvider<TenantScopeBinder> tenantScopeBinder;
+    /**
+     * 轮次身份作用域登记表（s2-tenant-cmp-a1，2026-10-12）：轮末状态保存由框架在共享池上
+     * 回调 {@code AgentStateStore}，闭包只剩 {@code (userId, sessionId)}；受理期捕获登记到
+     * 同一对键上，存储实现在 DAO 前重绑（形状同 F16 op1 抽取链）。释放钩子第 2 位注销
+     * （补存盘之后、放闸之前）。
+     */
+    private final AgentRunScopeRegistry runScopeRegistry;
 
     @Override
     public void streamChat(String question, String conversationId, SseEmitter emitter) {
@@ -249,8 +258,12 @@ public class AgentChatServiceImpl implements AgentChatService {
         // 事实源：桥、上下文与句柄共用，ID 与时刻只在这里产生
         Clock clock = Clock.systemDefaultZone();
         AgentToolExecutionFacts facts = new AgentToolExecutionFacts(taskId, clock);
-        // 上下文传到底，中断时句柄从这里取根 span
-        RuntimeContext runtimeContext = buildRuntimeContext(scope, facts);
+        // 受理期（请求线程、同步起源）一次捕获，完成链三处共用：轮末状态保存（框架在共享池上
+        // 回调 AgentStateStore，只回传 userId/sessionId）、终答落库（流终止/池线程）、知识检索
+        // 工具（工具自身 subscribeOn 起跳）。池化残留不是可信在场主体，捕获为空＝各链按原形态直跑。
+        AgentRunScope runScope = AgentRunScope.capture(tenantScopeBinder);
+        // 上下文传到底，中断时句柄从这里取根 span；捕获同时挂在工具执行上下文上供工具链读
+        RuntimeContext runtimeContext = buildRuntimeContext(scope, facts, runScope);
         // 许可接线：请求线程可取到执行主体；缺席（独立应用）退回裸帧形态
         DeliveryPermits permits = deliveryPermits.getIfAvailable();
         ExecutionPrincipal permitPrincipal = PrincipalContext.get();
@@ -258,7 +271,9 @@ public class AgentChatServiceImpl implements AgentChatService {
                 ? new SseEmitterSender(scope.emitter())
                 : new SseEmitterSender(scope.emitter(), permits, permitPrincipal, "run.stream", "chat:" + taskId);
         AgentRunHandle runHandle = new AgentRunHandle(taskId, sender, taskManager, facts, runtimeContext);
-        bindReleaseHooks(runHandle, agent, scope);
+        bindReleaseHooks(runHandle, agent, scope, runScope);
+        // 轮末框架存盘在流终止之前完成；登记放在订阅之前，注销是释放钩子第 2 位
+        runScopeRegistry.register(userId, conversationId, runScope);
         try {
             bindEmitterLifecycle(scope.emitter(), runHandle, taskId);
             sender.sendEvent(AgentSSEEventType.META.value(), new AgentMetaPayload(conversationId, taskId));
@@ -279,7 +294,8 @@ public class AgentChatServiceImpl implements AgentChatService {
                 taskManager.bindHandle(taskId, runHandle::interruptUpstream);
             });
         } catch (RuntimeException | Error e) {
-            // 启动失败时释放钩子不会执行，手动清掉缓存里的坏状态
+            // 启动失败时释放钩子不会执行：注销本轮登记＋清掉缓存里的坏状态
+            runScopeRegistry.unregister(userId, conversationId);
             agent.clearStateCache(userId, conversationId);
             throw e;
         }
@@ -287,8 +303,13 @@ public class AgentChatServiceImpl implements AgentChatService {
 
     /**
      * 登记流结束后的三件事，注册顺序就是执行顺序，换顺序会出问题
+     *
+     * <p>s2-tenant-cmp-a1 插入第 2 位注销：轮末框架存盘与补存盘都发生在登记期内，
+     * 注销必须排在补存盘钩子之后、放闸之前——放闸后同一 (user, 会话) 的新轮会重新登记
+     * 同一键，注销若排最后会把新轮的登记顶掉。
      */
-    private void bindReleaseHooks(AgentRunHandle runHandle, ReActAgent agent, RunScope scope) {
+    private void bindReleaseHooks(AgentRunHandle runHandle, ReActAgent agent, RunScope scope,
+                                  AgentRunScope runScope) {
         String userId = scope.userId();
         String conversationId = scope.conversationId();
         runHandle.onRelease(() -> {
@@ -304,16 +325,17 @@ public class AgentChatServiceImpl implements AgentChatService {
             // 只清本次流实际使用的实例，避免重建后旧流误清新 Agent
             agent.clearStateCache(userId, conversationId);
         });
+        // 本轮登记期到此为止（补存盘已在上个钩子里完成）；新轮重新登记前先撤，防跨轮错绑
+        runHandle.onRelease(() -> runScopeRegistry.unregister(userId, conversationId));
         // 最后再放行同一用户的下一轮，避免新流加载状态后被本轮收尾清掉
         runHandle.onRelease(scope.releaseGate());
-        // 抽取链的身份/租户在这里（受理期、请求线程）捕获：释放钩子可能跑在流终止线程或
+        // 抽取链复用同一份受理期捕获（launchStream 请求线程、同步起源处捕获，经参数传入；
+        // 捕获点只是从本方法内上移一行，语义不变）：释放钩子可能跑在流终止线程或
         // redisson 监听线程上，那里的主体是池化残留、租户为空——在钩子执行时才读就晚了
         // （F16 op1 真机根因）。只认同步起源：残留拷贝不是可信在场主体，绝不作为绑定来源。
-        AsyncPrincipalReference extractionPrincipal = PrincipalContext.isSynchronousOrigin()
-                ? AsyncPrincipalReference.from(PrincipalContext.require())
-                : null;
+        AsyncPrincipalReference extractionPrincipal = runScope == null ? null : runScope.principal();
         // tenantId 从同一捕获派生，两处来源不许各自读一遍（漂移＝跨租户写归属）
-        String extractionTenantId = extractionPrincipal == null ? null : extractionPrincipal.tenantId();
+        String extractionTenantId = runScope == null ? null : runScope.tenantId();
         // 放在释放并发锁之后，确保记忆抽取时名额已归还
         runHandle.onRelease(() -> scheduleMemoryExtraction(userId, conversationId,
                 extractionPrincipal, extractionTenantId));
@@ -351,14 +373,21 @@ public class AgentChatServiceImpl implements AgentChatService {
 
     /**
      * 事实源在构建时就位，中间件从上下文取它；其余 key 建完再 put——底层 ConcurrentHashMap 不接受 null
+     *
+     * <p>受理期捕获的身份作用域一并挂上（s2-tenant-cmp-a1）：工具链在池线程上从
+     * {@code ToolCallParam.getRuntimeContext()} 取它重绑；无捕获形态不挂、工具按原形态直跑。
      */
-    private static RuntimeContext buildRuntimeContext(RunScope scope, AgentToolExecutionFacts facts) {
+    private static RuntimeContext buildRuntimeContext(RunScope scope, AgentToolExecutionFacts facts,
+                                                      AgentRunScope runScope) {
         RuntimeContext runtimeContext = RuntimeContext.builder()
                 .userId(scope.userId())
                 .sessionId(scope.conversationId())
                 .put(McpMeta.class, new McpMeta(AgentMcpMeta.ofUser(scope.userId())))
                 .put(AgentToolExecutionFacts.RUNTIME_CONTEXT_KEY, facts)
                 .build();
+        if (runScope != null) {
+            runtimeContext.put(AgentRunScope.RUNTIME_CONTEXT_KEY, runScope);
+        }
         runtimeContext.put(AgentTraceContextKeys.TASK_ID, scope.taskId());
         runtimeContext.put(AgentTraceContextKeys.REPLY_TO_MESSAGE_ID, scope.replyToMessageId());
         runtimeContext.put(AgentTraceContextKeys.CONFIRM_MESSAGE_ID, scope.confirmMessageId());

@@ -96,4 +96,39 @@ public final class AsyncMemoryTaskScope {
         binder.runWithTenant(tenantId, () -> result.set(body.get()));
         return result.get();
     }
+
+    /**
+     * 已解析端口入口（s2-tenant-cmp-a1，2026-10-12；纯增，既有链语义不动）：完成链三处
+     * （轮末状态保存/终答落库/知识检索工具）的消费方手里已经是解析好的
+     * {@code AgentRunScope#tenantScopeBinder()} 实例，不再经 ObjectProvider 取一次。
+     * 语义与 {@link #callWithCapture(AsyncPrincipalReference, String, ObjectProvider, Supplier)}
+     * 完全一致：非配对 restore（只授 holder、不授同步起源）＋租户绑定内层＋finally 复原。
+     * 刻意不叫 callWithCapture：重载会让既有调用点传 null 端口时的重载决议歧义
+     * （P3 判据 AsyncMemoryTaskScopeTest 即传 null，不许改动）。
+     */
+    public static <T> T callWithResolvedCapture(AsyncPrincipalReference principalRef, String tenantId,
+                                                TenantScopeBinder tenantScopeBinder, Supplier<T> body) {
+        if (principalRef == null) {
+            return runInTenant(tenantId, tenantScopeBinder, body);
+        }
+        ExecutionPrincipal previous = PrincipalContext.get();
+        PrincipalContext.restore(principalRef.toExecutionPrincipal());
+        try {
+            return runInTenant(tenantId, tenantScopeBinder, body);
+        } finally {
+            PrincipalContext.restore(previous);
+        }
+    }
+
+    /**
+     * 端口实例版租户绑定：与 ObjectProvider 版同语义，只吃 {@link Runnable}，返回值经持有位转一手。
+     */
+    private static <T> T runInTenant(String tenantId, TenantScopeBinder binder, Supplier<T> body) {
+        if (binder == null || tenantId == null) {
+            return body.get();
+        }
+        AtomicReference<T> result = new AtomicReference<>();
+        binder.runWithTenant(tenantId, () -> result.set(body.get()));
+        return result.get();
+    }
 }

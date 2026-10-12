@@ -19,12 +19,14 @@ package com.nageoffer.ai.ragent.agent.config;
 
 import cn.hutool.core.util.StrUtil;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentStateMapper;
+import com.nageoffer.ai.ragent.agent.identity.AgentRunScopeRegistry;
 import com.nageoffer.ai.ragent.agent.state.PgAgentStateStore;
 import com.nageoffer.ai.ragent.infra.config.AIModelProperties;
 import com.nageoffer.ai.ragent.infra.enums.ModelProvider;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import io.agentscope.extensions.model.openai.compat.deepseek.DeepSeekFormatter;
 import lombok.RequiredArgsConstructor;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -91,5 +93,17 @@ public class AgentEngineConfiguration {
     @Bean
     public PgAgentStateStore agentStateStore(AgentStateMapper agentStateMapper) {
         return new PgAgentStateStore(agentStateMapper);
+    }
+
+    /**
+     * 轮次身份作用域登记表（s2-tenant-cmp-a1）：轮末状态保存链在共享池上回调
+     * AgentStateStore，受理期捕获经它按 (userId, sessionId) 取回重绑；
+     * AgentChatServiceImpl 受理时登记、释放钩子第 2 位注销。
+     * {@code @ConditionalOnMissingBean} 与内嵌闭包的同名 bean 去重（返回类型是具体类）。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public AgentRunScopeRegistry agentRunScopeRegistry() {
+        return new AgentRunScopeRegistry();
     }
 }

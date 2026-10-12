@@ -19,8 +19,12 @@ package com.nageoffer.ai.ragent.agent.state;
 
 import cn.hutool.core.util.StrUtil;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentStateMapper;
+import com.nageoffer.ai.ragent.agent.identity.AgentRunScope;
+import com.nageoffer.ai.ragent.agent.identity.AgentRunScopeRegistry;
+import com.nageoffer.ai.ragent.agent.memory.AsyncMemoryTaskScope;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.state.State;
 import io.agentscope.core.util.JsonUtils;
@@ -31,6 +35,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * AgentStateStore 的 PostgreSQL 实现
@@ -50,6 +55,14 @@ public class PgAgentStateStore implements AgentStateStore {
     private final AgentStateMapper agentStateMapper;
     private boolean provenanceRequired;
     private com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService sourceAuthorization;
+    /**
+     * 轮次身份作用域登记表与租户绑定端口（s2-tenant-cmp-a1，2026-10-12）：轮末状态保存由
+     * 框架在共享池上回调本类（{@code ReActAgent.saveStateToSession}），受理期捕获经登记表
+     * 按 {@code (userId, sessionId)} 取回重绑；登记表/端口缺席（独立应用、直构测试）按
+     * 原形态直跑。装配形状同 {@link #configureSources}。
+     */
+    private AgentRunScopeRegistry runScopeRegistry;
+    private TenantScopeBinder tenantScopeBinder;
 
     @org.springframework.beans.factory.annotation.Autowired
     public void configureSources(@org.springframework.beans.factory.annotation.Value("${ai.integration.enabled:false}") boolean required,
@@ -57,24 +70,38 @@ public class PgAgentStateStore implements AgentStateStore {
         this.provenanceRequired=required; this.sourceAuthorization=sources.getIfAvailable();
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureRunScope(
+            org.springframework.beans.factory.ObjectProvider<AgentRunScopeRegistry> registryProvider,
+            org.springframework.beans.factory.ObjectProvider<TenantScopeBinder> binderProvider) {
+        this.runScopeRegistry = registryProvider == null ? null : registryProvider.getIfAvailable();
+        this.tenantScopeBinder = binderProvider == null ? null : binderProvider.getIfAvailable();
+    }
+
     @Override
     public void save(String userId, String sessionId, String key, State value) {
-        Scope scope = requireScope();
-        // 展示引用取可信主体上的 userId，不取 AgentScope 运行时入参（那是可伪造的展示值）
-        agentStateMapper.upsert(scope.tenantId(), scope.memberId(), scope.displayUserId(),
-                sessionId, key, JsonUtils.getJsonCodec().toJson(value));
+        inRunScope(userId, sessionId, () -> {
+            Scope scope = requireScope();
+            // 展示引用取可信主体上的 userId，不取 AgentScope 运行时入参（那是可伪造的展示值）
+            agentStateMapper.upsert(scope.tenantId(), scope.memberId(), scope.displayUserId(),
+                    sessionId, key, JsonUtils.getJsonCodec().toJson(value));
+            return null;
+        });
     }
 
     @Override
     public void save(String userId, String sessionId, String key, List<? extends State> values) {
-        Scope scope = requireScope();
-        agentStateMapper.upsert(scope.tenantId(), scope.memberId(), scope.displayUserId(),
-                sessionId, key, JsonUtils.getJsonCodec().toJson(values));
+        inRunScope(userId, sessionId, () -> {
+            Scope scope = requireScope();
+            agentStateMapper.upsert(scope.tenantId(), scope.memberId(), scope.displayUserId(),
+                    sessionId, key, JsonUtils.getJsonCodec().toJson(values));
+            return null;
+        });
     }
 
     @Override
     public <T extends State> Optional<T> get(String userId, String sessionId, String key, Class<T> type) {
-        String payload = queryPayload(userId, sessionId, key);
+        String payload = inRunScope(userId, sessionId, () -> queryPayload(userId, sessionId, key));
         if (StrUtil.isBlank(payload)) {
             return Optional.empty();
         }
@@ -83,7 +110,7 @@ public class PgAgentStateStore implements AgentStateStore {
 
     @Override
     public <T extends State> List<T> getList(String userId, String sessionId, String key, Class<T> itemType) {
-        String payload = queryPayload(userId, sessionId, key);
+        String payload = inRunScope(userId, sessionId, () -> queryPayload(userId, sessionId, key));
         if (StrUtil.isBlank(payload)) {
             return List.of();
         }
@@ -97,26 +124,54 @@ public class PgAgentStateStore implements AgentStateStore {
 
     @Override
     public boolean exists(String userId, String sessionId) {
-        Scope scope = requireScope();
-        return agentStateMapper.exists(scope.tenantId(), scope.memberId(), sessionId);
+        return inRunScope(userId, sessionId, () -> {
+            Scope scope = requireScope();
+            return agentStateMapper.exists(scope.tenantId(), scope.memberId(), sessionId);
+        });
     }
 
     @Override
     public void delete(String userId, String sessionId) {
-        Scope scope = requireScope();
-        agentStateMapper.deleteBySession(scope.tenantId(), scope.memberId(), sessionId);
+        inRunScope(userId, sessionId, () -> {
+            Scope scope = requireScope();
+            agentStateMapper.deleteBySession(scope.tenantId(), scope.memberId(), sessionId);
+            return null;
+        });
     }
 
     @Override
     public void delete(String userId, String sessionId, String key) {
-        Scope scope = requireScope();
-        agentStateMapper.deleteByKey(scope.tenantId(), scope.memberId(), sessionId, key);
+        inRunScope(userId, sessionId, () -> {
+            Scope scope = requireScope();
+            agentStateMapper.deleteByKey(scope.tenantId(), scope.memberId(), sessionId, key);
+            return null;
+        });
     }
 
     @Override
     public Set<String> listSessionIds(String userId) {
-        Scope scope = requireScope();
-        return new LinkedHashSet<>(agentStateMapper.selectSessionIds(scope.tenantId(), scope.memberId()));
+        return inRunScope(userId, null, () -> {
+            Scope scope = requireScope();
+            return new LinkedHashSet<>(agentStateMapper.selectSessionIds(scope.tenantId(), scope.memberId()));
+        });
+    }
+
+    /**
+     * 在受理期登记的本轮作用域内执行 DAO 访问（s2-tenant-cmp-a1）。
+     *
+     * <p>轮末状态保存由框架在 {@code subscribeOn(boundedElastic)} 上回调本类，池线程上
+     * 主体是创建期继承的残留拷贝、动态租户为空；库回调只给 {@code (userId, sessionId)}，
+     * 唯一可信来源是受理期登记表。命中即按 {@code AsyncMemoryTaskScope} 形状重绑：
+     * 非配对 restore（只授 holder、不授同步起源）＋ {@link TenantScopeBinder} 内层绑租户
+     * ＋finally 复原线程原主体；未命中＝原形态直跑（fail-closed 语义不变，残留不得当身份）。
+     */
+    private <T> T inRunScope(String userId, String sessionId, Supplier<T> body) {
+        AgentRunScope scope = runScopeRegistry == null ? null : runScopeRegistry.resolve(userId, sessionId);
+        if (scope == null) {
+            return body.get();
+        }
+        return AsyncMemoryTaskScope.callWithResolvedCapture(scope.principal(), scope.tenantId(),
+                scope.tenantScopeBinder(), body);
     }
 
     private String queryPayload(String userId, String sessionId, String key) {
