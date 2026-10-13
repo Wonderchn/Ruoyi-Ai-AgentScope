@@ -58,7 +58,8 @@ class RealChatGatewayAuthorityTest {
 
     private static RunConfigBinding bound(String providerId, String modelId) {
         return new RunConfigBinding("t1", "run-1", "rag.chat", "rev-1", 1L,
-                providerId, modelId, "cat-v1", "params-hash", "cred-ref", "op-1", Instant.EPOCH);
+                providerId, modelId, "cat-v1", "params-hash", "cred-ref", "op-1", Instant.EPOCH,
+                java.util.Map.of());
     }
 
     /** 约束 2 的负例：无 run 身份面**必须抛异常**，不得回退默认模型。 */

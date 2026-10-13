@@ -128,6 +128,9 @@ class AiEmbeddedModelConfigurationTest {
                     // 档位校验器必须参与装配，否则结构性错误无从 fail-fast
                     assertThat(context).hasSingleBean(
                             com.nageoffer.ai.ragent.infra.model.ChatTierConfigValidator.class);
+                    // F16 出站（s2-f16egress-a1）：抽取重建事实端口与出站门同组装配
+                    assertThat(context).hasSingleBean(
+                            com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts.class);
                 });
     }
 
@@ -141,6 +144,9 @@ class AiEmbeddedModelConfigurationTest {
                     assertThat(context).doesNotHaveBean(ModelSelector.class);
                     assertThat(context).doesNotHaveBean(ChatClient.class);
                     assertThat(context).doesNotHaveBean("streamingHttpClient");
+                    // F16 出站事实端口随模型链门控缺席（缺席＝调用方拒绝重建）
+                    assertThat(context).doesNotHaveBean(
+                            com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts.class);
                 });
         runner.withPropertyValues("ai.model.enabled=true")
                 .run(context -> assertThat(context).doesNotHaveBean(LLMService.class));
@@ -394,6 +400,20 @@ class AiEmbeddedModelConfigurationTest {
                     assertThat(tier.getTimeoutMs()).as("档位超时预算是必填").isNotNull().isPositive();
                     assertThat(tier.getCandidates()).isNotEmpty();
                 });
+    }
+
+    @Test
+    @DisplayName("shipped FAST 档首候选＝deepseek-flash（裁决④：默认路径不再先经历额度耗尽的候选）")
+    void fastTierLeadsWithDeepseekFlash() {
+        AIModelProperties properties = bindEmbeddedCatalog();
+        List<String> fastCandidates = properties.getChat().getTiers().get("fast").getCandidates();
+        assertThat(fastCandidates)
+                .as("裁决④：FAST 首候选必须是 deepseek-flash——已获授权且已有真机正向证据的 provider；"
+                        + "默认首候选落在额度耗尽的 bailian 会让 shipped 路径先走失败候选")
+                .startsWith("deepseek-flash");
+        assertThat(fastCandidates)
+                .as("改指只调整首候选：其余候选保持原有相对顺序且不删除")
+                .containsExactly("deepseek-flash", "qwen-flash", "qwen-plus", "qwen3-local");
     }
 
     @Test

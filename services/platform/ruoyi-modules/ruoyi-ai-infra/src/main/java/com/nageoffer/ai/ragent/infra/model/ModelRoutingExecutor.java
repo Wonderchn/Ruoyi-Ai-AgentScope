@@ -21,6 +21,7 @@ import com.nageoffer.ai.ragent.framework.errorcode.BaseErrorCode;
 import com.nageoffer.ai.ragent.framework.cancellation.TaskCancellation;
 import com.nageoffer.ai.ragent.framework.exception.RemoteException;
 import com.nageoffer.ai.ragent.infra.enums.ModelCapability;
+import com.nageoffer.ai.ragent.infra.chat.ChatEgressDeniedException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -66,6 +67,11 @@ public class ModelRoutingExecutor {
                 healthStore.markSuccess(target.id());
                 return response;
             } catch (Exception e) {
+                ChatEgressDeniedException denied = ChatEgressDeniedException.find(e);
+                if (denied != null) {
+                    healthStore.releaseHalfOpenPermit(permit);
+                    throw denied;
+                }
                 if (TaskCancellation.isCancellation(e)) {
                     // 任务取消不是模型故障：不降级、不累计失败，半开探测只归还占用的名额
                     healthStore.releaseHalfOpenPermit(permit);

@@ -118,6 +118,30 @@ function mountPage(options: MountOptions = {}) {
 
   const modules: Record<string, unknown> = {
     'vue': { ...vue, nextTick: vue.nextTick },
+    // Agent 模式编排（F10/F15，p1c-a1）：页面级行为由 `agent-chat-page.test.ts` 覆盖，
+    // 本文件只关心普通聊天契约，这里给最小桩（否则页面 import 阶段直接失败）。
+    './useAgentChat': {
+      useAgentChat: () => ({
+        state: vue.shallowRef({}),
+        turns: vue.ref([]),
+        frames: vue.shallowRef([]),
+        isStreaming: vue.ref(false),
+        error: vue.ref(''),
+        notice: vue.ref(''),
+        pendingConfirm: vue.computed(() => null),
+        hasPendingConfirm: vue.computed(() => false),
+        conversationId: vue.computed(() => null),
+        taskId: vue.computed(() => null),
+        sendMessage: async () => {},
+        resolveConfirm: async () => {},
+        stop: async () => {},
+        loadConversation: async () => {},
+        startNewChat: () => {},
+        toggleBlock: () => {},
+        reset: () => {},
+        rowsOf: () => [],
+      }),
+    },
     'vue-router': { useRoute: () => route },
     '@/api/rag': {
       listKnowledgeBases: async () => {
@@ -137,6 +161,9 @@ function mountPage(options: MountOptions = {}) {
     './components/MessageDetails.vue': { default: { name: 'MessageDetails' } },
     './components/ToolCallCard.vue': { default: { name: 'ToolCallCard' } },
     './components/WorkflowRunStatus.vue': { default: { name: 'WorkflowRunStatus' } },
+    // F10/F15 接线新增的两个渲染组件（行为在 agent-chat-components.test.ts 覆盖）
+    './components/AgentTurn.vue': { default: { name: 'AgentTurn' } },
+    './components/AgentRawLogDrawer.vue': { default: { name: 'AgentRawLogDrawer' } },
   };
 
   const { descriptor } = parse(PAGE_SOURCE);
@@ -264,14 +291,15 @@ describe('互斥模式在旧契约退场后如实拒绝', () => {
     }
   });
 
-  it('选中智能体 → 不发请求，error 说明 agent.run 不在本卡（RW-17/RW-21）', async () => {
+  it('选中智能体 → 不再走"RW-17/RW-21 拒绝"旧口径（Agent 模式已接通引擎面）', async () => {
     const { page, scope, run } = mountPage({ agentId: 42 });
     try {
       await settle();
       await page.submitMessage('你好');
-      assert.equal(run.submits.length, 0);
-      assert.match(run.error.value, /智能体/);
-      assert.match(run.error.value, /agent\.run/);
+      assert.equal(run.submits.length, 0, 'Agent 模式不得再打运行面受理');
+      assert.equal(run.error.value, '', '不再是"不在本卡范围"的拒绝');
+      assert.equal(page.agentMode.value, true);
+      // 引擎面链路的页面级判据在 `agent-chat-page.test.ts`（本桩只给最小形态）
     }
     finally {
       scope.stop();
@@ -331,11 +359,35 @@ describe('模板：错误与提示必须可见（静态判据 + 绑定判据）'
   it('模板绑定的是新的提交/取消/加载状态', () => {
     assert.match(PAGE_SOURCE, /@submit="submitMessage"/);
     assert.match(PAGE_SOURCE, /@cancel="cancelSSE"/);
-    assert.match(PAGE_SOURCE, /:loading="runRunning"/);
+    // F10/F15 接线后：loading 由模式相关的 senderBusy 供给（Agent 在跑也算）
+    assert.match(PAGE_SOURCE, /:loading="senderBusy"/);
     assert.equal(PAGE_SOURCE.includes('@submit="startSSE"'), false);
   });
 
   it('挂载时加载知识库（vm 里 onMounted 不执行，故用源码钉住这条绑定）', () => {
     assert.match(PAGE_SOURCE, /onMounted\(\(\) => \{[\s\S]*?loadKnowledgeBases\(\)/);
+  });
+});
+
+describe('F03 op3：复制与状态/耗时渲染位', () => {
+  it('用户与助手气泡都提供整条复制（助手侧此前缺失）', () => {
+    const copies = PAGE_SOURCE.match(/copyToClipboard\(item\.content, item\.key\)/g) ?? [];
+    assert.ok(copies.length >= 2, `用户+助手各一处复制绑定；实际 ${copies.length} 处`);
+    assert.match(PAGE_SOURCE, /data-testid="chat-msg-copy"/);
+  });
+
+  it('助手复制按钮绑定在非用户分支上（不是只画了个图标）', () => {
+    assert.match(PAGE_SOURCE, /item\.role !== 'user'[\s\S]{0,600}data-testid="chat-msg-copy"/);
+  });
+
+  it('消息详情组件渲染状态位与耗时位（纯函数映射由 details.test.ts 覆盖）', () => {
+    const detailsSource = fs.readFileSync(
+      new URL('../src/pages/chat/layouts/chatWithId/components/MessageDetails.vue', import.meta.url),
+      'utf8',
+    );
+    assert.match(detailsSource, /data-testid="msg-status"/);
+    assert.match(detailsSource, /data-testid="msg-duration"/);
+    // 状态/耗时不得只在"深度思考"块的 v-if 之内（普通聊天没有 thinking_content）
+    assert.match(detailsSource, /data-testid="msg-status"/);
   });
 });

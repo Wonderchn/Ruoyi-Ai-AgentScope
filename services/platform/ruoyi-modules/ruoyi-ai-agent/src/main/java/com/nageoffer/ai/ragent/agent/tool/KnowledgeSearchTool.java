@@ -18,6 +18,8 @@
 package com.nageoffer.ai.ragent.agent.tool;
 
 import cn.hutool.core.util.StrUtil;
+import com.nageoffer.ai.ragent.agent.identity.AgentRunScope;
+import com.nageoffer.ai.ragent.agent.memory.AsyncMemoryTaskScope;
 import com.nageoffer.ai.ragent.agent.trace.AgentToolBodyTracer;
 import com.nageoffer.ai.ragent.framework.cancellation.TaskCancellation;
 import com.nageoffer.ai.ragent.rag.service.KnowledgeSearchFacade;
@@ -83,8 +85,25 @@ public class KnowledgeSearchTool implements AgentTool {
 
     @Override
     public Mono<ToolResultBlock> callAsync(ToolCallParam param) {
-        return AgentToolBodyTracer.trace(this, param, () -> Mono.fromCallable(() -> execute(param))
+        return AgentToolBodyTracer.trace(this, param, () -> Mono.fromCallable(() -> executeInRunScope(param))
                 .subscribeOn(Schedulers.boundedElastic()));
+    }
+
+    /**
+     * 工具体在受理期身份作用域内执行（s2-tenant-cmp-a1）：本工具把阻塞 RAG 管线调度到共享
+     * boundedElastic（subscribeOn），池线程上没有动态租户——RAG 内层
+     * （ai_query_term_mapping 等业务表读）会撞 MyBatis 租户门（真机 r17 run1）。
+     * 载体从工具执行上下文（ToolCallParam.runtimeContext，受理期挂载）取；无捕获按原形态直跑。
+     * 重绑是非配对 restore（不给同步起源）：RAG 内层若发起模型出站，照旧 fail-closed 停在
+     * C2 出站门——「工具链是否允许出站」属未决裁决，这里不越权重建 origin。
+     */
+    private ToolResultBlock executeInRunScope(ToolCallParam param) {
+        AgentRunScope runScope = AgentRunScope.from(param == null ? null : param.getRuntimeContext());
+        if (runScope == null) {
+            return execute(param);
+        }
+        return AsyncMemoryTaskScope.callWithResolvedCapture(runScope.principal(), runScope.tenantId(),
+                runScope.tenantScopeBinder(), () -> execute(param));
     }
 
     private ToolResultBlock execute(ToolCallParam param) {

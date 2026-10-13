@@ -144,7 +144,10 @@ public class RunAdmissionService {
                 tenantId, runId, action, published.revisionId(), published.revisionNo(),
                 published.providerId(), published.modelId(), published.catalogVersion(),
                 published.paramsHash(), published.credentialRef(), published.operatorId(),
-                published.publishedAt());
+                published.publishedAt(),
+                // 受理侧只把 hash 固定到 run 行（C1.2 既有形态）；实际参数由执行侧
+                // JdbcRunConfigBindingPort 从版本行 params_json 解析（F03 op6）。
+                java.util.Map.of());
     }
 
     /**
@@ -238,7 +241,7 @@ public class RunAdmissionService {
         // 2) run
         String runId = RunEventAppender.newRunId();
         dao.insertRun(tenantId, runId, principal.membershipId(), principal.userId(), request.action(),
-                idempotencyKey, requestHash, toJson(request.input()), toJson(request.budget()),
+                idempotencyKey, requestHash, toJson(runPayloadOf(request)), toJson(request.budget()),
                 (contract(request.action())==null?"p2-v1":contract(request.action()).executionVersion()), principal.policyVersion(), principal.aclVersion(), sources,
                 request.retryOf(), bindingOf(tenantId, runId, request.action(), published));
         dao.registerRun(tenantId,runId,principal.membershipId(),ownerDept);
@@ -307,6 +310,41 @@ public class RunAdmissionService {
             boolean inherited=contract(request.action())!=null && request.input()!=null && request.input().hasNonNull("inheritActionId");
             if(!parent.isTerminal() && !inherited) throw new RunApiException(RunErrorCode.RUN_STATE_CONFLICT,"ordinary retry requires a terminal source; unknown actions require explicit reconciliation/inheritance");
         }
+    }
+
+    /**
+     * D7a（s2-chathist-a1）：把受理体<b>顶层</b> {@code conversationId} 折入所存 input 子树。
+     *
+     * <p><b>为什么必须折。</b>执行器（{@code RagChatExecutor}）在 RunWorker 线程里只能从
+     * <b>run 行</b>的 input 子树读 conversationId（没有受理请求对象），而本服务持久化的就是
+     * {@code request.input()} 本身 —— shipped 客户端（工作台 / 验收探针）把 conversationId
+     * 放在受理体<b>顶层</b>（{@link com.nageoffer.ai.ragent.runtime.dto.AdmissionRequest#conversationId()}
+     * 显式字段）。不折入 ⇒ 顶层字段永不进 run 行 ⇒ 执行器恒读空 ⇒ 普通聊天轮次被
+     * <b>静默跳过</b>历史写（真机 AC2 实测 {@code ai_message} 全表 0 行），连"历史端口
+     * 未接线"的响亮失败卫也不可达。
+     *
+     * <p><b>折叠为什么不改别的。</b>幂等的 {@code requestHash} 按整个受理体计算，
+     * 顶层 conversationId 本来就在身份里 —— 折叠只改持久化载荷，不动 hash/幂等；也不新增
+     * 列/迁移，不改执行器读侧（唯一持久化点：{@code doAdmit} 的 {@code dao.insertRun} 调用处）。
+     *
+     * <p><b>形态规则。</b>①顶层非空白 ⇒ 覆盖同名字段写进载荷<b>副本</b>（显式字段优先：
+     * 让未声明的嵌套旧键静默压过显式字段，正是 D7a 这类"哪个字段说了算"的歧义）；
+     * ②顶层为空 ⇒ 载荷原样（嵌套旧形态零变化）；③input 非对象/为 null ⇒ 原样（不伪造）。
+     * 只在副本上折叠：受理校验（如 agent.run 对 input 的字段白名单）与受理事件仍看解析原样。
+     */
+    static JsonNode runPayloadOf(AdmissionRequest request) {
+        JsonNode input = request.input();
+        String conversationId = request.conversationId();
+        if (conversationId == null || conversationId.isBlank()) {
+            return input;
+        }
+        if (input == null || !input.isObject()) {
+            return input;
+        }
+        com.fasterxml.jackson.databind.node.ObjectNode payload =
+                ((com.fasterxml.jackson.databind.node.ObjectNode) input).deepCopy();
+        payload.put("conversationId", conversationId);
+        return payload;
     }
 
     private String toJson(Object value) {

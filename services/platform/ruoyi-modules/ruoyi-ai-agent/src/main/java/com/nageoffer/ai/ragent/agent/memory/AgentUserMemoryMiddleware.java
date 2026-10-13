@@ -19,6 +19,9 @@ package com.nageoffer.ai.ragent.agent.memory;
 
 import cn.hutool.core.util.StrUtil;
 import com.nageoffer.ai.ragent.agent.config.ConditionalOnAgentEngine;
+import com.nageoffer.ai.ragent.framework.context.AsyncPrincipalReference;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -28,6 +31,7 @@ import io.agentscope.core.middleware.MiddlewareBase;
 import io.agentscope.core.middleware.ReasoningInput;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -55,6 +59,13 @@ public class AgentUserMemoryMiddleware implements MiddlewareBase {
     public static final String SNAPSHOT_KEY = "__user_memory_snapshot__";
 
     private final AgentMemoryRepository memoryRepository;
+    /**
+     * 租户作用域绑定端口（F16 op1 管线修复，2026-10-12）：注入链的阻塞读经
+     * {@code subscribeOn(boundedElastic)} 跳上共享池线程，池上没有动态租户，
+     * MyBatis 租户行拦截器 fail-closed、读失败静默退空快照。受理期捕获的租户
+     * 在任务体内重绑；端口缺席（独立应用）按原形态直跑。
+     */
+    private final ObjectProvider<TenantScopeBinder> tenantScopeBinder;
 
     @Override
     public Flux<AgentEvent> onReasoning(Agent agent, RuntimeContext runtimeContext, ReasoningInput input,
@@ -68,8 +79,17 @@ public class AgentUserMemoryMiddleware implements MiddlewareBase {
         if (cached != null) {
             return next.apply(inject(input, cached));
         }
+        // 捕获点＝流订阅线程（请求线程）：首轮推理输入在订阅调用栈里同步构建，此处主体在场。
+        // 只认同步起源——池线程上的身份拷贝（创建期继承/非配对 restore）不是可信在场主体，
+        // 绝不允许它成为本轮绑定来源（宁可退化为无主体直跑，也不错绑他人身份）。
+        AsyncPrincipalReference principalRef = PrincipalContext.isSynchronousOrigin()
+                ? AsyncPrincipalReference.from(PrincipalContext.require())
+                : null;
+        // tenantId 从同一捕获派生，两处来源不许各自读一遍
+        String tenantId = principalRef == null ? null : principalRef.tenantId();
         // 首轮才读库，读的是阻塞 JDBC，不占推理线程
-        return Mono.fromCallable(() -> load(runtimeContext))
+        return Mono.fromCallable(() -> AsyncMemoryTaskScope.callWithCapture(principalRef, tenantId, tenantScopeBinder,
+                        () -> load(runtimeContext)))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMapMany(snapshot -> next.apply(inject(input, snapshot)));
     }

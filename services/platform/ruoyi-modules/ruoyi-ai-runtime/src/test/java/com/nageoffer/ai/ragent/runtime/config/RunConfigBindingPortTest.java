@@ -210,6 +210,34 @@ class RunConfigBindingPortTest {
     }
 
     @Test
+    @DisplayName("F03 op6：版本行 params_json 随绑定事实解析（缺失=空 Map，不是漏填）")
+    void boundRevisionResolvesGenerationParamsFromTheRevisionRow() {
+        given(List.of(row("rag.chat", "rev-p", 5, "deepseek", "deepseek-chat", "catalog-p",
+                "sha256:pp", "PUBLISHED", "env:DEEPSEEK_API_KEY")));
+        // row(...) 不含 params_json：缺失 ⇒ 空 Map
+        assertThat(port.requireBoundRevision(TENANT, "run-p").params()).isEmpty();
+
+        Map<String, Object> withParams = row("rag.chat", "rev-p2", 6, "deepseek", "deepseek-chat", "catalog-p2",
+                "sha256:pp2", "PUBLISHED", "env:DEEPSEEK_API_KEY");
+        withParams.put("revision_params_json", "{\"temperature\":0.7}");
+        given(List.of(withParams));
+        assertThat(port.requireBoundRevision(TENANT, "run-p2").params()).containsEntry("temperature", 0.7d);
+    }
+
+    @Test
+    @DisplayName("F03 op6：版本行 params_json 损坏 ⇒ 拒绝（不静默当空：篡改必须可见）")
+    void unreadableParamsFailClosed() {
+        Map<String, Object> broken = row("rag.chat", "rev-b", 7, "deepseek", "deepseek-chat", "catalog-b",
+                "sha256:pb", "PUBLISHED", "env:DEEPSEEK_API_KEY");
+        broken.put("revision_params_json", "{not-json");
+        given(List.of(broken));
+
+        assertThatThrownBy(() -> port.requireBoundRevision(TENANT, "run-b"))
+                .isInstanceOf(ConfigAuthorityUnavailable.class)
+                .hasMessageContaining("params are unreadable");
+    }
+
+    @Test
     @DisplayName("数据库读失败 ⇒ 拒绝（不得回退 YAML/当前版本）")
     void databaseFailureIsRejected() {
         jdbc = mock(JdbcTemplate.class);

@@ -67,7 +67,7 @@ class ProviderGatewayHttpTest {
     static final String BOUND_MODEL="bound-chat-model-v1";
     static com.nageoffer.ai.ragent.runtime.config.RunConfigBinding binding(String providerId){
         return new com.nageoffer.ai.ragent.runtime.config.RunConfigBinding("t1","run-1","rag.chat",
-                "rev-1",1L,providerId,BOUND_MODEL,"cat-v1","params-hash","cred-ref","op-1",java.time.Instant.EPOCH);
+                "rev-1",1L,providerId,BOUND_MODEL,"cat-v1","params-hash","cred-ref","op-1",java.time.Instant.EPOCH,java.util.Map.of());
     }
     @Test void deniedOrMissingKeyMakesNoRequest() throws Exception {
         var count=new AtomicInteger(); var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);

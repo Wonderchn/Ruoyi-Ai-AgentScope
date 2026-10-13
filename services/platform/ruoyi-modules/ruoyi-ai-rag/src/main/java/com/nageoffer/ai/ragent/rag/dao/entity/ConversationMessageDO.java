@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.rag.dao.entity;
 
 import com.baomidou.mybatisplus.annotation.FieldFill;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
@@ -128,6 +129,21 @@ public class ConversationMessageDO implements MergedTableRow {
      * 消息结束状态：NORMAL=正常完成，INTERRUPTED=用户中断，REJECTED=限流拒绝
      */
     private String messageStatus;
+
+    /**
+     * 模型绑定（V9 追加列 model_name；F03 op3 写侧收口由 ConversationHistoryAdapter 写入）
+     */
+    private String modelName;
+
+    /**
+     * 逐消息用量（V9 追加列 total_tokens；提供方未返回 usage 时保持 null —— 不写 0 冒充"已计量"）
+     *
+     * <p>{@code insertStrategy = ALWAYS} 是刻意的：该列在 V9 里带 {@code DEFAULT 0}，
+     * 而 MyBatis-Plus 默认（NOT_NULL）会在值为 null 时**省略该列**，于是"没拿到 usage"
+     * 会被库默认值悄悄变回 0 —— 与"没有记录和 0 是两件事"的判据相反。ALWAYS 让 null 显式落库。
+     */
+    @TableField(insertStrategy = FieldStrategy.ALWAYS)
+    private Integer totalTokens;
 
     /**
      * 创建时间，自动填充

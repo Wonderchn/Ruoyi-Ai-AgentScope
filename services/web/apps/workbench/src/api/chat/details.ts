@@ -174,6 +174,34 @@ export function formatUsage(modelName: string | undefined, totalTokens: number |
 }
 
 /**
+ * 消息状态 → 展示文本（F03 op3：逐消息 messageStatus 展示）。
+ *
+ * `NORMAL` 返回空串：它是"正常完成"的**存储态**（写入面默认值），给每条正常消息挂一个
+ * "正常完成"标签是噪声。终态/异常（已完成/失败/已取消/已中断/已拒绝）必须可见；
+ * 未登记的状态**原样透出** —— 不改写服务端事实（与运行面错误码的展示纪律一致）。
+ */
+export function formatMessageStatus(status: unknown): string {
+  if (typeof status !== 'string' || status.trim() === '')
+    return '';
+  switch (status.trim()) {
+    case 'NORMAL':
+      return '';
+    case 'SUCCEEDED':
+      return '已完成';
+    case 'FAILED':
+      return '失败';
+    case 'CANCELLED':
+      return '已取消';
+    case 'INTERRUPTED':
+      return '已中断';
+    case 'REJECTED':
+      return '已拒绝';
+    default:
+      return status.trim();
+  }
+}
+
+/**
  * 一条历史消息的可展示详情（页面按需渲染，空的部分不渲染）。
  *
  * `rawFallback` 是"解析失败时保留原文"的通道：`sources` 为空但 `sourcesRaw` 有值，
@@ -182,6 +210,8 @@ export function formatUsage(modelName: string | undefined, totalTokens: number |
 export interface MessageDetails {
   thinking: string;
   thinkingDuration: string;
+  /** 逐消息状态展示文本（NORMAL/空为不展示，见 formatMessageStatus）。 */
+  status: string;
   citations: CitationRow[];
   citationsRaw: string;
   chunks: ChunkRow[];
@@ -195,6 +225,7 @@ export interface MessageDetails {
 export function toMessageDetails(message: {
   thinkingContent?: string;
   thinkingDuration?: number;
+  messageStatus?: string;
   sources?: unknown;
   sourcesRaw?: string;
   recommendedQuestions?: unknown;
@@ -207,6 +238,7 @@ export function toMessageDetails(message: {
   const empty: MessageDetails = {
     thinking: '',
     thinkingDuration: '',
+    status: '',
     citations: [],
     citationsRaw: '',
     chunks: [],
@@ -225,6 +257,7 @@ export function toMessageDetails(message: {
   return {
     thinking: message.thinkingContent ?? '',
     thinkingDuration: formatThinkingDuration(message.thinkingDuration),
+    status: formatMessageStatus(message.messageStatus),
     citations,
     // 只有"解析失败"（有 raw、没有结构化值）才带原文；
     // 解析成功时 raw 是 undefined，天然为空。
@@ -240,6 +273,8 @@ export function toMessageDetails(message: {
 /** 详情里是否有任何可展示内容（决定要不要渲染整个详情区）。 */
 export function hasDetails(details: MessageDetails): boolean {
   return details.thinking !== ''
+    || details.thinkingDuration !== ''
+    || details.status !== ''
     || details.citations.length > 0
     || details.citationsRaw !== ''
     || details.chunks.length > 0

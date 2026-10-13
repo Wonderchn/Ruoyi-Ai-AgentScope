@@ -31,6 +31,8 @@ import com.nageoffer.ai.ragent.agent.dto.AgentToolProgress;
 import com.nageoffer.ai.ragent.agent.enums.AgentMessageStatus;
 import com.nageoffer.ai.ragent.agent.enums.AgentSSEEventType;
 import com.nageoffer.ai.ragent.agent.enums.AgentToolStatus;
+import com.nageoffer.ai.ragent.agent.identity.AgentRunScope;
+import com.nageoffer.ai.ragent.agent.memory.AsyncMemoryTaskScope;
 import com.nageoffer.ai.ragent.agent.service.AgentConversationService;
 import com.nageoffer.ai.ragent.agent.tool.AgentToolCatalog.ResolvedCatalog;
 import com.nageoffer.ai.ragent.agent.tool.AgentToolExecutionFacts;
@@ -64,6 +66,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * AgentScope 事件流 → SSE 协议转换，负责增量转发、轨迹落库与取消收尾
@@ -635,12 +638,27 @@ public class AgentStreamEventBridge {
         // 末段封口帧要赶在 finish/confirm/cancel 之前发出去
         flushSealedTextBlocks();
         try {
-            return conversationService.addAssistantMessage(conversationId, userId, content,
-                    thinking, settled, replyToMessageId, status, facts.settleRun());
+            return inRunScope(() -> conversationService.addAssistantMessage(conversationId, userId, content,
+                    thinking, settled, replyToMessageId, status, facts.settleRun()));
         } catch (Exception e) {
             log.error("Agent 终答落库失败, conversationId: {}", conversationId, e);
             return null;
         }
+    }
+
+    /**
+     * 终答落库在受理期身份作用域内执行（s2-tenant-cmp-a1）：错误/取消收尾跑在流终止线程上，
+     * 那里的主体是池化残留、动态租户为空——照原样直接落库会撞 MyBatis 租户门、助手消息丢失
+     * （真机 C4.R）。载体从 runHandle 的 RuntimeContext 取（受理期由 AgentChatServiceImpl 挂载）；
+     * 无捕获形态按原形态直跑。
+     */
+    private <T> T inRunScope(Supplier<T> body) {
+        AgentRunScope runScope = AgentRunScope.from(runHandle.getRuntimeContext());
+        if (runScope == null) {
+            return body.get();
+        }
+        return AsyncMemoryTaskScope.callWithResolvedCapture(runScope.principal(), runScope.tenantId(),
+                runScope.tenantScopeBinder(), body);
     }
 
     /**

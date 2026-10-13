@@ -59,11 +59,12 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -134,8 +135,20 @@ class LocalAgentSkillRouteDispatchTest {
     private static final IntentNodeRegistry intentRegistry = mock(IntentNodeRegistry.class);
     private static final StringRedisTemplate redis = mock(StringRedisTemplate.class);
     private static final RevocationGuard revocations = mock(RevocationGuard.class);
-    private static final List<String> permits = new ArrayList<>();
-    private static final List<String> acknowledgements = new ArrayList<>();
+    /** 本方法发布的许可（请求线程写、测试线程读，故用并发集合）。 */
+    private static final List<String> permits = new CopyOnWriteArrayList<>();
+
+    /**
+     * 交付回执收集（F-C2-7）。回执由 {@code AiDeliveryReleaser} 在响应 flush <b>之后</b>回调：
+     * 客户端可能已取回响应体，而上一方法的在途回执会越过本方法的 {@code clear()} 落地
+     * （CI 实证「Expected size: 3 but was: 4」）。
+     * <p>因此判据按 {@link #mintedReceipts} 过滤后再计数：迟到回执属于上一方法，
+     * 既不满足也不污染本方法判据；本方法的许可缺回执或重复回执照旧翻红。
+     */
+    private static final List<String> acknowledgements = new CopyOnWriteArrayList<>();
+
+    /** 本方法每次 {@code revocations.enter} 铸出的 permitId:operationId（回执判据的作用域）。 */
+    private static final Set<String> mintedReceipts = ConcurrentHashMap.newKeySet();
 
     @BeforeAll
     static void startContainer() throws Exception {
@@ -188,13 +201,17 @@ class LocalAgentSkillRouteDispatchTest {
         reset(skillMapper, intentRegistry, revocations);
         permits.clear();
         acknowledgements.clear();
+        mintedReceipts.clear();
         CURRENT_PERMISSIONS.set(ALL_PERMISSIONS);
         PLATFORM_ADMIN.set(true);
 
         when(revocations.enter(any(), anyString(), anyString())).thenAnswer(invocation -> {
             permits.add(invocation.getArgument(1) + "/" + invocation.getArgument(2));
-            return new RevocationGuard.Operation(revocations,
-                    java.util.UUID.randomUUID().toString(), java.util.UUID.randomUUID().toString());
+            // 铸出的 (permitId, operationId) 就是回执里的两个值 ⇒ 即本方法回执判据的作用域
+            String permitId = java.util.UUID.randomUUID().toString();
+            String operationId = java.util.UUID.randomUUID().toString();
+            mintedReceipts.add(permitId + ":" + operationId);
+            return new RevocationGuard.Operation(revocations, permitId, operationId);
         });
 
         doAnswer(invocation -> {
@@ -274,9 +291,10 @@ class LocalAgentSkillRouteDispatchTest {
                         "skill.list/agent-catalog:skill:tool-options",
                         "skill.read/agent-catalog:skill:" + SKILL_ID);
         awaitAcknowledgements(permits.size());
-        assertThat(acknowledgements)
+        assertThat(scopedAcknowledgements())
                 .as("字节分支的每个 200 必须恰有一次本地回执（缺则内层没铸头，多则许可泄漏）")
-                .hasSize(permits.size());
+                .hasSize(permits.size())
+                .doesNotHaveDuplicates();
 
         int before = permits.size();
         assertJsonOk("POST", "/api/ai/v1/agent-catalog/agent-skills",
@@ -288,6 +306,35 @@ class LocalAgentSkillRouteDispatchTest {
         assertThat(permits)
                 .as("写面走 JSON 分支：网关不会为它释放许可，内层因此不得铸造（否则逐请求泄漏 ACTIVE 许可）")
                 .hasSize(before);
+    }
+
+    /**
+     * F-C2-7 定向钉子（回执判据的作用域）。交付回执由 {@code AiDeliveryReleaser} 在响应 flush
+     * <b>之后</b>回调，上一测试方法的在途回执会越过本方法的 {@code clear()} 落地——CI 实证为
+     * 「Expected size: 3 but was: 4」。
+     *
+     * <p>本方法把该形状<b>确定复现</b>：三条 GET 之后注入一条形状相同（{@code permitId:operationId}）、
+     * 但 id 不属于本方法的迟到回执；判据只数本方法铸出的 permit ⇒ 迟到条目不参与计数。
+     * 若把判据改回"不过滤"（见变异证据），本方法必然翻红且报错文案与 CI 完全同形（3/4）。
+     */
+    @Test
+    @DisplayName("F-C2-7 迟到回执不入本方法判据作用域（不过滤计数＝CI 的 3/4 形状）")
+    void lateAcknowledgementFromThePreviousMethodStaysOutOfScope() throws Exception {
+        assertJsonOk("GET", "/api/ai/v1/agent-catalog/agent-skills?current=1&size=10", null, null);
+        assertJsonOk("GET", "/api/ai/v1/agent-catalog/agent-skills/tool-options", null, null);
+        assertJsonOk("GET", "/api/ai/v1/agent-catalog/agent-skills/" + SKILL_ID, null, null);
+
+        // 上一方法的在途回执：形状一致（两个不透明 id），但都不在本方法铸出集合里
+        String foreignReceipt = java.util.UUID.randomUUID() + ":" + java.util.UUID.randomUUID();
+        acknowledgements.add(foreignReceipt);
+
+        awaitAcknowledgements(permits.size());
+        assertThat(acknowledgements)
+                .as("构造确实落在同一收集器里（未被判据静默吞掉）")
+                .contains(foreignReceipt);
+        assertThat(scopedAcknowledgements())
+                .as("回执判据只数本方法铸出的 permit：迟到回执既不算缺、也不算多")
+                .hasSize(permits.size());
     }
 
     // ------------------------------------------------------------------ 负例：动作映射
@@ -388,14 +435,32 @@ class LocalAgentSkillRouteDispatchTest {
     // ------------------------------------------------------------------ helpers
 
     /**
-     * 等回执收敛到期望条数（≤3s）：回执在响应提交之后才发生，真实 HTTP 下客户端可能先返回。
+     * 等本方法回执<b>收敛</b>（≤3s）：下限=期望条数，且连续 250ms 不再增长才返回
+     * ——是收敛条件，不是固定睡眠。回执在响应提交之后才发生，真实 HTTP 下客户端可能先返回；
+     * 统计口径限定为本方法铸出的 permit（见 {@link #mintedReceipts}），
+     * 上一方法的在途回执不再计入（F-C2-7 修复点）。
      * 超时即由调用方的 {@code hasSize} 断言给出确定失败（本方法不吞错）。
      */
     private static void awaitAcknowledgements(int expected) throws InterruptedException {
         long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
-        while (acknowledgements.size() < expected && System.nanoTime() < deadline) {
+        long quietNanos = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(250);
+        int last = -1;
+        long lastChange = System.nanoTime();
+        while (System.nanoTime() < deadline) {
+            int now = scopedAcknowledgements().size();
+            if (now != last) {
+                last = now;
+                lastChange = System.nanoTime();
+            } else if (now >= expected && System.nanoTime() - lastChange >= quietNanos) {
+                return;
+            }
             Thread.sleep(20);
         }
+    }
+
+    /** 本方法回执判据的作用域：只认 permitId:operationId 属于本方法铸出集合的条目。 */
+    private static List<String> scopedAcknowledgements() {
+        return acknowledgements.stream().filter(mintedReceipts::contains).toList();
     }
 
     /**

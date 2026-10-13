@@ -20,6 +20,9 @@ package com.nageoffer.ai.ragent.framework.web;
 import cn.hutool.core.util.StrUtil;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
+import com.nageoffer.ai.ragent.framework.context.AsyncPrincipalReference;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import jakarta.annotation.PostConstruct;
@@ -39,12 +42,21 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>
  * 机制层与引擎无关：注册表 + Redis 标记 + 广播主题构成统一的取消协议，
  * 各引擎的个性化收尾动作（补发事件、中断上游流等）以回调形式注入
+ *
+ * <p><b>执行主体重绑定（F10 op2 债务 i；与平台树语义镜像，本树无租户 binder 块）。</b>
+ * register 在请求线程捕获身份引用（{@link AsyncPrincipalReference}，冻结口径「异步只传
+ * 身份引用」，绝不传 bearer/完整主体）；取消收尾链的落库门是
+ * {@code PrincipalContext.require()}——缺即 {@code no execution principal}，监听线程上先用
+ * <b>非配对</b> {@code restore()} 恢复引用（只授 holder、不授同步起源，勿用 {@code set()}，
+ * 见 P2-SCOUT §3 (a′)），外层 {@code finally} 无条件恢复线程原主体。
  */
 @Slf4j
 @Component
 public class StreamTaskManager {
 
-    private static final String CANCEL_TOPIC = "ragent:stream:cancel";
+    // 跨节点取消频道必须带 global: 前缀：订阅发生在容器启动线程（无租户），发布发生在 stop 请求线程（有租户），
+    // 只有 global: 能让 TenantKeyPrefixHandler 短路租户前缀，两端才映射到同一条频道；与 global:sse / global:websocket 同款
+    private static final String CANCEL_TOPIC = "global:ragent:stream:cancel";
     private static final String CANCEL_KEY_PREFIX = "ragent:stream:cancel:";
     private static final String OWNER_KEY_PREFIX = "ragent:stream:owner:";
     private static final Duration CANCEL_TTL = Duration.ofMinutes(30);
@@ -103,6 +115,12 @@ public class StreamTaskManager {
         // 属主必须先于收尾回调落地：反过来的话，两条赋值之间到达的广播能拿本地回调杀掉一条无主的流
         taskInfo.ownerUserId = ownerUserId;
         taskInfo.finalizer = onCancelFinalizer;
+        // 捕获注册侧身份引用（请求线程）：取消收尾在监听线程上执行，落库链吃
+        // PrincipalContext.require()（缺即 no execution principal，fail-closed）——身份按冻结
+        // 口径只传引用（无 scopes/无原 jti/无签发方材料，不可当 bearer 重放）；无主体则留空直跑
+        taskInfo.principalRef = PrincipalContext.hasPrincipal()
+                ? AsyncPrincipalReference.from(PrincipalContext.require())
+                : null;
         // 属主进 Redis 而非只留本地：停止请求可能落在没跑这条流的节点上
         if (StrUtil.isNotBlank(ownerUserId)) {
             RBucket<String> owner = redissonClient.getBucket(ownerKey(taskId));
@@ -218,13 +236,31 @@ public class StreamTaskManager {
             return;
         }
 
-        if (taskInfo.cancelAction != null) {
-            taskInfo.cancelAction.run();
-        }
+        Runnable cancelActions = () -> {
+            if (taskInfo.cancelAction != null) {
+                taskInfo.cancelAction.run();
+            }
 
-        // 在取消时执行收尾回调，保存已累积的内容
-        if (taskInfo.finalizer != null) {
-            taskInfo.finalizer.run();
+            // 在取消时执行收尾回调，保存已累积的内容
+            if (taskInfo.finalizer != null) {
+                taskInfo.finalizer.run();
+            }
+        };
+        // 监听线程没有执行主体：收尾链的落库门是 PrincipalContext.require()（真机 A000001
+        // 根因），先恢复注册侧捕获的身份引用——用非配对 restore（只授 holder、不授同步起源；
+        // 勿用 set，它会在共享监听线程上临时打开 chat egress 闸）；外层 finally 无条件恢复
+        // 线程原主体（线程池共享，泄漏=跨主体污染）。
+        AsyncPrincipalReference principalRef = taskInfo.principalRef;
+        if (principalRef == null) {
+            cancelActions.run();
+            return;
+        }
+        ExecutionPrincipal previous = PrincipalContext.get();
+        PrincipalContext.restore(principalRef.toExecutionPrincipal());
+        try {
+            cancelActions.run();
+        } finally {
+            PrincipalContext.restore(previous);
         }
     }
 
@@ -253,6 +289,11 @@ public class StreamTaskManager {
     private static final class StreamTaskInfo {
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private volatile String ownerUserId;
+        /**
+         * register 侧捕获的身份引用（F10 op2 债务 i）：收尾链在监听线程上恢复它，
+         * 只用于租户定位与归属记录，不是授权证据（恢复体无 scopes、无同步起源）。
+         */
+        private volatile AsyncPrincipalReference principalRef;
         private volatile Runnable cancelAction;
         private volatile Runnable finalizer;
     }

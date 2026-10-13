@@ -60,7 +60,9 @@ public class SyntheticChatGateway implements ChatGateway {
      */
     public static RunConfigBinding syntheticBinding(String tenantId, String runId) {
         return new RunConfigBinding(tenantId, runId, "synthetic", null, 0L,
-                SYNTHETIC_PROVIDER, SYNTHETIC_MODEL, null, null, null, null, null);
+                SYNTHETIC_PROVIDER, SYNTHETIC_MODEL, null, null, null, null, null,
+                // 合成样本没有"发布版本声明的生成参数"：空 Map（不是漏填，见 RunConfigBinding.params 注释）
+                Map.of());
     }
 
     // ------------------------------------------------------------ run 作用域面（D02）

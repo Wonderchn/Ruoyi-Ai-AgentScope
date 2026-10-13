@@ -63,4 +63,19 @@ public interface ConversationHistoryPort {
      */
     void appendTurn(String tenantId, String memberId, String userId, String conversationId,
                     String question, String answer);
+
+    /**
+     * 带补充事实的一轮追加（F03 op3：模型绑定 / 逐消息用量 / 消息耗时）。
+     *
+     * <p><b>默认实现忽略 {@code meta} 并退回 6 参重载</b>：老实现与测试替身不改也能编译；
+     * 需要把补充事实写进历史的实现（当前是 ai-rag 的 {@code ConversationHistoryAdapter}）
+     * 覆盖本方法。语义上"补不出事实"不是错误（无模型调用的轮次天然没有模型名/用量），
+     * 因此默认退化为"不写"而不是拒绝。
+     *
+     * @param meta 补充事实；{@code null} 视为 {@link ConversationTurnMeta#EMPTY}
+     */
+    default void appendTurn(String tenantId, String memberId, String userId, String conversationId,
+                            String question, String answer, ConversationTurnMeta meta) {
+        appendTurn(tenantId, memberId, userId, conversationId, question, answer);
+    }
 }

@@ -5,6 +5,7 @@ import type { BubbleProps } from 'vue-element-plus-x/types/Bubble';
 import type { BubbleListInstance } from 'vue-element-plus-x/types/BubbleList';
 import type { ThinkingStatus } from 'vue-element-plus-x/types/Thinking';
 import type { ToolCallInfo } from './types';
+import type { UseAgentChatBaseOptions } from './useAgentChat';
 import { nextTick } from 'vue';
 import { useRoute } from 'vue-router';
 import { listKnowledgeBases } from '@/api/rag';
@@ -14,10 +15,17 @@ import { useChatStore } from '@/stores/modules/chat';
 import { useSessionStore } from '@/stores/modules/session';
 import { useUserStore } from '@/stores/modules/user';
 import { codeXRender } from '@/utils/markdownRenderers';
+import AgentRawLogDrawer from './components/AgentRawLogDrawer.vue';
+import AgentTurn from './components/AgentTurn.vue';
 import MessageDetails from './components/MessageDetails.vue';
 import ToolCallCard from './components/ToolCallCard.vue';
 import WorkflowRunStatus from './components/WorkflowRunStatus.vue';
+import { useAgentChat } from './useAgentChat';
 import { useChatRun } from './useChatRun';
+
+// Agent 编排的测试缝：页面级测试经 props 注入整份编排（生产恒为空 ⇒ 走真实客户端）。
+// 与 `useAgentChat` 的 `factory` 选项同一机制，只是入口在组件签名上，便于 vm 沙箱直接驱动。
+const props = defineProps<{ agentChatFactory?: (options: UseAgentChatBaseOptions) => unknown }>();
 
 type MessageItem = BubbleProps & {
   key: number;
@@ -179,6 +187,60 @@ const {
   reset: resetRun,
 } = chatRun;
 
+// ---------------------------------------------------------------------------
+// Agent 模式（F10 op1/op5 + F15 op2）：选中智能体即走引擎面 `…/agent/v1/chat`
+// ---------------------------------------------------------------------------
+//
+// 契约与状态机全部在 `./useAgentChat`（可被 `node:test` 直接驱动）；
+// 本页只做：把轨迹画成过程卡、把确认卡接上裁决出口、把原始帧抽屉接上开关。
+// 互斥口径不变：工作流仍如实拒绝，智能体与普通聊天二选一。
+const agentMode = computed(() => Boolean(agentStore.currentAgentInfo?.id));
+
+const agentChat = useAgentChat({
+  baseUrl: import.meta.env.VITE_API_URL,
+  clientId: import.meta.env.VITE_CLIENT_ID,
+  identity: () => ({ token: userStore.token, epoch: userStore.authEpoch }),
+  onAuthExpired: () => userStore.handleAuthExpired(),
+  ...(props.agentChatFactory ? { factory: props.agentChatFactory } : {}),
+});
+
+const {
+  turns: agentTurns,
+  frames: agentFrames,
+  isStreaming: agentStreaming,
+  error: agentError,
+  notice: agentNotice,
+  pendingConfirm: agentPendingConfirm,
+  conversationId: agentConversationId,
+  sendMessage: sendAgentMessage,
+  resolveConfirm: resolveAgentConfirm,
+  stop: stopAgentTask,
+  loadConversation: loadAgentConversation,
+  startNewChat: resetAgentChat,
+  reset: resetAgent,
+  rowsOf: agentRowsOf,
+} = agentChat;
+
+/** 输入框与停止按钮对 Agent 模式共用同一「在跑」信号。 */
+const senderBusy = computed(() => (agentMode.value ? agentStreaming.value : runRunning.value));
+const agentPanelOpen = ref(false);
+/**
+ * 本页持有的 Agent 会话 id。
+ *
+ * 与 `route.params.id` 是**两套命名空间**（普通聊天会话 id 与引擎会话 id 不同源）；
+ * 只有「从历史加载过的引擎会话」才会带上它续聊，新会话一律由服务端 meta 帧发号。
+ */
+const agentLoadId = ref('');
+
+function toggleAgentPanel() {
+  agentPanelOpen.value = !agentPanelOpen.value;
+}
+
+/** 轨迹行（每轮调一次纯投影；渲染由 `AgentTurn` 负责）。 */
+function agentRowsFor(turn: Parameters<typeof agentRowsOf>[0]) {
+  return agentRowsOf(turn);
+}
+
 /** 在没有终态失败时也能显示提示（composable 的 notice 是主流，这里补事件级信息）。 */
 function runNoticeFallback(message: string) {
   if (!runNotice.value)
@@ -204,6 +266,9 @@ let isThinking = false;
 watch(() => userStore.authEpoch, () => {
   // 权限失效：中止在飞运行 + 清空页面与运行状态（不留下不属于新身份的运行数据）。
   resetRun();
+  resetAgent();
+  agentLoadId.value = '';
+  agentPanelOpen.value = false;
   bubbleItems.value = [];
   inputValue.value = '';
   toolCallEvents.value = [];
@@ -226,6 +291,16 @@ watch(
       // 切换会话时清空工具调用事件与工作流运行状态
       toolCallEvents.value = [];
       toolCallKeyCounter = 0;
+
+      // Agent 模式：换会话即清空 Agent 轨迹与帧缓冲（原始帧只属当前会话），
+      // 随后按路由 id 回放引擎会话消息（挂起中的确认卡由回放复原）。
+      resetAgentChat();
+      agentLoadId.value = _id_ === 'not_login' ? '' : String(_id_);
+      if (agentMode.value && _id_ !== 'not_login') {
+        await loadAgentConversation(String(_id_));
+        if (epoch !== userStore.authEpoch || _id_ !== route.params?.id)
+          return;
+      }
 
       if (_id_ !== 'not_login') {
         // 判断的当前会话id是否有聊天记录，有缓存则直接赋值展示
@@ -266,13 +341,13 @@ watch(
 );
 
 /**
- * 提交一轮普通聊天。
+ * 提交一轮对话。
  *
- * 协议（受理 + SSE）在 `@/api/chat/run-chat`；这里只负责：
- * - 把用户输入与助手气泡放上去；
- * - 三种互斥模式（工作流 / 智能体 / 普通聊天）的**边界**：本卡只接通普通聊天
- *   （`rag.chat`）。工作流与 Agent 运行是**另外的契约**（RW-17/RW-21），
- *   在它们落地前这里**如实拒绝**，而不是"带着旧参数去打一个已退场的端点"。
+ * 两种互斥契约：
+ * - **Agent 模式**（选中智能体）：引擎面 `GET /agent/v1/chat`（SSE 八类帧），
+ *   编排在 `./useAgentChat` —— 过程卡/确认卡/原始帧抽屉都在那条链上；
+ * - **普通聊天**：运行面 `rag.chat`（受理 + `run-events`），本函数下半段负责。
+ * 工作流仍**如实拒绝**（替代契约属 RW-17，不在本卡范围）。
  */
 async function submitMessage(content: string) {
   const text = String(content ?? '').trim();
@@ -282,7 +357,7 @@ async function submitMessage(content: string) {
     userStore.ensureLogin('/chat', '登录后即可继续当前对话');
     return;
   }
-  if (runRunning.value)
+  if (runRunning.value || agentStreaming.value)
     return;
 
   // —— 互斥模式边界（如实告知，不静默降级）——
@@ -290,8 +365,33 @@ async function submitMessage(content: string) {
     runError.value = `已选择工作流「${currentBinding.value.title}」：工作流对话的替代契约尚未交付（旧的聊天发送端点已随退场模块失效），属 RW-17 范围，本次未发送。`;
     return;
   }
-  if (agentStore.currentAgentInfo?.id) {
-    runError.value = '已选择智能体：Agent 运行（action=agent.run，需要 agentVersion 与 P3 执行器）不在本卡范围（RW-17/RW-21），本次未发送。';
+
+  // —— Agent 模式：走引擎面，过程卡取代气泡承载过程 -—
+  if (agentMode.value) {
+    const epoch = userStore.authEpoch;
+    inputValue.value = '';
+    toolCallEvents.value = [];
+    toolCallKeyCounter = 0;
+    addMessage(text, true);
+    if (bubbleItems.value.length) {
+      const last = bubbleItems.value[bubbleItems.value.length - 1];
+      last.typing = false;
+      last.loading = false;
+    }
+    bubbleListRef.value?.scrollToBottom();
+    // 续聊同一会话由编排层按自身状态带上 conversationId；新会话由服务端 meta 帧发号
+    await sendAgentMessage(text);
+    if (epoch !== userStore.authEpoch)
+      return;
+    // 服务端发号后更新本页会话指针（气泡与后续提问都认它）
+    if (!agentLoadId.value && agentConversationId.value)
+      agentLoadId.value = agentConversationId.value;
+    if (bubbleItems.value.length) {
+      const last = bubbleItems.value[bubbleItems.value.length - 1];
+      last.typing = false;
+      last.loading = false;
+    }
+    await nextTick();
     return;
   }
 
@@ -373,10 +473,15 @@ function handleContentChunk(content: string) {
 /**
  * 取消本轮运行。
  *
- * 先中止本地事件流，再调服务端 `POST /api/ai/v1/runs/{id}/cancel`（`run.cancel` scope）。
+ * - Agent 模式：`stop(taskId)`（引擎面 `POST …/agent/v1/stop`，`run.cancel` scope）；
+ * - 普通聊天：先中止本地事件流，再调 `POST /api/ai/v1/runs/{id}/cancel`。
  * 服务端取消失败（无权/版本冲突）**如实显示**，不能只把界面停下来就算"已取消"。
  */
 async function cancelSSE() {
+  if (agentMode.value) {
+    await stopAgentTask();
+    return;
+  }
   await cancelRun();
   if (bubbleItems.value.length) {
     const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
@@ -386,6 +491,16 @@ async function cancelSSE() {
       lastMessage.workflowRun.status = 'stopped';
     bubbleItems.value = [...bubbleItems.value];
   }
+}
+
+/** 确认卡裁决（整卡一次）：确认执行 / 取消。 */
+async function resolveAgentConfirmCard(approved: boolean) {
+  await resolveAgentConfirm(approved);
+}
+
+/** 轨迹块折叠切换（工具结果展开 / 思考展开 / 确认卡原始参数展开）。 */
+function toggleAgentBlock(payload: { messageId: string; blockId: number }) {
+  agentChat.toggleBlock(payload.messageId, payload.blockId);
 }
 
 function copyToClipboard(text: string, key: number) {
@@ -520,6 +635,60 @@ function sendMessageByKey(key: number) {
         </div>
       </Transition>
 
+      <!--
+        Agent 过程轨迹（F10 op1）：工具过程卡 / 确认卡 / 原始日志。
+        只在选中智能体时出现；过程与终答并存（不压平成一句回答）。
+      -->
+      <div v-if="agentMode" class="agent-panel" data-testid="agent-panel">
+        <div class="agent-panel-head">
+          <button
+            type="button"
+            class="agent-panel-toggle"
+            data-testid="agent-panel-toggle"
+            @click="toggleAgentPanel"
+          >
+            {{ agentPanelOpen ? '收起过程轨迹' : `过程轨迹（${agentTurns.length}）` }}
+          </button>
+          <span v-if="agentStreaming" class="agent-panel-live" data-testid="agent-panel-live">进行中…</span>
+          <span v-if="agentPendingConfirm" class="agent-panel-await" data-testid="agent-pending-confirm">有待确认的操作</span>
+        </div>
+        <ElAlert
+          v-if="agentError"
+          class="run-alert"
+          type="error"
+          :closable="false"
+          show-icon
+          title="Agent 本轮未完成"
+          :description="agentError"
+          data-testid="agent-run-error"
+        />
+        <ElAlert
+          v-if="agentNotice"
+          class="run-alert"
+          type="warning"
+          :closable="false"
+          show-icon
+          :description="agentNotice"
+          data-testid="agent-run-notice"
+        />
+        <!-- 原始帧抽屉（F10 op5）：本地帧缓冲，逐条帧名/时间/原文；换会话即清 -->
+        <AgentRawLogDrawer
+          v-model:open="agentPanelOpen"
+          :frames="agentFrames"
+          :context="agentConversationId || agentLoadId"
+        />
+        <div v-show="agentPanelOpen" class="agent-panel-body" data-testid="agent-panel-body">
+          <AgentTurn
+            v-for="turn in agentTurns"
+            :key="turn.id"
+            :turn="turn"
+            :rows="agentRowsFor(turn)"
+            @toggle="toggleAgentBlock"
+            @resolve="resolveAgentConfirmCard($event.approved)"
+          />
+        </div>
+      </div>
+
       <BubbleList ref="bubbleListRef" :list="bubbleItems" max-height="calc(100vh - 240px)">
         <template #header="{ item }">
           <WorkflowRunStatus v-if="item.workflowRun" :title="item.workflowRun.title" :status="item.workflowRun.status" :nodes="item.workflowRun.nodes" />
@@ -549,6 +718,25 @@ function sendMessageByKey(key: number) {
             MessageDetails 内部对空数据返回 null，因此这里的 v-if 可以省略。
           -->
           <MessageDetails :message="item" />
+          <!--
+            F03 op3：助手消息的整条复制（此前只有用户气泡可复制；助手正文走 XMarkdown，
+            库内只保证代码块级别的复制动作）。与用户侧共用 copyToClipboard 与同一份图标状态。
+          -->
+          <div
+            v-if="item.content && item.role !== 'user'"
+            class="assistant-copy-row"
+            data-testid="assistant-copy-row"
+          >
+            <el-tooltip content="复制" placement="bottom">
+              <el-button
+                class="copy-btn"
+                :icon="copyIconMap[item.key] || 'CopyDocument'"
+                size="small"
+                data-testid="chat-msg-copy"
+                @click="copyToClipboard(item.content, item.key)"
+              />
+            </el-tooltip>
+          </div>
           <div v-if="item.content && item.role === 'user'" class="userContent">
             <div class="user-bubble" :class="{ editing: editingMessageKeys.includes(item.key) }">
               <template v-if="!editingMessageKeys.includes(item.key)">
@@ -598,7 +786,7 @@ function sendMessageByKey(key: number) {
         <ChatSender
           ref="chatSenderRef"
           v-model="inputValue"
-          :loading="runRunning"
+          :loading="senderBusy"
           @submit="submitMessage"
           @cancel="cancelSSE"
         />
@@ -703,6 +891,32 @@ function sendMessageByKey(key: number) {
   }
 }
 
+/* F03 op3：助手气泡的整条复制行（用户侧是悬浮在气泡外侧的 absolute 布局，助手侧不适用） */
+.assistant-copy-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 4px;
+
+  .copy-btn {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    font-size: 16px;
+    cursor: pointer;
+    border: none !important;
+    color: #91949a;
+    :deep(svg) {
+      stroke-width: 3 !important;
+    }
+
+    &:hover {
+      border-radius: 50%;
+      transition: background-color 0.2s;
+      background-color: #f1efef;
+    }
+  }
+}
+
 .chat-with-id-container {
   position: relative;
   display: flex;
@@ -725,6 +939,43 @@ function sendMessageByKey(key: number) {
 
     .tool-events-wrapper {
       padding: 12px;
+    }
+
+    .agent-panel {
+      padding: 0 12px;
+
+      .agent-panel-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 0 4px;
+
+        .agent-panel-toggle {
+          border: 1px solid #dcdfe6;
+          border-radius: 6px;
+          background: #ffffff;
+          color: #606266;
+          font-size: 12px;
+          padding: 2px 10px;
+          cursor: pointer;
+        }
+
+        .agent-panel-live {
+          color: #b88230;
+          font-size: 12px;
+        }
+
+        .agent-panel-await {
+          color: #e6a23c;
+          font-size: 12px;
+        }
+      }
+
+      .agent-panel-body {
+        max-height: 320px;
+        overflow: auto;
+        padding-bottom: 8px;
+      }
     }
 
     .tool-events-fade-enter-active,

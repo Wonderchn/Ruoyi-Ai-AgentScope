@@ -115,7 +115,16 @@ public class RealChatGateway implements ChatGateway {
         if(maxTokens<1 || maxTokens>8192 || serialized.stream().mapToInt(m->m.get("content").length()).sum()>65536) throw ProviderHttp.unavailable();
         HttpURLConnection http=null;
         try {
-            String body=json.writeValueAsString(Map.of("model",bound.modelId(),"messages",serialized,"max_tokens",maxTokens,"thinking",Map.of("type","disabled"),"stream",true,"stream_options",Map.of("include_usage",true)));
+            LinkedHashMap<String,Object> requestBody=new LinkedHashMap<>();
+            requestBody.put("model",bound.modelId());
+            requestBody.put("messages",serialized);
+            requestBody.put("max_tokens",maxTokens);
+            requestBody.put("thinking",Map.of("type","disabled"));
+            requestBody.put("stream",true);
+            requestBody.put("stream_options",Map.of("include_usage",true));
+            // F03 op6：把 run 绑定版本声明的生成参数合进请求体（白名单/范围见 applyGenerationParams）
+            applyGenerationParams(requestBody,bound.params());
+            String body=json.writeValueAsString(requestBody);
             String spendId=reserve(bound,connection,body,maxTokens);
             http=ProviderHttp.open(connection.endpoint(),credential(connection),body);
             int status=http.getResponseCode();
@@ -211,5 +220,51 @@ public class RealChatGateway implements ChatGateway {
         if(!providerEndpoint) return null;
         if(spend==null) throw ProviderHttp.unavailable();
         return spend.reserve(bound.providerId(),bound.modelId(),body.getBytes(StandardCharsets.UTF_8).length,maxTokens);
+    }
+
+    // ------------------------------------------------------------ F03 op6：版本声明的生成参数
+
+    /**
+     * 把 run 绑定版本声明的生成参数（{@code params_json}）合进请求体。
+     *
+     * <p><b>白名单是安全边界，不是"顺便支持一下"。</b>{@code params_json} 是可发布配置，
+     * 但它不允许改写由 run 事实与既有契约决定的字段：{@code model}（绑定）/ {@code messages}
+     * （调用方构造）/ {@code stream} / {@code thinking}（既定 disabled）不接收参数覆盖；
+     * {@code max_tokens} 只由 run 预算决定（额度预占按它计量）。参数里出现这些键按"未知键"丢弃。
+     *
+     * <p>只放行四类标准采样参数并逐项做数值与范围校验；<b>未知键与越界值丢弃并留日志</b> ——
+     * 配置错误要么可见（日志），要么被挡在请求体之外，不允许"悄悄改变一次外发行为"。
+     * 非数值一律丢弃（不做字符串解析：发布器写的是 JSON 数字，字符串是配置错误）。
+     */
+    static void applyGenerationParams(Map<String,Object> requestBody,Map<String,Object> params) {
+        if(params==null || params.isEmpty()) return;
+        for(Map.Entry<String,Object> entry:params.entrySet()) {
+            String key=entry.getKey();
+            Object value=entry.getValue();
+            Double numeric=value instanceof Number number?number.doubleValue():null;
+            switch(key) {
+                case "temperature" -> {
+                    if(within(numeric,0.0,2.0)) requestBody.put(key,numeric);
+                    else drop(key,value);
+                }
+                case "top_p" -> {
+                    if(within(numeric,0.0,1.0) && numeric>0.0) requestBody.put(key,numeric);
+                    else drop(key,value);
+                }
+                case "presence_penalty","frequency_penalty" -> {
+                    if(within(numeric,-2.0,2.0)) requestBody.put(key,numeric);
+                    else drop(key,value);
+                }
+                default -> drop(key,value);
+            }
+        }
+    }
+
+    private static boolean within(Double value,double min,double max) {
+        return value!=null && !value.isNaN() && !value.isInfinite() && value>=min && value<=max;
+    }
+
+    private static void drop(String key,Object value) {
+        log.warn("generation param ignored (not whitelisted or out of range): key={} value={}",key,value);
     }
 }

@@ -26,8 +26,12 @@ import com.nageoffer.ai.ragent.agent.dto.AgentConfirmSettlement;
 import com.nageoffer.ai.ragent.agent.dto.AgentMetaPayload;
 import com.nageoffer.ai.ragent.agent.enums.AgentMemoryTriggerType;
 import com.nageoffer.ai.ragent.agent.enums.AgentSSEEventType;
+import com.nageoffer.ai.ragent.agent.identity.AgentRunScope;
+import com.nageoffer.ai.ragent.agent.identity.AgentRunScopeRegistry;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryPipeline;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryProperties;
+import com.nageoffer.ai.ragent.agent.memory.AsyncMemoryTaskScope;
+import com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts;
 import com.nageoffer.ai.ragent.agent.service.AgentChatService;
 import com.nageoffer.ai.ragent.agent.service.AgentConversationService;
 import com.nageoffer.ai.ragent.agent.service.handler.AgentRunGate;
@@ -35,10 +39,12 @@ import com.nageoffer.ai.ragent.agent.service.handler.AgentRunHandle;
 import com.nageoffer.ai.ragent.agent.service.handler.AgentStreamEventBridge;
 import com.nageoffer.ai.ragent.agent.tool.AgentToolExecutionFacts;
 import com.nageoffer.ai.ragent.agent.trace.AgentTraceContextKeys;
+import com.nageoffer.ai.ragent.framework.context.AsyncPrincipalReference;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.framework.web.SseEmitterSender;
 import com.nageoffer.ai.ragent.framework.web.StreamTaskManager;
 import com.nageoffer.ai.ragent.runtime.web.DeliveryPermits;
@@ -67,6 +73,7 @@ import reactor.core.scheduler.Schedulers;
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -77,6 +84,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @ConditionalOnAgentEngine
 @RequiredArgsConstructor
 public class AgentChatServiceImpl implements AgentChatService {
+
+    /**
+     * 后台记忆抽取出站的声明动作集（F16 出站最小 scopes）：记忆域唯一注册动作
+     * {@code memory.read}→{@code ai:memory:read}（{@code AiCanonicalAction:46}；菜单 7111）。
+     * 刻意只声明抽取所需的最小集合——不得用全量 canonicalActions 或追加动作制造放行；
+     * 重建序列逐动作预检、出站 verifier 逐动作重判。
+     */
+    private static final Set<String> MEMORY_EXTRACTION_EGRESS_ACTIONS = Set.of("memory.read");
 
     private final ReActAgentProvider agentProvider;
     private final AgentConversationService conversationService;
@@ -90,6 +105,26 @@ public class AgentChatServiceImpl implements AgentChatService {
      * 端口缺席（独立应用）按原形态裸帧发送。
      */
     private final ObjectProvider<DeliveryPermits> deliveryPermits;
+    /**
+     * 租户作用域绑定端口（F16 op1 管线修复，2026-10-12）：轮次结束后台抽取经
+     * {@code subscribeOn(boundedElastic)} 跳到共享池线程——池线程上没有动态租户，
+     * MyBatis 租户行拦截器对记忆表 fail-closed（真机 tenant.context.missing）。
+     * 受理期捕获的租户经本端口在任务体内重绑；端口缺席（独立应用）按原形态直跑。
+     */
+    private final ObjectProvider<TenantScopeBinder> tenantScopeBinder;
+    /**
+     * 后台抽取出站身份重建的只读在线事实端口（F16 出站，s2-f16egress-a1，2026-10-12）：轮次结束后台
+     * 抽取任务体内按受理期捕获的引用在线重建出站主体（裁决⑤）。端口缺席或事实不满足时拒绝重建、
+     * 退回捕获形态——出站照旧 fail-closed，不新增默认身份、不复用捕获 scopes。
+     */
+    private final ObjectProvider<MemoryEgressSubjectFacts> memoryEgressFacts;
+    /**
+     * 轮次身份作用域登记表（s2-tenant-cmp-a1，2026-10-12）：轮末状态保存由框架在共享池上
+     * 回调 {@code AgentStateStore}，闭包只剩 {@code (userId, sessionId)}；受理期捕获登记到
+     * 同一对键上，存储实现在 DAO 前重绑（形状同 F16 op1 抽取链）。释放钩子第 2 位注销
+     * （补存盘之后、放闸之前）。
+     */
+    private final AgentRunScopeRegistry runScopeRegistry;
 
     @Override
     public void streamChat(String question, String conversationId, SseEmitter emitter) {
@@ -239,8 +274,12 @@ public class AgentChatServiceImpl implements AgentChatService {
         // 事实源：桥、上下文与句柄共用，ID 与时刻只在这里产生
         Clock clock = Clock.systemDefaultZone();
         AgentToolExecutionFacts facts = new AgentToolExecutionFacts(taskId, clock);
-        // 上下文传到底，中断时句柄从这里取根 span
-        RuntimeContext runtimeContext = buildRuntimeContext(scope, facts);
+        // 受理期（请求线程、同步起源）一次捕获，完成链三处共用：轮末状态保存（框架在共享池上
+        // 回调 AgentStateStore，只回传 userId/sessionId）、终答落库（流终止/池线程）、知识检索
+        // 工具（工具自身 subscribeOn 起跳）。池化残留不是可信在场主体，捕获为空＝各链按原形态直跑。
+        AgentRunScope runScope = AgentRunScope.capture(tenantScopeBinder);
+        // 上下文传到底，中断时句柄从这里取根 span；捕获同时挂在工具执行上下文上供工具链读
+        RuntimeContext runtimeContext = buildRuntimeContext(scope, facts, runScope);
         // 许可接线：请求线程可取到执行主体；缺席（独立应用）退回裸帧形态
         DeliveryPermits permits = deliveryPermits.getIfAvailable();
         ExecutionPrincipal permitPrincipal = PrincipalContext.get();
@@ -248,7 +287,9 @@ public class AgentChatServiceImpl implements AgentChatService {
                 ? new SseEmitterSender(scope.emitter())
                 : new SseEmitterSender(scope.emitter(), permits, permitPrincipal, "run.stream", "chat:" + taskId);
         AgentRunHandle runHandle = new AgentRunHandle(taskId, sender, taskManager, facts, runtimeContext);
-        bindReleaseHooks(runHandle, agent, scope);
+        bindReleaseHooks(runHandle, agent, scope, runScope);
+        // 轮末框架存盘在流终止之前完成；登记放在订阅之前，注销是释放钩子第 2 位
+        runScopeRegistry.register(userId, conversationId, runScope);
         try {
             bindEmitterLifecycle(scope.emitter(), runHandle, taskId);
             sender.sendEvent(AgentSSEEventType.META.value(), new AgentMetaPayload(conversationId, taskId));
@@ -269,7 +310,8 @@ public class AgentChatServiceImpl implements AgentChatService {
                 taskManager.bindHandle(taskId, runHandle::interruptUpstream);
             });
         } catch (RuntimeException | Error e) {
-            // 启动失败时释放钩子不会执行，手动清掉缓存里的坏状态
+            // 启动失败时释放钩子不会执行：注销本轮登记＋清掉缓存里的坏状态
+            runScopeRegistry.unregister(userId, conversationId);
             agent.clearStateCache(userId, conversationId);
             throw e;
         }
@@ -277,8 +319,13 @@ public class AgentChatServiceImpl implements AgentChatService {
 
     /**
      * 登记流结束后的三件事，注册顺序就是执行顺序，换顺序会出问题
+     *
+     * <p>s2-tenant-cmp-a1 插入第 2 位注销：轮末框架存盘与补存盘都发生在登记期内，
+     * 注销必须排在补存盘钩子之后、放闸之前——放闸后同一 (user, 会话) 的新轮会重新登记
+     * 同一键，注销若排最后会把新轮的登记顶掉。
      */
-    private void bindReleaseHooks(AgentRunHandle runHandle, ReActAgent agent, RunScope scope) {
+    private void bindReleaseHooks(AgentRunHandle runHandle, ReActAgent agent, RunScope scope,
+                                  AgentRunScope runScope) {
         String userId = scope.userId();
         String conversationId = scope.conversationId();
         runHandle.onRelease(() -> {
@@ -294,10 +341,20 @@ public class AgentChatServiceImpl implements AgentChatService {
             // 只清本次流实际使用的实例，避免重建后旧流误清新 Agent
             agent.clearStateCache(userId, conversationId);
         });
+        // 本轮登记期到此为止（补存盘已在上个钩子里完成）；新轮重新登记前先撤，防跨轮错绑
+        runHandle.onRelease(() -> runScopeRegistry.unregister(userId, conversationId));
         // 最后再放行同一用户的下一轮，避免新流加载状态后被本轮收尾清掉
         runHandle.onRelease(scope.releaseGate());
+        // 抽取链复用同一份受理期捕获（launchStream 请求线程、同步起源处捕获，经参数传入；
+        // 捕获点只是从本方法内上移一行，语义不变）：释放钩子可能跑在流终止线程或
+        // redisson 监听线程上，那里的主体是池化残留、租户为空——在钩子执行时才读就晚了
+        // （F16 op1 真机根因）。只认同步起源：残留拷贝不是可信在场主体，绝不作为绑定来源。
+        AsyncPrincipalReference extractionPrincipal = runScope == null ? null : runScope.principal();
+        // tenantId 从同一捕获派生，两处来源不许各自读一遍（漂移＝跨租户写归属）
+        String extractionTenantId = runScope == null ? null : runScope.tenantId();
         // 放在释放并发锁之后，确保记忆抽取时名额已归还
-        runHandle.onRelease(() -> scheduleMemoryExtraction(userId, conversationId));
+        runHandle.onRelease(() -> scheduleMemoryExtraction(userId, conversationId,
+                extractionPrincipal, extractionTenantId));
     }
 
     /**
@@ -332,14 +389,21 @@ public class AgentChatServiceImpl implements AgentChatService {
 
     /**
      * 事实源在构建时就位，中间件从上下文取它；其余 key 建完再 put——底层 ConcurrentHashMap 不接受 null
+     *
+     * <p>受理期捕获的身份作用域一并挂上（s2-tenant-cmp-a1）：工具链在池线程上从
+     * {@code ToolCallParam.getRuntimeContext()} 取它重绑；无捕获形态不挂、工具按原形态直跑。
      */
-    private static RuntimeContext buildRuntimeContext(RunScope scope, AgentToolExecutionFacts facts) {
+    private static RuntimeContext buildRuntimeContext(RunScope scope, AgentToolExecutionFacts facts,
+                                                      AgentRunScope runScope) {
         RuntimeContext runtimeContext = RuntimeContext.builder()
                 .userId(scope.userId())
                 .sessionId(scope.conversationId())
                 .put(McpMeta.class, new McpMeta(AgentMcpMeta.ofUser(scope.userId())))
                 .put(AgentToolExecutionFacts.RUNTIME_CONTEXT_KEY, facts)
                 .build();
+        if (runScope != null) {
+            runtimeContext.put(AgentRunScope.RUNTIME_CONTEXT_KEY, runScope);
+        }
         runtimeContext.put(AgentTraceContextKeys.TASK_ID, scope.taskId());
         runtimeContext.put(AgentTraceContextKeys.REPLY_TO_MESSAGE_ID, scope.replyToMessageId());
         runtimeContext.put(AgentTraceContextKeys.CONFIRM_MESSAGE_ID, scope.confirmMessageId());
@@ -357,12 +421,24 @@ public class AgentChatServiceImpl implements AgentChatService {
 
     /**
      * 轮次结束后异步抽取长期记忆
+     *
+     * <p>抽取跳上共享 boundedElastic 线程后，落库链要先过 {@code PrincipalContext.require()}
+     * 再过 MyBatis 租户行拦截器两道门——两道门都只认受理期捕获的事实：任务体用捕获的
+     * 身份引用与同源派生的租户重绑，finally 恢复线程原主体。无捕获（无主体形态）按原形态直跑，
+     * 不新增默认身份。
+     *
+     * <p>F16 出站（s2-f16egress-a1）：抽取体两处出站（judge 与 consolidator）需要合法出站身份——
+     * 任务体按在线事实重建出站主体（裁决⑤，facts 端口在线读取、声明最小动作集），
+     * 重建不满足即退回捕获形态（非配对 restore、无起源，出站照旧可见拒绝）。
      */
-    private void scheduleMemoryExtraction(String userId, String conversationId) {
+    private void scheduleMemoryExtraction(String userId, String conversationId,
+                                          AsyncPrincipalReference principalRef, String tenantId) {
         if (!memoryProperties.isLongTermEnabled()) {
             return;
         }
-        Mono.fromCallable(() -> memoryPipeline.extract(userId, conversationId, AgentMemoryTriggerType.BACKGROUND))
+        Mono.fromCallable(() -> AsyncMemoryTaskScope.callWithRebuiltEgress(principalRef, tenantId,
+                        tenantScopeBinder, memoryEgressFacts, MEMORY_EXTRACTION_EGRESS_ACTIONS,
+                        () -> memoryPipeline.extract(userId, conversationId, AgentMemoryTriggerType.BACKGROUND)))
                 .subscribeOn(Schedulers.boundedElastic())
                 .subscribe(outcome -> {
                             if (outcome.idle()) {

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import re
 
-IMAGES = frozenset({"ruoyi-ai-agentscope-platform", "ruoyi-ai-agentscope-ai", "ruoyi-ai-agentscope-web"})
+IMAGES = frozenset({"ruoyi-ai-agentscope-platform", "ruoyi-ai-agentscope-web"})
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -39,7 +39,7 @@ def validate(manifest, source, repository, root=REPO_ROOT):
     identity(source, repository)
     require(manifest["sourceCommit"] == source, "Source commit mismatch")
     require(manifest["sourceRepository"] == repository, "Source repository mismatch")
-    require(set(manifest["images"]) == IMAGES, "Expected exactly platform, AI and web")
+    require(set(manifest["images"]) == IMAGES, "Expected exactly platform and web")
     for name, reference in manifest["images"].items():
         require(re.fullmatch(rf"ghcr\.io/wonderchn/{name}@sha256:[0-9a-f]{{64}}", reference), f"Invalid immutable reference: {name}")
     for key, expected in compatibility(root).items():

@@ -133,6 +133,63 @@ public class AiEmbeddedModelConfiguration {
                 return new ChatTierConfigValidator(properties);
             }
 
+            /** Chat exits remain present and denied when any trusted fact/budget dependency is absent. */
+            @Bean
+            @ConditionalOnMissingBean(com.nageoffer.ai.ragent.infra.chat.ChatEgressPort.class)
+            public com.nageoffer.ai.ragent.infra.chat.ChatEgressPort chatEgressPort(
+                    org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.runtime.usage.EgressPolicy> egress,
+                    org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope> spend,
+                    org.springframework.beans.factory.ObjectProvider<org.ruoyi.aiintegration.identity.PlatformIdentitySource> identities,
+                    org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService> acl) {
+                return call -> {
+                    var identitySource = identities.getIfAvailable();
+                    var aclSource = acl.getIfAvailable();
+                    var egressPolicy = egress.getIfAvailable();
+                    var spendEnvelope = spend.getIfAvailable();
+                    if (identitySource == null || aclSource == null || egressPolicy == null || spendEnvelope == null) {
+                        throw new com.nageoffer.ai.ragent.infra.chat.ChatEgressDeniedException("chat boundary unavailable");
+                    }
+                    var bridge = new com.nageoffer.ai.ragent.runtime.usage.EnvelopeChatEgressPort(
+                            egressPolicy, spendEnvelope, reference -> {
+                                if (identitySource.tenantState(reference.tenantId()) !=
+                                        org.ruoyi.aiintegration.identity.PlatformIdentitySource.TenantState.ENABLED) {
+                                    throw new com.nageoffer.ai.ragent.infra.chat.ChatEgressDeniedException("chat subject unavailable");
+                                }
+                                var identity = identitySource.membership(reference.tenantId(), reference.userId(), reference.membershipId());
+                                if (identity == null || !identity.enabled()
+                                        || !reference.tenantId().equals(identity.tenantId())
+                                        || !reference.userId().equals(identity.subject())
+                                        || !reference.membershipId().equals(identity.membershipId())
+                                        || identity.policyVersion() != reference.policyVersion()
+                                        || aclSource.currentAclVersion(reference.tenantId()) != reference.aclVersion()
+                                        || identity.scopes() == null || reference.scopes().isEmpty()) {
+                                    throw new com.nageoffer.ai.ragent.infra.chat.ChatEgressDeniedException("chat subject unavailable");
+                                }
+                                for (String action : reference.scopes()) {
+                                    String permission = org.ruoyi.ai.api.action.AiCanonicalAction.permissionOf(action).orElse(null);
+                                    if (permission == null || !identity.scopes().contains(permission)) {
+                                        throw new com.nageoffer.ai.ragent.infra.chat.ChatEgressDeniedException("chat scope unavailable");
+                                    }
+                                }
+                            }, java.time.Clock.systemUTC());
+                    return bridge.authorize(call);
+                };
+            }
+
+            /**
+             * 后台记忆抽取的出站身份重建事实端口（F16 出站，s2-f16egress-a1，2026-10-12）：
+             * 复用与 {@link #chatEgressPort} 同一对在线事实源（{@code PlatformIdentitySource}＋
+             * {@code ResourceAuthorizationService}），经 AI 侧只读端口暴露给抽取任务作用域。
+             * 端口缺席（身份源未装配）时调用方拒绝重建、退回捕获形态——出站照旧 fail-closed。
+             */
+            @Bean
+            @ConditionalOnMissingBean(com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts.class)
+            public com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts memoryEgressSubjectFacts(
+                    org.springframework.beans.factory.ObjectProvider<org.ruoyi.aiintegration.identity.PlatformIdentitySource> identities,
+                    org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService> acl) {
+                return new org.ruoyi.aiweb.embedded.EmbeddedMemoryEgressSubjectFacts(identities, acl);
+            }
+
             // ---------------------------------------------------------- HTTP / 线程池基础设施
 
             /**

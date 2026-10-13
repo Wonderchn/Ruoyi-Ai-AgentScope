@@ -18,6 +18,8 @@
 package com.nageoffer.ai.ragent.framework.context;
 
 import com.alibaba.ttl.TransmittableThreadLocal;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 
 /**
@@ -29,7 +31,7 @@ import com.nageoffer.ai.ragent.framework.exception.ClientException;
  *       绝不传 bearer/完整主体；</li>
  *   <li>必须 {@code finally} 清理，且清理要能看到"我之前是谁"——
  *       嵌套调用（同步委托另一个主体）不得互相污染；</li>
- *   <li>与旧 {@code UserContext}（AI 自己的 t_user 上下文）是两套东西：
+ *   <li>与旧 {@code UserContext}（AI 自己的 ai_legacy_user 上下文）是两套东西：
  *       旧上下文既没有 tenant 也没有版本，<b>不能</b>用来满足 P1 的主体要求。</li>
  * </ul>
  */
@@ -37,6 +39,16 @@ public final class PrincipalContext {
 
     private static final TransmittableThreadLocal<ExecutionPrincipal> CONTEXT =
             new TransmittableThreadLocal<>();
+
+    // This origin proof is deliberately NOT transmitted by TTL. Restoring a copied holder
+    // never promotes it to a synchronous origin on a worker thread.
+    private static final ThreadLocal<ExecutionPrincipal> SYNCHRONOUS_ORIGIN = new ThreadLocal<>();
+    private static final ThreadLocal<Deque<OriginFrame>> ORIGIN_FRAMES = ThreadLocal.withInitial(ArrayDeque::new);
+    private record OriginFrame(ExecutionPrincipal expectedPrevious, ExecutionPrincipal previousOrigin) {}
+
+    public static boolean isSynchronousOrigin() {
+        return CONTEXT.get() != null && SYNCHRONOUS_ORIGIN.get() == CONTEXT.get();
+    }
 
     private PrincipalContext() {
     }
@@ -52,12 +64,25 @@ public final class PrincipalContext {
             throw new ClientException("principal must not be null");
         }
         ExecutionPrincipal previous = CONTEXT.get();
+        ORIGIN_FRAMES.get().push(new OriginFrame(previous, SYNCHRONOUS_ORIGIN.get()));
         CONTEXT.set(principal);
+        SYNCHRONOUS_ORIGIN.set(principal);
         return previous;
     }
 
     /** 恢复先前主体；{@code previous} 为 {@code null} 时表示清空。 */
     public static void restore(ExecutionPrincipal previous) {
+        Deque<OriginFrame> frames = ORIGIN_FRAMES.get();
+        if (!frames.isEmpty() && frames.peek().expectedPrevious() == previous) {
+            ExecutionPrincipal origin = frames.pop().previousOrigin();
+            if (origin == null) { SYNCHRONOUS_ORIGIN.remove(); }
+            else { SYNCHRONOUS_ORIGIN.set(origin); }
+        } else {
+            // Unpaired legacy restore keeps its holder contract, but grants no chat origin.
+            SYNCHRONOUS_ORIGIN.remove();
+            frames.clear();
+        }
+        if (frames.isEmpty()) { ORIGIN_FRAMES.remove(); }
         if (previous == null) {
             CONTEXT.remove();
         } else {
@@ -94,5 +119,7 @@ public final class PrincipalContext {
     /** 清理当前主体。 */
     public static void clear() {
         CONTEXT.remove();
+        SYNCHRONOUS_ORIGIN.remove();
+        ORIGIN_FRAMES.remove();
     }
 }

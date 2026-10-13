@@ -130,7 +130,53 @@ class AgentChatServiceImplTest {
                     public com.nageoffer.ai.ragent.runtime.web.DeliveryPermits getIfUnique() {
                         return null;
                     }
-                });
+                },
+                // 本类用例不铺租户门（双门合测在 AsyncMemoryChainsIdentityBindingTest）
+                new org.springframework.beans.factory.ObjectProvider<>() {
+                    @Override
+                    public com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder getObject() {
+                        throw new IllegalStateException("no binder");
+                    }
+
+                    @Override
+                    public com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder getObject(Object... args) {
+                        return getObject();
+                    }
+
+                    @Override
+                    public com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder getIfAvailable() {
+                        return null;
+                    }
+
+                    @Override
+                    public com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder getIfUnique() {
+                        return null;
+                    }
+                },
+                // s2-f16egress-a1：抽取出站重建事实端口（本类不铺出站判据，缺席＝退回捕获形态）
+                new org.springframework.beans.factory.ObjectProvider<>() {
+                    @Override
+                    public com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts getObject() {
+                        throw new IllegalStateException("no egress facts");
+                    }
+
+                    @Override
+                    public com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts getObject(Object... args) {
+                        return getObject();
+                    }
+
+                    @Override
+                    public com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts getIfAvailable() {
+                        return null;
+                    }
+
+                    @Override
+                    public com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts getIfUnique() {
+                        return null;
+                    }
+                },
+                // s2-tenant-cmp-a1：完成链登记表只需真实实例（本类不铺完成链双门判据）
+                new com.nageoffer.ai.ragent.agent.identity.AgentRunScopeRegistry());
 
         gateReleased = new AtomicInteger();
         when(runGate.acquire(anyString(), anyString(), anyString())).thenReturn(gateReleased::incrementAndGet);

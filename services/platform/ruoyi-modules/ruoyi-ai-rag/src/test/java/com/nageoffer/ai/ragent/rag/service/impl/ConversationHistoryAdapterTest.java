@@ -22,6 +22,7 @@ import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.rag.service.ConversationMessageService;
 import com.nageoffer.ai.ragent.rag.service.bo.ConversationMessageBO;
+import com.nageoffer.ai.ragent.runtime.port.ConversationTurnMeta;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -173,6 +174,50 @@ class ConversationHistoryAdapterTest {
 
         verifyNoInteractions(history);
         verify(repository, never()).findConversation(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("F03 op3：补充事实（模型/用量/耗时）只写在助手消息上，用户消息不写这三列")
+    void appendTurnWithMetaWritesModelUsageAndDurationOnTheAssistantMessageOnly() {
+        ConversationMessageService history = history();
+        when(history.addMessage(any())).thenReturn("msg-user-1", "msg-assistant-1");
+
+        new ConversationHistoryAdapter(history, conversationsOwnedBy(TENANT, MEMBER))
+                .appendTurn(TENANT, MEMBER, USER, CONVERSATION, "问题", "答案",
+                        new ConversationTurnMeta("deepseek-flash", 42, 1750));
+
+        ArgumentCaptor<ConversationMessageBO> captor = ArgumentCaptor.forClass(ConversationMessageBO.class);
+        verify(history, org.mockito.Mockito.times(2)).addMessage(captor.capture());
+        List<ConversationMessageBO> written = captor.getAllValues();
+
+        ConversationMessageBO user = written.get(0);
+        assertNull(user.getModelName(), "用户消息不是模型调用的产物");
+        assertNull(user.getTotalTokens());
+        assertNull(user.getThinkingDuration());
+
+        ConversationMessageBO assistant = written.get(1);
+        assertEquals("deepseek-flash", assistant.getModelName());
+        assertEquals(42, assistant.getTotalTokens());
+        // thinking_duration 列在本读取面承载"消息耗时"（普通聊天 thinking 为 disabled），单位为毫秒
+        assertEquals(1750, assistant.getThinkingDuration());
+    }
+
+    @Test
+    @DisplayName("F03 op3：meta 缺值（null）不得被伪造成 0")
+    void appendTurnWithPartialMetaNeverFabricatesZeros() {
+        ConversationMessageService history = history();
+        when(history.addMessage(any())).thenReturn("msg-user-1", "msg-assistant-1");
+
+        new ConversationHistoryAdapter(history, conversationsOwnedBy(TENANT, MEMBER))
+                .appendTurn(TENANT, MEMBER, USER, CONVERSATION, "q", "a",
+                        new ConversationTurnMeta(null, null, null));
+
+        ArgumentCaptor<ConversationMessageBO> captor = ArgumentCaptor.forClass(ConversationMessageBO.class);
+        verify(history, org.mockito.Mockito.times(2)).addMessage(captor.capture());
+        ConversationMessageBO assistant = captor.getAllValues().get(1);
+        assertNull(assistant.getModelName());
+        assertNull(assistant.getTotalTokens(), "没有 usage 就是 null，不写 0");
+        assertNull(assistant.getThinkingDuration());
     }
 
     @Test

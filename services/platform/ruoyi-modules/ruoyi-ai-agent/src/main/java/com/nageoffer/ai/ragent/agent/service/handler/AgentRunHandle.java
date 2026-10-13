@@ -97,8 +97,10 @@ public class AgentRunHandle {
     private final AgentToolExecutionFacts facts;
 
     /**
-     * 打断跑在 HTTP 线程上够不着响应式链，根 span 从这里取
+     * 打断跑在 HTTP 线程上够不着响应式链，根 span 从这里取；
+     * s2-tenant-cmp-a1 起桥也从这里取受理期身份作用域载体（{@code AgentRunScope}）
      */
+    @Getter
     private final RuntimeContext runtimeContext;
 
     public AgentRunHandle(String taskId, SseEmitterSender sender, StreamTaskManager taskManager,

@@ -27,6 +27,7 @@ import com.nageoffer.ai.ragent.agent.service.handler.AgentRunGate;
 import com.nageoffer.ai.ragent.agent.state.PgAgentStateStore;
 import com.nageoffer.ai.ragent.agent.tool.AgentMcpProperties;
 import com.nageoffer.ai.ragent.agent.tool.AgentToolCatalog;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.framework.web.StreamTaskManager;
 import com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority;
 import com.nageoffer.ai.ragent.runtime.config.PublishedModelAuthority;
@@ -173,8 +174,11 @@ public class AiEmbeddedAgentEngineConfiguration {
              */
             @Bean
             @ConditionalOnMissingBean
-            public StreamTaskManager streamTaskManager(RedissonClient redissonClient) {
-                return new StreamTaskManager(redissonClient);
+            public StreamTaskManager streamTaskManager(RedissonClient redissonClient,
+                                                       ObjectProvider<TenantScopeBinder> tenantScopeBinder) {
+                // F10 op1：监听线程无租户，取消收尾的落库与键删除都要重绑 register 侧捕获的租户。
+                // 装配形状与上方 agentRunGate 的 ENV-B5b 修复一致；端口缺席时管理器件内直跑。
+                return new StreamTaskManager(redissonClient, tenantScopeBinder);
             }
 
             // ---------------------------------------------------------- 公开面（C13.1 四条）

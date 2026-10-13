@@ -21,9 +21,20 @@ const expandedChunks = ref(false);
     <div v-if="details.thinking" class="detail-block">
       <div class="detail-title">
         深度思考
-        <span v-if="details.thinkingDuration" class="detail-meta">{{ details.thinkingDuration }}</span>
       </div>
       <pre class="detail-thinking">{{ details.thinking }}</pre>
+    </div>
+
+    <!--
+      状态/耗时（F03 op3）：**不藏在"深度思考"块内** —— 普通聊天 thinking 为 disabled，
+      但 message_status 与耗时是独立写入的事实（写入面见 ConversationHistoryAdapter）。
+      NORMAL/空状态不渲染（formatMessageStatus 返回空串），异常/终态必须可见。
+    -->
+    <div v-if="details.status || details.thinkingDuration" class="detail-block" data-testid="msg-meta">
+      <div class="detail-title">
+        <span v-if="details.status" data-testid="msg-status">状态：{{ details.status }}</span>
+        <span v-if="details.thinkingDuration" class="detail-meta" data-testid="msg-duration">耗时 {{ details.thinkingDuration }}</span>
+      </div>
     </div>
 
     <!-- 引用来源 -->

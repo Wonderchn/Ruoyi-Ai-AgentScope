@@ -213,10 +213,19 @@ class LocalConversationHistoryPostgresE2ETest {
     private static final String KB = "kb-f03-r7-1";
     private static final String REVISION = "rev-f03-r7-1";
 
+    /**
+     * 受理体 = <b>shipped 形态</b>（D7a，s2-chathist-a1）：conversationId 是受理 DTO 的
+     * 显式<b>顶层</b>字段（{@code AdmissionRequest.conversationId}；工作台
+     * {@code run-chat.ts} 与验收探针都这么发），input 子树只带 {@code text}。
+     * 此前夹具把 conversationId 放在 input 子树里，形状与 shipped 载荷不一致 ——
+     * 判据因此对真机缺陷（执行器读 input 子树恒空 ⇒ 静默不落历史）恒绿；本夹具
+     * 对齐 shipped 形态，判据才真的能抓到这类错位。
+     */
     private static final String ADMISSION_BODY = "{"
             + "\"schemaVersion\":1,"
             + "\"action\":\"rag.chat\","
-            + "\"input\":{\"text\":\"" + QUESTION + "\",\"conversationId\":\"" + CONV + "\"},"
+            + "\"conversationId\":\"" + CONV + "\","
+            + "\"input\":{\"text\":\"" + QUESTION + "\"},"
             + "\"resourceRefs\":[{\"type\":\"knowledge_base\",\"id\":\"" + KB + "\"}],"
             + "\"budget\":{\"maxTokens\":2000}"
             + "}";
