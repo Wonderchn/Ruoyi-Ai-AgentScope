@@ -65,9 +65,6 @@ jobs:
           - image: ruoyi-ai-agentscope-platform
             context: services/platform
             dockerfile: infra/docker/platform.Dockerfile
-          - image: ruoyi-ai-agentscope-ai
-            context: services/ai
-            dockerfile: infra/docker/ai.Dockerfile
           - image: ruoyi-ai-agentscope-web
             context: .
             dockerfile: infra/docker/ruoyi-web.Dockerfile
@@ -123,7 +120,7 @@ jobs:
           pattern: release-manifest-*
           path: image-digests
           merge-multiple: true
-      - name: Bind three digests and compatibility to this checkout
+      - name: Bind image digests and compatibility to this checkout
         run: >-
           python3 scripts/ci/release-manifest.py create
           --source '${{ github.sha }}' --repository '${{ github.repository }}'

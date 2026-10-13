@@ -26,7 +26,7 @@ class ManifestContractTest(unittest.TestCase):
     def manifest(self):
         return release.create(self.digests, SOURCE, REPOSITORY)
 
-    def test_three_immutable_images_and_modes_round_trip(self):
+    def test_immutable_images_and_modes_round_trip(self):
         manifest = self.manifest()
         self.assertEqual(manifest, release.validate(json.loads(json.dumps(manifest)), SOURCE, REPOSITORY))
         self.assertEqual({"embedded", "compatibility"}, set(manifest["runtimeModes"]))
