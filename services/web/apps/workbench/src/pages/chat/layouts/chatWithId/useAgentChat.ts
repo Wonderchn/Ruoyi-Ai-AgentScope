@@ -24,8 +24,8 @@ import type {
   AgentChatConnection,
   AgentFrame,
 } from '../../../../api/ai/agent-chat';
-import type { AgentRawFrame, AgentTurn } from './types';
 import type { AgentEvent, AgentTimelineContext, AgentTimelineState, PendingConfirm } from './agentTimeline';
+import type { AgentRawFrame, AgentTurn } from './types';
 import { computed, ref, shallowRef, watch } from 'vue';
 import { AgentChatFailure, createAgentChatClient, frameToRawEntry, parseAgentFrame } from '../../../../api/ai/agent-chat';
 import { applyAgentEvent, buildTimelineRows, createAgentTimeline, projectReplayMessages } from './agentTimeline';
@@ -60,7 +60,6 @@ export function useAgentChat(options: UseAgentChatOptions) {
 }
 
 function createChat(options: UseAgentChatBaseOptions) {
-
   const client = options.client ?? createAgentChatClient({
     baseUrl: options.baseUrl,
     clientId: options.clientId,

@@ -1,3 +1,4 @@
+import type { AgentBlockUpdate, AgentCompletionPayload, AgentConfirmPayload, AgentHintPayload, AgentMessageDelta, AgentMetaPayload, AgentToolProgress } from '../../../../api/ai/agent-chat';
 /**
  * Agent 时间线的**纯投影层**：SSE 帧与落库块进来，轨迹行出去。
  *
@@ -20,7 +21,6 @@ import type {
   AgentTurn,
   AgentTurnMessage,
 } from './types';
-import type { AgentBlockUpdate, AgentCompletionPayload, AgentConfirmPayload, AgentHintPayload, AgentMessageDelta, AgentMetaPayload, AgentToolProgress } from '../../../../api/ai/agent-chat';
 
 export interface AgentTimelineContext {
   /** 当前本地时刻 `HH:mm:ss`（注入，便于测试）。 */
@@ -994,7 +994,7 @@ export function flattenMarkdown(text: string, max = 96): string {
   const flat = text
     .split('\n')
     .map(line => line.trim())
-    .filter(line => line && !/^(-{3,}|\*{3,}|_{3,})$/.test(line))
+    .filter(line => line && !/^(?:-{3,}|\*{3,}|_{3,})$/.test(line))
     .map(stripMdMarks)
     .join(' ')
     .replace(/\s+/g, ' ')

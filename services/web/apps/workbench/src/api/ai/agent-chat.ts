@@ -174,26 +174,6 @@ export function createAgentChatClient(deps: AgentChatClientDeps): AgentChatClien
     if (input.signal)
       input.signal.addEventListener('abort', () => { cancelled = true; }, { once: true });
 
-    function record(event: SseEvent) {
-      const entry = frameToRawEntry(event);
-      if (entry !== null) {
-        if (frames.length >= AGENT_RAW_FRAME_LIMIT)
-          frames.shift();
-        frames.push({ id: ++seq, ts: nowHms(), name: entry.name, data: entry.data });
-      }
-      // 原始帧抽屉要逐条可见 —— 注释帧（许可/心跳）先进缓冲，再交给回调；
-      // 回调自己不推状态（isComment 判定在消费方）。
-      if (!event.isComment) {
-        if (event.type === 'done') {
-          terminated = true;
-          completed = true;
-        }
-        if (event.type === 'cancel')
-          completed = true;
-      }
-      connection.onFrame?.(event);
-    }
-
     const connection: AgentChatConnection = {
       frames,
       get terminated() { return terminated; },
@@ -275,6 +255,26 @@ export function createAgentChatClient(deps: AgentChatClientDeps): AgentChatClien
       },
     };
 
+    function record(event: SseEvent) {
+      const entry = frameToRawEntry(event);
+      if (entry !== null) {
+        if (frames.length >= AGENT_RAW_FRAME_LIMIT)
+          frames.shift();
+        frames.push({ id: ++seq, ts: nowHms(), name: entry.name, data: entry.data });
+      }
+      // 原始帧抽屉要逐条可见 —— 注释帧（许可/心跳）先进缓冲，再交给回调；
+      // 回调自己不推状态（isComment 判定在消费方）。
+      if (!event.isComment) {
+        if (event.type === 'done') {
+          terminated = true;
+          completed = true;
+        }
+        if (event.type === 'cancel')
+          completed = true;
+      }
+      connection.onFrame?.(event);
+    }
+
     return connection;
   }
 
@@ -299,8 +299,8 @@ export function createAgentChatClient(deps: AgentChatClientDeps): AgentChatClien
           method: 'GET',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${identity.token ?? ''}`,
-            ClientID: deps.clientId ?? '',
+            'Authorization': `Bearer ${identity.token ?? ''}`,
+            'ClientID': deps.clientId ?? '',
           },
         },
         identity,

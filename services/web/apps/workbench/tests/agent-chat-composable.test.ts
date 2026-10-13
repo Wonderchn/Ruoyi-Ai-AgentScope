@@ -57,15 +57,15 @@ interface StreamPlan {
 }
 
 interface Harness {
-  chatCalls: Array<{ url: string, init: RequestInit }>;
-  confirmCalls: Array<{ url: string, init: RequestInit }>;
-  jsonCalls: Array<{ url: string, init: RequestInit }>;
+  chatCalls: Array<{ url: string; init: RequestInit }>;
+  confirmCalls: Array<{ url: string; init: RequestInit }>;
+  jsonCalls: Array<{ url: string; init: RequestInit }>;
   chat: ReturnType<typeof useAgentChat>;
   /** 改身份代次（真响应式 ref）。 */
   setEpoch: (value: number) => void;
 }
 
-function harness(plan: StreamPlan = {}, jsonBodies: Array<{ body: unknown, status?: number }> = []): Harness {
+function harness(plan: StreamPlan = {}, jsonBodies: Array<{ body: unknown; status?: number }> = []): Harness {
   const chatCalls: Harness['chatCalls'] = [];
   const confirmCalls: Harness['confirmCalls'] = [];
   const jsonCalls: Harness['jsonCalls'] = [];
@@ -105,7 +105,15 @@ function harness(plan: StreamPlan = {}, jsonBodies: Array<{ body: unknown, statu
     client,
   });
 
-  return { chatCalls, confirmCalls, jsonCalls, chat, setEpoch: (value: number) => { epoch.value = value; } };
+  return {
+    chatCalls,
+    confirmCalls,
+    jsonCalls,
+    chat,
+    setEpoch: (value: number) => {
+      epoch.value = value;
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +187,9 @@ describe('提问与流式推进', () => {
     // 挂起的流：meta 已到、终帧未到且不自行关闭（等测试显式释放）。
     // 真实中止路径要求读取循环被 abort 打断 —— 这条用例正是它的回归判据。
     let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const body = new ReadableStream<Uint8Array>({
       async start(controller) {
         controller.enqueue(encoder.encode(frame('meta', { conversationId: 'c-1', taskId: 't-1' })));

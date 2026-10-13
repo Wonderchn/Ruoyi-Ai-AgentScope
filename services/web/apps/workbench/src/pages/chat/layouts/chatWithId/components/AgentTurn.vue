@@ -11,8 +11,8 @@
   - reasoning 行可折叠（折叠态给单行摘要），流式中自动展开。
 -->
 <script setup lang="ts">
-import type { AgentBlock, AgentTurn } from '../types';
 import type { TraceRow } from '../agentTimeline';
+import type { AgentBlock, AgentTurn } from '../types';
 import { computed } from 'vue';
 import { formatDuration, peekThinking } from '../agentTimeline';
 import AgentConfirmCard from './AgentConfirmCard.vue';
@@ -130,7 +130,9 @@ function isTool(row: TraceRow): row is TraceRow & { block: AgentBlock } {
           <span v-if="row.durationMs != null" class="agent-row-dur"> · 生成 {{ formatDuration(row.durationMs) }}</span>
           <span v-if="row.ts" class="agent-row-ts">{{ row.ts }}</span>
         </div>
-        <div class="agent-row-text" :data-streaming="row.streaming ? 'true' : 'false'">{{ row.text }}</div>
+        <div class="agent-row-text" :data-streaming="row.streaming ? 'true' : 'false'">
+          {{ row.text }}
+        </div>
       </template>
     </div>
   </section>

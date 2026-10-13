@@ -50,7 +50,9 @@ async function mountSfc(name: string, props: Record<string, unknown> = {}): Prom
   }).outputText;
 
   const emits: any[][] = [];
-  const emitted = (event: string, ...args: any[]) => { emits.push([event, ...args]); };
+  const emitted = (event: string, ...args: any[]) => {
+    emits.push([event, ...args]);
+  };
 
   const modules: Record<string, unknown> = {
     'vue': vue,
@@ -428,7 +430,7 @@ describe('AgentTurn（轮次头 / 轨迹行委托）', () => {
       { key: 'b-2', channel: 'tool', ts: '', block: { id: 2, kind: 'tool', at: '', name: 't', status: 'done', result: 'x' }, messageId: 'a-1', durationMs: 10 },
       { key: 'b-3', channel: 'confirm', ts: '', block: { id: 3, kind: 'confirm', at: '', status: 'pending', calls: [{ toolCallId: 'tc1', name: 'w', fields: [], arguments: '{}' }] }, messageId: 'a-1', outcomes: [undefined] },
     ];
-    const { ctx, emits, scope, source } = await mountSfc('AgentTurn.vue', { turn, rows });
+    const { ctx, scope, source } = await mountSfc('AgentTurn.vue', { turn, rows });
     try {
       assert.equal(ctx.isTool(rows[0]), true);
       assert.equal(ctx.isTool(rows[1]), false);

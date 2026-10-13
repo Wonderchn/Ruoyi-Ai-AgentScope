@@ -5,6 +5,7 @@ import type { BubbleProps } from 'vue-element-plus-x/types/Bubble';
 import type { BubbleListInstance } from 'vue-element-plus-x/types/BubbleList';
 import type { ThinkingStatus } from 'vue-element-plus-x/types/Thinking';
 import type { ToolCallInfo } from './types';
+import type { UseAgentChatBaseOptions } from './useAgentChat';
 import { nextTick } from 'vue';
 import { useRoute } from 'vue-router';
 import { listKnowledgeBases } from '@/api/rag';
@@ -19,7 +20,6 @@ import AgentTurn from './components/AgentTurn.vue';
 import MessageDetails from './components/MessageDetails.vue';
 import ToolCallCard from './components/ToolCallCard.vue';
 import WorkflowRunStatus from './components/WorkflowRunStatus.vue';
-import type { UseAgentChatBaseOptions } from './useAgentChat';
 import { useAgentChat } from './useAgentChat';
 import { useChatRun } from './useChatRun';
 

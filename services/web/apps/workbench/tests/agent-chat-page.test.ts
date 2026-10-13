@@ -41,15 +41,17 @@ interface FakeAgent {
   resets: number;
   newChats: number;
   loads: string[];
-  toggles: Array<{ messageId: string, blockId: number }>;
+  toggles: Array<{ messageId: string; blockId: number }>;
   /** 测试里手动放行的 sendMessage 完成闸（模拟在飞）。 */
-  hold: { promise: Promise<void>, resolve: () => void } | null;
+  hold: { promise: Promise<void>; resolve: () => void } | null;
 }
 
 function fakeAgent(): FakeAgent {
-  const holdDeferred = (): { promise: Promise<void>, resolve: () => void } => {
+  const holdDeferred = (): { promise: Promise<void>; resolve: () => void } => {
     let resolve!: () => void;
-    const promise = new Promise<void>((r) => { resolve = r; });
+    const promise = new Promise<void>((r) => {
+      resolve = r;
+    });
     return { promise, resolve };
   };
   const state = {
@@ -68,7 +70,7 @@ function fakeAgent(): FakeAgent {
     resets: 0,
     newChats: 0,
     loads: [] as string[],
-    toggles: [] as Array<{ messageId: string, blockId: number }>,
+    toggles: [] as Array<{ messageId: string; blockId: number }>,
     hold: null as FakeAgent['hold'],
     async sendMessage(text: string) {
       state.sent.push(text);

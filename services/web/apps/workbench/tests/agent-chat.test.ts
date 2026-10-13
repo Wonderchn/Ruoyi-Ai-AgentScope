@@ -18,6 +18,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { parseSseText } from '@ruoyi/events/sse';
 import {
   AGENT_CHAT_CONFIRM_PATH,
   AGENT_CHAT_PATH,
@@ -29,7 +30,6 @@ import {
   parseAgentFrame,
   readFailureMessage,
 } from '../src/api/ai/agent-chat.ts';
-import { parseSseText } from '@ruoyi/events/sse';
 import {
   applyAgentEvent,
   buildTimelineRows,
@@ -45,8 +45,8 @@ import {
   replayBlock,
   splitCommonFields,
   summarizeToolResult,
-  TOOL_STATE_LABEL,
   toBlockHms,
+  TOOL_STATE_LABEL,
 } from '../src/pages/chat/layouts/chatWithId/agentTimeline.ts';
 
 const encoder = new TextEncoder();
@@ -73,7 +73,7 @@ function sseResponse(frames: string[], status = 200): Response {
 }
 
 /** 一条数据帧（`event:` + `data:`），带许可注释前缀；`multiline` 模拟 Spring JSON 美化输出的多 `data:` 行。 */
-function frame(name: string, payload: unknown, opts: { permit?: boolean, multiline?: boolean } = {}): string {
+function frame(name: string, payload: unknown, opts: { permit?: boolean; multiline?: boolean } = {}): string {
   const permit = opts.permit === false ? '' : ': ai-delivery P-1 op-1\n';
   if (opts.multiline) {
     const pretty = JSON.stringify(payload, null, 2);
@@ -91,7 +91,7 @@ interface Harness {
 
 function harness(options: {
   stream?: Response | (() => Response);
-  json?: Array<{ body: unknown, status?: number }>;
+  json?: Array<{ body: unknown; status?: number }>;
 } = {}): Harness {
   const calls: Call[] = [];
   const streamCalls: Call[] = [];
@@ -133,7 +133,7 @@ describe('端点与查询串', () => {
       buildAgentChatUrl('q&1', 'c-9'),
       `${AGENT_CHAT_PATH}?question=${encodeURIComponent('q&1')}&conversationId=c-9`,
     );
-    assert.ok(buildAgentChatUrl('q', '   ').indexOf('conversationId') === -1, '纯空白会话 id 不带上');
+    assert.ok(!buildAgentChatUrl('q', '   ').includes('conversationId'), '纯空白会话 id 不带上');
     assert.equal(AGENT_CHAT_PATH, '/api/ai/v1/agent/v1/chat');
     assert.equal(AGENT_CHAT_CONFIRM_PATH, '/api/ai/v1/agent/v1/chat/confirm');
   });
