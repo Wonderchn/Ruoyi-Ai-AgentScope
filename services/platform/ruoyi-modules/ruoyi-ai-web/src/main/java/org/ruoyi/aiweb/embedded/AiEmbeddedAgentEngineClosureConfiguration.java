@@ -335,9 +335,11 @@ public class AiEmbeddedAgentEngineClosureConfiguration {
                                              AgentMcpClients mcpClients,
                                              AgentMemoryProperties memoryProperties,
                                              AgentMemoryPipeline memoryPipeline,
-                                             AgentSkillRegistry skillRegistry) {
+                                             AgentSkillRegistry skillRegistry,
+                                             org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder> tenantScopeBinder,
+                                             org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts> memoryEgressFacts) {
         return new AgentToolCatalog(knowledgeSearchFacade, intentNodeRegistry, mcpClients,
-                memoryProperties, memoryPipeline, skillRegistry);
+                memoryProperties, memoryPipeline, tenantScopeBinder, memoryEgressFacts, skillRegistry);
     }
 
     /**

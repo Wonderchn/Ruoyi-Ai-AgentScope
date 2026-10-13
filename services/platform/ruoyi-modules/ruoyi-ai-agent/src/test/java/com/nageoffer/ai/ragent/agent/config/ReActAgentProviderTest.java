@@ -17,6 +17,7 @@
 
 package com.nageoffer.ai.ragent.agent.config;
 
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.agent.confirm.AgentConfirmDenialMiddleware;
 import com.nageoffer.ai.ragent.agent.memory.AgentContextCompactionMiddleware;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryPipeline;
@@ -85,6 +86,8 @@ class ReActAgentProviderTest {
                 mcpClients,
                 new AgentMemoryProperties(),
                 mock(AgentMemoryPipeline.class),
+                providerOf(TenantScopeBinder.class, null),
+                providerOf(com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts.class, null),
                 mock(AgentSkillRegistry.class)));
         AgentProperties agentProperties = new AgentProperties();
         provider = new ReActAgentProvider(
@@ -208,5 +211,12 @@ class ReActAgentProviderTest {
         McpClientWrapper client = mock(McpClientWrapper.class);
         when(client.getName()).thenReturn("default");
         return new RemoteTool(tool, client);
+    }
+
+    private static <T> org.springframework.beans.factory.ObjectProvider<T> providerOf(Class<T> type, T value) {
+        return new org.springframework.beans.factory.ObjectProvider<>() {
+            @Override public T getObject() { return value; }
+            @Override public T getIfAvailable() { return value; }
+        };
     }
 }

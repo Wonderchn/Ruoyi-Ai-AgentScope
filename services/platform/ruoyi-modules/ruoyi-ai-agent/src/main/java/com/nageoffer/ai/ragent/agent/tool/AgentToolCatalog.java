@@ -67,6 +67,11 @@ public class AgentToolCatalog {
     private final AgentMcpClients mcpClients;
     private final AgentMemoryProperties memoryProperties;
     private final AgentMemoryPipeline memoryPipeline;
+    /**
+     * F-AC6-7：flush 工具体在受理期身份作用域内执行所需的绑定/出站重建端口（透传给工具）。
+     */
+    private final org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder> tenantScopeBinder;
+    private final org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts> memoryEgressFacts;
     private final AgentSkillRegistry skillRegistry;
 
     /**
@@ -89,7 +94,8 @@ public class AgentToolCatalog {
         toolkit.registerAgentTool(new KnowledgeSearchTool(
                 catalog.knowledgeToolDescription, knowledgeSearchFacade));
         if (catalog.memoryToolDescription != null) {
-            toolkit.registerAgentTool(new MemoryFlushTool(catalog.memoryToolDescription, memoryPipeline));
+            toolkit.registerAgentTool(new MemoryFlushTool(catalog.memoryToolDescription, memoryPipeline,
+                    tenantScopeBinder, memoryEgressFacts));
         } else if (memoryProperties.isLongTermEnabled()) {
             log.warn("AGENT_MEMORY_TOOL_DESCRIPTION 提示词为空, 本次不挂载 {}", MemoryFlushTool.TOOL_NAME);
         }

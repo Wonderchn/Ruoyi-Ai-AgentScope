@@ -18,10 +18,14 @@
 package com.nageoffer.ai.ragent.agent.tool;
 
 import cn.hutool.core.util.StrUtil;
+import com.nageoffer.ai.ragent.agent.identity.AgentRunScope;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryOutcome;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryOutcome.Status;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryPipeline;
 import com.nageoffer.ai.ragent.agent.memory.AgentUserMemoryMiddleware;
+import com.nageoffer.ai.ragent.agent.memory.AsyncMemoryTaskScope;
+import com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.agent.trace.AgentToolBodyTracer;
 import com.nageoffer.ai.ragent.agent.trace.AgentTraceContextKeys;
 import io.agentscope.core.agent.RuntimeContext;
@@ -35,6 +39,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
+
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.util.Map;
 import java.util.Optional;
@@ -52,6 +58,13 @@ public class MemoryFlushTool implements AgentTool {
 
     private final String description;
     private final AgentMemoryPipeline memoryPipeline;
+    /**
+     * 租户绑定端口与出站身份事实（F-AC6-7）：工具体在受理期身份作用域内执行——
+     * flush 全链含 LLM 出站（judge/consolidator），必须走在线重建式（capture 形会
+     * 撞出站门，E5 同栈）；载体缺席（独立应用/直调）按原形态直跑。
+     */
+    private final ObjectProvider<TenantScopeBinder> tenantScopeBinder;
+    private final ObjectProvider<MemoryEgressSubjectFacts> memoryEgressFacts;
 
     @Override
     public String getName() {
@@ -76,8 +89,25 @@ public class MemoryFlushTool implements AgentTool {
 
     @Override
     public Mono<ToolResultBlock> callAsync(ToolCallParam param) {
-        return AgentToolBodyTracer.trace(this, param, () -> Mono.fromCallable(() -> execute(param))
+        return AgentToolBodyTracer.trace(this, param, () -> Mono.fromCallable(() -> executeInRunScope(param))
                 .subscribeOn(Schedulers.boundedElastic()));
+    }
+
+    /**
+     * 工具体在受理期身份作用域内执行（F-AC6-7）：载体从工具执行上下文
+     * （ToolCallParam.runtimeContext，受理期挂载）取；命中则以在线重建式包裹——
+     * flush 管线含 judge 出站，重建按声明集最小集合在线核验（裁决⑤形状），
+     * 重建失败退化为捕获形态（出站照旧 fail-closed、flush 如实落 FAILED）；
+     * 载体缺席按原形态直跑。
+     */
+    private ToolResultBlock executeInRunScope(ToolCallParam param) {
+        AgentRunScope runScope = AgentRunScope.from(param == null ? null : param.getRuntimeContext());
+        if (runScope == null) {
+            return execute(param);
+        }
+        return AsyncMemoryTaskScope.callWithRebuiltEgress(runScope.principal(), runScope.tenantId(),
+                tenantScopeBinder, memoryEgressFacts, AgentMemoryPipeline.MEMORY_EXTRACTION_EGRESS_ACTIONS,
+                () -> execute(param));
     }
 
     private ToolResultBlock execute(ToolCallParam param) {

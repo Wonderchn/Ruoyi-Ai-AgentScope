@@ -91,7 +91,7 @@ public class AgentChatServiceImpl implements AgentChatService {
      * 刻意只声明抽取所需的最小集合——不得用全量 canonicalActions 或追加动作制造放行；
      * 重建序列逐动作预检、出站 verifier 逐动作重判。
      */
-    private static final Set<String> MEMORY_EXTRACTION_EGRESS_ACTIONS = Set.of("memory.read");
+
 
     private final ReActAgentProvider agentProvider;
     private final AgentConversationService conversationService;
@@ -433,15 +433,20 @@ public class AgentChatServiceImpl implements AgentChatService {
      */
     private void scheduleMemoryExtraction(String userId, String conversationId,
                                           AsyncPrincipalReference principalRef, String tenantId) {
+        // F-AC6-8 观测点（零行为）：claim 触发条件的判别面——principalRef/tenantId 空与非空可辨
+        log.info("轮次结束记忆抽取调度, userId: {}, conversationId: {}, principalRef: {}, tenantId: {}",
+                userId, conversationId, principalRef == null ? "null" : "present", tenantId == null ? "null" : "present");
         if (!memoryProperties.isLongTermEnabled()) {
             return;
         }
         Mono.fromCallable(() -> AsyncMemoryTaskScope.callWithRebuiltEgress(principalRef, tenantId,
-                        tenantScopeBinder, memoryEgressFacts, MEMORY_EXTRACTION_EGRESS_ACTIONS,
+                        tenantScopeBinder, memoryEgressFacts, AgentMemoryPipeline.MEMORY_EXTRACTION_EGRESS_ACTIONS,
                         () -> memoryPipeline.extract(userId, conversationId, AgentMemoryTriggerType.BACKGROUND)))
                 .subscribeOn(Schedulers.boundedElastic())
                 .subscribe(outcome -> {
                             if (outcome.idle()) {
+                                log.info("轮次结束记忆抽取空闲, userId: {}, conversationId: {}, 状态: {}",
+                                        userId, conversationId, outcome.status());
                                 return;
                             }
                             log.info("轮次结束后台记忆抽取完成, userId: {}, conversationId: {}, 状态: {}, 落库: {}",

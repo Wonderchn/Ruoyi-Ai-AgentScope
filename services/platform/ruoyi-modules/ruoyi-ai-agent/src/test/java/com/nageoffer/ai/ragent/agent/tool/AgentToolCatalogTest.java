@@ -17,6 +17,7 @@
 
 package com.nageoffer.ai.ragent.agent.tool;
 
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryPipeline;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryProperties;
 import com.nageoffer.ai.ragent.agent.tool.AgentMcpClients.RemoteTool;
@@ -64,12 +65,14 @@ class AgentToolCatalogTest {
         RemoteTool salesTool = executor("sales_query", "MCP 服务端描述");
         when(mcpClients.get("sales_query")).thenReturn(salesTool);
         AgentToolCatalog catalog = new AgentToolCatalog(
-                mock(KnowledgeSearchFacade.class),
-                intentNodeRegistry,
-                mcpClients,
-                memoryProperties(false),
-                mock(AgentMemoryPipeline.class),
-                mock(AgentSkillRegistry.class));
+         mock(KnowledgeSearchFacade.class),
+         intentNodeRegistry,
+         mcpClients,
+         memoryProperties(false),
+         mock(AgentMemoryPipeline.class),
+         providerOf(TenantScopeBinder.class, null),
+         providerOf(com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts.class, null),
+         mock(AgentSkillRegistry.class));
 
         AgentToolCatalog.ResolvedCatalog resolved = catalog.resolve(KNOWLEDGE_ONLY);
         Toolkit toolkit = catalog.buildToolkit(resolved);
@@ -306,12 +309,14 @@ class AgentToolCatalogTest {
         executors.forEach(executor -> when(mcpClients.get(executor.definition().name())).thenReturn(executor));
 
         return new AgentToolCatalog(
-                mock(KnowledgeSearchFacade.class),
-                intentNodeRegistry,
-                mcpClients,
-                memoryProperties(false),
-                mock(AgentMemoryPipeline.class),
-                mock(AgentSkillRegistry.class));
+         mock(KnowledgeSearchFacade.class),
+         intentNodeRegistry,
+         mcpClients,
+         memoryProperties(false),
+         mock(AgentMemoryPipeline.class),
+         providerOf(TenantScopeBinder.class, null),
+         providerOf(com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts.class, null),
+         mock(AgentSkillRegistry.class));
     }
 
     /**
@@ -323,12 +328,14 @@ class AgentToolCatalogTest {
         AgentMcpClients mcpClients = mock(AgentMcpClients.class);
 
         return new AgentToolCatalog(
-                mock(KnowledgeSearchFacade.class),
-                intentNodeRegistry,
-                mcpClients,
-                memoryProperties(longTermEnabled),
-                mock(AgentMemoryPipeline.class),
-                mock(AgentSkillRegistry.class));
+         mock(KnowledgeSearchFacade.class),
+         intentNodeRegistry,
+         mcpClients,
+         memoryProperties(longTermEnabled),
+         mock(AgentMemoryPipeline.class),
+         providerOf(TenantScopeBinder.class, null),
+         providerOf(com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts.class, null),
+         mock(AgentSkillRegistry.class));
     }
 
     private Map<String, String> promptsWithMemory(String memorySlotContent) {
@@ -375,5 +382,12 @@ class AgentToolCatalogTest {
         McpClientWrapper client = mock(McpClientWrapper.class);
         when(client.getName()).thenReturn("default");
         return new RemoteTool(tool, client);
+    }
+
+    private static <T> org.springframework.beans.factory.ObjectProvider<T> providerOf(Class<T> type, T value) {
+        return new org.springframework.beans.factory.ObjectProvider<>() {
+            @Override public T getObject() { return value; }
+            @Override public T getIfAvailable() { return value; }
+        };
     }
 }

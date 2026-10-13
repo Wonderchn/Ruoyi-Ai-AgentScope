@@ -17,6 +17,7 @@
 
 package com.nageoffer.ai.ragent.agent.tool;
 
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryItem;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryOutcome;
 import com.nageoffer.ai.ragent.agent.memory.AgentMemoryOutcome.Status;
@@ -60,7 +61,8 @@ class MemoryFlushToolTest {
     @BeforeEach
     void setUp() {
         memoryPipeline = mock(AgentMemoryPipeline.class);
-        tool = new MemoryFlushTool("记忆整理工具描述", memoryPipeline);
+        tool = new MemoryFlushTool("记忆整理工具描述", memoryPipeline,
+                providerOf(TenantScopeBinder.class, null), providerOf(com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts.class, null));
     }
 
     @Test
@@ -234,5 +236,12 @@ class MemoryFlushToolTest {
                 .filter(TextBlock.class::isInstance)
                 .map(block -> ((TextBlock) block).getText())
                 .collect(Collectors.joining());
+    }
+
+    private static <T> org.springframework.beans.factory.ObjectProvider<T> providerOf(Class<T> type, T value) {
+        return new org.springframework.beans.factory.ObjectProvider<>() {
+            @Override public T getObject() { return value; }
+            @Override public T getIfAvailable() { return value; }
+        };
     }
 }

@@ -19,6 +19,7 @@ package com.nageoffer.ai.ragent.agent.memory;
 
 import cn.hutool.core.util.StrUtil;
 import com.nageoffer.ai.ragent.agent.config.ConditionalOnAgentEngine;
+import com.nageoffer.ai.ragent.agent.identity.AgentRunScope;
 import com.nageoffer.ai.ragent.framework.context.AsyncPrincipalReference;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
@@ -79,16 +80,30 @@ public class AgentUserMemoryMiddleware implements MiddlewareBase {
         if (cached != null) {
             return next.apply(inject(input, cached));
         }
-        // 捕获点＝流订阅线程（请求线程）：首轮推理输入在订阅调用栈里同步构建，此处主体在场。
-        // 只认同步起源——池线程上的身份拷贝（创建期继承/非配对 restore）不是可信在场主体，
-        // 绝不允许它成为本轮绑定来源（宁可退化为无主体直跑，也不错绑他人身份）。
-        AsyncPrincipalReference principalRef = PrincipalContext.isSynchronousOrigin()
-                ? AsyncPrincipalReference.from(PrincipalContext.require())
-                : null;
-        // tenantId 从同一捕获派生，两处来源不许各自读一遍
-        String tenantId = principalRef == null ? null : principalRef.tenantId();
-        // 首轮才读库，读的是阻塞 JDBC，不占推理线程
-        return Mono.fromCallable(() -> AsyncMemoryTaskScope.callWithCapture(principalRef, tenantId, tenantScopeBinder,
+        // 载体优先（F-AC6-7/F-AC6-6）：受理期挂进 RuntimeContext 的 AgentRunScope 是本轮
+        // 身份的唯一可信来源——推理信号线程上 isSynchronousOrigin() 恒 false（SYNCHRONOUS_ORIGIN
+        // 刻意不随 TTL 传播），在信号线程上自抓只会拿到 null 而整轮退空快照（真机每轮
+        // 「长期记忆读取失败」）。载体缺席（独立应用/直调）才回退线程抓取；线程上的
+        // 身份拷贝（创建期继承/非配对 restore）仍不是可信在场主体，绝不绑成本轮身份。
+        AgentRunScope runScope = runtimeContext == null ? null : AgentRunScope.from(runtimeContext);
+        AsyncPrincipalReference principalRef;
+        String tenantId;
+        if (runScope != null) {
+            principalRef = runScope.principal();
+            tenantId = runScope.tenantId();
+        } else {
+            // 回退捕获点＝流订阅线程（请求线程）：首轮推理输入在订阅调用栈里同步构建，此处主体在场。
+            // 只认同步起源——宁可退化为无主体直跑，也不错绑他人身份。
+            principalRef = PrincipalContext.isSynchronousOrigin()
+                    ? AsyncPrincipalReference.from(PrincipalContext.require())
+                    : null;
+            // tenantId 从同一捕获派生，两处来源不许各自读一遍
+            tenantId = principalRef == null ? null : principalRef.tenantId();
+        }
+        // 首轮才读库，读的是阻塞 JDBC，不占推理线程。纯读路径走 capture 形（非配对 restore，
+        // 不授同步起源——C2 fail-closed 语义保持，见 AgentInRunMemoryIdentityBindingTest）。
+        return Mono.fromCallable(() -> AsyncMemoryTaskScope.callWithResolvedCapture(principalRef, tenantId,
+                        tenantScopeBinder.getIfAvailable(),
                         () -> load(runtimeContext)))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMapMany(snapshot -> next.apply(inject(input, snapshot)));
