@@ -190,6 +190,20 @@ public class AiEmbeddedModelConfiguration {
                 return new org.ruoyi.aiweb.embedded.EmbeddedMemoryEgressSubjectFacts(identities, acl);
             }
 
+            /**
+             * rag 检索/意图链的出站身份重建事实端口（BD-1，2026-10-14）：意图分类任务体含
+             * LLM 出站，池线程无同步起源，按在线事实重建出站主体（flush 同形）。rag 模块依赖面
+             * 看不到 agent 模块端口，故立同形端口并<b>纯委托</b> {@code memoryEgressSubjectFacts}
+             * 同一 bean（同一对在线事实源）。委托目标缺席语义一致——调用方拒绝重建、退回捕获
+             * 形态，出站照旧 fail-closed。
+             */
+            @Bean
+            @ConditionalOnMissingBean(com.nageoffer.ai.ragent.runtime.scope.RetrievalEgressSubjectFacts.class)
+            public com.nageoffer.ai.ragent.runtime.scope.RetrievalEgressSubjectFacts retrievalEgressSubjectFacts(
+                    org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts> memoryFacts) {
+                return new org.ruoyi.aiweb.embedded.EmbeddedRetrievalEgressSubjectFacts(memoryFacts);
+            }
+
             // ---------------------------------------------------------- HTTP / 线程池基础设施
 
             /**

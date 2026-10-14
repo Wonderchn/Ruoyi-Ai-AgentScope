@@ -187,7 +187,8 @@ class RetrievalEngineTest {
                 contextFormatter,
                 mock(PromptTemplateLoader.class),
                 multiChannel,
-                Runnable::run
+                Runnable::run,
+                null
         );
     }
 

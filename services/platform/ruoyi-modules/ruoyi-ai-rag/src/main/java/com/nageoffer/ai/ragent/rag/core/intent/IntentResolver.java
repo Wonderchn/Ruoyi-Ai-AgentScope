@@ -18,17 +18,22 @@
 package com.nageoffer.ai.ragent.rag.core.intent;
 
 import cn.hutool.core.collection.CollUtil;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.rag.dto.IntentCandidate;
 import com.nageoffer.ai.ragent.rag.dto.SubQuestionIntent;
 import com.nageoffer.ai.ragent.framework.trace.RagTraceNode;
 import com.nageoffer.ai.ragent.rag.core.rewrite.RewriteResult;
+import com.nageoffer.ai.ragent.runtime.scope.AsyncRetrievalTaskScope;
+import com.nageoffer.ai.ragent.runtime.scope.RetrievalEgressSubjectFacts;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.HashMap;
 import java.util.concurrent.Executor;
@@ -45,6 +50,29 @@ public class IntentResolver {
     private final Executor intentClassifyExecutor;
 
     /**
+     * 租户作用域绑定端口（BD-1）：任务体重绑时在身份作用域内侧绑定受理捕获的租户。
+     * 端口缺席（独立应用无租户拦截器）时按原形态直跑。
+     */
+    private final ObjectProvider<TenantScopeBinder> tenantScopeBinder;
+
+    /**
+     * 出站身份重建事实端口（BD-1）：意图分类链任务体含 LLM 出站，池线程无同步起源，
+     * 按在线事实重建出站主体（flush 同形）。端口缺席＝拒绝重建、退回捕获形态（出站照旧拒）。
+     */
+    private final ObjectProvider<RetrievalEgressSubjectFacts> egressFacts;
+
+    /**
+     * 意图分类链的出站声明权限集（BD-1，声明集最小化＝恰一项）。
+     *
+     * <p>意图分类是 KB 检索管线的前半程（其输出只路由/收窄检索作用域），整条管线的授权动作
+     * 就是检索（{@code RetrievalScopeAuthorizer.ACTION_KB_RETRIEVE} = "kb.retrieve"）。
+     * 动作名→权限串映射在 ruoyi-ai-api 的 {@code AiCanonicalAction}
+     * （"kb.retrieve" → "ai:kb:retrieve"）；rag 模块依赖面不可见 api，故此处落权限串字面量
+     * 并以该映射锚定——两处漂移时本重建会被成员在线 scopes 检查拒绝（fail-closed，不放大）。
+     */
+    public static final Set<String> INTENT_EGRESS_PERMISSIONS = Set.of("ai:kb:retrieve");
+
+    /**
      * 显式构造（替代 {@code @RequiredArgsConstructor}，S1 装配批 R1）：两处限定符都写在
      * <b>构造参数</b>上——platform 树没有 {@code services/ai/lombok.config}，字段上的
      * {@code @Qualifier} 不会进入 Lombok 生成的构造参数（原形态只是"接口恰有一个实现"侥幸可用，
@@ -56,11 +84,20 @@ public class IntentResolver {
      *   <li>{@code intentClassifyExecutor}：platform 侧两个 {@code @Primary} 的 {@code Executor}
      *       （{@code ThreadPoolConfig}）会让按类型注入以"多个 primary"启动期失败，必须按名注入。</li>
      * </ul>
+     *
+     * <p>BD-1（2026-10-14）追加了 {@code tenantScopeBinder}/{@code egressFacts} 两个端口：
+     * 分类任务体从受理线程跳到 {@code intent_classify_executor_*} 池线程后动态租户丢失，
+     * 真机对 {@code ai_intent_node} fail-closed（{@code tenant.context.missing}）——任务体以
+     * 受理捕获重绑；体内 LLM 出站段按在线事实重建出站主体（flush 同形）。
      */
     public IntentResolver(@Qualifier("defaultIntentClassifier") IntentClassifier intentClassifier,
-                          @Qualifier("intentClassifyExecutor") Executor intentClassifyExecutor) {
+                          @Qualifier("intentClassifyExecutor") Executor intentClassifyExecutor,
+                          ObjectProvider<TenantScopeBinder> tenantScopeBinder,
+                          ObjectProvider<RetrievalEgressSubjectFacts> egressFacts) {
         this.intentClassifier = intentClassifier;
         this.intentClassifyExecutor = intentClassifyExecutor;
+        this.tenantScopeBinder = tenantScopeBinder;
+        this.egressFacts = egressFacts;
     }
 
     @RagTraceNode(name = "intent-resolve", type = "INTENT")
@@ -68,11 +105,16 @@ public class IntentResolver {
         List<String> subQuestions = CollUtil.isNotEmpty(rewriteResult.subQuestions())
                 ? rewriteResult.subQuestions()
                 : List.of(rewriteResult.rewrittenQuestion());
+        // BD-1：受理线程（同步起源）捕获身份引用；无捕获形态按原样直跑。捕获在线程跳变前完成，
+        // 任务体内经重建式（含 LLM 出站段）或其退化捕获形态重绑（拒绝重建＝非配对 restore，出站照旧拒）。
+        AsyncRetrievalTaskScope.Capture capture = AsyncRetrievalTaskScope.Capture.capture();
         List<CompletableFuture<SubQuestionIntent>> tasks = subQuestions.stream()
                 .map(q -> CompletableFuture.supplyAsync(
                         () -> {
                             try {
-                                return new SubQuestionIntent(q, classifyIntents(q));
+                                return AsyncRetrievalTaskScope.callWithRebuiltEgress(capture, tenantScopeBinder,
+                                        egressFacts, INTENT_EGRESS_PERMISSIONS,
+                                        () -> new SubQuestionIntent(q, classifyIntents(q)));
                             } catch (Exception e) {
                                 log.error("子问题意图分类失败，降级为空意图，question：{}", q, e);
                                 return new SubQuestionIntent(q, List.of());
