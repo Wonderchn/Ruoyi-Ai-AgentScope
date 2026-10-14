@@ -212,8 +212,10 @@ public final class AsyncRetrievalTaskScope {
 
     /**
      * 在<b>在线重建的判定主体</b>作用域内执行 {@code body}（BD-2）：{@code evaluationSupplier} 经
-     * 平台在线重判构造判定主体（scopes={动作名}），配对 {@code set()/restore()}——共享池线程纪律同
-     * 裁决⑤；租户绑定内层；重建失败（在线门拒绝/授权装配缺席）＝fail-closed：body 不执行、
+     * 平台在线重判构造判定主体（scopes={动作名}），以<b>非配对 restore</b> 挂载/复原——只授 holder、
+     * 不授同步起源（检索链纯读；比裁决⑤允许的配对 {@code set()/restore()} 更保守，C2 纪律保持，
+     * 重建体 scopes={动作名} 满足授权链 hasScope 门、origin 不被授予）；finally 无条件复原＝共享池
+     * 线程纪律同裁决⑤；租户绑定内层；重建失败（在线门拒绝/授权装配缺席）＝fail-closed：body 不执行、
      * 调用方得 {@code null}。恢复引用本身不被改写。
      *
      * @param capture           受理期捕获；{@code null}＝无捕获形态，直跑（返回 {@code null}）
