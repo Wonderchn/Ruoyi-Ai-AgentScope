@@ -40,6 +40,14 @@ import java.util.List;
 @ConditionalOnAgentEngine
 @RequiredArgsConstructor
 public class AgentMemoryPipeline {
+    /**
+     * 记忆链出站的最小声明集（F-AC6-7 提升为管线自声明；后台抽取链与 in-run flush 共用）。
+     * {@code memory.read}→{@code ai:memory:read}（{@code AiCanonicalAction:46}；菜单 7111）。
+     * 刻意只声明抽取所需的最小集合——不得用全量 canonicalActions 或追加动作制造放行；
+     * 重建序列逐动作预检、出站 verifier 逐动作重判。
+     */
+    public static final java.util.Set<String> MEMORY_EXTRACTION_EGRESS_ACTIONS = java.util.Set.of("memory.read");
+
 
     /**
      * 显式整理一次最多跑几批；每批一次仲裁调用，全压在本轮回答里，跑不完如实报未完成而不是无限续跑

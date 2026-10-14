@@ -207,6 +207,8 @@ class AgentToolBodyTracerCoverageTest {
                 mcpClients,
                 memoryProperties,
                 mock(AgentMemoryPipeline.class),
+                providerOf(com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder.class, null),
+                providerOf(com.nageoffer.ai.ragent.agent.memory.MemoryEgressSubjectFacts.class, null),
                 skillRegistry);
         return catalog.buildToolkit(catalog.resolve(prompts));
     }
@@ -241,5 +243,12 @@ class AgentToolBodyTracerCoverageTest {
         public CompletableResultCode shutdown() {
             return CompletableResultCode.ofSuccess();
         }
+    }
+
+    private static <T> org.springframework.beans.factory.ObjectProvider<T> providerOf(Class<T> type, T value) {
+        return new org.springframework.beans.factory.ObjectProvider<>() {
+            @Override public T getObject() { return value; }
+            @Override public T getIfAvailable() { return value; }
+        };
     }
 }
