@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -36,7 +37,9 @@ import org.junit.jupiter.api.Tag;
 @Tag("dev")
 class MemoryConfigValidatorTest {
 
-    private final ConstraintValidatorContext context = mock(ConstraintValidatorContext.class);
+    // 生产路径由 Hibernate 提供非空 violation builder；裸 mock 会让链式 addConstraintViolation() NPE，
+    // 故用 deep stubs 复刻"builder 恒非空"的真实契约（首跑 1 error 的根因，2026-10-14）。
+    private final ConstraintValidatorContext context = mock(ConstraintValidatorContext.class, RETURNS_DEEP_STUBS);
     private final MemoryConfigValidator validator = new MemoryConfigValidator();
 
     @Test
