@@ -193,10 +193,16 @@ public final class AsyncRetrievalTaskScope {
             if (aclVersion < 1) {
                 return null;
             }
+            // BD-2 契约修正：成员核验用权限串（CurrentSubject.scopes 记账口径），重建体 scopes 铸
+            // canonical action 名（出站门 verifier 消费动作名）——两种表示的映射归适配边界白名单。
+            java.util.Set<String> actionNames = facts.canonicalActionsOf(declaredPermissions);
+            if (actionNames == null || actionNames.size() != declaredPermissions.size()) {
+                return null;
+            }
             long issuedAt = Instant.now().getEpochSecond();
             return new ExecutionPrincipal(principalRef.tenantId(), principalRef.userId(),
                     principalRef.membershipId(), subject.policyVersion(), aclVersion,
-                    Set.copyOf(declaredPermissions), "retrieval-egress:" + issuedAt, "platform",
+                    Set.copyOf(actionNames), "retrieval-egress:" + issuedAt, "platform",
                     issuedAt, issuedAt + EGRESS_SUBJECT_TTL_SECONDS);
         } catch (RuntimeException unavailableFacts) {
             // 事实源不可用（含 ACL 缺行/读错/身份源缺席）：拒绝重建，不新增默认身份

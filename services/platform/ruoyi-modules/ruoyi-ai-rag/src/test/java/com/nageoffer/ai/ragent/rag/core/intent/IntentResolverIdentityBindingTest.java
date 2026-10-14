@@ -88,7 +88,7 @@ class IntentResolverIdentityBindingTest {
         assertThat(observed.syncOrigin)
                 .as("意图分类含 LLM 出站：重建式在任务体内授予同步起源（flush 同形）")
                 .isTrue();
-        assertThat(observed.scopes).as("重建主体 scopes 恰为声明集，不加宽").containsExactly("ai:kb:retrieve");
+        assertThat(observed.scopes).as("重建主体 scopes 恰为 canonical action 名（出站门消费动作名）").containsExactly("kb.retrieve");
         assertThat(observed.issuer).as("重建主体 issuer 固定为 platform").isEqualTo("platform");
         assertThat(observed.jti).as("重建主体 jti 为合成标记，不可当 bearer 重放").startsWith("retrieval-egress:");
         assertThat(result).hasSize(1);
@@ -195,6 +195,15 @@ class IntentResolverIdentityBindingTest {
             @Override
             public int currentAclVersion(String tenantId) {
                 return 1;
+            }
+
+            @Override
+            public java.util.Set<String> canonicalActionsOf(java.util.Collection<String> permissions) {
+                // 白名单精确反查（镜像嵌入适配器）：ai:kb:retrieve -> kb.retrieve
+                if (permissions.size() == 1 && permissions.contains("ai:kb:retrieve")) {
+                    return java.util.Set.of("kb.retrieve");
+                }
+                throw new com.nageoffer.ai.ragent.framework.exception.ClientException("no mapping");
             }
         };
     }

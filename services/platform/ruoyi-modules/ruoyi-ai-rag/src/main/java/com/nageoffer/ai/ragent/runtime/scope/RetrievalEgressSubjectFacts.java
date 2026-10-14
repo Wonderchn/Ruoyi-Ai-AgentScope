@@ -55,6 +55,16 @@ public interface RetrievalEgressSubjectFacts {
      */
     int currentAclVersion(String tenantId);
 
+    /**
+     * 权限串→canonical action 名的白名单精确映射（BD-2 契约修正）：成员在线 scopes 以权限串记账，
+     * 而出站门 verifier 消费 canonical action 名——两种表示的转换归适配边界（实现方持有动作注册表，
+     * 白名单逐项反查、缺映射即抛），重建体不做公式推导。未实现＝fail-closed。
+     */
+    default java.util.Set<String> canonicalActionsOf(java.util.Collection<String> permissions) {
+        throw new com.nageoffer.ai.ragent.framework.exception.ClientException(
+                "canonical action mapping unsupported by this facts implementation");
+    }
+
     /** 租户状态（与出站 verifier 同一语义）。 */
     enum TenantState {
         /** 租户不存在。 */

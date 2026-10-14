@@ -62,6 +62,32 @@ final class EmbeddedRetrievalEgressSubjectFacts implements RetrievalEgressSubjec
         return delegate().currentAclVersion(tenantId);
     }
 
+    /**
+     * 权限串→canonical action 白名单反查（BD-2 契约修正）：适配边界持有动作注册表
+     * （org.ruoyi.ai.api.action.AiCanonicalAction），逐已知动作精确反查、缺映射即抛——
+     * 不做公式推导、不放宽出站门。
+     */
+    @Override
+    public java.util.Set<String> canonicalActionsOf(java.util.Collection<String> permissions) {
+        var result = new java.util.LinkedHashSet<String>();
+        for (String permission : permissions == null ? java.util.List.<String>of() : permissions) {
+            String action = null;
+            for (String known : org.ruoyi.ai.api.action.AiCanonicalAction.knownActions()) {
+                if (org.ruoyi.ai.api.action.AiCanonicalAction.permissionOf(known)
+                        .map(permission::equals).orElse(false)) {
+                    action = known;
+                    break;
+                }
+            }
+            if (action == null) {
+                throw new com.nageoffer.ai.ragent.framework.exception.ClientException(
+                        "no canonical action maps to permission " + permission);
+            }
+            result.add(action);
+        }
+        return result;
+    }
+
     /** 事实 bean 缺席即事实不可拿：抛异常（调用方拒绝重建），不回落任何环境身份。 */
     private MemoryEgressSubjectFacts delegate() {
         MemoryEgressSubjectFacts facts = delegate.getIfAvailable();
