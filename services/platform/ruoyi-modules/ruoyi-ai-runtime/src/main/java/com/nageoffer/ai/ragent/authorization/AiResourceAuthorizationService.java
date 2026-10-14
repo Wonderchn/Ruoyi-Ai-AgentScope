@@ -29,6 +29,7 @@ import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.security.DefaultResourceAuthorizationService;
 import com.nageoffer.ai.ragent.framework.security.AuthorizedResourceScope;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService;
+import com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -355,6 +356,48 @@ public class AiResourceAuthorizationService
         var refs=filterDataScope(principal, action, resolved.authorizedRefs());
         return AuthorizedResourceScope.granted(principal,action,refs,clock.millis());
     }
+
+    /**
+     * 异步恢复引用入口（BD-2，2026-10-14）：{@link #resolveScope} 的 hasScope 前置对恢复引用
+     * <b>按契约不可满足</b>——AsyncPrincipalReference 恢复体 scopes 恒空（恢复引用不是授权证据），
+     * 异步链（检索/意图任务体）经此入口做在线作用域解析。
+     *
+     * <p><b>严格门不移位</b>：跳过的只是「引用自带 scopes 的自证前置」（对恢复引用永假）；
+     * 平台在线重判完整保留——platformAuthorization.check 按当前事实校验租户启用、成员在册、
+     * pv 新鲜、在线 scopes 含动作权限（本地 checker 全部从在线事实源取值，不读引用自带字段）。
+     * 事实层（owner/ACL/epoch/dataScope）照旧全量执行。
+     *
+     * <p><b>红证</b>：真机 r17/bd1 logs（14:54:28）——恢复引用走 resolveScope 撞 hasScope 门抛
+     * FORBIDDEN（requirePlatform:220）→ 引擎降级空上下文；同夹具同步入口（显式 KB/空候选）均 GRANT。
+     */
+    /** 检索链动作名（rag 侧 RetrievalScopeAuthorizer.ACTION_KB_RETRIEVE 同源；runtime 不可反向依赖 rag，故落字面量锚定）。 */
+    private static final String RETRIEVAL_ACTION = "kb.retrieve";
+
+    @Override
+    public ExecutionPrincipal rebuildForAction(ExecutionPrincipal restoredReference, String action) {
+        // 严格门（平台在线重判）：租户启用＋成员在册＋pv 新鲜＋在线 scopes 含动作权限——任一不满足即拒。
+        requirePlatformOnline(restoredReference, action, restoredReference == null ? "tenant:resources" : "tenant:resources");
+        // 在线事实重建判定主体：scopes={动作名}（hasScope 消费动作名），pv 取引用（check 已验新鲜），
+        // av 取在线现值（缺失即拒）；短时合成标记（300s），绝不回写恢复引用本身。
+        long now = clock.instant().getEpochSecond();
+        return new ExecutionPrincipal(restoredReference.tenantId(), restoredReference.userId(),
+                restoredReference.membershipId(), restoredReference.policyVersion(),
+                currentAclVersion(restoredReference.tenantId()),
+                java.util.Set.of(action), "retrieval-scope:" + now, "platform", now, now + 300);
+    }
+
+    /** 平台在线重判（无 hasScope 自证前置）：恢复引用入口的严格门——租户/成员/pv/在线权限全在平台侧校验。 */
+    private void requirePlatformOnline(ExecutionPrincipal principal, String action, String ref) {
+        if (platformAuthorization != null) {
+            var result = platformAuthorization.check(new com.nageoffer.ai.ragent.framework.security.DelegatedPrincipal(
+                    principal.issuer(), principal.tenantId(), principal.userId(), principal.membershipId(),
+                    principal.policyVersion(), principal.scopes(), principal.jti()), action, ref);
+            if (!result.allowed() || result.policyVersion() != principal.policyVersion()) {
+                throw new ServiceException("platform authorization unavailable");
+            }
+        }
+    }
+
 
     @Override
     public Verdict check(ExecutionPrincipal principal, String action, String resourceRef) {

@@ -188,6 +188,7 @@ class RetrievalEngineTest {
                 mock(PromptTemplateLoader.class),
                 multiChannel,
                 Runnable::run,
+                null,
                 null
         );
     }

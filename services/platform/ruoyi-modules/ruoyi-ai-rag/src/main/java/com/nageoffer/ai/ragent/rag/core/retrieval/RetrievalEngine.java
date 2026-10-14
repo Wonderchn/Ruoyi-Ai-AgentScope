@@ -69,6 +69,12 @@ public class RetrievalEngine {
     private final ObjectProvider<TenantScopeBinder> tenantScopeBinder;
 
     /**
+     * 授权器端口（BD-2）：任务体的在线重建判定主体经其平台在线重判构造（严格门在平台侧）。
+     * 授权器缺席＝重建不可得＝fail-closed 降级空上下文。
+     */
+    private final ObjectProvider<RetrievalScopeAuthorizer> retrievalScopeAuthorizer;
+
+    /**
      * 显式构造（替代 {@code @RequiredArgsConstructor}，S1 装配批 R1）：{@code Executor} 参数
      * 带 {@code @Qualifier} <b>按名注入</b>——platform 侧存在两个 {@code @Primary} 的
      * {@code Executor}（{@code ThreadPoolConfig} 的 {@code scheduledExecutorService}/
@@ -89,13 +95,15 @@ public class RetrievalEngine {
                            PromptTemplateLoader templateLoader,
                            MultiChannelRetrievalEngine multiChannelRetrievalEngine,
                            @Qualifier("ragContextExecutor") Executor ragContextExecutor,
-                           ObjectProvider<TenantScopeBinder> tenantScopeBinder) {
+                           ObjectProvider<TenantScopeBinder> tenantScopeBinder,
+                           ObjectProvider<RetrievalScopeAuthorizer> retrievalScopeAuthorizer) {
         this.searchProperties = searchProperties;
         this.contextFormatter = contextFormatter;
         this.templateLoader = templateLoader;
         this.multiChannelRetrievalEngine = multiChannelRetrievalEngine;
         this.ragContextExecutor = ragContextExecutor;
         this.tenantScopeBinder = tenantScopeBinder;
+        this.retrievalScopeAuthorizer = retrievalScopeAuthorizer;
     }
 
     @RagTraceNode(name = "retrieval-engine", type = "RETRIEVE")
@@ -120,8 +128,27 @@ public class RetrievalEngine {
                 .map(intent -> CompletableFuture.supplyAsync(
                         () -> {
                             try {
-                                return AsyncRetrievalTaskScope.callWithResolvedCapture(capture, tenantScopeBinder,
+                                // BD-2：任务体在在线重建的判定主体作用域内执行（平台在线重判＝严格门；
+                                // 重建被拒＝fail-closed 降级空上下文，不回落全库）。恢复引用本身不被改写。
+                                SubQuestionContext built = AsyncRetrievalTaskScope.callWithRebuiltEvaluation(
+                                        capture, tenantScopeBinder,
+                                        () -> {
+                                            var a = retrievalScopeAuthorizer == null ? null
+                                                    : retrievalScopeAuthorizer.getIfAvailable();
+                                            return a == null ? null : a.rebuildForAction(
+                                                    capture.principalRef().toExecutionPrincipal(),
+                                                    RetrievalScopeAuthorizer.ACTION_KB_RETRIEVE);
+                                        },
                                         () -> buildSubQuestionContext(intent, budget));
+                                if (built == null) {
+                                    log.warn("授权作用域重建被拒（在线门未通过），子问题降级为空上下文，question：{}",
+                                            intent.subQuestion());
+                                    return new SubQuestionContext(
+                                            intent.subQuestion(), "", Map.of(),
+                                            KnowledgeRetrievalResult.empty().eligibleIntentIds(
+                                                    NodeScoreFilters.kb(intent.nodeScores())));
+                                }
+                                return built;
                             } catch (Exception e) {
                                 log.error("子问题上下文构建失败，降级为空上下文，question：{}", intent.subQuestion(), e);
                                 return new SubQuestionContext(

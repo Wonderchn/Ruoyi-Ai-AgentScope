@@ -190,6 +190,8 @@ class MultiChannelRetrievalEngineAuthorizedScopeTest {
      */
     private RetrievalScopeAuthorizer authorizer(List<String> grantedRefs, Set<String> collections) {
         ResourceAuthorizationService service = mock(ResourceAuthorizationService.class);
+        when(service.rebuildForAction(any(ExecutionPrincipal.class), anyString()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
         when(service.resolveScope(any(ExecutionPrincipal.class), anyString(), anyCollection()))
                 .thenAnswer(invocation -> {
                     ExecutionPrincipal principal = invocation.getArgument(0);

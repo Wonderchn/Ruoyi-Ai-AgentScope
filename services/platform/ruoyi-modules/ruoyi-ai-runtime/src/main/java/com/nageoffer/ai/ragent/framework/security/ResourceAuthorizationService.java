@@ -131,6 +131,18 @@ public interface ResourceAuthorizationService {
      * 而不是把 platform 的判定当成完整授权。平台故障/坏响应必须抛错（调用方按 UNKNOWN 处理），
      * <b>不得</b>返回"全部未匹配"来伪装成正常的空集合。
      */
+    /**
+     * 异步恢复引用的在线重建（BD-2，裁决⑤同形）：恢复引用 scopes 恒空（非授权证据），授权链上
+     * 所有 hasScope 自证前置对其按契约不可满足——实现经平台在线重判（租户启用/成员在册/pv 新鲜/
+     * 在线 scopes 含动作权限，任一不满足即拒）后，构造<b>短时判定主体</b>（scopes={动作名}、
+     * pv/av 取在线现值、合成 jti、300s），供异步任务体在配对 set/restore 下执行；恢复引用本身
+     * 不被改写。未实现该入口的授权服务 fail-closed 抛错（不回落 hasScope 门）。
+     */
+    default ExecutionPrincipal rebuildForAction(ExecutionPrincipal restoredReference, String action) {
+        throw new com.nageoffer.ai.ragent.framework.exception.ClientException(
+                "restored-reference rebuild unsupported by this authorization service");
+    }
+
     interface SubjectMatchPort {
 
         /**

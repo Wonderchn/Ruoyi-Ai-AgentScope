@@ -165,12 +165,22 @@ class RetrievalEngineIdentityBindingTest {
         MultiChannelRetrievalEngine multiChannel = mock(MultiChannelRetrievalEngine.class);
         when(multiChannel.retrieveKnowledgeChannels(any(SubQuestionIntent.class), any(RetrievalBudget.class)))
                 .thenAnswer(invocation -> observeAtRetrieval(observed));
+        var authzService = mock(com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.class);
+        // rebuild fake：身份原样返回（判定主体可用），让任务体到达被观测的检索内层
+        org.mockito.Mockito.when(authzService.rebuildForAction(
+                org.mockito.ArgumentMatchers.any(ExecutionPrincipal.class),
+                org.mockito.ArgumentMatchers.anyString()))
+                .thenAnswer(inv -> inv.getArgument(0));
+        var authorizer = com.nageoffer.ai.ragent.rag.core.retrieval.RetrievalScopeAuthorizer.of(
+                authzService,
+                mock(com.nageoffer.ai.ragent.framework.security.AuthorizedRetrievalScopeResolver.class));
         return new RetrievalEngine(new SearchChannelProperties(),
                 mock(ContextFormatter.class),
                 mock(PromptTemplateLoader.class),
                 multiChannel,
                 pool,
-                providerOf(gate.binder()));
+                providerOf(gate.binder()),
+                providerOf(authorizer));
     }
 
     private static <T> ObjectProvider<T> providerOf(T value) {

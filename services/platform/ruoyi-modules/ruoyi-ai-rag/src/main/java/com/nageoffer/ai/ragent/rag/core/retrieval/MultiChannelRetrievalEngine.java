@@ -319,7 +319,10 @@ public class MultiChannelRetrievalEngine {
                 .build();
     }
 
-    /** 授权器缺席＝没有授权（denied），不是错误——与授权器自身对内层依赖的口径一致。 */
+    /**
+     * 授权作用域解析：任务体已在判定主体（在线重建，scopes={动作名}）作用域内——同步入口的
+     * hasScope 自证前置可满足，事实层照旧全量。授权器缺席＝没有授权（denied）。
+     */
     private AuthorizedRetrievalScope resolveAuthorizedScope() {
         RetrievalScopeAuthorizer authorizer =
                 retrievalScopeAuthorizer == null ? null : retrievalScopeAuthorizer.getIfAvailable();

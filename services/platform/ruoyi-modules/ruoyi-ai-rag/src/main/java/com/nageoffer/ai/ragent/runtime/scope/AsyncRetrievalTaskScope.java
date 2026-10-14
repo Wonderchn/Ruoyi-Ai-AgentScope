@@ -205,6 +205,41 @@ public final class AsyncRetrievalTaskScope {
     }
 
     /**
+     * 在<b>在线重建的判定主体</b>作用域内执行 {@code body}（BD-2）：{@code evaluationSupplier} 经
+     * 平台在线重判构造判定主体（scopes={动作名}），配对 {@code set()/restore()}——共享池线程纪律同
+     * 裁决⑤；租户绑定内层；重建失败（在线门拒绝/授权装配缺席）＝fail-closed：body 不执行、
+     * 调用方得 {@code null}。恢复引用本身不被改写。
+     *
+     * @param capture           受理期捕获；{@code null}＝无捕获形态，直跑（返回 {@code null}）
+     * @param tenantScopeBinder 租户绑定端口（可缺席；缺席按直跑语义处理租户）
+     * @param evaluationSupplier 在线重建回调；返回 {@code null}＝重建被拒（fail-closed）
+     * @return {@code body} 的返回值；重建被拒/无捕获时 {@code null}
+     */
+    public static <T> T callWithRebuiltEvaluation(Capture capture,
+                                                  ObjectProvider<TenantScopeBinder> tenantScopeBinder,
+                                                  java.util.function.Supplier<ExecutionPrincipal> evaluationSupplier,
+                                                  Supplier<T> body) {
+        if (capture == null) {
+            // 无捕获形态：原形态直跑（BD-1 纪律——不新增默认身份）
+            return body.get();
+        }
+        ExecutionPrincipal evaluation = evaluationSupplier == null ? null : evaluationSupplier.get();
+        if (evaluation == null) {
+            // 在线重建被拒（平台门未通过）＝fail-closed：body 不执行，调用方降级空上下文
+            return null;
+        }
+        // 非配对 restore（只授 holder、不授同步起源——检索链纯读，C2 纪律保持；重建体 scopes={动作名}
+        // 满足授权链 hasScope 门，origin 不被授予）
+        ExecutionPrincipal previous = PrincipalContext.get();
+        PrincipalContext.restore(evaluation);
+        try {
+            return runInTenant(capture.tenantId(), tenantScopeBinder, body);
+        } finally {
+            PrincipalContext.restore(previous);
+        }
+    }
+
+    /**
      * 租户绑定端口只吃 {@link Runnable}，返回值经持有位转一手；绑定端口的清理由其自身 finally 保证。
      */
     private static <T> T runInTenant(String tenantId, ObjectProvider<TenantScopeBinder> tenantScopeBinder,
