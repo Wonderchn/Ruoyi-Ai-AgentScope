@@ -22,6 +22,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.nageoffer.ai.ragent.agent.config.ConditionalOnAgentEngine;
 import com.nageoffer.ai.ragent.agent.dao.entity.AgentContextCompactionDO;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentContextCompactionMapper;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.ToolResultBlock;
@@ -123,7 +124,9 @@ public class AgentContextCompactor {
     }
 
     /**
-     * 摘要每代覆盖，这张表是唯一的存档；落库失败只报警不回滚
+     * 摘要每代覆盖，这张表是唯一的存档；落库失败只报警不回滚。
+     * member_id 是 V7 的 NOT NULL 平台列，取当前执行主体的 canonical membershipId；
+     * 主体缺失与落库失败同走告警降级。
      */
     private void audit(String userId, String sessionId, String summaryText,
                        int materialMsgCount, int materialChars, int charsBefore, int charsAfter) {
@@ -132,6 +135,7 @@ public class AgentContextCompactor {
                     .eq(AgentContextCompactionDO::getUserId, userId)
                     .eq(AgentContextCompactionDO::getConversationId, sessionId)) + 1;
             compactionMapper.insert(AgentContextCompactionDO.builder()
+                    .memberId(PrincipalContext.require().membershipId())
                     .userId(userId)
                     .conversationId(sessionId)
                     .generation(generation.intValue())

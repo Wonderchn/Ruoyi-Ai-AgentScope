@@ -21,6 +21,8 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.nageoffer.ai.ragent.agent.dao.entity.AgentContextCompactionDO;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentContextCompactionMapper;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
@@ -28,6 +30,7 @@ import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolResultState;
 import io.agentscope.core.message.ToolUseBlock;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -37,6 +40,7 @@ import org.mockito.ArgumentCaptor;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -58,6 +62,9 @@ class AgentContextCompactorTest {
     private static final String USER_ID = "u-1001";
     private static final String SESSION_ID = "c-2002";
     private static final String VALID_SUMMARY = "## 背景\n旧对话讲幂等性。\n## 进展\n已完成两轮。\n## 结论\n保留反例。";
+    private static final String PRINCIPAL_TENANT = "T-F16AUDIT";
+    private static final String PRINCIPAL_USER = "1001";
+    private static final String MEMBERSHIP_ID = "platform:" + PRINCIPAL_TENANT + ":" + PRINCIPAL_USER;
 
     /**
      * 生产摘要消息头字面量（AgentStateProbe 同款手抄口径），unwrap 依它定位正文
@@ -86,6 +93,13 @@ class AgentContextCompactorTest {
         memoryProperties.setContextWindowChars(8_000);
         compactor = new AgentContextCompactor(summarizer, memoryProperties, compactionMapper);
         when(summarizer.summarize(any(), any())).thenReturn(VALID_SUMMARY);
+        // 审计行身份列来自执行主体：默认在场，主体缺失用例自行 clear
+        PrincipalContext.set(principal());
+    }
+
+    @AfterEach
+    void tearDown() {
+        PrincipalContext.clear();
     }
 
     @Test
@@ -234,6 +248,41 @@ class AgentContextCompactorTest {
         assertThat(context.get(0).getName()).isEqualTo("__compaction_summary__");
     }
 
+    @Test
+    @DisplayName("审计落库带主体成员：memberId=当前主体 canonical membershipId，其余审计字段不变")
+    void auditCarriesPrincipalMemberId() {
+        List<Msg> context = new ArrayList<>(firstGenerationContext());
+        int totalBefore = AgentContextChars.total(context);
+
+        assertThat(compactor.compactInPlace(context, USER_ID, SESSION_ID)).isTrue();
+
+        ArgumentCaptor<AgentContextCompactionDO> captor = ArgumentCaptor.forClass(AgentContextCompactionDO.class);
+        verify(compactionMapper).insert(captor.capture());
+        AgentContextCompactionDO row = captor.getValue();
+        assertThat(row.getMemberId()).isEqualTo(MEMBERSHIP_ID);
+        assertThat(row.getUserId()).isEqualTo(USER_ID);
+        assertThat(row.getConversationId()).isEqualTo(SESSION_ID);
+        assertThat(row.getGeneration()).isEqualTo(1);
+        assertThat(row.getSummary()).isEqualTo(VALID_SUMMARY);
+        assertThat(row.getMaterialMsgCount()).isEqualTo(2);
+        assertThat(row.getMaterialChars()).isEqualTo(5_000);
+        assertThat(row.getSummaryChars()).isEqualTo(VALID_SUMMARY.length());
+        assertThat(row.getContextCharsBefore()).isEqualTo(totalBefore);
+        assertThat(row.getContextCharsAfter()).isEqualTo(AgentContextChars.total(context));
+    }
+
+    @Test
+    @DisplayName("主体缺失：审计不抛不落库，压缩本身照旧生效")
+    void skipsAuditInsertWhenPrincipalMissing() {
+        PrincipalContext.clear();
+        List<Msg> context = new ArrayList<>(firstGenerationContext());
+
+        assertThat(compactor.compactInPlace(context, USER_ID, SESSION_ID)).isTrue();
+        assertThat(context).hasSize(4);
+        assertThat(context.get(0).getName()).isEqualTo("__compaction_summary__");
+        verify(compactionMapper, never()).insert(any(AgentContextCompactionDO.class));
+    }
+
     /**
      * 首代素材：旧问/旧答各 2500 字符，切点前的可换出字符过半；
      * 尾段 1800+1800+4 使从尾部累计到 1600 的边界落在 1800 那条上，回退到最近的用户轮起点
@@ -245,6 +294,11 @@ class AgentContextCompactorTest {
                 userText("切点问句", 1_800),
                 assistantText("切点回答", 1_800),
                 userText("再问", 4));
+    }
+
+    private static ExecutionPrincipal principal() {
+        return new ExecutionPrincipal(PRINCIPAL_TENANT, PRINCIPAL_USER, MEMBERSHIP_ID, 7, 3,
+                Set.of("ai:agent:execute"), "jti-f16-audit", "platform", 1_700_000_000L, 1_700_003_600L);
     }
 
     private static Msg userText(String label, int chars) {
