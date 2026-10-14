@@ -63,6 +63,7 @@ public class MultiChannelRetrievalEngine {
     private final List<SearchChannel> searchChannels;
     private final List<SearchResultPostProcessor> postProcessors;
     private final RetrievalScopeResolver retrievalScopeResolver;
+    private final org.springframework.beans.factory.ObjectProvider<RetrievalScopeAuthorizer> retrievalScopeAuthorizer;
     private final Executor ragRetrievalExecutor;
     private final SearchChannelProperties searchProperties;
 
@@ -73,15 +74,24 @@ public class MultiChannelRetrievalEngine {
      * 用显式构造参数而非字段注解：platform 树无 {@code lombok.config}，
      * Lombok 生成的构造参数不会带上 final 字段的 {@code @Qualifier}；
      * 参数顺序与生成形态逐位一致，既有测试的手工构造（{@code MultiChannelRetrievalEngineTest}）不受影响。
+     *
+     * <p>BD-2（2026-10-14，维护者裁决批准）追加了 {@code retrievalScopeAuthorizer}：检索入口在此
+     * 解析已授权检索作用域（P1.3b 装配点接线——{@code SearchContext.authorizedScope} 此前在 main
+     * 全史无生产者，向量通道对空作用域交空卷、结构性不可达）。授权器经 {@code ObjectProvider} 注入：
+     * <b>装配缺席是合法状态</b>（同授权器自身对内层依赖的口径——结果是"没有授权"（denied），
+     * 不是应用起不来，最小装配上下文照常启动）；动作名 {@code kb.retrieve} 由授权器内部映射为
+     * 权限串 {@code ai:kb:retrieve}（AiCanonicalAction），本类不触碰权限串字面量。
      */
     public MultiChannelRetrievalEngine(List<SearchChannel> searchChannels,
                                        List<SearchResultPostProcessor> postProcessors,
                                        RetrievalScopeResolver retrievalScopeResolver,
+                                       org.springframework.beans.factory.ObjectProvider<RetrievalScopeAuthorizer> retrievalScopeAuthorizer,
                                        @Qualifier("ragRetrievalExecutor") Executor ragRetrievalExecutor,
                                        SearchChannelProperties searchProperties) {
         this.searchChannels = searchChannels;
         this.postProcessors = postProcessors;
         this.retrievalScopeResolver = retrievalScopeResolver;
+        this.retrievalScopeAuthorizer = retrievalScopeAuthorizer;
         this.ragRetrievalExecutor = ragRetrievalExecutor;
         this.searchProperties = searchProperties;
     }
@@ -294,12 +304,25 @@ public class MultiChannelRetrievalEngine {
         List<SubQuestionIntent> subIntents = List.of(subIntent);
         String question = subIntent.subQuestion();
 
+        // BD-2：检索入口解析已授权作用域（P1.3b 装配点接线）。候选资源对本链为空——全局/定向收窄
+        // 是检索作用域（retrievalScopeResolver）的事；授权作用域回答"当前主体在线能查哪些库"，
+        // 由授权器按动作 kb.retrieve 解析（空请求=全部已授权集合），通道按其剔除越权库。
+        // 授权装配缺席（最小上下文/独立应用）= 合法状态：denied——空授权拒绝，不回落全库；
+        // 无主体（载体缺席直跑形态）同理。
         return SearchContext.builder()
                 .originalQuestion(question)
                 .rewrittenQuestion(question)
                 .intents(subIntents)
                 .budget(budget)
                 .retrievalScope(retrievalScopeResolver.resolve(subIntents))
+                .authorizedScope(resolveAuthorizedScope())
                 .build();
+    }
+
+    /** 授权器缺席＝没有授权（denied），不是错误——与授权器自身对内层依赖的口径一致。 */
+    private AuthorizedRetrievalScope resolveAuthorizedScope() {
+        RetrievalScopeAuthorizer authorizer =
+                retrievalScopeAuthorizer == null ? null : retrievalScopeAuthorizer.getIfAvailable();
+        return authorizer == null ? AuthorizedRetrievalScope.denied() : authorizer.authorize(List.of());
     }
 }
