@@ -125,6 +125,18 @@ public class RetrievalScopeAuthorizer {
     }
 
     /**
+     * 异步恢复引用的在线重建（BD-2，裁决⑤同形）：经授权服务的平台在线重判构造短时判定主体
+     * （scopes={动作名}）。授权服务未实现＝fail-closed 抛错（引擎降级，不回落 hasScope 门）。
+     */
+    public ExecutionPrincipal rebuildForAction(ExecutionPrincipal restoredReference, String action) {
+        if (restoredReference == null || authorizationService == null) {
+            throw new com.nageoffer.ai.ragent.framework.exception.ClientException(
+                    "restored-reference rebuild unavailable");
+        }
+        return authorizationService.rebuildForAction(restoredReference, action);
+    }
+
+    /**
      * 从一组 KB 事实推导 collection 名（registry 里"逻辑库 → 物理 space"的映射）。
      *
      * <p>抽成静态方法便于单测直接验证映射规则，不必构造完整授权链。

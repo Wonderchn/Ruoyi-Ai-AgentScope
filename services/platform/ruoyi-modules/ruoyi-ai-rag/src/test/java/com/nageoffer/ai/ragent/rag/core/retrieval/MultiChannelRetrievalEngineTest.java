@@ -19,6 +19,7 @@ package com.nageoffer.ai.ragent.rag.core.retrieval;
 
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunkKey;
+import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService;
 import com.nageoffer.ai.ragent.rag.config.SearchChannelProperties;
 import com.nageoffer.ai.ragent.rag.core.intent.IntentNode;
 import com.nageoffer.ai.ragent.rag.core.intent.NodeScore;
@@ -163,6 +164,7 @@ class MultiChannelRetrievalEngineTest {
                     List.of(fast, slow),
                     List.of(),
                     resolver,
+                    null,
                     pool,
                     properties)
                     .retrieveKnowledgeChannels(
@@ -194,8 +196,10 @@ class MultiChannelRetrievalEngineTest {
                                                RetrievalScope scope) {
         RetrievalScopeResolver resolver = mock(RetrievalScopeResolver.class);
         when(resolver.resolve(anyList())).thenReturn(scope);
+        // BD-2 签名适配：null 授权器提供者＝装配缺席（合法状态）→ 授权作用域 denied——
+        // 本类线程无主体，旧判据不受影响；顺带覆盖缺席分支。
         return new MultiChannelRetrievalEngine(
-                channels, processors, resolver, Runnable::run, new SearchChannelProperties());
+                channels, processors, resolver, null, Runnable::run, new SearchChannelProperties());
     }
 
     private static RetrievalScope directedScope(List<NodeScore> intents,

@@ -20,6 +20,7 @@ package com.nageoffer.ai.ragent.rag.core.retrieval;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.framework.trace.RagTraceNode;
 import com.nageoffer.ai.ragent.rag.config.SearchChannelProperties;
 import com.nageoffer.ai.ragent.rag.core.intent.NodeScore;
@@ -29,7 +30,9 @@ import com.nageoffer.ai.ragent.rag.core.prompt.PromptTemplateLoader;
 import com.nageoffer.ai.ragent.rag.dto.KbResult;
 import com.nageoffer.ai.ragent.rag.dto.RetrievalContext;
 import com.nageoffer.ai.ragent.rag.dto.SubQuestionIntent;
+import com.nageoffer.ai.ragent.runtime.scope.AsyncRetrievalTaskScope;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
@@ -60,6 +63,18 @@ public class RetrievalEngine {
     private final Executor ragContextExecutor;
 
     /**
+     * 租户作用域绑定端口（BD-1）：任务体重绑时在身份作用域内侧绑定受理捕获的租户。
+     * 端口缺席（独立应用无租户拦截器）时按原形态直跑。
+     */
+    private final ObjectProvider<TenantScopeBinder> tenantScopeBinder;
+
+    /**
+     * 授权器端口（BD-2）：任务体的在线重建判定主体经其平台在线重判构造（严格门在平台侧）。
+     * 授权器缺席＝重建不可得＝fail-closed 降级空上下文。
+     */
+    private final ObjectProvider<RetrievalScopeAuthorizer> retrievalScopeAuthorizer;
+
+    /**
      * 显式构造（替代 {@code @RequiredArgsConstructor}，S1 装配批 R1）：{@code Executor} 参数
      * 带 {@code @Qualifier} <b>按名注入</b>——platform 侧存在两个 {@code @Primary} 的
      * {@code Executor}（{@code ThreadPoolConfig} 的 {@code scheduledExecutorService}/
@@ -70,17 +85,25 @@ public class RetrievalEngine {
      * {@code lombok.copyableAnnotations}），Lombok 生成的构造参数上不会带字段注解；
      * 手写构造则注解就在参数上，语义不依赖编译树差异。参数顺序与生成形态逐位一致，
      * 既有测试的手工构造（{@code RetrievalEngineTest}）不受影响。
+     *
+     * <p>BD-1（2026-10-14）追加了 {@code tenantScopeBinder} 端口：检索链任务体从受理线程
+     * 跳到 {@code rag_context_executor_*} 池线程后动态租户丢失，真机对 {@code ai_knowledge_base}
+     * fail-closed（{@code tenant.context.missing}）——任务体以受理捕获（capture 形）重绑。
      */
     public RetrievalEngine(SearchChannelProperties searchProperties,
                            ContextFormatter contextFormatter,
                            PromptTemplateLoader templateLoader,
                            MultiChannelRetrievalEngine multiChannelRetrievalEngine,
-                           @Qualifier("ragContextExecutor") Executor ragContextExecutor) {
+                           @Qualifier("ragContextExecutor") Executor ragContextExecutor,
+                           ObjectProvider<TenantScopeBinder> tenantScopeBinder,
+                           ObjectProvider<RetrievalScopeAuthorizer> retrievalScopeAuthorizer) {
         this.searchProperties = searchProperties;
         this.contextFormatter = contextFormatter;
         this.templateLoader = templateLoader;
         this.multiChannelRetrievalEngine = multiChannelRetrievalEngine;
         this.ragContextExecutor = ragContextExecutor;
+        this.tenantScopeBinder = tenantScopeBinder;
+        this.retrievalScopeAuthorizer = retrievalScopeAuthorizer;
     }
 
     @RagTraceNode(name = "retrieval-engine", type = "RETRIEVE")
@@ -98,11 +121,34 @@ public class RetrievalEngine {
                 searchProperties.getFusion().getRerankCandidateLimit(),
                 contextTopK
         );
+        // BD-1：受理线程（同步起源）捕获身份引用；无捕获形态（池化线程直调等）按原样直跑。
+        // 捕获在线程跳变前完成，任务体内经非配对 restore＋租户内层绑定重绑（纯读，不授同步起源）。
+        AsyncRetrievalTaskScope.Capture capture = AsyncRetrievalTaskScope.Capture.capture();
         List<CompletableFuture<SubQuestionContext>> tasks = subIntents.stream()
                 .map(intent -> CompletableFuture.supplyAsync(
                         () -> {
                             try {
-                                return buildSubQuestionContext(intent, budget);
+                                // BD-2：任务体在在线重建的判定主体作用域内执行（平台在线重判＝严格门；
+                                // 重建被拒＝fail-closed 降级空上下文，不回落全库）。恢复引用本身不被改写。
+                                SubQuestionContext built = AsyncRetrievalTaskScope.callWithRebuiltEvaluation(
+                                        capture, tenantScopeBinder,
+                                        () -> {
+                                            var a = retrievalScopeAuthorizer == null ? null
+                                                    : retrievalScopeAuthorizer.getIfAvailable();
+                                            return a == null ? null : a.rebuildForAction(
+                                                    capture.principalRef().toExecutionPrincipal(),
+                                                    RetrievalScopeAuthorizer.ACTION_KB_RETRIEVE);
+                                        },
+                                        () -> buildSubQuestionContext(intent, budget));
+                                if (built == null) {
+                                    log.warn("授权作用域重建被拒（在线门未通过），子问题降级为空上下文，question：{}",
+                                            intent.subQuestion());
+                                    return new SubQuestionContext(
+                                            intent.subQuestion(), "", Map.of(),
+                                            KnowledgeRetrievalResult.empty().eligibleIntentIds(
+                                                    NodeScoreFilters.kb(intent.nodeScores())));
+                                }
+                                return built;
                             } catch (Exception e) {
                                 log.error("子问题上下文构建失败，降级为空上下文，question：{}", intent.subQuestion(), e);
                                 return new SubQuestionContext(

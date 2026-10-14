@@ -71,6 +71,7 @@ import com.nageoffer.ai.ragent.rag.core.prompt.DefaultContextFormatter;
 import com.nageoffer.ai.ragent.rag.core.prompt.PromptTemplateLoader;
 import com.nageoffer.ai.ragent.rag.core.prompt.RAGPromptService;
 import com.nageoffer.ai.ragent.rag.core.retrieval.MultiChannelRetrievalEngine;
+import com.nageoffer.ai.ragent.rag.core.retrieval.RetrievalScopeAuthorizer;
 import com.nageoffer.ai.ragent.rag.core.retrieval.RetrievalEngine;
 import com.nageoffer.ai.ragent.rag.core.retrieval.channel.KbCollectionProvider;
 import com.nageoffer.ai.ragent.rag.core.retrieval.channel.RetrievalScopeResolver;
@@ -205,6 +206,11 @@ import java.util.concurrent.TimeUnit;
         AmbiguityLLMChecker.class,
         RetrievalEngine.class,
         MultiChannelRetrievalEngine.class,
+        // BD-2（2026-10-14）：检索入口的授权作用域装配点——SearchContext.authorizedScope 的唯一生产者。
+        // 缺席＝ObjectProvider 空 → 引擎侧 denied → 向量通道结构性不可达（真机 bd2-layered-auth-probe
+        // 实证：同步入口同夹具 GRANT、异步链静默空）。语义保持授权器自身 fail-closed（内层依赖缺席
+        // 即没有授权，不回落全库）。
+        RetrievalScopeAuthorizer.class,
         CitationContextEnricher.class,
         RAGPromptService.class,
         PromptTemplateLoader.class,
