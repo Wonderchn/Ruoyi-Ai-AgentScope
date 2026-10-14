@@ -172,7 +172,7 @@ class AgentCompletionChainsIdentityBindingTest {
         doAnswer(invocation -> {
             observed.set(observeAtWritePoint());
             return null;
-        }).when(mapper).upsert(any(), any(), any(), any(), any(), any());
+        }).when(mapper).upsert(any(), any(), any(), any(), any(), any(), any(), any(), any());
 
         // 模拟轮末存盘线程：别的身份残留＋没有动态租户（真机 boundedElastic 形态）
         ExecutionPrincipal residue = principal("T-RESIDUE", "920001");
@@ -185,9 +185,10 @@ class AgentCompletionChainsIdentityBindingTest {
         assertThat(observed.get())
                 .as("轮末存盘必须看到受理期捕获的身份与租户（双门），否则真机 tenant.context.missing")
                 .isEqualTo("persisted:T-CMP-A1A:T-CMP-A1A:platform:T-CMP-A1A:910101");
-        // DAO 收到的键参数必须来自捕获，不许是残留身份
+        // DAO 收到的键参数必须来自捕获，不许是残留身份（末三参＝写侧 provenance：
+        // 本用例 store 未接授权事实端口 ⇒ NULL，故用宽匹配器，语义断言仍只钉键参数）
         verify(mapper).upsert(eq("T-CMP-A1A"), eq("platform:T-CMP-A1A:910101"), eq(USER_ID),
-                eq(CONVERSATION_ID), eq("agent_state"), any());
+                eq(CONVERSATION_ID), eq("agent_state"), any(), any(), any(), any());
         // finally 复原线程原主体（恢复而非 clear）
         assertThat(PrincipalContext.get()).isSameAs(residue);
 
@@ -211,7 +212,7 @@ class AgentCompletionChainsIdentityBindingTest {
         doAnswer(invocation -> {
             observed.set(observeAtWritePoint());
             return null;
-        }).when(mapper).upsert(any(), any(), any(), any(), any(), any());
+        }).when(mapper).upsert(any(), any(), any(), any(), any(), any(), any(), any(), any());
 
         PrincipalContext.clear();
         gate.setCurrentTenant(null);
