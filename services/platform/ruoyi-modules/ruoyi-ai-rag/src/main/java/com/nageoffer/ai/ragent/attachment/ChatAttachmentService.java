@@ -125,14 +125,21 @@ public class ChatAttachmentService implements ChatAttachmentPort {
         tx.executeWithoutResult(status->{
             String conversation=input.path("conversationId").asText();
             requireConversation(run.tenantId(),run.memberId(),run.subject(),"AGENT",conversation);
-            String userId="cam-"+CanonicalJson.sha256(run.tenantId()+"\n"+run.runId()+"\nuser").substring(0,40);
-            String assistantId="cam-"+CanonicalJson.sha256(run.tenantId()+"\n"+run.runId()+"\nassistant").substring(0,40);
+            // F04：V7 的 ai_agent_message.id/reply_to_message_id 是 VARCHAR(20)。
+            // 稳定 ID（tenant+run+role 的 sha256 前 16 hex，前缀 cam- 共 20 字符）让同一 run 的重放
+            // 落到同一行（ON CONFLICT(id) DO NOTHING），既不超列宽也不产生第二组绑定。
+            String userId=agentMessageId(run.tenantId(),run.runId(),"user");
+            String assistantId=agentMessageId(run.tenantId(),run.runId(),"assistant");
             for(var entry:List.of(Map.entry(userId,question),Map.entry(assistantId,answer))) {
                 boolean user=entry.getKey().equals(userId);
-                jdbc.update("INSERT INTO platform.ai_agent_message(id,tenant_id,member_id,user_id,conversation_id,role,content,reply_to_message_id,message_status) VALUES(?,?,?,?,?,?,?,?, 'NORMAL') ON CONFLICT DO NOTHING",entry.getKey(),run.tenantId(),run.memberId(),run.subject(),conversation,user?"user":"assistant",entry.getValue(),user?null:userId);
+                jdbc.update("INSERT INTO platform.ai_agent_message(id,tenant_id,member_id,user_id,conversation_id,role,content,reply_to_message_id,message_status) VALUES(?,?,?,?,?,?,?,?, 'NORMAL') ON CONFLICT(id) DO NOTHING",entry.getKey(),run.tenantId(),run.memberId(),run.subject(),conversation,user?"user":"assistant",entry.getValue(),user?null:userId);
             }
             bind(run.tenantId(),run.memberId(),run.subject(),"AGENT",conversation,userId,input.path("attachments"));
         });
+    }
+    /** 稳定性来自输入事实：同一 (tenant,run,role) 重放必须得到同一个 ≤20 的 id。 */
+    static String agentMessageId(String tenantId,String runId,String role) {
+        return "cam-"+CanonicalJson.sha256(tenantId+"\n"+runId+"\n"+role).substring(0,16);
     }
     private void function(ExecutionPrincipal p,String action) {
         if(p==null) throw new RunApiException(RunErrorCode.AUTH_REQUIRED);
