@@ -201,9 +201,16 @@ public class ChatAttachmentService implements ChatAttachmentPort {
         if(node==null || !node.isArray() || node.size()>4) throw bad("attachments must be an array of at most four references");
         List<Ref> result=new ArrayList<>();Set<String> seen=new HashSet<>();
         for(JsonNode ref:node) {
+            // 真机锚（2026-10-16）：平台 API 映射把 Long 一律序列化为字符串（PlatformObjectMapperConfig），
+            // 客户端回传的 version 线上形态是纯十进制串——与 JSON 数字等价接受（1–18 位、无前导 0）；
+            // 其余形态（0/小数/带符号/非数字/越宽）仍拒，不放松守卫。
+            JsonNode version=ref.path("version");
+            String versionText=version.isTextual()?version.asText():"";
+            boolean versionOk=(version.isIntegralNumber() && version.asLong()>=1)
+                    || versionText.matches("[1-9][0-9]{0,17}");
             if(!ref.isObject() || ref.size()!=2 || !ref.path("id").isTextual() || !ref.path("id").asText().matches("att-[a-f0-9]{32}")
-                    || !ref.path("version").isIntegralNumber() || ref.path("version").asLong()<1 || !seen.add(ref.path("id").asText())) throw bad("Invalid attachment reference");
-            result.add(new Ref(ref.path("id").asText(),ref.path("version").asLong()));
+                    || !versionOk || !seen.add(ref.path("id").asText())) throw bad("Invalid attachment reference");
+            result.add(new Ref(ref.path("id").asText(), version.isIntegralNumber()?version.asLong():Long.parseLong(versionText)));
         }return result;
     }
     private static Map<String,Object> metadata(Row row) {return Map.of("id",row.id,"filename",row.name,"mimeType",row.mime,"sizeBytes",row.size,"sha256",row.sha,"version",row.version);}

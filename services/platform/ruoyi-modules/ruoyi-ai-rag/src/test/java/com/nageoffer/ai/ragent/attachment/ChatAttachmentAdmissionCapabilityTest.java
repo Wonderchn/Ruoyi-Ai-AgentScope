@@ -150,6 +150,29 @@ class ChatAttachmentAdmissionCapabilityTest {
         }
     }
 
+    private static AdmissionRequest requestWithVersion(String versionJson) {
+        try {
+            return new AdmissionRequest(1, "rag.chat", "conv-1", null,
+                    JSON.readTree("{\"text\":\"q\",\"attachments\":[{\"id\":\"" + ATTACHMENT
+                            + "\",\"version\":" + versionJson + "}]}"),
+                    null, null, null, null);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Test
+    @DisplayName("平台 Long→字符串策略：纯十进制串 version 等价接受；0/非十进制串仍拒（形态守卫不放松）")
+    void numericStringVersionIsAcceptedAsEquivalentReference() {
+        given("text/plain", "{\"temperature\":0.7}");
+        assertDoesNotThrow(() -> service.validateAdmission(principal, requestWithVersion("\"1\""), model()));
+        for (String junk : List.of("\"0\"", "\"abc\"", "\"1.5\"", "\"\"", "-1", "0")) {
+            RunApiException refused = assertThrows(RunApiException.class,
+                    () -> service.validateAdmission(principal, requestWithVersion(junk), model()));
+            assertEquals(RunErrorCode.BAD_REQUEST, refused.errorCode());
+        }
+    }
+
     private static EngineModelAuthority.PublishedModel model() {
         return new EngineModelAuthority.PublishedModel(TENANT, "rev-1", 1L, "deepseek", "deepseek-chat",
                 "cat-v1", "params-1", "cred-ref-1", "op-1", Instant.EPOCH);
