@@ -29,6 +29,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * 文档级摄取配置的读写、校验与归一化：单点
@@ -53,6 +55,15 @@ public class IngestionSpecCodec {
     public static final String KEY_TOLERANCE_FACTOR = "toleranceFactor";
 
     private static final String KEY_PARSE_PROFILE = "parseProfile";
+
+    /**
+     * 提交形状允许的键：与 {@link IngestionSpecSchemaProvider} 下发的表单字段一一对应
+     * <p>
+     * 多一个键都拒绝，而不是丢掉：前端把 {@code chunkSize} 当成块大小提交时，丢掉它就等于把
+     * "用户以为改了配置"变成"后端静默走了默认值"，两侧都无感，只有看效果时才发现不对
+     */
+    private static final Set<String> ALLOWED_KEYS = Set.of(
+            KEY_PARSE_PROFILE, KEY_MAX_CHARS, KEY_OVERLAP_CHARS, KEY_ROWS_PER_CHUNK, KEY_TOLERANCE_FACTOR);
 
     /**
      * 不分块哨兵：沿用前端既有约定的 {@code -1}，线路上（提交、落库、出参、schema 下发）只有这一个表示
@@ -95,6 +106,10 @@ public class IngestionSpecCodec {
 
     /**
      * 校验并归一化前端提交的配置 JSON，返回落库用的规整 JSON
+     * <p>
+     * 非法一律拒绝，不静默回落默认：未知字段、类型错、越界取值都会抛
+     * {@link ClientException}（4xx 语义），调用方在落任何副作用之前即可终止；
+     * 回落默认<b>只</b>发生在字段缺失时
      *
      * @param rawJson 前端提交的原始 JSON，可空（空表示全默认）
      * @return 规整后的 JSON，入参为空时返回 null（列留空即表示走默认）
@@ -118,9 +133,90 @@ public class IngestionSpecCodec {
     }
 
     private IngestionSpec fromMap(Map<String, Object> raw) {
+        rejectUnknownKeys(raw);
+        Integer maxChars = readInt(raw, KEY_MAX_CHARS);
+        Integer overlap = readInt(raw, KEY_OVERLAP_CHARS);
+        Integer rows = readInt(raw, KEY_ROWS_PER_CHUNK);
+        Integer tolerance = readInt(raw, KEY_TOLERANCE_FACTOR);
+        validateBudgetRange(maxChars, overlap, rows, tolerance);
         return IngestionSpec.of(ParseProfile.from(readString(raw, KEY_PARSE_PROFILE)),
-                toBudget(readInt(raw, KEY_MAX_CHARS), readInt(raw, KEY_OVERLAP_CHARS),
-                        readInt(raw, KEY_ROWS_PER_CHUNK), readInt(raw, KEY_TOLERANCE_FACTOR)));
+                toBudget(maxChars, overlap, rows, tolerance));
+    }
+
+    /**
+     * 拒绝不在 schema 内的键：静默丢弃会让契约漂移无痕通过（见 {@link #ALLOWED_KEYS}）
+     */
+    private static void rejectUnknownKeys(Map<String, Object> raw) {
+        Set<String> unknown = new TreeSet<>(raw.keySet());
+        unknown.removeAll(ALLOWED_KEYS);
+        if (!unknown.isEmpty()) {
+            throw new IllegalArgumentException("未知字段：" + String.join(", ", unknown));
+        }
+    }
+
+    /**
+     * 提交值的取值范围校验：只在"该值真的会被采用"时拦
+     * <p>
+     * 整篇不分块（哨兵 {@code -1}）时 overlap/rows/tolerance 按定义不参与分块（见 {@link #toBudget}），
+     * 线路上它们本就允许是 0 或 -1（见 {@link SpecWire#of}），故在该分支豁免——把合法的整篇不分块
+     * 按"数值越界"拒掉才是矫枉过正。上限（{@link ChunkBudget#MAX_CHARS_LIMIT} 等）仍由
+     * {@link ChunkBudget} 构造期兜底
+     */
+    private static void validateBudgetRange(Integer maxChars, Integer overlap, Integer rows, Integer tolerance) {
+        if (maxChars != null && maxChars == WHOLE_DOCUMENT_SENTINEL) {
+            return;
+        }
+        if (maxChars != null && maxChars <= 0) {
+            throw new IllegalArgumentException("块大小必须为正整数（" + WHOLE_DOCUMENT_SENTINEL
+                    + " 表示整篇不分块），实际：" + maxChars);
+        }
+        if (overlap != null && overlap < 0) {
+            throw new IllegalArgumentException("块重叠不能为负数，实际：" + overlap);
+        }
+        if (rows != null && rows <= 0) {
+            throw new IllegalArgumentException("表格每块行数必须为正整数，实际：" + rows);
+        }
+        if (tolerance != null && tolerance < 1) {
+            throw new IllegalArgumentException("结构容忍倍数不能小于 1，实际：" + tolerance);
+        }
+    }
+
+    /**
+     * 读一个可缺省的整数：缺失（或显式 {@code null}）→ {@code null} 交给默认值，
+     * <b>写错类型则拒绝</b>
+     * <p>
+     * 旧实现把"类型错"与"数字串不可解析"一并当成缺失回落默认，于是 {@code {"maxChars":"abc"}} 会静默
+     * 变成 1024——用户提交的是别的意思、落库的是默认值，谁都没看到异常
+     */
+    private static Integer readInt(Map<String, Object> raw, String key) {
+        Object value = raw.get(key);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            if (!isIntegral(number)) {
+                throw new IllegalArgumentException(key + " 必须是整数，实际：" + value);
+            }
+            return number.intValue();
+        }
+        if (value instanceof String str) {
+            if (!StringUtils.hasText(str)) {
+                return null;
+            }
+            try {
+                return Integer.parseInt(str.trim());
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(key + " 必须是整数，实际：" + value);
+            }
+        }
+        throw new IllegalArgumentException(key + " 必须是整数，实际：" + value);
+    }
+
+    /** 整数判定：{@code 600.0} 收，{@code 600.5} 与超出 int 范围的数一律拒（避免静默截断） */
+    private static boolean isIntegral(Number number) {
+        double asDouble = number.doubleValue();
+        return asDouble == Math.rint(asDouble)
+                && asDouble >= Integer.MIN_VALUE && asDouble <= Integer.MAX_VALUE;
     }
 
     /**
@@ -141,21 +237,6 @@ public class IngestionSpecCodec {
                 overlap != null && overlap >= 0 ? overlap : ChunkBudget.defaultOverlapFor(budget),
                 rows != null && rows > 0 ? rows : defaults.rowsPerChunk(),
                 tolerance != null && tolerance > 0 ? tolerance : defaults.toleranceFactor());
-    }
-
-    private static Integer readInt(Map<String, Object> raw, String key) {
-        Object value = raw.get(key);
-        if (value instanceof Number number) {
-            return number.intValue();
-        }
-        if (value instanceof String str && StringUtils.hasText(str)) {
-            try {
-                return Integer.parseInt(str.trim());
-            } catch (NumberFormatException ignored) {
-                return null;
-            }
-        }
-        return null;
     }
 
     private static String readString(Map<String, Object> raw, String key) {
