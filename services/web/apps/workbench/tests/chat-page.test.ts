@@ -164,6 +164,15 @@ function mountPage(options: MountOptions = {}) {
     // F10/F15 接线新增的两个渲染组件（行为在 agent-chat-components.test.ts 覆盖）
     './components/AgentTurn.vue': { default: { name: 'AgentTurn' } },
     './components/AgentRawLogDrawer.vue': { default: { name: 'AgentRawLogDrawer' } },
+    // F04 附件接线：本文件保底只保证页面可加载；上传/预览行为在
+    // attachments.test.ts 与 chat-attachments-component.test.ts 覆盖（页面流用例在下方追加）。
+    '../../../../api/ai/attachments': {
+      createAttachmentClient: () => ({
+        upload: async () => { throw new Error('本文件未配置附件上传桩'); },
+        download: async () => { throw new Error('本文件未配置附件下载桩'); },
+      }),
+    },
+    '../../../../components/rag/ChatAttachments.vue': { default: { name: 'ChatAttachments' } },
   };
 
   const { descriptor } = parse(PAGE_SOURCE);

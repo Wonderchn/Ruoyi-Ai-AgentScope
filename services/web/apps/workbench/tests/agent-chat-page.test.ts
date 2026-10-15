@@ -166,6 +166,15 @@ function mountPage(options: MountOptions = {}) {
     './components/WorkflowRunStatus.vue': { default: { name: 'WorkflowRunStatus' } },
     './components/AgentTurn.vue': { default: { name: 'AgentTurn' } },
     './components/AgentRawLogDrawer.vue': { default: { name: 'AgentRawLogDrawer' } },
+    // F04 附件接线：Agent 页面对附件只做「拒绝并提示」；上传/预览行为在
+    // attachments.test.ts 与 chat-attachments-component.test.ts 覆盖。
+    '../../../../api/ai/attachments': {
+      createAttachmentClient: () => ({
+        upload: async () => { throw new Error('Agent 页面测试不使用附件上传'); },
+        download: async () => { throw new Error('Agent 页面测试不使用附件下载'); },
+      }),
+    },
+    '../../../../components/rag/ChatAttachments.vue': { default: { name: 'ChatAttachments' } },
   };
 
   const { descriptor } = parse(PAGE_SOURCE);
