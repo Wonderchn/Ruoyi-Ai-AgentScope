@@ -73,7 +73,8 @@ class SkillLoadToolActivationTest {
                 "先核对订单，再提交退货申请", List.of(MCP_TOOL));
         AgentSkillRegistry registry = mock(AgentSkillRegistry.class);
         when(registry.listEnabled()).thenReturn(List.of(skill));
-        when(registry.findByCode(SKILL_CODE)).thenReturn(skill);
+        when(registry.listEnabledFor("agent-1")).thenReturn(List.of(skill));
+        when(registry.findByCodeFor("agent-1", SKILL_CODE)).thenReturn(skill);
 
         McpClientWrapper client = mock(McpClientWrapper.class);
         when(client.getName()).thenReturn("returns");
@@ -106,7 +107,8 @@ class SkillLoadToolActivationTest {
 
         Msg answer = agent.call(
                         List.of(Msg.builder().name("user").role(MsgRole.USER).textContent("帮我退货").build()),
-                        RuntimeContext.builder().userId("user-a").sessionId("session-a").build())
+                        RuntimeContext.builder().userId("user-a").sessionId("session-a")
+                                .put(AgentSkillMaskingMiddleware.AGENT_PROFILE_ID_ATTRIBUTE, "agent-1").build())
                 .block(Duration.ofSeconds(5));
 
         assertThat(answer).isNotNull();
@@ -128,6 +130,83 @@ class SkillLoadToolActivationTest {
     private static ChatResponse toolCall(String id, String name, Map<String, Object> input, String content) {
         ToolUseBlock call = ToolUseBlock.builder().id(id).name(name).input(input).content(content).build();
         return ChatResponse.builder().content(List.of(call)).finishReason("tool_calls").build();
+    }
+
+    /**
+     * P3-BIND/F11:3 掩码三段端到端（段①/③与跨 Agent）：
+     * 未绑定（＝解绑/停用后的同一代码路径）⇒ load_skill **拒载**，且该技能解锁的 MCP 工具**保持遮蔽**。
+     */
+    @Test
+    void unboundOrCrossAgentSkillIsNotLoadableAndStaysMasked() {
+        AgentSkillRegistry registry = mock(AgentSkillRegistry.class);
+        AgentSkill skill = new AgentSkill(SKILL_CODE, "退货办理", "办理退货", "手册正文", List.of(MCP_TOOL));
+        when(registry.listEnabled()).thenReturn(List.of(skill));
+        // agent-2 的绑定子集为空（等价于"从没绑定"或"已解绑/停用后被排除"）
+        when(registry.listEnabledFor("agent-2")).thenReturn(List.of());
+        when(registry.findByCodeFor("agent-2", SKILL_CODE)).thenReturn(null);
+
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerAgentTool(new SkillLoadTool(registry));
+        McpClientWrapper client = mock(McpClientWrapper.class);
+        when(client.getName()).thenReturn("returns");
+        toolkit.registerAgentTool(new McpToolProxy(McpToolBinding.of(MCP_TOOL, "提交退货", "提交退货申请", false,
+                new RemoteTool(Tool.builder().name(MCP_TOOL).description("提交退货申请")
+                        .inputSchema(new JsonSchema("object", Map.of(), List.of(), false, null, null))
+                        .annotations(new ToolAnnotations(null, true, null, null, null, null)).build(),
+                        client))));
+        MaskAssertModel model = new MaskAssertModel();
+        ReActAgent agent = ReActAgent.builder()
+                .name("returns")
+                .sysPrompt("按技能手册办理退货")
+                .model(model)
+                .toolkit(toolkit)
+                .stateStore(new InMemoryAgentStateStore())
+                .permissionContext(PermissionContextState.builder().mode(PermissionMode.BYPASS).build())
+                .middleware(new AgentSkillMaskingMiddleware(registry))
+                .maxIters(3)
+                .build();
+
+        Msg answer = agent.call(
+                        List.of(Msg.builder().name("user").role(MsgRole.USER).textContent("帮我退货").build()),
+                        RuntimeContext.builder().userId("user-b").sessionId("session-b")
+                                .put(AgentSkillMaskingMiddleware.AGENT_PROFILE_ID_ATTRIBUTE, "agent-2").build())
+                .block(Duration.ofSeconds(5));
+
+        assertThat(answer).isNotNull();
+        assertThat(model.loadState).as("未绑定/解绑后必须拒载").isEqualTo(ToolResultState.ERROR);
+    }
+
+    /** 段①/③ 的模型侧断言：未绑定时 MCP 工具始终不可见，load_skill 返回 ERROR。 */
+    private static final class MaskAssertModel implements Model {
+
+        private int turns;
+        private ToolResultState loadState;
+
+        @Override
+        public Flux<ChatResponse> stream(List<Msg> messages, List<ToolSchema> tools, GenerateOptions options) {
+            turns++;
+            if (turns == 1) {
+                assertThat(tools).extracting(ToolSchema::getName)
+                        .contains(SkillLoadTool.TOOL_NAME)
+                        .as("未绑定档案下，技能解锁的工具必须保持遮蔽")
+                        .doesNotContain(MCP_TOOL);
+                return Flux.just(toolCall("load-2", SkillLoadTool.TOOL_NAME,
+                        Map.of("skill_code", SKILL_CODE), "{\"skill_code\":\"return_apply\"}"));
+            }
+            ToolResultBlock loadResult = result(messages, SkillLoadTool.TOOL_NAME);
+            assertThat(loadResult).isNotNull();
+            loadState = loadResult.getState();
+            assertThat(tools).extracting(ToolSchema::getName).doesNotContain(MCP_TOOL);
+            return Flux.just(ChatResponse.builder()
+                    .content(List.of(TextBlock.builder().text("结束").build()))
+                    .finishReason("stop")
+                    .build());
+        }
+
+        @Override
+        public String getModelName() {
+            return "mask-assert-model";
+        }
     }
 
     private static final class ActivationModel implements Model {

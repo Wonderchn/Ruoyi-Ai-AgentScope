@@ -123,6 +123,23 @@ public class AgentPromptResolver {
         return own;
     }
 
+    /**
+     * P3-BIND：当前"生效档案" id——与 {@link #loadFromDb()} 的覆盖顺序**同源**
+     * （active 行优先 → 租户 builtin → 无租户行则 empty；不另起查询路径）。
+     *
+     * <p>消费侧（技能遮蔽/载入）只认这个 id：前端入参一律不采信。
+     *
+     * @return 生效档案 id；租户域既无 active 又无 builtin 时为空
+     */
+    public Optional<String> effectiveProfileId() {
+        AgentProfileDO active = firstByFlag(AgentProfileDO::getActive);
+        if (active != null) {
+            return Optional.ofNullable(active.getId());
+        }
+        AgentProfileDO builtin = firstByFlag(AgentProfileDO::getBuiltin);
+        return builtin == null ? Optional.empty() : Optional.ofNullable(builtin.getId());
+    }
+
     private Map<String, String> loadFromDb() {
         // 先铺内置作为基线，再让激活智能体的非空槽位覆盖；两者同为一条时重复覆盖无副作用
         Map<String, String> resolved = new HashMap<>();

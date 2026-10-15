@@ -126,6 +126,12 @@ public class AgentChatServiceImpl implements AgentChatService {
      */
     private final AgentRunScopeRegistry runScopeRegistry;
 
+    /**
+     * P3-BIND：生效档案解析器（rag 侧 bean；字段注入 + 可选，避免改动本类既有构造签名与装配）。
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.nageoffer.ai.ragent.rag.core.prompt.AgentPromptResolver agentPromptResolver;
+
     @Override
     public void streamChat(String question, String conversationId, SseEmitter emitter) {
         String userId = UserContext.getUserId();
@@ -280,6 +286,12 @@ public class AgentChatServiceImpl implements AgentChatService {
         AgentRunScope runScope = AgentRunScope.capture(tenantScopeBinder);
         // 上下文传到底，中断时句柄从这里取根 span；捕获同时挂在工具执行上下文上供工具链读
         RuntimeContext runtimeContext = buildRuntimeContext(scope, facts, runScope);
+        // P3-BIND：放入**执行中的生效档案 id**（与提示词解析同源；前端入参不采信）。
+        // 缺失（无 active/builtin）⇒ 属性缺席 ⇒ 技能遮蔽/载入按 fail-closed 空子集/拒载。
+        if (agentPromptResolver != null) {
+            agentPromptResolver.effectiveProfileId().ifPresent(id -> runtimeContext.put(
+                    com.nageoffer.ai.ragent.agent.skill.AgentSkillMaskingMiddleware.AGENT_PROFILE_ID_ATTRIBUTE, id));
+        }
         // 许可接线：请求线程可取到执行主体；缺席（独立应用）退回裸帧形态
         DeliveryPermits permits = deliveryPermits.getIfAvailable();
         ExecutionPrincipal permitPrincipal = PrincipalContext.get();
