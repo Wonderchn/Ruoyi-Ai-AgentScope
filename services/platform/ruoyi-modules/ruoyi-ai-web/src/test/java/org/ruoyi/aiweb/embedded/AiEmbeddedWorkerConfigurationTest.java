@@ -414,6 +414,19 @@ class AiEmbeddedWorkerConfigurationTest {
             return mock(PrivateObjectStore.class);
         }
 
+        // F06:1/2 集成（T0，2026-10-16）：ingestionPipelineExecutor（WorkerEnabled）新增的任务面
+        // 构造依赖；生产由 AiEmbeddedIngestionConfiguration 的任务组提供，本切片用显式配置清单、
+        // 不加载它 —— 同"新增依赖 bean 要同步补齐所在切片"纪律。行为断言不依赖这两个替身。
+        @Bean
+        com.nageoffer.ai.ragent.ingestion.task.IngestionPipelineReader ingestionPipelineReader() {
+            return mock(com.nageoffer.ai.ragent.ingestion.task.IngestionPipelineReader.class);
+        }
+
+        @Bean
+        com.nageoffer.ai.ragent.ingestion.task.IngestionTaskRepository ingestionTaskRepository() {
+            return mock(com.nageoffer.ai.ragent.ingestion.task.IngestionTaskRepository.class);
+        }
+
         // 注意：不要在这里定义 runLedgerDao / runEventAppender / notificationBus / outboxDao——
         // 它们由 AiEmbeddedRunConfiguration 与本组配置提供，重复定义会以
         // BeanDefinitionOverrideException 让容器启动失败（测试替身写错，不是产品装配问题）。

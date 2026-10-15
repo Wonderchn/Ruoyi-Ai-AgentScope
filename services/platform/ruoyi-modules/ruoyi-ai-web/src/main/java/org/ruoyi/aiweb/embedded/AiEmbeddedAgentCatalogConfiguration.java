@@ -96,8 +96,12 @@ public class AiEmbeddedAgentCatalogConfiguration {
      * 判据＝该租户存在**已发布权威版本** 且 版本发布历史里出现过该模型 id；
      * 任一不满足（含无已发布版本；读失败直接上抛由协议层映射 503）⇒ 不核过，
      * 绑定保存整体拒绝（fail-closed，不回落"看起来可用"）。
+     *
+     * <p>类级条件 {@link ConditionalOnEmbeddedLocal} 必需：嵌套组件会被平台组件扫描独立发现，
+     * 外层配置的条件不适用于它（{@code AiEmbeddedComponentScanTest} 判据一/二钉住）。
      */
     @Configuration(proxyBeanMethods = false)
+    @ConditionalOnEmbeddedLocal
     static class BindingRefLookupAssembly {
 
         @Bean
