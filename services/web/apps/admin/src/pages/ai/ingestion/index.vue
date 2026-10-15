@@ -19,11 +19,11 @@
     不在本切片闭包内，调用将 404；任务卡片保留分母形态与阻断标注，联调判据 NOT_RUN。
 -->
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { aiApi } from '@/api';
 import BlockedBy from '@/components/BlockedBy.vue';
 import { errorMessageOf } from '@/utils';
-import { createPipelinePageRequest, normalizePipelinePage, pipelineIdOf, pipelineNameOf } from './pipelineAdmin';
+import { canSaveEditor, createPipelinePageRequest, normalizePipelinePage, pipelineIdOf, pipelineNameOf } from './pipelineAdmin';
 
 // ---------------------------------------------------------------- 流水线
 const pipelineRows = ref<Record<string, unknown>[]>([]);
@@ -66,15 +66,53 @@ const editorNodes = ref<EditableNode[]>([]);
 const editorLoading = ref(false);
 const editorSaving = ref(false);
 const editorError = ref('');
+/**
+ * 加载门禁事实（F06GUARD，REVIEW-F06-PDF「新发现」风险 1）：
+ * - `editorLoadedForId`：最近一次**成功**加载完成的 pipelineId（'' = 未成功）；
+ * - `editorLoadFailed`：当前目标最近一次加载是否失败。
+ * 保存前必须核对"当前目标已成功加载"：否则 GET 失败后 editorNodes=[] 会被
+ * PUT {nodes:[]} 发出去——服务端 upsertNodes 先物理删原节点再插入，会清空既有节点。
+ */
+const editorLoadedForId = ref('');
+const editorLoadFailed = ref(false);
+/**
+ * 详情请求序号（异步隔离，REVIEW-F06-PDF「新发现」相邻风险）：打开 A 挂起时切到 B，
+ * 迟到的 A 响应/失败必须整体丢弃，不得覆盖 B 的编辑态或写进 B 的错误态。
+ * 成功/失败/finally 的每一处状态写入都用 `(seq, pipelineId)` 双钥核对。
+ */
+let editorRequestSeq = 0;
+
+/** 保存门禁：模板按钮与 savePipelineNodes 共用同一判据（pipelineAdmin.canSaveEditor）。 */
+const editorSavable = computed(() => canSaveEditor({
+  pipelineId: editorPipelineId.value,
+  loadedForId: editorLoadedForId.value,
+  loadFailed: editorLoadFailed.value,
+  loading: editorLoading.value,
+  saving: editorSaving.value,
+}));
+
+/** 该次请求的 (seq, pipelineId) 是否仍是编辑器当前会话。 */
+function editorRequestIsCurrent(seq: number, targetId: string): boolean {
+  return seq === editorRequestSeq && editorPipelineId.value === targetId;
+}
 
 async function editPipeline(row: Record<string, unknown>) {
-  editorPipelineId.value = pipelineIdOf(row);
+  const targetId = pipelineIdOf(row);
+  editorPipelineId.value = targetId;
   editorVisible.value = true;
   editorLoading.value = true;
+  editorSaving.value = false;
   editorError.value = '';
   editorNodes.value = [];
+  // 每次切换目标先复位门禁事实：加载成功前一律不可保存。
+  editorLoadedForId.value = '';
+  editorLoadFailed.value = false;
+  const seq = editorRequestSeq + 1;
+  editorRequestSeq = seq;
   try {
-    const pipeline = await aiApi.ingestion.getPipeline(editorPipelineId.value);
+    const pipeline = await aiApi.ingestion.getPipeline(targetId);
+    if (!editorRequestIsCurrent(seq, targetId))
+      return;
     const nodes = pipeline?.nodes;
     if (!Array.isArray(nodes)) throw new Error('流水线节点响应格式无效');
     editorNodes.value = nodes.map((node: Record<string, unknown>) => ({
@@ -82,32 +120,51 @@ async function editPipeline(row: Record<string, unknown>) {
       enabled: node.enabled !== false,
       conditionText: node.condition == null ? '' : JSON.stringify(node.condition, null, 2),
     }));
+    editorLoadedForId.value = targetId;
+    editorLoadFailed.value = false;
   }
   catch (e) {
+    if (!editorRequestIsCurrent(seq, targetId))
+      return;
+    editorLoadFailed.value = true;
     editorError.value = errorMessageOf(e);
   }
   finally {
-    editorLoading.value = false;
+    if (editorRequestIsCurrent(seq, targetId))
+      editorLoading.value = false;
   }
 }
 
 async function savePipelineNodes() {
+  if (!editorSavable.value) {
+    // 门禁拒绝：保留原有加载错误（若有），否则给出明确的阻断提示；不发请求。
+    if (!editorError.value)
+      editorError.value = '节点尚未成功加载，已阻止保存：请重新打开并等待加载完成后再试。';
+    return;
+  }
   editorError.value = '';
   editorSaving.value = true;
+  const targetId = editorPipelineId.value;
+  const seq = editorRequestSeq;
   try {
     const nodes = editorNodes.value.map(({ conditionText, ...node }) => ({
       ...node,
       condition: conditionText.trim() ? JSON.parse(conditionText) : null,
     }));
-    await aiApi.ingestion.updatePipeline(editorPipelineId.value, { nodes });
+    await aiApi.ingestion.updatePipeline(targetId, { nodes });
+    if (!editorRequestIsCurrent(seq, targetId))
+      return;
     editorVisible.value = false;
     await loadPipelines();
   }
   catch (e) {
+    if (!editorRequestIsCurrent(seq, targetId))
+      return;
     editorError.value = errorMessageOf(e);
   }
   finally {
-    editorSaving.value = false;
+    if (editorRequestIsCurrent(seq, targetId))
+      editorSaving.value = false;
   }
 }
 
@@ -291,7 +348,7 @@ function str(row: Record<string, unknown>, key: string): string {
         </ElTableColumn>
       </ElTable>
       <template #footer>
-        <ElButton :disabled="editorLoading" :loading="editorSaving" data-testid="ingestion-save-nodes" @click="savePipelineNodes()">保存</ElButton>
+        <ElButton :disabled="!editorSavable" :loading="editorSaving" data-testid="ingestion-save-nodes" @click="savePipelineNodes()">保存</ElButton>
       </template>
     </ElDrawer>
 

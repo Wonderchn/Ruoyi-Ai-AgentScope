@@ -45,15 +45,29 @@ function fakeIngestion() {
   const calls: Array<{ pageNo?: number; pageSize?: number }> = [];
   const pending: Array<Pending & { promise: Promise<any> }> = [];
   const updates: Array<{ id: string; body: any }> = [];
+  const gets: Array<{ id: string; request: Pending & { promise: Promise<any> } }> = [];
+  let getPipelineImpl: (id: string) => Promise<any> = async () => ({ nodes: [
+    { nodeId: 'first', nodeType: 'fetcher', nextNodeId: 'last', settings: { mode: 'safe' }, enabled: false, condition: false },
+    { nodeId: 'last', nodeType: 'parser' },
+  ] });
   return {
     calls,
     pending,
     updates,
+    gets,
+    /**
+     * 把 getPipeline 切成手动模式：每次调用登记一条 deferred，由用例逐条
+     * resolve/reject——复现"请求挂起/迟到响应"的真实异步时序（R1/R3）。
+     */
+    holdGetPipeline() {
+      getPipelineImpl = (id: string) => {
+        const request = deferred();
+        gets.push({ id, request });
+        return request.promise;
+      };
+    },
     api: {
-      getPipeline: async () => ({ nodes: [
-        { nodeId: 'first', nodeType: 'fetcher', nextNodeId: 'last', settings: { mode: 'safe' }, enabled: false, condition: false },
-        { nodeId: 'last', nodeType: 'parser' },
-      ] }),
+      getPipeline: (id: string) => getPipelineImpl(id),
       updatePipeline: async (id: string, body: any) => { updates.push({ id, body }); },
       listPipelines: (query?: { pageNo?: number; pageSize?: number }) => {
         calls.push({ ...query });
@@ -157,6 +171,17 @@ describe('pipelineAdmin 纯函数（页面逻辑模块的直接判据）', () =>
     assert.equal(pipelineAdmin.pipelineNameOf({ name: 'p' }), 'p');
     assert.equal(pipelineAdmin.pipelineNameOf({}), '—');
     assert.equal(pipelineAdmin.pipelineNameOf(undefined), '—');
+  });
+
+  test('保存门禁 canSaveEditor：只放行“当前 pipeline 已成功加载且无失败/在途”', () => {
+    const base = { pipelineId: 'p1', loadedForId: 'p1', loadFailed: false, loading: false, saving: false };
+    assert.equal(pipelineAdmin.canSaveEditor(base), true);
+    assert.equal(pipelineAdmin.canSaveEditor({ ...base, pipelineId: '' }), false, '没有目标 pipeline 不得保存');
+    assert.equal(pipelineAdmin.canSaveEditor({ ...base, loadedForId: '' }), false, '未成功加载过不得保存');
+    assert.equal(pipelineAdmin.canSaveEditor({ ...base, loadedForId: 'other' }), false, '加载成功的不是当前目标不得保存');
+    assert.equal(pipelineAdmin.canSaveEditor({ ...base, loadFailed: true }), false, '加载失败不得保存');
+    assert.equal(pipelineAdmin.canSaveEditor({ ...base, loading: true }), false, '加载中不得保存');
+    assert.equal(pipelineAdmin.canSaveEditor({ ...base, saving: true }), false, '保存在途不得重复保存');
   });
 });
 
@@ -345,5 +370,120 @@ describe('SFC 静态绑定（模板不渲染时的另一侧锚点）', () => {
       'ingestion-nodes-rows',
     ])
       assert.ok(PAGE_SOURCE.includes(`data-testid="${id}"`), `缺少 ${id}`);
+  });
+});
+
+/**
+ * F06 编辑器加载门禁与异步隔离（REVIEW-F06-PDF「新发现」两处风险的补丁判据）。
+ *
+ * 风险 1（数据完整性）：GET /ingestion/pipelines/{id} 失败后 editorNodes=[]，
+ *   保存按钮却恢复可点；savePipelineNodes 无条件 PUT {nodes:[]}。服务端 update→
+ *   upsertNodes 会先按 pipelineId 物理删除再插入——读取暂时失败后点保存会清空既有节点。
+ * 风险 2（异步隔离）：打开 A（挂起）→打开 B；迟到的 A 响应/失败会覆盖 B 会话，
+ *   且保存可能 PUT 到错误目标。
+ */
+describe('F06 编辑器加载门禁与异步隔离（红先行补丁的判据）', () => {
+  test('R1 加载失败后保存被门禁拦截：不得 PUT {nodes:[]} 清空服务端节点', async () => {
+    const { page, scope, fake } = mountPage();
+    try {
+      fake.holdGetPipeline();
+      const opening = page.editPipeline({ id: 'p-fail' });
+      assert.equal(fake.gets.length, 1, '打开详情必须发出 getPipeline');
+      fake.gets[0].request.reject(Object.assign(new Error('HTTP 503'), { kind: 'business-error', code: 503 }));
+      await opening;
+      await settle();
+
+      assert.notEqual(page.editorError.value, '', '加载失败必须保留错误提示');
+      assert.match(page.editorError.value, /503/);
+      assert.equal(page.editorNodes.value.length, 0);
+
+      const saving = page.savePipelineNodes();
+      await settle();
+      assert.equal(fake.updates.length, 0, '未成功加载时保存必须 0 次 PUT（当前会 PUT {nodes:[]}）');
+      assert.notEqual(page.editorError.value, '', '门禁拒绝保存后错误提示必须仍非空');
+      assert.equal(page.editorVisible.value, true, '门禁拒绝不得关闭抽屉');
+      // 红跑会走完 update→loadPipelines；给挂起的列表请求收尾，避免遗留未决 promise
+      if (fake.pending.length > 0) fake.take().resolve(ipage([]));
+      await saving.catch(() => {});
+    }
+    finally { scope.stop(); }
+  });
+
+  test('R2 静态：保存按钮 :disabled 纳入“未成功加载/加载失败”门禁', () => {
+    const tag = /<ElButton[^>]*data-testid="ingestion-save-nodes"[^>]*>/.exec(PAGE_SOURCE);
+    assert.ok(tag, '模板必须保留保存按钮（data-testid=ingestion-save-nodes）');
+    const disabled = /:disabled="([^"]*)"/.exec(tag[0]);
+    assert.ok(disabled, '保存按钮必须有 :disabled 绑定');
+    assert.match(
+      disabled[1],
+      /editorSavable|canSaveEditor|editorCanSave/,
+      '保存按钮 :disabled 必须绑定“已成功加载”门禁（不能只看 editorLoading）',
+    );
+    assert.ok(PAGE_SOURCE.includes('canSaveEditor('), '页面必须复用 pipelineAdmin 的 canSaveEditor 门禁函数');
+  });
+
+  test('R3a 迟到成功响应被丢弃：编辑态与保存目标都是当前打开的管线', async () => {
+    const { page, scope, fake } = mountPage();
+    try {
+      fake.holdGetPipeline();
+      const openingA = page.editPipeline({ id: 'p-a' });
+      const openingB = page.editPipeline({ id: 'p-b' });
+      assert.equal(fake.gets.length, 2, '两次打开必须各发一个 getPipeline');
+
+      fake.gets[1].request.resolve({ nodes: [{ nodeId: 'b-node', nodeType: 'parser' }] });
+      await openingB;
+      await settle();
+      assert.equal(page.editorNodes.value.length, 1);
+      assert.equal(page.editorNodes.value[0].nodeId, 'b-node');
+
+      fake.gets[0].request.resolve({ nodes: [{ nodeId: 'a-node', nodeType: 'fetcher' }] });
+      await openingA;
+      await settle();
+      assert.equal(page.editorNodes.value.length, 1, '迟到 A 的成功响应不得与 B 合并');
+      assert.equal(page.editorNodes.value[0].nodeId, 'b-node', '迟到 A 的成功响应必须丢弃（当前：B 被 A 覆盖）');
+      assert.equal(page.editorPipelineId.value, 'p-b');
+
+      const saving = page.savePipelineNodes();
+      await settle();
+      assert.equal(fake.updates.length, 1, 'B 已成功加载，保存应发出一次 PUT');
+      assert.equal(fake.updates[0].id, 'p-b', '保存必须 PUT 到当前打开(B)的 pipelineId');
+      assert.equal(fake.updates[0].body.nodes.length, 1);
+      assert.equal(fake.updates[0].body.nodes[0].nodeId, 'b-node', 'PUT 的节点必须是 B 的');
+      if (fake.pending.length > 0) fake.take().resolve(ipage([]));
+      await saving;
+    }
+    finally { scope.stop(); }
+  });
+
+  test('R3b 迟到失败不得污染新会话：错误态保持为空，保存仍走新 pipelineId', async () => {
+    const { page, scope, fake } = mountPage();
+    try {
+      fake.holdGetPipeline();
+      const openingA = page.editPipeline({ id: 'p-a' });
+      const openingB = page.editPipeline({ id: 'p-b' });
+
+      fake.gets[1].request.resolve({ nodes: [{ nodeId: 'b-node', nodeType: 'parser' }] });
+      await openingB;
+      await settle();
+
+      fake.gets[0].request.reject(Object.assign(new Error('HTTP 403'), { kind: 'forbidden', code: 403 }));
+      await openingA;
+      await settle();
+
+      assert.equal(page.editorError.value, '', '迟到 A 的失败不得写进 B 会话（当前：B 出现 403 错误）');
+      assert.equal(page.editorNodes.value.length, 1);
+      assert.equal(page.editorNodes.value[0].nodeId, 'b-node');
+      assert.equal(page.editorLoading.value, false, '迟到 A 的 finally 不得改动 B 的加载态');
+      assert.equal(page.editorVisible.value, true);
+
+      const saving = page.savePipelineNodes();
+      await settle();
+      assert.equal(fake.updates.length, 1);
+      assert.equal(fake.updates[0].id, 'p-b', '保存必须 PUT 到当前打开(B)的 pipelineId');
+      assert.equal(fake.updates[0].body.nodes[0].nodeId, 'b-node');
+      if (fake.pending.length > 0) fake.take().resolve(ipage([]));
+      await saving;
+    }
+    finally { scope.stop(); }
   });
 });
