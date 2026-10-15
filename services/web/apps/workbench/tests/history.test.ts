@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { toChatHistory } from '../src/api/chat/history.ts';
+import { toChatAttachments, toChatHistory } from '../src/api/chat/history.ts';
 
 /** 后端真实返回形状的一条完整消息。 */
 const FULL_ROW = {
@@ -113,5 +113,77 @@ describe('toChatHistory', () => {
     assert.deepEqual(toChatHistory([], 'conv-1'), []);
     assert.deepEqual(toChatHistory(null, 'conv-1'), []);
     assert.deepEqual(toChatHistory(undefined, 'conv-1'), []);
+  });
+});
+
+/**
+ * F04-HANDOFF 缺口 7：历史附件此前是 `unknown[]`，页面消费形状是 `ChatAttachment[]`。
+ * 网络上的行是**不可信输入**（迁移旧行、后端字段演进）：非法条目丢弃而不是整段历史打不开，
+ * 也不能把非法形状透传给 `<ChatAttachments>` / download 核验。
+ */
+describe('toChatAttachments（历史附件运行时校验）', () => {
+  const VALID = {
+    id: 'att-0123456789abcdef0123456789abcdef',
+    version: 3,
+    filename: '图.png',
+    mimeType: 'image/png',
+    sizeBytes: 2048,
+    sha256: 'a'.repeat(64),
+  };
+
+  it('合法条目只保留已知字段（多余键不得透传）', () => {
+    const [attachment] = toChatAttachments([{ ...VALID, objectKey: 'tenant/attachments/secret', memberId: 'm-1' }]);
+    assert.deepEqual(attachment, VALID);
+  });
+
+  it('缺字段 / 类型不符 / 越界条目逐条丢弃，其余合法条目保留', () => {
+    const valid2 = { ...VALID, id: 'att-ffffffffffffffffffffffffffffffff', version: 1, filename: 'b.txt', mimeType: 'text/plain' };
+    const result = toChatAttachments([
+      VALID,
+      null,
+      undefined,
+      7,
+      '[]',
+      {},
+      { ...VALID, id: '' },
+      { ...VALID, id: 9 },
+      { ...VALID, version: 0 },
+      { ...VALID, version: 1.5 },
+      { ...VALID, version: '1' },
+      { ...VALID, filename: '' },
+      { ...VALID, mimeType: '' },
+      { ...VALID, sizeBytes: 0 },
+      { ...VALID, sizeBytes: -1 },
+      { ...VALID, sha256: 'zz' },
+      { ...VALID, sha256: null },
+      valid2,
+    ]);
+    assert.equal(result.length, 2);
+    assert.deepEqual(result[0], VALID);
+    assert.deepEqual(result[1], valid2);
+  });
+
+  it('非数组（缺失 / null / 对象 / JSON 文本）统一为空数组', () => {
+    assert.deepEqual(toChatAttachments(undefined), []);
+    assert.deepEqual(toChatAttachments(null), []);
+    assert.deepEqual(toChatAttachments({}), []);
+    assert.deepEqual(toChatAttachments('[]'), []);
+  });
+
+  it('toChatHistory 接线：坏条目被过滤，合法条目进入消息 attachments', () => {
+    const [message] = toChatHistory(
+      [{ ...FULL_ROW, attachments: [VALID, { ...VALID, sha256: 'bad' }] }],
+      'conv-1',
+    );
+    assert.equal(message.attachments?.length, 1);
+    assert.equal(message.attachments?.[0]?.id, VALID.id);
+    assert.equal(message.attachments?.[0]?.sha256, VALID.sha256);
+  });
+
+  it('行里没有附件（旧行 / NULL）时就是空数组，不是 undefined', () => {
+    const [message] = toChatHistory([FULL_ROW], 'conv-1');
+    assert.deepEqual(message.attachments, []);
+    const [rowsAsText] = toChatHistory([{ ...FULL_ROW, attachments: '[]' }], 'conv-1');
+    assert.deepEqual(rowsAsText.attachments, [], 'JSON 文本形状（未展开）也按无附件处理，不猜测解析');
   });
 });

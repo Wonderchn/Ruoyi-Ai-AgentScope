@@ -12,7 +12,12 @@
  * `MessageRow` 的 **13** 个字段，其中三个 jsonb 列以 **JSON 文本**返回
  * （`sources` / `recommended_questions` / `retrieved_chunks`），
  * `thinking_duration` / `total_tokens` / `model_name` 可为 NULL。
+ * F04 起 `attachments` 是服务端由绑定事实组装的元数据数组
+ * （`{id, version, filename, mimeType, sizeBytes, sha256}`），但网络输入按不可信处理，
+ * 经 `toChatAttachments` 逐条校验后才进入视图。
  */
+
+import type { ChatAttachment } from '../ai/attachments';
 
 /** 后端 `TenantConversationReadRepository.MessageRow` 的线上形状（jsonb 为 JSON 文本）。 */
 export interface ConversationMessageRow {
@@ -33,7 +38,7 @@ export interface ConversationMessageRow {
 
 /** 历史里的一条消息（前端消费形状）。 */
 export interface ChatHistoryMessage {
-  attachments?: unknown[];
+  attachments?: ChatAttachment[];
   id: string;
   sessionId: string;
   role: string;
@@ -91,6 +96,33 @@ function toDate(value: string | null | undefined): Date | undefined {
 }
 
 /**
+ * 历史附件条的运行时校验（F04-HANDOFF 缺口 7）。
+ *
+ * 历史行是**不可信网络输入**（迁移旧行、后端字段演进）：非法条目逐条丢弃，
+ * 而不是让整段历史打不开，也不把非法形状透传给 `<ChatAttachments>` / download 核验。
+ * 只保留已知六字段——多余键（objectKey 等内部字段）不得随视图下发。
+ */
+export function toChatAttachments(value: unknown): ChatAttachment[] {
+  if (!Array.isArray(value))
+    return [];
+  const result: ChatAttachment[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object')
+      continue;
+    const { id, version, sizeBytes, filename, mimeType, sha256 } = entry as Record<string, unknown>;
+    if (typeof id !== 'string' || id === ''
+      || !Number.isInteger(version) || (version as number) < 1
+      || typeof filename !== 'string' || filename === ''
+      || typeof mimeType !== 'string' || mimeType === ''
+      || !Number.isInteger(sizeBytes) || (sizeBytes as number) < 1
+      || typeof sha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(sha256))
+      continue;
+    result.push({ id, version: version as number, filename, mimeType, sizeBytes: sizeBytes as number, sha256: sha256.toLowerCase() });
+  }
+  return result;
+}
+
+/**
  * 把后端消息行映射成前端历史消息。
  *
  * 顺序保持后端给的顺序（后端已按 `create_time ASC, id ASC` 排序）——
@@ -125,7 +157,7 @@ export function toChatHistory(
       replyToMessageId: optionalText(row.replyToMessageId),
       modelName: optionalText(row.modelName),
       totalTokens: optionalNumber(row.totalTokens),
-      attachments: Array.isArray(row.attachments) ? row.attachments : [],
+      attachments: toChatAttachments(row.attachments),
     };
   });
 }

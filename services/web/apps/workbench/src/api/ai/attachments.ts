@@ -17,6 +17,32 @@ export function validateAttachment(file: Pick<File, 'name' | 'type' | 'size'>): 
     throw new Error('附件仅支持 PNG、JPEG、PDF、UTF-8 文本，单个上限 5 MiB');
 }
 
+/** MIME essence：忽略参数（`text/plain;charset=utf-8` 与 `text/plain` 等价）。 */
+function mimeEssence(value: string): string {
+  return (value.split(';', 1)[0] ?? '').trim().toLowerCase();
+}
+
+/**
+ * 最终 Blob 的严格核验（F04-HANDOFF 缺口 6）。
+ *
+ * 服务端只在哈希/版本一致时才释放字节，但**传输侧**也要把住最后一道：
+ * 非空且字节数 = 登记值、MIME essence 匹配、sha256 一致。
+ * `crypto.subtle` 不可用时 **fail-closed** —— 宁可不显示，也不显示未核验内容。
+ */
+async function verifyDownloadedBlob(blob: Blob, attachment: ChatAttachment): Promise<void> {
+  if (blob.size < 1 || blob.size !== attachment.sizeBytes)
+    throw new Error('附件内容校验失败：字节数不符');
+  if (mimeEssence(blob.type) !== mimeEssence(attachment.mimeType))
+    throw new Error('附件内容校验失败：类型不符');
+  const subtle = (globalThis as { crypto?: Crypto }).crypto?.subtle;
+  if (!subtle)
+    throw new Error('当前环境不支持附件内容校验，已拒绝显示');
+  const digest = await subtle.digest('SHA-256', await blob.arrayBuffer());
+  const hex = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  if (hex !== attachment.sha256.trim().toLowerCase())
+    throw new Error('附件内容校验失败：摘要不符');
+}
+
 export function createAttachmentClient(options: {
   baseUrl?: string;
   clientId?: string;
@@ -70,6 +96,7 @@ export function createAttachmentClient(options: {
       const blob = await response.blob();
       if (identity.epoch !== options.identity().epoch)
         throw new Error('登录身份已变更');
+      await verifyDownloadedBlob(blob, attachment);
       return blob;
     },
   };

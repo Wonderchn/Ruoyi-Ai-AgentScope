@@ -82,6 +82,45 @@ function fakeRun(): FakeRun {
   return state as FakeRun;
 }
 
+interface UploadCall {
+  file: unknown;
+  progress: (percent: number) => void;
+  resolve: (attachment: unknown) => void;
+  reject: (error: unknown) => void;
+}
+
+/** 可控附件客户端桩：`selectAttachments` 的每次上传都停在这里，由测试手动放行。 */
+function fakeAttachmentClient() {
+  const client = {
+    uploads: [] as UploadCall[],
+    upload(file: unknown, progress: (percent: number) => void) {
+      return new Promise((resolve, reject) => client.uploads.push({
+        file,
+        progress,
+        resolve: resolve as (attachment: unknown) => void,
+        reject,
+      }));
+    },
+    async download(): Promise<never> {
+      throw new Error('页面测试不使用附件下载');
+    },
+  };
+  return client;
+}
+
+const attachmentOf = (overrides: Record<string, unknown> = {}) => ({
+  id: 'att-1',
+  version: 1,
+  filename: '报告.pdf',
+  mimeType: 'application/pdf',
+  sizeBytes: 12,
+  sha256: 'b'.repeat(64),
+  ...overrides,
+});
+
+const fakeFile = (name: string, type: string, size = 12) => ({ name, type, size });
+const fileEvent = (files: unknown[]) => ({ target: { files, value: '' } }) as unknown as Event;
+
 interface MountOptions {
   token?: string;
   authEpoch?: number;
@@ -90,6 +129,7 @@ interface MountOptions {
   agentId?: number | undefined;
   kbRows?: Array<{ kbId: string; name: string }>;
   kbError?: Error;
+  attachmentClient?: ReturnType<typeof fakeAttachmentClient>;
 }
 
 function mountPage(options: MountOptions = {}) {
@@ -115,6 +155,7 @@ function mountPage(options: MountOptions = {}) {
     takePendingFirstMessage: () => '',
   };
   const route = vue.reactive({ params: { id: options.routeId ?? 'c-1' } });
+  const attachments = options.attachmentClient ?? fakeAttachmentClient();
 
   const modules: Record<string, unknown> = {
     'vue': { ...vue, nextTick: vue.nextTick },
@@ -164,14 +205,9 @@ function mountPage(options: MountOptions = {}) {
     // F10/F15 接线新增的两个渲染组件（行为在 agent-chat-components.test.ts 覆盖）
     './components/AgentTurn.vue': { default: { name: 'AgentTurn' } },
     './components/AgentRawLogDrawer.vue': { default: { name: 'AgentRawLogDrawer' } },
-    // F04 附件接线：本文件保底只保证页面可加载；上传/预览行为在
-    // attachments.test.ts 与 chat-attachments-component.test.ts 覆盖（页面流用例在下方追加）。
-    '../../../../api/ai/attachments': {
-      createAttachmentClient: () => ({
-        upload: async () => { throw new Error('本文件未配置附件上传桩'); },
-        download: async () => { throw new Error('本文件未配置附件下载桩'); },
-      }),
-    },
+    // F04 附件接线：createAttachmentClient 由本文件注入可控桩（上传由测试手动放行），
+    // 页面级行为用例见本文件末尾「F04 附件流」；下载核验在 attachments.test.ts。
+    '../../../../api/ai/attachments': { createAttachmentClient: () => attachments },
     '../../../../components/rag/ChatAttachments.vue': { default: { name: 'ChatAttachments' } },
   };
 
@@ -190,7 +226,10 @@ function mountPage(options: MountOptions = {}) {
     assert.ok(name in modules, `页面引用了未桩化的依赖：${name}`);
     return modules[name];
   };
-  vm.runInNewContext(output, {
+  // `vm.createContext`（而不是 runInNewContext）让测试拿得到**页面 realm** 的 Error 构造函数：
+  // 跨 realm 的 `failure instanceof Error` 为 false，页面会退化成兜底文案；
+  // 需要核验"原因原文透传"的用例必须用页面 realm 抛错（`realmError`）。
+  const context = vm.createContext({
     require: requireModule,
     exports: exportsObject,
     __importMetaEnv: { VITE_API_URL: 'http://gateway.test', VITE_CLIENT_ID: 'client-x' },
@@ -203,9 +242,11 @@ function mountPage(options: MountOptions = {}) {
     console,
     ...vue,
   });
+  vm.runInContext(output, context);
+  const realmError = vm.runInContext('Error', context) as new (message: string) => Error;
   const scope = vue.effectScope();
   const page = scope.run(() => exportsObject.default.setup({}, { expose() {} }));
-  return { page: page as Record<string, any>, scope, run, user, chat, session };
+  return { page: page as Record<string, any>, scope, run, user, chat, session, attachments, realmError };
 }
 
 async function settle(): Promise<void> {
@@ -398,5 +439,124 @@ describe('F03 op3：复制与状态/耗时渲染位', () => {
     assert.match(detailsSource, /data-testid="msg-duration"/);
     // 状态/耗时不得只在"深度思考"块的 v-if 之内（普通聊天没有 thinking_content）
     assert.match(detailsSource, /data-testid="msg-status"/);
+  });
+});
+
+/**
+ * F04 附件流（页面级）：选择 → 上传 → 提交。
+ *
+ * 页面的契约（缺口 7 要求补的页面行为测试）：
+ * - 提交受理体带 `{id, version}` 引用（字节与文件名只留给气泡展示，不进受理）；
+ * - 未就绪（在传/失败）时**阻断提交**，不发"缺附件"的运行；
+ * - authEpoch 变化清空待传清单，过期上传回调不得落账；
+ * - 超过四个附件直接拒绝选择。
+ */
+describe('F04 附件流：上传 → 提交引用 / 失败阻断 / 身份变化清场', () => {
+  it('上传成功后提交：受理体带 {id, version}，气泡带完整附件，成功后清空待传清单', async () => {
+    const attachmentClient = fakeAttachmentClient();
+    const { page, scope, run } = mountPage({ attachmentClient });
+    try {
+      await settle();
+      const selection = page.selectAttachments(fileEvent([fakeFile('报告.pdf', 'application/pdf')]));
+      assert.equal(attachmentClient.uploads.length, 1, '选择后立即进入上传');
+      assert.equal(page.pendingAttachments.value[0].status, 'uploading');
+
+      attachmentClient.uploads[0].resolve(attachmentOf({ id: 'att-1', version: 3 }));
+      await selection;
+      await settle();
+      assert.equal(page.pendingAttachments.value[0].status, 'ready');
+
+      await page.submitMessage('看图');
+      await settle();
+      assert.equal(run.submits.length, 1);
+      const submitted = run.submits[0];
+      assert.equal(submitted.attachments.length, 1);
+      assert.equal(submitted.attachments[0].id, 'att-1');
+      assert.equal(submitted.attachments[0].version, 3);
+      const bubbles = page.bubbleItems.value as any[];
+      assert.equal(bubbles[0].attachments.length, 1);
+      assert.equal(bubbles[0].attachments[0].filename, '报告.pdf');
+      assert.equal(page.pendingAttachments.value.length, 0, '提交成功后清空待传清单');
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  it('上传失败 → 行可重试；未就绪时提交被阻断（不产生运行）', async () => {
+    const attachmentClient = fakeAttachmentClient();
+    const { page, scope, run, realmError } = mountPage({ attachmentClient });
+    try {
+      await settle();
+      const selection = page.selectAttachments(fileEvent([fakeFile('图.png', 'image/png')]));
+      attachmentClient.uploads[0].reject(new realmError('连接超时'));
+      await selection;
+      await settle();
+      assert.equal(page.pendingAttachments.value[0].status, 'failed');
+      assert.equal(page.pendingAttachments.value[0].error, '连接超时');
+
+      await page.submitMessage('带失败附件');
+      await settle();
+      assert.equal(run.submits.length, 0, '未就绪不得提交');
+      assert.match(run.error.value, /附件上传/);
+
+      const retry = page.retryAttachment(page.pendingAttachments.value[0]);
+      assert.equal(attachmentClient.uploads.length, 2, '重试重新上传');
+      attachmentClient.uploads[1].resolve(attachmentOf({ id: 'att-2', version: 5 }));
+      await retry;
+      await settle();
+      assert.equal(page.pendingAttachments.value[0].status, 'ready');
+
+      await page.submitMessage('重试好了');
+      await settle();
+      assert.equal(run.submits.length, 1);
+      assert.equal(run.submits[0].attachments[0].id, 'att-2');
+      assert.equal(run.submits[0].attachments[0].version, 5);
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  it('authEpoch 变化：待传清单清空，过期上传回调（进度/完成）不落账', async () => {
+    const attachmentClient = fakeAttachmentClient();
+    const { page, scope, user } = mountPage({ attachmentClient });
+    try {
+      await settle();
+      const selection = page.selectAttachments(fileEvent([fakeFile('图.png', 'image/png')]));
+      const orphan = page.pendingAttachments.value[0];
+      assert.equal(orphan.status, 'uploading');
+
+      user.authEpoch = 3;
+      await settle();
+      assert.equal(page.pendingAttachments.value.length, 0, '身份变化清空待传清单');
+
+      orphan && attachmentClient.uploads[0].progress(80);
+      attachmentClient.uploads[0].resolve(attachmentOf());
+      await selection;
+      await settle();
+      assert.equal(orphan.status, 'uploading', '过期回调不得把已丢弃的行标为 ready');
+      assert.equal(orphan.attachment, undefined);
+      assert.equal(orphan.progress, 0, '过期进度回调不得写入');
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  it('超过四个附件：拒绝选择并给出原因（不发上传）', async () => {
+    const attachmentClient = fakeAttachmentClient();
+    const { page, scope, run } = mountPage({ attachmentClient });
+    try {
+      await settle();
+      await page.selectAttachments(fileEvent([1, 2, 3, 4, 5].map(i => fakeFile(`f${i}.png`, 'image/png'))));
+      await settle();
+      assert.equal(attachmentClient.uploads.length, 0);
+      assert.equal(page.pendingAttachments.value.length, 0);
+      assert.match(run.error.value, /四个附件/);
+    }
+    finally {
+      scope.stop();
+    }
   });
 });
