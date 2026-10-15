@@ -116,6 +116,12 @@ public class AiGatewayController {
             new Route("POST", "/knowledge-bases/retrievals", "kb.retrieve"),
             new Route("GET", "/documents/{id}", "document.read"),
             new Route("GET", "/documents/{id}/content", "document.download"),
+            // F04 private chat attachments: authenticated gateway only (no public object URLs).
+            // Internal handlers (scan-visible, LocalWhitelistHandlerCoverageTest):
+            //  POST /internal/ai/v1/chat/attachments          <- ChatAttachmentController.upload
+            //  GET  /internal/ai/v1/chat/attachments/{id}/content <- ChatAttachmentController.content
+            new Route("POST", "/chat/attachments", "document.upload"),
+            new Route("GET", "/chat/attachments/{attachmentId}/content", "document.read"),
             new Route("GET", "/conversations", "conversation.read"),
             new Route("GET", "/conversations/{id}", "conversation.read"),
             new Route("GET", "/conversations/{id}/messages", "conversation.read"),

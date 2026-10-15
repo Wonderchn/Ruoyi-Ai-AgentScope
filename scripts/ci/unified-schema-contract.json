@@ -30,7 +30,8 @@
     31,
     32,
     33,
-    35
+    35,
+    36
   ],
   "aiVersions": [
     1,
@@ -66,7 +67,9 @@
     "ai_agent_state",
     "ai_biz_change_log",
     "ai_budget_reservation",
+    "ai_chat_attachment",
     "ai_chat_message",
+    "ai_chat_message_attachment",
     "ai_conversation",
     "ai_conversation_summary",
     "ai_delegation_replay",

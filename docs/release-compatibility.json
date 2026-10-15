@@ -36,7 +36,7 @@
       "verifiedBy": "scripts/ci/verify-ai-migrations.sh"
     },
     "unifiedPlatform": {
-      "migrations": 31,
+      "migrations": 32,
       "versionList": [
         1,
         2,
@@ -68,7 +68,8 @@
         31,
         32,
         33,
-        35
+        35,
+        36
       ],
       "verifiedBy": "scripts/ci/verify-unified-migrations.sh; scripts/ci/check-unified-contract.py"
     }
