@@ -273,6 +273,8 @@ public class AiGatewayController {
             // 而**不登记** /agent-catalog/agent-skills 的任何路径；
             // 该缺口已由 S2-F11-A1 接管——7 条见本表末尾的 agent-skills 段（同一前缀家族）。
             new Route("GET", "/agent-catalog/agents", "agent.list"),
+            new Route("GET", "/agent-catalog/agents/export", "agent.read"),
+            new Route("GET", "/agent-catalog/agents/{id}", "agent.read"),
             new Route("POST", "/agent-catalog/agents", "agent.write"),
             new Route("PUT", "/agent-catalog/agents/{id}", "agent.write"),
             new Route("DELETE", "/agent-catalog/agents/{id}", "agent.delete"),
