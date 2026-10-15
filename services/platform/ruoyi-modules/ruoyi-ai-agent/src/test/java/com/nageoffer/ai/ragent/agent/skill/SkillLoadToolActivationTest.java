@@ -19,7 +19,9 @@ package com.nageoffer.ai.ragent.agent.skill;
 
 import com.nageoffer.ai.ragent.agent.tool.AgentMcpClients.RemoteTool;
 import com.nageoffer.ai.ragent.agent.tool.AgentToolCatalog.McpToolBinding;
+import com.nageoffer.ai.ragent.agent.tool.AgentToolCatalog;
 import com.nageoffer.ai.ragent.agent.tool.McpToolProxy;
+import com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService;
 import com.nageoffer.ai.ragent.rag.core.skill.AgentSkill;
 import com.nageoffer.ai.ragent.rag.core.skill.AgentSkillRegistry;
 import io.agentscope.core.ReActAgent;
@@ -75,6 +77,15 @@ class SkillLoadToolActivationTest {
         when(registry.listEnabled()).thenReturn(List.of(skill));
         when(registry.listEnabledFor("agent-1")).thenReturn(List.of(skill));
         when(registry.findByCodeFor("agent-1", SKILL_CODE)).thenReturn(skill);
+        // 生产三参装配：目录提供 MCP id 全集，绑定侧声明该工具**已绑定**给 agent-1
+        AgentToolCatalog catalog = mock(AgentToolCatalog.class);
+        when(catalog.mcpToolIds()).thenReturn(new java.util.LinkedHashSet<>(List.of(MCP_TOOL)));
+        @SuppressWarnings("unchecked")
+        final org.springframework.beans.factory.ObjectProvider<AgentToolCatalog> catalogProvider =
+                mock(org.springframework.beans.factory.ObjectProvider.class);
+        when(catalogProvider.getIfAvailable()).thenReturn(catalog);
+        AgentProfileBindingService bindingService = mock(AgentProfileBindingService.class);
+        when(bindingService.boundMcpToolIds("agent-1")).thenReturn(java.util.Set.of(MCP_TOOL));
 
         McpClientWrapper client = mock(McpClientWrapper.class);
         when(client.getName()).thenReturn("returns");
@@ -101,7 +112,7 @@ class SkillLoadToolActivationTest {
                 .toolkit(toolkit)
                 .stateStore(new InMemoryAgentStateStore())
                 .permissionContext(PermissionContextState.builder().mode(PermissionMode.BYPASS).build())
-                .middleware(new AgentSkillMaskingMiddleware(registry))
+                .middleware(new AgentSkillMaskingMiddleware(registry, catalogProvider, bindingService))
                 .maxIters(3)
                 .build();
 
@@ -206,6 +217,82 @@ class SkillLoadToolActivationTest {
         @Override
         public String getModelName() {
             return "mask-assert-model";
+        }
+    }
+
+    /**
+     * O-2 专属：**技能已绑定并可加载，但该技能解锁的 MCP 工具未绑定给本档案** ⇒ 工具仍不可见（不得因手册加载而放行）。
+     */
+    @Test
+    void loadedSkillDoesNotUnmaskAnUnboundMcpTool() {
+        AgentSkillRegistry registry = mock(AgentSkillRegistry.class);
+        AgentSkill skill = new AgentSkill(SKILL_CODE, "退货办理", "办理退货", "手册正文", List.of(MCP_TOOL));
+        when(registry.listEnabled()).thenReturn(List.of(skill));
+        when(registry.listEnabledFor("agent-3")).thenReturn(List.of(skill));
+        when(registry.findByCodeFor("agent-3", SKILL_CODE)).thenReturn(skill);
+
+        AgentToolCatalog catalog = mock(AgentToolCatalog.class);
+        when(catalog.mcpToolIds()).thenReturn(new java.util.LinkedHashSet<>(List.of(MCP_TOOL)));
+        @SuppressWarnings("unchecked")
+        final org.springframework.beans.factory.ObjectProvider<AgentToolCatalog> catalogProvider =
+                mock(org.springframework.beans.factory.ObjectProvider.class);
+        when(catalogProvider.getIfAvailable()).thenReturn(catalog);
+        // 关键：agent-3 绑定了技能，但**没有**绑定该 MCP 工具
+        AgentProfileBindingService bindingService = mock(AgentProfileBindingService.class);
+        when(bindingService.boundMcpToolIds("agent-3")).thenReturn(java.util.Set.of());
+
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerAgentTool(new SkillLoadTool(registry));
+        McpClientWrapper client = mock(McpClientWrapper.class);
+        when(client.getName()).thenReturn("returns");
+        toolkit.registerAgentTool(new McpToolProxy(McpToolBinding.of(MCP_TOOL, "提交退货", "提交退货申请", false,
+                new RemoteTool(Tool.builder().name(MCP_TOOL).description("提交退货申请")
+                        .inputSchema(new JsonSchema("object", Map.of(), List.of(), false, null, null))
+                        .annotations(new ToolAnnotations(null, true, null, null, null, null)).build(), client))));
+        UnboundMcpModel model = new UnboundMcpModel();
+        ReActAgent agent = ReActAgent.builder()
+                .name("returns").sysPrompt("按技能手册办理退货").model(model).toolkit(toolkit)
+                .stateStore(new InMemoryAgentStateStore())
+                .permissionContext(PermissionContextState.builder().mode(PermissionMode.BYPASS).build())
+                .middleware(new AgentSkillMaskingMiddleware(registry, catalogProvider, bindingService))
+                .maxIters(3).build();
+
+        Msg answer = agent.call(
+                        List.of(Msg.builder().name("user").role(MsgRole.USER).textContent("帮我退货").build()),
+                        RuntimeContext.builder().userId("user-c").sessionId("session-c")
+                                .put(AgentSkillMaskingMiddleware.AGENT_PROFILE_ID_ATTRIBUTE, "agent-3").build())
+                .block(Duration.ofSeconds(5));
+
+        assertThat(answer).isNotNull();
+        assertThat(model.skillLoaded).as("技能本身应可加载（已绑定）").isTrue();
+    }
+
+    /** 每一轮都断言：未绑定的 MCP 工具**始终**不可见（即便技能已加载）。 */
+    private static final class UnboundMcpModel implements Model {
+
+        private int turns;
+        private boolean skillLoaded;
+
+        @Override
+        public Flux<ChatResponse> stream(List<Msg> messages, List<ToolSchema> tools, GenerateOptions options) {
+            turns++;
+            assertThat(tools).extracting(ToolSchema::getName)
+                    .as("未绑定的 MCP 工具在任何一轮都不得出现")
+                    .doesNotContain(MCP_TOOL);
+            if (turns == 1) {
+                return Flux.just(toolCall("load-3", SkillLoadTool.TOOL_NAME,
+                        Map.of("skill_code", SKILL_CODE), "{\"skill_code\":\"return_apply\"}"));
+            }
+            ToolResultBlock loadResult = result(messages, SkillLoadTool.TOOL_NAME);
+            skillLoaded = loadResult != null && loadResult.getState() == ToolResultState.SUCCESS;
+            return Flux.just(ChatResponse.builder()
+                    .content(List.of(TextBlock.builder().text("结束").build()))
+                    .finishReason("stop").build());
+        }
+
+        @Override
+        public String getModelName() {
+            return "unbound-mcp-model";
         }
     }
 
