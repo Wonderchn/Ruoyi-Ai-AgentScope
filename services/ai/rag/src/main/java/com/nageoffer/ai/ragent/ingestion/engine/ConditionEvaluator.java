@@ -23,7 +23,9 @@ import com.nageoffer.ai.ragent.ingestion.domain.context.IngestionContext;
 import org.springframework.beans.BeanWrapperImpl;
 import org.springframework.expression.ExpressionParser;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
-import org.springframework.expression.spel.support.StandardEvaluationContext;
+import org.springframework.expression.spel.standard.SpelExpression;
+import org.springframework.expression.spel.SpelNode;
+import org.springframework.expression.spel.support.SimpleEvaluationContext;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -50,7 +52,10 @@ public class ConditionEvaluator {
     }
 
     private boolean isStructurallyValid(JsonNode condition) {
-        if (condition == null || condition.isNull() || condition.isBoolean() || condition.isTextual()) {
+        if (condition != null && condition.isTextual()) {
+            return isReadOnlyExpression(condition.asText());
+        }
+        if (condition == null || condition.isNull() || condition.isBoolean()) {
             return true;
         }
         if (!condition.isObject()) {
@@ -66,7 +71,8 @@ public class ConditionEvaluator {
             return isStructurallyValid(condition.get("not"));
         }
         if (condition.has("field")) {
-            return StringUtils.hasText(condition.path("field").asText(null));
+            String field = condition.path("field").asText(null);
+            return StringUtils.hasText(field) && !field.matches(".*(^|[.\\[])class([.\\]]|$).*");
         }
         return false;
     }
@@ -233,12 +239,36 @@ public class ConditionEvaluator {
 
     private boolean evalSpel(IngestionContext context, String expression) {
         try {
-            StandardEvaluationContext ctx = new StandardEvaluationContext(context);
+            SimpleEvaluationContext ctx = SimpleEvaluationContext.forReadOnlyDataBinding()
+                    .withRootObject(context).build();
             ctx.setVariable("ctx", context);
             Boolean result = parser.parseExpression(expression).getValue(ctx, Boolean.class);
             return Boolean.TRUE.equals(result);
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private boolean isReadOnlyExpression(String expression) {
+        try {
+            return isReadOnlyNode(((SpelExpression) parser.parseExpression(expression)).getAST());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean isReadOnlyNode(SpelNode node) {
+        String kind = node.getClass().getSimpleName();
+        if (java.util.Set.of("TypeReference", "ConstructorReference", "BeanReference",
+                "MethodReference", "FunctionReference", "Assign", "OpInc", "OpDec").contains(kind)
+                || "PropertyOrFieldReference".equals(kind) && "class".equals(node.toStringAST())) {
+            return false;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (!isReadOnlyNode(node.getChild(i))) {
+                return false;
+            }
+        }
+        return true;
     }
 }

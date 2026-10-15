@@ -217,6 +217,15 @@ public class IngestionEngine {
             return NodeResult.fail(new IllegalStateException("未找到节点类型: " + nodeType));
         }
 
+        // Disabled nodes must never evaluate conditions or invoke the node's dependencies.
+        if (Boolean.FALSE.equals(nodeConfig.getEnabled())) {
+            NodeResult skip = NodeResult.skip("节点已禁用");
+            context.getLogs().add(NodeLog.builder()
+                    .nodeId(nodeId).nodeType(nodeType).message(skip.getMessage())
+                    .durationMs(0).success(true).build());
+            return skip;
+        }
+
         // 条件检查
         if (nodeConfig.getCondition() != null && !nodeConfig.getCondition().isNull()) {
             if (!conditionEvaluator.evaluate(context, nodeConfig.getCondition())) {

@@ -38,6 +38,28 @@ import org.junit.jupiter.api.Tag;
 @Tag("dev")
 class ConditionEvaluatorTest {
 
+    @Test
+    void expressionSandboxRejectsCodeAndMutationEvenInsideNot() {
+        IngestionContext context = IngestionContext.builder().rawText("original").build();
+        for (String expression : java.util.List.of(
+                "T(java.lang.Math).abs(-1) == 1", "rawText.toUpperCase() == 'ORIGINAL'",
+                "new java.lang.String('x') == 'x'", "@someBean != null",
+                "(rawText = 'changed') == 'changed'", "class != null")) {
+            var text = objectMapper.getNodeFactory().textNode(expression);
+            assertFalse(evaluator.evaluate(context, text), expression);
+            var negated = objectMapper.createObjectNode().set("not", text);
+            assertFalse(evaluator.evaluate(context, negated), "not must not turn invalid expression true: " + expression);
+            assertEquals("original", context.getRawText());
+        }
+    }
+
+    @Test
+    void expressionSandboxKeepsReadOnlyConditions() {
+        IngestionContext context = IngestionContext.builder().rawText("text").build();
+        assertTrue(evaluator.evaluate(context, objectMapper.getNodeFactory().textNode("rawText == 'text' and 2 + 3 > 4")));
+        assertTrue(evaluator.evaluate(context, objectMapper.getNodeFactory().textNode("#ctx.rawText == 'text'")));
+    }
+
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ConditionEvaluator evaluator = new ConditionEvaluator(objectMapper);
 

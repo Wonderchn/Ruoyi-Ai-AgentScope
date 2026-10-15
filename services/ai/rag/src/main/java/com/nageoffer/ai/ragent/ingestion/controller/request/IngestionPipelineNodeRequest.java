@@ -27,6 +27,8 @@ import lombok.Data;
 @Data
 public class IngestionPipelineNodeRequest {
 
+    private Boolean enabled = true;
+
     /**
      * 节点的唯一标识符
      */

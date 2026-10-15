@@ -23,6 +23,8 @@ import lombok.Data;
 @Data
 public class IngestionPipelineNodeVO {
 
+    private Boolean enabled = true;
+
     private String id;
 
     private String nodeId;

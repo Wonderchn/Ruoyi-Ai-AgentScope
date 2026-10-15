@@ -44,10 +44,17 @@ function deferred(): Pending & { promise: Promise<any> } {
 function fakeIngestion() {
   const calls: Array<{ pageNo?: number; pageSize?: number }> = [];
   const pending: Array<Pending & { promise: Promise<any> }> = [];
+  const updates: Array<{ id: string; body: any }> = [];
   return {
     calls,
     pending,
+    updates,
     api: {
+      getPipeline: async () => ({ nodes: [
+        { nodeId: 'first', nodeType: 'fetcher', nextNodeId: 'last', settings: { mode: 'safe' }, enabled: false, condition: false },
+        { nodeId: 'last', nodeType: 'parser' },
+      ] }),
+      updatePipeline: async (id: string, body: any) => { updates.push({ id, body }); },
       listPipelines: (query?: { pageNo?: number; pageSize?: number }) => {
         calls.push({ ...query });
         const item = deferred();
@@ -154,6 +161,41 @@ describe('pipelineAdmin 纯函数（页面逻辑模块的直接判据）', () =>
 });
 
 describe('正例：整数信封加载 IPage（records/total）', () => {
+  test('节点启停与条件保存保留原有settings/next，缺位enabled默认true', async () => {
+    const { page, scope, fake } = mountPage();
+    try {
+      await page.editPipeline({ id: 'p-edit' });
+      assert.equal(page.editorNodes.value[0].enabled, false);
+      assert.equal(page.editorNodes.value[1].enabled, true);
+      page.editorNodes.value[0].enabled = true;
+      page.editorNodes.value[0].conditionText = '{"field":"rawText","operator":"exists"}';
+      const saving = page.savePipelineNodes();
+      await settle();
+      fake.take().resolve(ipage([]));
+      await saving;
+      assert.equal(fake.updates.length, 1);
+      assert.equal(fake.updates[0].id, 'p-edit');
+      assert.equal(fake.updates[0].body.nodes[0].enabled, true);
+      assert.equal(fake.updates[0].body.nodes[0].nextNodeId, 'last');
+      assert.equal(fake.updates[0].body.nodes[0].settings.mode, 'safe');
+      assert.equal(fake.updates[0].body.nodes[0].condition.field, 'rawText');
+      assert.equal('conditionText' in fake.updates[0].body.nodes[0], false);
+    }
+    finally { scope.stop(); }
+  });
+
+  test('非法条件JSON不发送更新，编辑器保留错误供修复', async () => {
+    const { page, scope, fake } = mountPage();
+    try {
+      await page.editPipeline({ id: 'p-edit' });
+      page.editorNodes.value[0].conditionText = '{';
+      await page.savePipelineNodes();
+      assert.equal(fake.updates.length, 0);
+      assert.equal(page.editorVisible.value, true);
+      assert.notEqual(page.editorError.value, '');
+    }
+    finally { scope.stop(); }
+  });
   test('加载后 rows/total 来自 IPage；请求参数是 pageNo/pageSize', async () => {
     const { page, scope, fake } = mountPage();
     try {

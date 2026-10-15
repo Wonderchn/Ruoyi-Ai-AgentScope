@@ -33,6 +33,8 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+
+
 class IngestionEngineTest {
 
     @Test
@@ -124,6 +126,68 @@ class IngestionEngineTest {
                 List.of(node),
                 new ConditionEvaluator(new ObjectMapper()),
                 new NodeOutputExtractor());
+    }
+
+    @Test
+    void disabledNodeSkipsWithoutEvaluatingConditionAndContinuesTheChain() throws Exception {
+        List<String> executed = new ArrayList<>();
+        NodeConfig disabled = new ObjectMapper().readerFor(NodeConfig.class)
+                .without(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+                .readValue("{\"nodeId\":\"disabled\",\"nodeType\":\"test\",\"enabled\":false,\"condition\":false,\"nextNodeId\":\"tail\"}");
+        IngestionContext context = IngestionContext.builder().build();
+        engine(executed).execute(PipelineDefinition.builder()
+                .nodes(List.of(disabled, node("tail", null))).build(), context);
+        assertEquals(List.of("tail"), executed);
+        assertEquals(IngestionStatus.COMPLETED, context.getStatus());
+        assertEquals("Skipped: 节点已禁用", context.getLogs().get(0).getMessage());
+        assertEquals(0, context.getLogs().get(0).getDurationMs());
+    }
+
+    @Test
+    void conditionFalseSkipsAndContinuesToEnabledSuccessor() throws Exception {
+        List<String> executed = new ArrayList<>();
+        NodeConfig guarded = node("guarded", "tail");
+        guarded.setCondition(new ObjectMapper().readTree("false"));
+        IngestionContext context = IngestionContext.builder().build();
+        engine(executed).execute(PipelineDefinition.builder()
+                .nodes(List.of(guarded, node("tail", null))).build(), context);
+        assertEquals(List.of("tail"), executed);
+        assertEquals("Skipped: 条件未满足", context.getLogs().get(0).getMessage());
+    }
+
+    @Test
+    void omittedAndNullEnabledRemainCompatibleAndAllDisabledCompletes() {
+        List<String> executed = new ArrayList<>();
+        NodeConfig root = node("root", "middle");
+        NodeConfig middle = node("middle", "tail");
+        middle.setEnabled(null);
+        NodeConfig tail = node("tail", null);
+        tail.setEnabled(false);
+        var pipeline = PipelineDefinition.builder().nodes(List.of(root, middle, tail)).build();
+        engine(executed).execute(pipeline, IngestionContext.builder().build());
+        assertEquals(Boolean.TRUE, root.getEnabled());
+        assertEquals(List.of("root", "middle"), executed);
+        root.setEnabled(false);
+        middle.setEnabled(false);
+        executed.clear();
+        IngestionContext context = IngestionContext.builder().build();
+        engine(executed).execute(pipeline, context);
+        assertEquals(List.of(), executed);
+        assertEquals(3, context.getLogs().size());
+        assertEquals(IngestionStatus.COMPLETED, context.getStatus());
+    }
+
+    @Test
+    void disabledNodeCannotBypassUnknownTypeOrTopologyValidation() {
+        var unknown = node("unknown", null);
+        unknown.setNodeType("unregistered");
+        unknown.setEnabled(false);
+        var context = IngestionContext.builder().build();
+        engine(new ArrayList<>()).execute(PipelineDefinition.builder().nodes(List.of(unknown)).build(), context);
+        assertEquals(IngestionStatus.FAILED, context.getStatus());
+        unknown.setNextNodeId("missing");
+        assertThrows(ClientException.class, () -> engine(new ArrayList<>()).execute(
+                PipelineDefinition.builder().nodes(List.of(unknown)).build(), IngestionContext.builder().build()));
     }
 
     private NodeConfig node(String nodeId, String nextNodeId) {
