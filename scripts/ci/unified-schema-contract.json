@@ -31,7 +31,8 @@
     32,
     33,
     35,
-    36
+    36,
+    38
   ],
   "aiVersions": [
     1,
@@ -61,6 +62,7 @@
     "ai_agent_memory_extraction",
     "ai_agent_message",
     "ai_agent_profile",
+    "ai_agent_profile_binding",
     "ai_agent_prompt",
     "ai_agent_run",
     "ai_agent_skill",

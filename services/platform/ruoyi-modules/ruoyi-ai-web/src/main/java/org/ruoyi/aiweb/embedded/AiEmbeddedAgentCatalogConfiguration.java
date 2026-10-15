@@ -2,16 +2,23 @@ package org.ruoyi.aiweb.embedded;
 
 import com.nageoffer.ai.ragent.agent.controller.AgentOptionController;
 import com.nageoffer.ai.ragent.audit.support.BizChangeLogContext;
+import com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService;
+import com.nageoffer.ai.ragent.rag.binding.DefaultBindingRefLookup;
 import com.nageoffer.ai.ragent.rag.config.OrchestrationProperties;
 import com.nageoffer.ai.ragent.rag.controller.AgentProfileController;
 import com.nageoffer.ai.ragent.rag.core.prompt.AgentPromptCacheManager;
 import com.nageoffer.ai.ragent.rag.core.prompt.AgentPromptResolver;
+import com.nageoffer.ai.ragent.rag.service.RuntimeCatalogService;
 import com.nageoffer.ai.ragent.rag.service.impl.AgentOptionReadServiceImpl;
 import com.nageoffer.ai.ragent.rag.service.impl.AgentProfileAdminServiceImpl;
 import com.nageoffer.ai.ragent.template.PublicTemplateRepository;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.util.StringUtils;
 
 /**
  * W4-9（F09 only）：Agent 定义与 Prompt 管理面的内层装配。
@@ -58,6 +65,11 @@ import org.springframework.context.annotation.Import;
         AgentOptionController.class,
         AgentOptionReadServiceImpl.class,
         AgentProfileAdminServiceImpl.class,
+        // P3-BIND（2026-10-16，T0 集成）：绑定权威与引用核验适配入 embedded 闭包。
+        // 未装配期这条腿是 fail-closed（DefaultBindingRefLookup 的 MODEL 分支拒绝）；
+        // 装配后 SKILL/MCP 走既有资产表实查、MODEL 走运行目录（见本类尾部 BindingRefLookupAssembly）。
+        AgentProfileBindingService.class,
+        DefaultBindingRefLookup.class,
         // 运行期读端：v6 里不是 bean（见类注释的"装配在场 ≠ 生效"段），必须由本类登记。
         AgentPromptResolver.class,
         AgentPromptCacheManager.class,
@@ -72,4 +84,33 @@ import org.springframework.context.annotation.Import;
         PublicTemplateRepository.class
 })
 public class AiEmbeddedAgentCatalogConfiguration {
+
+    /**
+     * P3-BIND M-1：MODEL 引用的在线核验适配（T0 单写；提案见 F09-3-SHARED.patch §「共享 5 项」）。
+     *
+     * <p>refId 空间＝管理面 {@code GET /runtime-config/catalog} 的模型 {@code id}
+     * （即 {@code ai_runtime_config_revision.model_id}；见 {@link RuntimeCatalogService#knownModels}）。
+     * 判据＝该租户存在**已发布权威版本** 且 版本发布历史里出现过该模型 id；
+     * 任一不满足（含无已发布版本；读失败直接上抛由协议层映射 503）⇒ 不核过，
+     * 绑定保存整体拒绝（fail-closed，不回落"看起来可用"）。
+     */
+    @Configuration(proxyBeanMethods = false)
+    static class BindingRefLookupAssembly {
+
+        @Bean
+        @ConditionalOnMissingBean
+        AgentProfileBindingService.ModelRefLookup agentProfileModelRefLookup(RuntimeCatalogService catalog) {
+            return (tenantId, modelRefId) -> {
+                if (!StringUtils.hasText(tenantId) || !StringUtils.hasText(modelRefId)) {
+                    return false;
+                }
+                RuntimeCatalogService.RevisionRow current = catalog.currentRevision(tenantId);
+                if (current == null) {
+                    return false;
+                }
+                return catalog.knownModels(tenantId, 200).stream()
+                        .anyMatch(model -> modelRefId.equals(model.modelId()));
+            };
+        }
+    }
 }
