@@ -53,6 +53,22 @@ public final class RunApiResponses {
         return builder.body(body);
     }
 
+    /**
+     * F04 上传信封（2026-10-16 真机窗修复）：HTTP 201 与 {@code code=201} 同时成立。
+     *
+     * <p>网关转发对 2xx 执行 {@code requireSingleJsonObject}，要求 {@code body.code == HTTP status}
+     * （仅 202/200 为既有登记例外）。创建型端点若沿用 {@code ok(CREATED,…)}（code 恒 200）会被判
+     * "missing envelope code" 并在客户端呈现 503；本方法与前端 201/201 契约一致。
+     */
+    public static <T> ResponseEntity<Map<String, Object>> created(T data, String requestId) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("code", 201);
+        body.put("msg", "created");
+        body.put("data", data);
+        body.put("requestId", requestId);
+        return ResponseEntity.status(HttpStatus.CREATED).header(REQUEST_ID_HEADER, requestId).body(body);
+    }
+
     public static <T> ResponseEntity<Map<String, Object>> accepted(T data, String requestId) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("code", 200);

@@ -24,7 +24,7 @@ public class ChatAttachmentController {
             if(parts.size()!=1 || !parts.iterator().next().getName().equals("file")) throw new RunApiException(RunErrorCode.BAD_REQUEST,"Exactly one file part is required");
             byte[] bytes;
             try(var in=file.getInputStream()){bytes=in.readNBytes(ChatAttachmentPolicy.MAX_BYTES+1);}
-            return RunApiResponses.ok(HttpStatus.CREATED,service.upload(PrincipalContext.require(),file.getOriginalFilename(),file.getContentType(),bytes),requestId);
+            return RunApiResponses.created(service.upload(PrincipalContext.require(),file.getOriginalFilename(),file.getContentType(),bytes),requestId);
         }catch(RunApiException ex){return RunApiResponses.fail(ex.errorCode(),ex.getMessage(),requestId);}
         catch(java.io.IOException | jakarta.servlet.ServletException ex){return RunApiResponses.fail(RunErrorCode.BAD_REQUEST,"Invalid attachment upload",requestId);}
     }
