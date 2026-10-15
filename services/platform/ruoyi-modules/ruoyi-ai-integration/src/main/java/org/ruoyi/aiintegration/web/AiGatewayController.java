@@ -229,9 +229,10 @@ public class AiGatewayController {
             // （类级 @RequestMapping("/internal/ai/v1")，与 RunController/AiResourceController/
             // UploadController/AgentActionController 同形），故内层 handler 现在真实存在。
             //
-            // 只有**两条 JSON** 在此登记：
+            // 只有**三条 JSON** 在此登记：
             new Route("POST", "/agent/v1/stop", "run.cancel"),
             new Route("GET", "/agent/v1/meta", "agent.execute"),
+            new Route("GET", "/agent/v1/agents", "agent.execute"),
             // 另两条是 text/event-stream（GET /agent/v1/chat、POST /agent/v1/chat/confirm），
             // **刻意不在此登记**：本通用转发有 2s/2MiB 上限且不做 SSE，登记了只会超时或缓冲失败。
             // 它们由 AiGatewayStreamController 逐条精确映射（专用流式受限传输，先于 catch-all 生效）。

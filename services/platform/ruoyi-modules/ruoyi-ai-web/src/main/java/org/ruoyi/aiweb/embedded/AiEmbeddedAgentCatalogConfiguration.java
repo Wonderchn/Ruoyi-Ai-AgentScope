@@ -1,10 +1,12 @@
 package org.ruoyi.aiweb.embedded;
 
+import com.nageoffer.ai.ragent.agent.controller.AgentOptionController;
 import com.nageoffer.ai.ragent.audit.support.BizChangeLogContext;
 import com.nageoffer.ai.ragent.rag.config.OrchestrationProperties;
 import com.nageoffer.ai.ragent.rag.controller.AgentProfileController;
 import com.nageoffer.ai.ragent.rag.core.prompt.AgentPromptCacheManager;
 import com.nageoffer.ai.ragent.rag.core.prompt.AgentPromptResolver;
+import com.nageoffer.ai.ragent.rag.service.impl.AgentOptionReadServiceImpl;
 import com.nageoffer.ai.ragent.rag.service.impl.AgentProfileAdminServiceImpl;
 import com.nageoffer.ai.ragent.template.PublicTemplateRepository;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -53,6 +55,8 @@ import org.springframework.context.annotation.Import;
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
 @Import({
         AgentProfileController.class,
+        AgentOptionController.class,
+        AgentOptionReadServiceImpl.class,
         AgentProfileAdminServiceImpl.class,
         // 运行期读端：v6 里不是 bean（见类注释的"装配在场 ≠ 生效"段），必须由本类登记。
         AgentPromptResolver.class,
