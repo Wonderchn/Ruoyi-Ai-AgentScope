@@ -73,6 +73,12 @@ export const AGENT_CATALOG_PROMPT_SLOTS_PATH = `${AGENT_CATALOG_AGENTS_PATH}/pro
  */
 export const AGENT_CATALOG_EXPORT_PATH = `${AGENT_CATALOG_AGENTS_PATH}/export`;
 
+/** P3-BIND：绑定引用（线路形状与服务端 `AgentProfileSaveRequest.BindingRef` 对齐）。 */
+export interface AgentProfileBindingRef {
+  type: 'MODEL' | 'SKILL' | 'MCP' | 'ORCHESTRATION';
+  refId: string;
+}
+
 /** `AgentProfileVO`（`AgentProfileController.list` 的元素）。 */
 export interface AgentProfileRow {
   id?: string;
@@ -88,6 +94,8 @@ export interface AgentProfileRow {
   effectiveSlots?: number;
   /** 已填写但当前架构读不到的槽位数（切 `ragent.engine.type` 后生效）。 */
   inactiveSlots?: number;
+  /** P3-BIND 读侧回显：该智能体的绑定引用（未绑定 ⇒ 空数组/缺失）。 */
+  bindings?: AgentProfileBindingRef[] | null;
   createTime?: string;
   updateTime?: string;
 }
@@ -140,6 +148,16 @@ export interface AgentProfileSaveBody {
   name: string;
   description?: string;
   avatar?: string;
+  /**
+   * P3-BIND：绑定集合（与服务端 `AgentProfileSaveRequest.bindings` 同形状）。
+   *
+   * - `null`/缺失 = **本次不改绑定**；
+   * - `[]` = **解除全部绑定**；
+   * - 非空 = 整体替换为该集合（服务端先在线核引用、失败即零持久化）。
+   *
+   * ⚠️ 产品行为：**未绑定任何技能/MCP ⇒ 运行期无技能、无 MCP 工具**（fail-closed）。
+   */
+  bindings?: AgentProfileBindingRef[] | null;
 }
 
 /** 单槽位保存请求体（`AgentPromptSaveRequest`）：字段名是 `content`。 */
