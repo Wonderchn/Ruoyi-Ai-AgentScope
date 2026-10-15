@@ -1,15 +1,10 @@
-// 智能体选项
+// 智能体选项（用户端最小投影：id/name/description/avatar/active/executable 六字段）
+// id 是雪花字符串；executable 是服务端真值表判定的"当前可否作为对话对象"。
 export interface AgentVO {
-  id?: number;
-  agentName?: string;
-  agentDescribe?: string;
-  agentShow?: string;
-  modelId?: number;
-  modelName?: string;
-  enableThinking?: string;
-  systemPrompt?: string;
-  mcpToolIds?: number[];
-  skillNames?: string[];
-  knowledgeIds?: number[];
-  status?: string;
+  id: string;
+  name: string;
+  description?: string;
+  avatar?: string;
+  active: boolean;
+  executable: boolean;
 }
