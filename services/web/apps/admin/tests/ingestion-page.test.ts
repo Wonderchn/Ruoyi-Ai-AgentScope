@@ -12,7 +12,8 @@
  * - 失败绝不显示成空态（error 非空且清旧数据）；成功空集合 = empty；
  * - 成功路径不产生追加请求（GET 回执由网关消费，前端不 ACK）；
  * - 静态：管线卡片打活族端点 `aiApi.ingestion.listPipelines(`；旧 ragent 信封解包器
- *   与 "调用将 404" 的管线阻断文案必须消失；任务面（未装配）保留分母形态与阻断标注。
+ *   与 "调用将 404" 的管线阻断文案必须消失；任务面已接活族
+ *   `aiApi.ingestionTaskRuns.list(`/`.nodes(`，裸路径与 BlockedBy 阻断标注必须消失。
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -80,6 +81,18 @@ function fakeIngestion() {
       listTasks: () => Promise.resolve({ code: '0', data: [] }),
       taskNodes: () => Promise.resolve({ code: '0', data: [] }),
     },
+    /**
+     * 活族任务面假体（F06:1/2-A 接线后页面只走它）。整数信封已由共享 client 解包，
+     * 故 `list` 直接返回 IPage、`nodes` 直接返回数组——与真实客户端契约同形
+     * （否则页面挂载调用活族会取到 undefined → 崩）。
+     */
+    ingestionTaskRuns: {
+      list: () => Promise.resolve({ records: [], total: 0, current: 1, size: 10 }),
+      nodes: () => Promise.resolve([]),
+      submit: () => Promise.resolve({ runId: 'r-fake', status: 'pending' }),
+      cancel: () => Promise.resolve({ runId: 'r-fake', status: 'cancelled' }),
+      retry: () => Promise.resolve({ runId: 'r-fake', status: 'pending' }),
+    },
     /** 最近一次挂起的管线查询（没有挂起时抛错，避免测试静默挂住）。 */
     take() {
       const item = pending[pending.length - 1];
@@ -94,7 +107,7 @@ function mountPage() {
   const fake = fakeIngestion();
   const modules: Record<string, unknown> = {
     vue,
-    '@/api': { aiApi: { ingestion: fake.api, ingestionTasks: fake.tasks } },
+    '@/api': { aiApi: { ingestion: fake.api, ingestionTasks: fake.tasks, ingestionTaskRuns: fake.ingestionTaskRuns } },
     '@/components/BlockedBy.vue': { default: { name: 'BlockedBy', props: ['reason', 'detail'] } },
     '@/utils': { errorMessageOf },
     './pipelineAdmin': pipelineAdmin,
@@ -345,17 +358,18 @@ describe('SFC 静态绑定（模板不渲染时的另一侧锚点）', () => {
       false,
       '管线面已装配，"两控制器都 404"的旧阻断文案必须删除/改写',
     );
-    assert.ok(
+    assert.equal(
       PAGE_SOURCE.includes('IngestionTaskController（5 条）'),
-      '任务面仍未装配，阻断文案必须点名 IngestionTaskController',
+      false,
+      '任务面已接活族，旧"未装配/调用将 404"阻断文案必须删除',
     );
   });
 
-  test('任务面保留分母形态（裸路径 + ragent 信封）+ BlockedBy 阻断标注', () => {
-    assert.ok(PAGE_SOURCE.includes('aiApi.ingestionTasks.listTasks('), '任务面仍走未装配子域（分母留档）');
-    assert.ok(PAGE_SOURCE.includes('aiApi.ingestionTasks.taskNodes('), '任务节点进度同上');
-    assert.ok(PAGE_SOURCE.includes('BlockedBy'), '任务卡片必须保留阻断标注组件');
-    assert.ok(PAGE_SOURCE.includes('reason="EMBEDDED-REGISTRY"'), '阻断原因逐字保留（脚本识别 blocked-EMBEDDED-REGISTRY）');
+  test('任务面接活族端点（裸路径 + BlockedBy 阻断标注消失）', () => {
+    assert.ok(PAGE_SOURCE.includes('ingestionTaskRuns.list('), '任务列表必须走活族 run surface');
+    assert.ok(PAGE_SOURCE.includes('ingestionTaskRuns.nodes('), '任务节点进度必须走活族 run surface');
+    assert.equal(PAGE_SOURCE.includes('BlockedBy'), false, '任务卡片不得再保留 BlockedBy 阻断标注');
+    assert.ok(PAGE_SOURCE.includes('/api/ai/v1/ingestion/tasks'), '页面文案必须指明活路径（/api/ai/v1/ingestion/tasks）');
   });
 
   test('状态块 testid 保留（脚本只认标记，不匹配中文文案）', () => {
