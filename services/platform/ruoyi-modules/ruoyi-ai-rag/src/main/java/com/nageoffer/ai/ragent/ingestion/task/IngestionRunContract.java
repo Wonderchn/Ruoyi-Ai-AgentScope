@@ -222,6 +222,20 @@ public class IngestionRunContract implements RuntimeActionContract {
             throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
         }
         Map<String, Object> metadata = parseMetadata(parent.metadataJson());
+        Object parentPipelineHashValue = metadata.get("pipelineHash");
+        if (parentPipelineHashValue != null && !String.valueOf(parentPipelineHashValue).equals(snapshot.hash())) {
+            throw new RunApiException(RunErrorCode.RUN_STATE_CONFLICT,
+                    "pipeline snapshot changed since the parent run; retry is refused");
+        }
+        Object parentSourceShaValue = metadata.get("sourceSha256");
+        if (parentSourceShaValue != null) {
+            String sourceSha = documents.findUpload(tenantId, uploadId)
+                    .map(DocumentPort.UploadRow::sha256).orElse(null);
+            if (sourceSha == null || !String.valueOf(parentSourceShaValue).equals(sourceSha)) {
+                throw new RunApiException(RunErrorCode.RUN_STATE_CONFLICT,
+                        "source object changed since the parent run; retry is refused");
+            }
+        }
         String parentVersionId = (String) metadata.get("versionId");
         if (parentVersionId == null) {
             throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);

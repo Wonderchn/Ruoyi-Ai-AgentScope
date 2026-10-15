@@ -156,6 +156,9 @@ public class IngestionPipelineExecutor implements RunExecutor {
         List<IngestionPipelineReader.NodeSnapshot> chain = snapshot.enabledChain();
         State state = new State();
         int start = 0;
+        IngestionPipelineReader.NodeSnapshot currentNode = null;
+        int currentNodeIndex = -1;
+        long currentNodeBegan = 0L;
         try {
             if (retryNodeId != null && !retryNodeId.isBlank()) {
                 int idx = indexOf(chain, retryNodeId);
@@ -192,6 +195,9 @@ public class IngestionPipelineExecutor implements RunExecutor {
                 tasks.upsertNode(tenantId, runId, pipelineId, node.nodeId(), node.nodeType(), i,
                         "running", 0L, null, null, null);
                 long began = System.currentTimeMillis();
+                currentNode = node;
+                currentNodeIndex = i;
+                currentNodeBegan = began;
                 try {
                     state = runNode(ctx, node, guard, upload, state, maxToolCalls, maxSteps);
                 } catch (IngestionCancelled cancelled) {
@@ -211,6 +217,10 @@ public class IngestionPipelineExecutor implements RunExecutor {
             return new Outcome("CANCELLED", Map.of(), null);
         } catch (RuntimeException e) {
             log.warn("ingestion run failed runId={} cause={}", runId, e.getMessage());
+            if (currentNode != null) {
+                tasks.upsertNode(tenantId, runId, pipelineId, currentNode.nodeId(), currentNode.nodeType(),
+                        currentNodeIndex, "failed", System.currentTimeMillis() - currentNodeBegan, null, brief(e), null);
+            }
             tasks.markTerminal(tenantId, runId, "failed", null, brief(e));
             throw e;
         }

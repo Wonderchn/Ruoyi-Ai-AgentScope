@@ -210,4 +210,41 @@ class IngestionRunContractTest {
                 org.mockito.ArgumentMatchers.eq(DOC), org.mockito.ArgumentMatchers.eq(UPLOAD),
                 org.mockito.ArgumentMatchers.eq("r-new"));
     }
+
+    @Test
+    void retryRejectsPipelineSnapshotDrift() {
+        stubGoodSnapshot();
+        Map<String, Object> input = validInput();
+        input.put("retryNodeId", "n2");
+        when(tasks.findTask(TENANT, "r-old")).thenReturn(Optional.of(taskRow(metaJson("OLD-HASH"))));
+        lenient().when(documents.findUpload(TENANT, UPLOAD)).thenReturn(Optional.of(
+                new DocumentPort.UploadRow(UPLOAD, DOC, KB, "platform:acme:1", "f.pdf", "application/pdf",
+                        10L, "sha-1", "tenants/acme/upl-1.pdf", "STORED", Instant.now())));
+
+        RunApiException ex = assertThrows(RunApiException.class,
+                () -> contract().validate(principal(), request(input, "r-old")));
+        assertEquals(RunErrorCode.RUN_STATE_CONFLICT, ex.errorCode());
+    }
+
+    private String metaJson(String pipelineHash) {
+        Map<String, Object> meta = new java.util.LinkedHashMap<>();
+        meta.put("runId", "r-old");
+        meta.put("pipelineId", PIPE);
+        meta.put("docId", DOC);
+        meta.put("kbId", KB);
+        meta.put("uploadId", UPLOAD);
+        meta.put("versionId", "ver-old");
+        meta.put("pipelineHash", pipelineHash);
+        meta.put("sourceSha256", "sha-1");
+        try {
+            return MAPPER.writeValueAsString(meta);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static IngestionTaskRepository.TaskRow taskRow(String metadataJson) {
+        return new IngestionTaskRepository.TaskRow("r-old", PIPE, "file", "tenants/acme/upl-1.pdf", "f.pdf",
+                "failed", 0, null, null, metadataJson, null, null, "1", Instant.now(), Instant.now());
+    }
 }

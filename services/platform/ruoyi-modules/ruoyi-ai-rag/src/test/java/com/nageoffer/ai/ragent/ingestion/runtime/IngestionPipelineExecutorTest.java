@@ -57,6 +57,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
@@ -296,6 +297,22 @@ class IngestionPipelineExecutorTest {
         assertEquals(RunErrorCode.RECONCILIATION_REQUIRED, ex.errorCode());
         verify(mineru, never()).submit(any(), anyString(), anyString());
         verify(documents, never()).publishVersionFenced(anyString(), anyString(), anyString(), anyString(), anyLong());
+    }
+
+    @Test
+    void nonCancelFailureMarksFailingNodeFailed() {
+        stubCommon();
+        when(tasks.findTask(TENANT, RUN)).thenReturn(Optional.of(task(metadata(null))));
+        when(mineruProvider.getIfAvailable()).thenReturn(mineru);
+        when(mineru.submit(any(), anyString(), anyString()))
+                .thenThrow(new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE, "mineru down"));
+
+        assertThrows(RunApiException.class, () -> executor().execute(execution(
+                "{\"pipelineId\":\"pipe-1\",\"docId\":\"doc-1\",\"kbId\":\"kb-1\",\"uploadId\":\"upl-1\"}")));
+
+        verify(tasks).upsertNode(eq(TENANT), eq(RUN), eq(PIPE), eq("n1"), eq("parser"), anyInt(), eq("failed"),
+                anyLong(), any(), any(), any());
+        verify(tasks).markTerminal(eq(TENANT), eq(RUN), eq("failed"), any(), any());
     }
 
     private String toJson(Object value) {
