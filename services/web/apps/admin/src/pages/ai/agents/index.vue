@@ -33,7 +33,7 @@
 -->
 <script setup lang="ts">
 import type { AgentProfileForm } from './agentAdmin';
-import type { AgentProfileRow, AgentPromptSlot } from '@/api';
+import type { AgentProfileBindingRef, AgentProfileRow, AgentPromptSlot } from '@/api';
 import { computed, ref, watch } from 'vue';
 import { aiApi } from '@/api';
 import { usePermission } from '@/composables/usePermission';
@@ -184,6 +184,9 @@ const createForm = ref<AgentProfileForm>(profileFormOf());
 
 function openCreate() {
   createForm.value = profileFormOf();
+  // 创建侧本轮不接绑定（R-4 默认不落）：清空编辑态绑定，避免跨对话框串味。
+  editCarriesBindings.value = false;
+  editBindings.value = [];
   actionError.value = '';
   createVisible.value = true;
 }
@@ -225,15 +228,22 @@ function openEdit(row: AgentProfileRow) {
     return;
   editTargetId.value = id;
   editForm.value = profileFormOf(row);
+  // 安全兜底：仅当行**携带**绑定数据（数组，含空数组）才进入替换语义；
+  // 老服务端/边界行缺 `bindings`（undefined）或为 null ⇒ 保持"本次不改绑定"。
+  editCarriesBindings.value = Array.isArray(row.bindings);
+  editBindings.value = editCarriesBindings.value ? [...(row.bindings ?? [])] : [];
   actionError.value = '';
   editVisible.value = true;
+  void loadBindingOptions();
 }
 
 async function submitEdit() {
   const id = editTargetId.value;
-  const body = profileSaveBody(editForm.value);
-  if (!id || !body)
+  const base = profileSaveBody(editForm.value);
+  if (!id || !base)
     return;
+  // 携带数据 ⇒ 整体替换（空数组＝解除全部）；未携带 ⇒ 不发该字段（服务端 null＝不改绑定）。
+  const body = editCarriesBindings.value ? { ...base, bindings: editBindings.value } : base;
   const capturedAuth = identity.snapshotEpoch();
   editing.value = true;
   actionError.value = '';
@@ -253,6 +263,113 @@ async function submitEdit() {
       editing.value = false;
   }
 }
+
+// ---------------- P3-BIND：绑定选择器与读侧回显（F09:3 / F11:3） ----------------
+
+type BindingType = AgentProfileBindingRef['type'];
+/** 编排模式闭集（与服务端 ORCHESTRATION_MODES 对齐；未知码服务端拒绝）。 */
+const ORCHESTRATION_MODES = ['REACT', 'PLAN_ACT'] as const;
+
+const editBindings = ref<AgentProfileBindingRef[]>([]);
+/**
+ * 打开编辑时行上是否**携带**绑定数据（`Array.isArray(row.bindings)`）。
+ *
+ * 安全兜底：老服务端/边界行缺 `bindings`（`undefined`/`null`）⇒ 保存体**不发**该字段，
+ * 保持服务端 `null`＝"本次不改绑定"；仅当行确实带回数据（含空数组）才按替换语义发。
+ */
+const editCarriesBindings = ref(false);
+const modelOptions = ref<Array<{ id: string; label: string }>>([]);
+const skillOptions = ref<Array<{ skillCode: string; name: string }>>([]);
+const mcpOptions = ref<Array<{ toolId: string; name: string }>>([]);
+/** MCP 清单是否可用；不可用走受控文本输入（服务端仍在保存时核验）。 */
+const mcpListAvailable = ref(false);
+const mcpFallbackInput = ref('');
+const bindingLoadError = ref('');
+const bindingNotice = ref('');
+
+function bindingsOfType(type: BindingType): string[] {
+  return editBindings.value.filter(b => b.type === type).map(b => b.refId);
+}
+function setBindingsOfType(type: BindingType, ids: string[]): void {
+  // 整体替换该类型的引用（其它类型保持不变）。
+  editBindings.value = [
+    ...editBindings.value.filter(b => b.type !== type),
+    ...ids.filter(id => id.trim()).map(id => ({ type, refId: id.trim() })),
+  ];
+}
+function addMcpFallbackId(): void {
+  const id = mcpFallbackInput.value.trim();
+  if (!id)
+    return;
+  // 去重（同 id 不重复绑定），保持加入顺序。用 Array.from 而非 `[...new Set(...)]`：
+  // 后者在测试的 ES5 transpile 目标下会退化成空数组（Set 无 length），非产品缺陷但会假红。
+  setBindingsOfType('MCP', Array.from(new Set([...bindingsOfType('MCP'), id])));
+  mcpFallbackInput.value = '';
+}
+
+async function loadBindingOptions(): Promise<void> {
+  bindingLoadError.value = '';
+  bindingNotice.value = '';
+  // 模型：运行时目录（config.read）。按 modelId 展示（同 pages/ai/models 的模型列）；
+  // 失败/403 ⇒ 禁用选择器并如实提示，不伪造选项。
+  if (modelOptions.value.length === 0) {
+    try {
+      const catalog = await aiApi.runtimeConfig.catalog();
+      modelOptions.value = (catalog?.models ?? [])
+        .map(m => ({ id: String(m.id ?? ''), label: String(m.modelId ?? m.id ?? '') }))
+        .filter(o => o.id);
+    }
+    catch (caught) {
+      bindingLoadError.value = `模型清单不可用：${agentFailureHint(caught).message}（模型绑定暂不可选）`;
+    }
+  }
+  // 技能：既有 agentSkills.list()（skill.list）。
+  if (skillOptions.value.length === 0) {
+    try {
+      const page = await aiApi.agentSkills.list({ current: 1, size: 200 });
+      skillOptions.value = (page?.records ?? [])
+        .map(r => ({ skillCode: String(r.skillCode ?? ''), name: String(r.name ?? '') }))
+        .filter(o => o.skillCode);
+    }
+    catch (caught) {
+      bindingLoadError.value = `技能清单不可用：${agentFailureHint(caught).message}`;
+    }
+  }
+  // MCP：改用 `agentSkills.toolOptions()`——其 `toolId` 正是服务端绑定核验空间
+  // （`ai_intent_node.mcp_tool_id`），且是活端点；`mcp.*` 在本形态 G-22 恒 404，不再使用。
+  // 不可用（403 / 引擎闭包门 / 清单为空）⇒ 降级受控文本输入，不抛给页面。
+  if (mcpOptions.value.length === 0) {
+    try {
+      const options = await aiApi.agentSkills.toolOptions();
+      mcpOptions.value = (Array.isArray(options) ? options : [])
+        .map(t => ({ toolId: String(t.toolId ?? ''), name: String(t.name ?? '') }))
+        .filter(o => o.toolId);
+    }
+    catch {
+      mcpOptions.value = [];
+    }
+    mcpListAvailable.value = mcpOptions.value.length > 0;
+    if (!mcpListAvailable.value) {
+      bindingNotice.value = 'MCP 工具清单不可用（需 ai:skill:list；引擎未启用或 403 时降级）：'
+        + '请直接填写 tool id 后点「添加」，保存时由服务端按意图树核验存在与启用。';
+    }
+  }
+}
+
+const modelBindingIds = computed({ get: () => bindingsOfType('MODEL'), set: v => setBindingsOfType('MODEL', v) });
+const skillBindingIds = computed({ get: () => bindingsOfType('SKILL'), set: v => setBindingsOfType('SKILL', v) });
+const mcpBindingIds = computed({ get: () => bindingsOfType('MCP'), set: v => setBindingsOfType('MCP', v) });
+const orchestrationMode = computed({
+  get: () => bindingsOfType('ORCHESTRATION')[0] ?? '',
+  set: v => setBindingsOfType('ORCHESTRATION', v ? [v] : []),
+});
+
+/** 读侧回显汇总文本（分组顺序 = 加入顺序）。 */
+const bindingEcho = computed(() => {
+  if (editBindings.value.length === 0)
+    return '（未绑定任何引用）';
+  return editBindings.value.map(b => `${b.type}:${b.refId}`).join('、');
+});
 
 /** 删除（agent.delete）。 */
 const removing = ref('');
@@ -751,6 +868,77 @@ function nameOf(row: AgentProfileRow): string {
           </ElFormItem>
           <ElFormItem label="头像标识">
             <ElInput v-model="editForm.avatar" data-testid="agents-edit-avatar" />
+          </ElFormItem>
+
+          <ElAlert
+            data-testid="agents-binding-notice"
+            type="warning"
+            :closable="false"
+            class="mb-4"
+            title="绑定为空即禁用：未绑定任何技能 / MCP 工具时，该智能体运行期看不到任何技能，也看不到任何 MCP 工具。"
+          />
+          <ElAlert
+            v-if="bindingLoadError"
+            data-testid="agents-binding-error"
+            type="error"
+            :closable="false"
+            class="mb-4"
+            :title="bindingLoadError"
+          />
+          <ElAlert
+            v-if="bindingNotice"
+            data-testid="agents-binding-fallback-notice"
+            type="info"
+            :closable="false"
+            class="mb-4"
+            :title="bindingNotice"
+          />
+
+          <ElFormItem label="模型（MODEL）">
+            <ElSelect
+              v-model="modelBindingIds"
+              multiple
+              clearable
+              :disabled="modelOptions.length === 0"
+              data-testid="agents-binding-model"
+            >
+              <ElOption v-for="o in modelOptions" :key="o.id" :label="o.label" :value="o.id" />
+            </ElSelect>
+          </ElFormItem>
+          <ElFormItem label="技能（SKILL）">
+            <ElSelect v-model="skillBindingIds" multiple clearable data-testid="agents-binding-skill">
+              <ElOption
+                v-for="o in skillOptions"
+                :key="o.skillCode"
+                :label="o.name || o.skillCode"
+                :value="o.skillCode"
+              />
+            </ElSelect>
+          </ElFormItem>
+          <ElFormItem label="MCP 工具（MCP）">
+            <ElSelect v-if="mcpListAvailable" v-model="mcpBindingIds" multiple clearable data-testid="agents-binding-mcp">
+              <ElOption v-for="o in mcpOptions" :key="o.toolId" :label="o.name || o.toolId" :value="o.toolId" />
+            </ElSelect>
+            <template v-else>
+              <ElInput
+                v-model="mcpFallbackInput"
+                data-testid="agents-binding-mcp-input"
+                placeholder="MCP 清单未启用；填写 tool id 后点「添加」，保存时由服务端校验存在/启用"
+              />
+              <ElButton link size="small" data-testid="agents-binding-mcp-add" @click="addMcpFallbackId()">
+                添加
+              </ElButton>
+            </template>
+          </ElFormItem>
+          <ElFormItem label="编排模式（ORCHESTRATION）">
+            <ElSelect v-model="orchestrationMode" clearable data-testid="agents-binding-orchestration">
+              <ElOption v-for="m in ORCHESTRATION_MODES" :key="m" :label="m" :value="m" />
+            </ElSelect>
+          </ElFormItem>
+          <ElFormItem label="当前绑定（只读）">
+            <div data-testid="agents-binding-echo" class="card-header-meta">
+              {{ bindingEcho }}
+            </div>
           </ElFormItem>
         </ElForm>
         <template #footer>
