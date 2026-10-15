@@ -188,6 +188,26 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
     }
 
     /**
+     * P3-BIND：逐行读回该 Agent 的绑定（F09:3 读侧回显，与保存契约对称）。
+     *
+     * <ul>
+     *   <li>确无绑定 ⇒ 空列表（页面按替换语义发空集 = 无操作）；</li>
+     *   <li>绑定权威缺席（兼容构造，仅老测试路径）⇒ {@code null}：读不出就**不冒充**"无绑定"，
+     *       页面据 {@code null}/{@code undefined} 保持"本次不改绑定"。</li>
+     * </ul>
+     * 读路径直接复用既有权威 {@link AgentProfileBindingService#bindingsOf(String)}（租户收窄、enabled、排序）。
+     */
+    private List<AgentProfileVO.BindingRef> readBindings(String agentProfileId) {
+        if (bindingService == null) {
+            return null;
+        }
+        return bindingService.bindingsOf(agentProfileId).stream()
+                .map(ref -> new AgentProfileVO.BindingRef(
+                        ref.type() == null ? null : ref.type().name(), ref.refId()))
+                .toList();
+    }
+
+    /**
      * 按智能体聚合已配置的槽位，只投影两个键以免把大段提示词正文全捞回内存
      * <p>
      * isNotNull + ne("") 即视为已配置，与 {@code AgentPromptResolver#putNonBlank} 的
@@ -541,8 +561,11 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
 
     /**
      * 目录投影的唯一构造点（list / detail 共用），避免两处字段口径漂移。
+     *
+     * <p>P3-BIND 集成（2026-10-16）：绑定回显并入本构造点（原 c87ddffd 在 list() 内联
+     * builder；与 F09:0 的 toVO 抽取语义合并后收敛到一处），空绑定⇒[]、权威缺席⇒null。
      */
-    private static AgentProfileVO toVO(AgentProfileDO profile, int effective, int inactive) {
+    private AgentProfileVO toVO(AgentProfileDO profile, int effective, int inactive) {
         return AgentProfileVO.builder()
                 .id(profile.getId())
                 .name(profile.getName())
@@ -554,6 +577,7 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
                 .inactiveSlots(inactive)
                 .createTime(profile.getCreateTime())
                 .updateTime(profile.getUpdateTime())
+                .bindings(readBindings(profile.getId()))
                 .build();
     }
 
