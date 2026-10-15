@@ -59,10 +59,14 @@ import static org.mockito.Mockito.when;
  * W4-9 / 维护者裁决 <b>A2-ter</b> 的门禁判据：Agent 目录动作要求
  * <b>"scope + 平台管理身份"两个独立条件</b>同时成立。
  *
- * <p>背景：{@code ai_agent_profile}/{@code ai_agent_prompt}/{@code ai_agent_skill}
- * 三表<b>没有 tenant_id</b>、{@code uk_agent_name} <b>全局唯一</b> ⇒ 目录是
- * <b>平台级</b>资源。若只按 scope 放行，任何被误授 {@code ai:agent:write} 的租户成员
- * 都能改到所有租户共用的目录。维护者要求：<b>证明普通租户即使误获该 scope 仍被拒绝</b>。
+ * <p>背景（<b>数据面事实勘误，仅更正事实、行为不变</b>）：{@code ai_agent_profile}/
+ * {@code ai_agent_prompt}/{@code ai_agent_skill} 三表自 V7 起<b>已有 {@code tenant_id}</b>
+ * （NOT NULL；模板行显式落在保留租户 {@code __public_template__}），唯一键为租户作用域
+ * ——"三表没有 tenant_id、{@code uk_agent_name} 全局唯一"的旧描述<b>不再成立</b>。
+ * 第二道门的理由因此改写为：这族动作面向<b>平台管理的 Agent 目录面</b>，若只按 scope 放行，
+ * 任何被误授 {@code ai:agent:write} 的租户成员都能改到平台管理面内容（与 AGENTS.md
+ * 「缺少租户或主体时必须拒绝」同向）。维护者要求不变：<b>证明普通租户即使误获该 scope
+ * 仍被拒绝</b>。
  *
  * <p>本类用 mock 直接驱动控制器（不起容器），三条判据：
  * <ol>
@@ -211,5 +215,48 @@ class W49AgentCatalogAdminGateTest {
         assertEquals(403, response.getStatusCode().value(),
                 "两个条件独立：平台管理身份不能替代 scope");
         verify(client, never()).forward(any());
+    }
+
+    /**
+     * F09:0 新增详情面：{@code GET /agent-catalog/agents/{id}} 复用 {@code agent.read}，
+     * 因此必须与既有目录动作同受 A2-ter 双门（而不是因为"只是读一条"就放宽）。
+     *
+     * <p>红锚语义：本路由未由 T0 补进 {@code AiGatewayController.ROUTES} 之前，
+     * 网关先以 404 收敛（路径不在白名单），所以这里拿不到 403 —— 该用例会红。
+     */
+    @Test
+    @DisplayName("F09:0-详情：持有 ai:agent:read 但非平台管理身份 ⇒ 403，且不转发")
+    void agentDetailRouteKeepsTheAdminGate() {
+        stubMember(Set.of("ai:agent:read"));
+        // isPlatformAdmin() 保持默认 false：本用例钉的是第二道门对**新增详情路由**同样成立
+
+        ResponseEntity<?> response = controller.gateway(
+                request("GET", "/api/ai/v1/agent-catalog/agents/a-1"), null, null);
+
+        assertNotNull(response);
+        assertEquals(403, response.getStatusCode().value(),
+                "详情复用 agent.read，必须与既有目录动作同受平台管理身份门");
+        assertEquals("FORBIDDEN", errorCode(response));
+        verify(client, never()).forward(any());
+    }
+
+    /**
+     * F09:0 新增导出面：{@code GET /agent-catalog/agents/export} 复用 {@code agent.read}。
+     *
+     * <p>同样以 404 为红锚（路由未登记前不可达）；登记后平台管理身份 + scope 必须放行。
+     */
+    @Test
+    @DisplayName("F09:0-导出：平台管理身份 + ai:agent:read ⇒ 通过第二道门（转发发生）")
+    void agentExportRoutePassesTheAdminGate() {
+        stubMember(Set.of("ai:agent:read"));
+        when(principalResolver.isPlatformAdmin()).thenReturn(true);
+
+        ResponseEntity<?> response = controller.gateway(
+                request("GET", "/api/ai/v1/agent-catalog/agents/export"), null, null);
+
+        assertNotNull(response);
+        assertEquals(200, response.getStatusCode().value(),
+                "平台管理身份 + scope 齐备 ⇒ 导出路由不得被门禁或白名单拦下");
+        verify(client).forward(any());
     }
 }

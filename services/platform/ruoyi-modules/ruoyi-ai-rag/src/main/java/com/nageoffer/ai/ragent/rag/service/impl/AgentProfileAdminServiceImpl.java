@@ -44,12 +44,16 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -59,6 +63,17 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
      * 与 ai_agent_profile.avatar 列宽一致
      */
     private static final int AVATAR_MAX_LENGTH = 32;
+
+    /**
+     * 列表/详情/导出共用的目录排序：内置在前 → createTime 升序（nullsLast）。
+     * 抽取自 {@code list()} 的原有比较器，三处口径逐字一致（F09:0 只加读取面，不改排序）。
+     */
+    private static final Comparator<AgentProfileDO> PROFILE_ORDER =
+            Comparator.comparing((AgentProfileDO each) -> !isTrue(each.getBuiltin()))
+                    .thenComparing(AgentProfileDO::getCreateTime, Comparator.nullsLast(Comparator.naturalOrder()));
+
+    /** 导出时间列口径：ISO-8601（UTC 瞬时），保证导出可被下游解析而不依赖本地时区。 */
+    private static final DateTimeFormatter EXPORT_TIME = DateTimeFormatter.ISO_INSTANT;
 
     private final AgentProfileMapper agentProfileMapper;
     private final AgentPromptMapper agentPromptMapper;
@@ -76,23 +91,11 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
 
         List<AgentProfileVO> agents = agentProfileMapper.selectList(Wrappers.lambdaQuery(AgentProfileDO.class))
                 .stream()
-                .sorted(Comparator.comparing((AgentProfileDO each) -> !isTrue(each.getBuiltin()))
-                        .thenComparing(AgentProfileDO::getCreateTime, Comparator.nullsLast(Comparator.naturalOrder())))
+                .sorted(PROFILE_ORDER)
                 .map(each -> {
                     List<AgentPromptSlot> own = configuredSlots.getOrDefault(each.getId(), List.of());
                     int effective = (int) own.stream().filter(slot -> slot.isEffectiveIn(mode)).count();
-                    return AgentProfileVO.builder()
-                            .id(each.getId())
-                            .name(each.getName())
-                            .description(each.getDescription())
-                            .avatar(each.getAvatar())
-                            .builtin(isTrue(each.getBuiltin()))
-                            .active(isTrue(each.getActive()))
-                            .effectiveSlots(effective)
-                            .inactiveSlots(own.size() - effective)
-                            .createTime(each.getCreateTime())
-                            .updateTime(each.getUpdateTime())
-                            .build();
+                    return toVO(each, effective, own.size() - effective);
                 })
                 .toList();
         return AgentProfileListVO.builder()
@@ -100,6 +103,48 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
                 .effectiveSlotTotal(AgentPromptSlot.effectiveIn(mode).size())
                 .agents(agents)
                 .build();
+    }
+
+    /**
+     * F09:0 详情：单条读取，投影与 {@code list()} 同形（同一个 {@link #toVO}）。
+     *
+     * <p>不存在即 {@code ClientException}（经 {@link #mustLoad(String)}），不回落空对象、
+     * 不返回邻行——"没找到"必须与"找到但字段为空"可区分。
+     */
+    @Override
+    public AgentProfileVO detail(String id) {
+        AgentProfileDO profile = mustLoad(id);
+        OrchestrationMode mode = orchestrationProperties.getMode();
+        List<AgentPromptSlot> own = configuredSlotsOf(id);
+        int effective = (int) own.stream().filter(slot -> slot.isEffectiveIn(mode)).count();
+        return toVO(profile, effective, own.size() - effective);
+    }
+
+    /**
+     * F09:0 导出：NDJSON（一行一个智能体），字段与掩码见接口 javadoc。
+     *
+     * <p>只读：与 {@code list()} 同一 {@code PROFILE_ORDER} 排序、同一 {@code mode} 生效判定；
+     * {@code keyword} 过滤与前端列表筛选同口径（名称/描述、大小写不敏感），保证"导出的行集合
+     * == 页面上筛出来的行集合"。槽位只输出 {@code slotKey} ＋ {@code "masked":true}，
+     * 提示词正文永不进入导出（比"脱敏后仍带原文"更强）。
+     */
+    @Override
+    public String exportDefinition(String keyword) {
+        OrchestrationMode mode = orchestrationProperties.getMode();
+        String needle = StrUtil.isBlank(keyword) ? null : StrUtil.trim(keyword).toLowerCase(Locale.ROOT);
+        Map<String, List<AgentPromptSlot>> configuredSlots = loadConfiguredSlots();
+
+        StringBuilder ndjson = new StringBuilder();
+        agentProfileMapper.selectList(Wrappers.lambdaQuery(AgentProfileDO.class))
+                .stream()
+                .sorted(PROFILE_ORDER)
+                .filter(profile -> matches(profile, needle))
+                .forEach(profile -> {
+                    List<AgentPromptSlot> own = configuredSlots.getOrDefault(profile.getId(), List.of());
+                    int effective = (int) own.stream().filter(slot -> slot.isEffectiveIn(mode)).count();
+                    ndjson.append(exportLine(profile, own, effective)).append('\n');
+                });
+        return ndjson.toString();
     }
 
     /**
@@ -394,6 +439,113 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
             throw new ClientException("内置智能体不可编辑或删除，如需调整请复制一份新建");
         }
         return profile;
+    }
+
+    /**
+     * 目录投影的唯一构造点（list / detail 共用），避免两处字段口径漂移。
+     */
+    private static AgentProfileVO toVO(AgentProfileDO profile, int effective, int inactive) {
+        return AgentProfileVO.builder()
+                .id(profile.getId())
+                .name(profile.getName())
+                .description(profile.getDescription())
+                .avatar(profile.getAvatar())
+                .builtin(isTrue(profile.getBuiltin()))
+                .active(isTrue(profile.getActive()))
+                .effectiveSlots(effective)
+                .inactiveSlots(inactive)
+                .createTime(profile.getCreateTime())
+                .updateTime(profile.getUpdateTime())
+                .build();
+    }
+
+    /**
+     * 单条详情的槽位集合：只查该智能体、只投影两个键（不把全表或大段正文捞回内存）。
+     * 与 {@link #loadConfiguredSlots()} 的"已配置"判定逐字一致（isNotNull + ne("")）。
+     */
+    private List<AgentPromptSlot> configuredSlotsOf(String agentId) {
+        return agentPromptMapper.selectList(Wrappers.lambdaQuery(AgentPromptDO.class)
+                        .select(AgentPromptDO::getAgentId, AgentPromptDO::getSlotKey)
+                        .eq(AgentPromptDO::getAgentId, agentId)
+                        .isNotNull(AgentPromptDO::getContent)
+                        .ne(AgentPromptDO::getContent, ""))
+                .stream()
+                .map(prompt -> AgentPromptSlot.find(prompt.getSlotKey()))
+                .flatMap(Optional::stream)
+                .toList();
+    }
+
+    /** 导出筛选：与页面列表同一口径（名称/描述、大小写不敏感包含）；needle 为 null 即不过滤。 */
+    private static boolean matches(AgentProfileDO profile, String needle) {
+        if (needle == null) {
+            return true;
+        }
+        return StrUtil.emptyIfNull(profile.getName()).toLowerCase(Locale.ROOT).contains(needle)
+                || StrUtil.emptyIfNull(profile.getDescription()).toLowerCase(Locale.ROOT).contains(needle);
+    }
+
+    /**
+     * 导出单行（NDJSON）。字段恰为：id/name/description/avatar/builtin/active/
+     * effectiveSlots/inactiveSlots/createTime/updateTime/configuredSlots；
+     * {@code configuredSlots} 只含 slotKey 与 {@code "masked":true}（提示词正文不出现）。
+     */
+    private static String exportLine(AgentProfileDO profile, List<AgentPromptSlot> own, int effective) {
+        StringBuilder slots = new StringBuilder("[");
+        for (int i = 0; i < own.size(); i++) {
+            if (i > 0) {
+                slots.append(',');
+            }
+            slots.append("{\"slotKey\":\"").append(escape(own.get(i).name())).append("\",\"masked\":true}");
+        }
+        slots.append(']');
+
+        return new StringBuilder(256)
+                .append("{\"id\":").append(jsonString(profile.getId()))
+                .append(",\"name\":").append(jsonString(profile.getName()))
+                .append(",\"description\":").append(jsonString(profile.getDescription()))
+                .append(",\"avatar\":").append(jsonString(profile.getAvatar()))
+                .append(",\"builtin\":").append(isTrue(profile.getBuiltin()))
+                .append(",\"active\":").append(isTrue(profile.getActive()))
+                .append(",\"effectiveSlots\":").append(effective)
+                .append(",\"inactiveSlots\":").append(own.size() - effective)
+                .append(",\"createTime\":").append(jsonString(isoTime(profile.getCreateTime())))
+                .append(",\"updateTime\":").append(jsonString(isoTime(profile.getUpdateTime())))
+                .append(",\"configuredSlots\":").append(slots)
+                .append('}')
+                .toString();
+    }
+
+    private static String isoTime(Date time) {
+        return time == null ? null : EXPORT_TIME.format(time.toInstant());
+    }
+
+    /** null 与空串都如实写成 JSON 字符串（不伪造、不省略键）。 */
+    private static String jsonString(String raw) {
+        return raw == null ? "null" : "\"" + escape(raw) + "\"";
+    }
+
+    /** JSON 字符串转义：控制字符走 \\uXXXX，防止名称/描述里的引号换行破坏 NDJSON 逐行可解析。 */
+    private static String escape(String raw) {
+        StringBuilder out = new StringBuilder(raw.length() + 8);
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (c == '"') {
+                out.append("\\\"");
+            } else if (c == '\\') {
+                out.append("\\\\");
+            } else if (c == '\n') {
+                out.append("\\n");
+            } else if (c == '\r') {
+                out.append("\\r");
+            } else if (c == '\t') {
+                out.append("\\t");
+            } else if (c < 0x20) {
+                out.append(String.format("\\u%04x", (int) c));
+            } else {
+                out.append(c);
+            }
+        }
+        return out.toString();
     }
 
     private static boolean isTrue(Integer flag) {

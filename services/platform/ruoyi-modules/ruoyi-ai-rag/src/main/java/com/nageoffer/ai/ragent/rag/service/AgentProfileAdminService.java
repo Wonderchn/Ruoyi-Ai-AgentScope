@@ -20,6 +20,7 @@ package com.nageoffer.ai.ragent.rag.service;
 import com.nageoffer.ai.ragent.rag.controller.request.AgentProfileSaveRequest;
 import com.nageoffer.ai.ragent.rag.controller.request.AgentPromptSaveRequest;
 import com.nageoffer.ai.ragent.rag.controller.vo.AgentProfileListVO;
+import com.nageoffer.ai.ragent.rag.controller.vo.AgentProfileVO;
 import com.nageoffer.ai.ragent.rag.controller.vo.AgentPromptConfigVO;
 
 public interface AgentProfileAdminService {
@@ -28,6 +29,23 @@ public interface AgentProfileAdminService {
      * 查询全部智能体，内置在前、其余按创建时间
      */
     AgentProfileListVO list();
+
+    /**
+     * 读取单个智能体详情（F09:0）。
+     *
+     * <p>与 {@link #list()} 同一投影（{@code AgentProfileVO}）；不存在（或已软删）即
+     * 抛 {@code ClientException}，<b>零副作用</b>（不写任何表、不 bump 任何 epoch）。
+     */
+    AgentProfileVO detail(String id);
+
+    /**
+     * 导出智能体目录（F09:0），返回 NDJSON 文本（每行一个智能体）。
+     *
+     * <p><b>字段与掩码</b>：只导出目录元数据 + 已配置槽位的 {@code slotKey}（内容一律不出现，
+     * 以 {@code "masked":true} 显式标注）；不导出提示词正文、模型、凭据等任何运行配置事实。
+     * {@code keyword} 非空时按名称/描述包含过滤（与列表筛选同一口径，大小写不敏感）。
+     */
+    String exportDefinition(String keyword);
 
     String create(AgentProfileSaveRequest requestParam);
 

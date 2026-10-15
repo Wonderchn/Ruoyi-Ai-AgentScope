@@ -68,7 +68,12 @@ const readAllowed = computed(() => mayReadCatalog(checker));
 const writeAllowed = computed(() => mayWrite(checker));
 const deleteAllowed = computed(() => mayDelete(checker));
 const activateAllowed = computed(() => mayActivate(checker));
-const readPromptsAllowed = computed(() => mayHold(checker, AGENT_PERMISSIONS.read));
+/**
+ * 同一个 `ai:agent:read`（V27）同时管三件事：槽位读取、**详情**、**导出**（F09:0）。
+ * 三者的后端动作都是 `agent.read`；前端不另立权限，按钮显示共用这一条。
+ */
+const readDetailAllowed = computed(() => mayHold(checker, AGENT_PERMISSIONS.read));
+const readPromptsAllowed = readDetailAllowed;
 
 const rows = ref<AgentProfileRow[]>([]);
 const loading = ref(false);
@@ -89,11 +94,40 @@ const phase = computed(() => listViewPhase({
   rowCount: rows.value.length,
 }));
 
+/**
+ * F09:0 列表筛选（客户端）：与导出 `keyword` **同口径**（名称/描述、大小写不敏感）。
+ * 导出按钮把同一个 `keyword` 送服务端，因此"页面筛出来的行"与"导出的行"一致。
+ */
+const keyword = ref('');
+const filterNeedle = computed(() => keyword.value.trim().toLowerCase());
+const filteredRows = computed(() => {
+  const needle = filterNeedle.value;
+  if (!needle)
+    return rows.value;
+  return rows.value.filter((row) => {
+    const name = row.name == null ? '' : String(row.name);
+    const description = row.description == null ? '' : String(row.description);
+    return `${name} ${description}`.toLowerCase().includes(needle);
+  });
+});
+
+/** 分页（客户端）；筛选变化与重新加载都回到第一页。 */
+const page = ref(1);
+const pageSize = 10;
+const pagedRows = computed(() => {
+  const start = (page.value - 1) * pageSize;
+  return filteredRows.value.slice(start, start + pageSize);
+});
+watch(filterNeedle, () => {
+  page.value = 1;
+});
+
 function clearRows() {
   rows.value = [];
   loaded.value = false;
   mode.value = '';
   effectiveSlotTotal.value = 0;
+  page.value = 1;
 }
 
 async function load() {
@@ -398,6 +432,100 @@ async function copyDefault(slot: AgentPromptSlot) {
   }
 }
 
+/** F09:0 详情（agent.read）：单条读取，与列表同一投影；失败清空并如实显示服务端结论。 */
+const detailVisible = ref(false);
+const detailLoading = ref(false);
+const detailError = ref('');
+const detailRow = ref<AgentProfileRow | null>(null);
+
+async function openDetail(row: AgentProfileRow) {
+  const id = agentIdOf(row);
+  if (!id)
+    return;
+  detailVisible.value = true;
+  detailRow.value = null;
+  detailError.value = '';
+  await loadDetail(id);
+}
+
+async function loadDetail(id: string) {
+  const capturedAuth = identity.snapshotEpoch();
+  const current = () => identity.isCurrent(capturedAuth);
+  detailLoading.value = true;
+  detailError.value = '';
+  try {
+    const detail = await aiApi.agentProfiles.detail(id);
+    if (!current())
+      return;
+    detailRow.value = detail ?? null;
+  }
+  catch (caught) {
+    if (current()) {
+      // 失败必须清空：403（缺 scope／非平台管理身份）后不得继续显示上一条详情。
+      detailRow.value = null;
+      detailError.value = agentFailureHint(caught).message;
+    }
+  }
+  finally {
+    if (current())
+      detailLoading.value = false;
+  }
+}
+
+/** F09:0 导出（agent.read）：服务端回 NDJSON 文本，这里物化成 .ndjson 下载。 */
+const exporting = ref(false);
+const exportNotice = ref('');
+
+async function runExport() {
+  const capturedAuth = identity.snapshotEpoch();
+  const needle = keyword.value.trim();
+  exporting.value = true;
+  actionError.value = '';
+  exportNotice.value = '';
+  try {
+    const ndjson = await aiApi.agentProfiles.exportDefinition(needle || undefined);
+    if (!identity.isCurrent(capturedAuth))
+      return;
+    const text = typeof ndjson === 'string' ? ndjson : '';
+    const trimmed = text.trim();
+    const lineCount = trimmed === '' ? 0 : trimmed.split('\n').length;
+    downloadNdjson(exportFileName(), text);
+    exportNotice.value = lineCount === 0
+      ? '导出完成：当前筛选没有匹配的智能体（导出内容为空）。'
+      : `导出完成：${lineCount} 个智能体${needle ? `（筛选：${needle}）` : ''}；导出只含目录元数据，提示词正文按掩码排除。`;
+  }
+  catch (caught) {
+    if (identity.isCurrent(capturedAuth))
+      actionError.value = agentFailureHint(caught).message;
+  }
+  finally {
+    if (identity.isCurrent(capturedAuth))
+      exporting.value = false;
+  }
+}
+
+function exportFileName(): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `agent-catalog-${stamp}.ndjson`;
+}
+
+function onPageChange(value: number) {
+  page.value = value;
+}
+
+/** 下载文本：不引新依赖（Blob + 临时 <a>）；服务端不产二进制，物化只发生在前端。 */
+function downloadNdjson(filename: string, text: string) {
+  const blob = new Blob([text], { type: 'application/x-ndjson' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 function nameOf(row: AgentProfileRow): string {
   return row.name == null ? '' : String(row.name);
 }
@@ -422,6 +550,22 @@ function nameOf(row: AgentProfileRow): string {
             生效槽位 {{ effectiveSlotTotal }} · 共 {{ rows.length }} 条
           </span>
           <div class="toolbar-actions">
+            <ElInput
+              v-model="keyword"
+              data-testid="agents-search"
+              class="agents-search"
+              placeholder="按名称/描述筛选（导出同口径）"
+              clearable
+              @clear="keyword = ''"
+            />
+            <ElButton
+              v-if="readDetailAllowed"
+              data-testid="agents-export"
+              :loading="exporting"
+              @click="runExport()"
+            >
+              导出 NDJSON
+            </ElButton>
             <ElButton
               v-if="writeAllowed"
               type="primary"
@@ -465,7 +609,13 @@ function nameOf(row: AgentProfileRow): string {
           成功响应，当前平台目录没有智能体定义。
         </div>
 
-        <ElTable v-else :data-testid="listStateTestId('agents', phase)" :data="rows" border size="small">
+        <template v-else>
+          <ElEmpty
+            v-if="filteredRows.length === 0"
+            data-testid="agents-filter-empty"
+            description="当前筛选没有匹配的智能体（导出同样为空）。"
+          />
+          <ElTable v-else :data-testid="listStateTestId('agents', phase)" :data="pagedRows" border size="small">
           <ElTableColumn label="ID" width="260">
             <template #default="{ row }">
               {{ agentIdOf(row) }}
@@ -491,6 +641,15 @@ function nameOf(row: AgentProfileRow): string {
           </ElTableColumn>
           <ElTableColumn label="操作" width="300">
             <template #default="{ row }">
+              <ElButton
+                v-if="readDetailAllowed"
+                link
+                size="small"
+                :data-testid="`agents-detail-${agentIdOf(row)}`"
+                @click="openDetail(row)"
+              >
+                详情
+              </ElButton>
               <ElButton
                 v-if="readPromptsAllowed"
                 link
@@ -535,6 +694,17 @@ function nameOf(row: AgentProfileRow): string {
             </template>
           </ElTableColumn>
         </ElTable>
+          <ElPagination
+            v-if="filteredRows.length > pageSize"
+            data-testid="agents-pagination"
+            class="agents-pagination"
+            layout="prev, pager, next"
+            :current-page="page"
+            :page-size="pageSize"
+            :total="filteredRows.length"
+            @current-change="onPageChange"
+          />
+        </template>
       </ElCard>
 
       <ElDialog v-model="createVisible" title="新建智能体（POST /agent-catalog/agents）" width="520px">
@@ -597,6 +767,54 @@ function nameOf(row: AgentProfileRow): string {
             保存
           </ElButton>
         </template>
+      </ElDialog>
+
+      <ElAlert
+        v-if="exportNotice"
+        data-testid="agents-export-notice"
+        :title="exportNotice"
+        type="success"
+        :closable="false"
+        class="mb-4"
+      />
+
+      <ElDialog v-model="detailVisible" title="智能体详情（GET /agent-catalog/agents/{id}）" width="560px">
+        <div v-if="detailLoading" data-testid="agents-detail-loading" class="state-block">
+          正在读取详情…
+        </div>
+        <ElAlert
+          v-else-if="detailError"
+          data-testid="agents-detail-error"
+          :title="detailError"
+          type="error"
+          :closable="false"
+        />
+        <ElDescriptions v-else-if="detailRow" :column="1" border data-testid="agents-detail-body">
+          <ElDescriptionsItem label="ID">
+            {{ agentIdOf(detailRow) }}
+          </ElDescriptionsItem>
+          <ElDescriptionsItem label="名称">
+            {{ nameOf(detailRow) }}
+          </ElDescriptionsItem>
+          <ElDescriptionsItem label="描述">
+            {{ detailRow.description ?? '（空）' }}
+          </ElDescriptionsItem>
+          <ElDescriptionsItem label="头像标识">
+            {{ detailRow.avatar || '（空）' }}
+          </ElDescriptionsItem>
+          <ElDescriptionsItem label="内置 / 激活">
+            {{ detailRow.builtin ? '内置' : '普通' }} / {{ detailRow.active ? '激活中' : '未激活' }}
+          </ElDescriptionsItem>
+          <ElDescriptionsItem label="槽位">
+            {{ detailRow.effectiveSlots ?? 0 }} 生效 / {{ detailRow.inactiveSlots ?? 0 }} 当前架构读不到
+          </ElDescriptionsItem>
+          <ElDescriptionsItem label="创建时间">
+            {{ detailRow.createTime ?? '—' }}
+          </ElDescriptionsItem>
+          <ElDescriptionsItem label="更新时间">
+            {{ detailRow.updateTime ?? '—' }}
+          </ElDescriptionsItem>
+        </ElDescriptions>
       </ElDialog>
 
       <ElDrawer v-model="promptVisible" title="Prompt 槽位（GET /agent-catalog/agents/{id}/prompts）" size="55%">
@@ -736,5 +954,14 @@ function nameOf(row: AgentProfileRow): string {
 
 .ml-1 {
   margin-left: 4px;
+}
+
+.agents-search {
+  width: 260px;
+}
+
+.agents-pagination {
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 </style>
