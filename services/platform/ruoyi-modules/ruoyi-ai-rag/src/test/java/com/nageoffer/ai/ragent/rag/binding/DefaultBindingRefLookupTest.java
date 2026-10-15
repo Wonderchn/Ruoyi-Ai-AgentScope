@@ -79,10 +79,31 @@ class DefaultBindingRefLookupTest {
     }
 
     @Test
-    @DisplayName("MODEL：目录不在此层 ⇒ fail-closed 拒绝（不触达任何资产查询）")
-    void modelIsFailClosed() {
+    @DisplayName("MODEL：端口缺席 ⇒ fail-closed 拒绝（不触达任何资产查询）")
+    void modelIsFailClosedWhenPortAbsent() {
         assertThat(lookup().existsEnabled(TENANT, RefType.MODEL, "model-1")).isFalse();
         verifyNoInteractions(agentSkillMapper, intentNodeMapper);
+    }
+
+    @Test
+    @DisplayName("MODEL：端口到场 ⇒ 按端口结论（M-1）")
+    void modelConsultsPortWhenPresent() {
+        AgentProfileBindingService.ModelRefLookup port = mock(AgentProfileBindingService.ModelRefLookup.class);
+        when(port.existsEnabled(TENANT, "model-1")).thenReturn(true);
+        when(port.existsEnabled(TENANT, "model-x")).thenReturn(false);
+
+        DefaultBindingRefLookup lookup = new DefaultBindingRefLookup(agentSkillMapper, intentNodeMapper, provider(port));
+        assertThat(lookup.existsEnabled(TENANT, RefType.MODEL, "model-1")).isTrue();
+        assertThat(lookup.existsEnabled(TENANT, RefType.MODEL, "model-x")).isFalse();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static org.springframework.beans.factory.ObjectProvider<AgentProfileBindingService.ModelRefLookup> provider(
+            AgentProfileBindingService.ModelRefLookup lookup) {
+        org.springframework.beans.factory.ObjectProvider<AgentProfileBindingService.ModelRefLookup> provider =
+                mock(org.springframework.beans.factory.ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(lookup);
+        return provider;
     }
 
     @Test

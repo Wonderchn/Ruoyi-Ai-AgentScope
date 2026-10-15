@@ -68,6 +68,16 @@ public class AgentProfileBindingService {
         boolean existsEnabled(String tenantId, RefType type, String refId);
     }
 
+    /**
+     * P3-BIND 续段 2（M-1）：**模型引用**核验端口。
+     *
+     * <p>模型目录不在本模块（`ModelSelector` 属 infra-ai）⇒ 本卡只落端口与 fail-closed 默认：
+     * 端口缺席时 MODEL 一律不可绑定；端口装配与 runtime 目录适配列入 T0 共享闸批量落行。
+     */
+    public interface ModelRefLookup {
+        boolean existsEnabled(String tenantId, String modelRefId);
+    }
+
     /** 编排模式闭集：只接受已知码，未知码拒绝（不回落默认模式）。 */
     private static final Set<String> ORCHESTRATION_MODES = Set.of("REACT", "PLAN_ACT");
 
@@ -157,6 +167,17 @@ public class AgentProfileBindingService {
             }
         }
         return codes;
+    }
+
+    /** 运行期 MCP 工具子集（O-2 消费点）：空绑定 ⇒ 空集合（无 MCP 工具可用）。 */
+    public Set<String> boundMcpToolIds(String agentProfileId) {
+        Set<String> toolIds = new LinkedHashSet<>();
+        for (BindingReference ref : bindingsOf(agentProfileId)) {
+            if (ref.type() == RefType.MCP) {
+                toolIds.add(ref.refId());
+            }
+        }
+        return toolIds;
     }
 
     /** 绑定版本：集合的确定性哈希（排序后拼接再 sha256）。 */

@@ -41,11 +41,25 @@ import org.springframework.util.StringUtils;
  * </table>
  */
 @Component
-@RequiredArgsConstructor
 public class DefaultBindingRefLookup implements RefLookup {
 
     private final AgentSkillMapper agentSkillMapper;
     private final IntentNodeMapper intentNodeMapper;
+
+    /** 模型核验端口（M-1）：缺席 ⇒ MODEL fail-closed（一律不可绑定）。 */
+    private final org.springframework.beans.factory.ObjectProvider<AgentProfileBindingService.ModelRefLookup> modelRefLookup;
+
+    public DefaultBindingRefLookup(AgentSkillMapper agentSkillMapper, IntentNodeMapper intentNodeMapper,
+                                   org.springframework.beans.factory.ObjectProvider<AgentProfileBindingService.ModelRefLookup> modelRefLookup) {
+        this.agentSkillMapper = agentSkillMapper;
+        this.intentNodeMapper = intentNodeMapper;
+        this.modelRefLookup = modelRefLookup;
+    }
+
+    /** 兼容构造：无模型核验端口（MODEL 按 fail-closed 拒绝）。 */
+    public DefaultBindingRefLookup(AgentSkillMapper agentSkillMapper, IntentNodeMapper intentNodeMapper) {
+        this(agentSkillMapper, intentNodeMapper, null);
+    }
 
     @Override
     public boolean existsEnabled(String tenantId, RefType type, String refId) {
@@ -59,7 +73,12 @@ public class DefaultBindingRefLookup implements RefLookup {
             case MCP -> intentNodeMapper.selectCount(Wrappers.lambdaQuery(IntentNodeDO.class)
                     .eq(IntentNodeDO::getMcpToolId, refId)
                     .eq(IntentNodeDO::getEnabled, 1)) > 0;
-            case MODEL -> false;
+            // M-1：端口到场才核验；缺席（含装配未落）⇒ fail-closed
+            case MODEL -> {
+                AgentProfileBindingService.ModelRefLookup lookup =
+                        modelRefLookup == null ? null : modelRefLookup.getIfAvailable();
+                yield lookup != null && lookup.existsEnabled(tenantId, refId);
+            }
             case ORCHESTRATION -> false;
         };
     }
