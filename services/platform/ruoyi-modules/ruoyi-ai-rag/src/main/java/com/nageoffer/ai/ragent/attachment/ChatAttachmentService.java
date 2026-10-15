@@ -55,6 +55,9 @@ public class ChatAttachmentService implements ChatAttachmentPort {
     public Content content(ExecutionPrincipal p,String id,long version) {
         function(p,"document.read");
         Row row=row(p.tenantId(),p.membershipId(),p.userId(),id,version);
+        // F04：已绑定消息的附件在本路径也必须复验会话/消息仍可读（会话删除/归属变化=拒绝）；
+        // list 路径已按同一事实过滤，这里补上单取预览路径，且在释放字节之前。
+        requireBoundMessagesReadable(p.tenantId(),p.membershipId(),p.userId(),id);
         byte[] bytes=bytes(row);
         // A deletion or object-version change during I/O must not release bytes.
         row(p.tenantId(),p.membershipId(),p.userId(),id,version);
@@ -151,6 +154,16 @@ public class ChatAttachmentService implements ChatAttachmentPort {
         String table="AGENT".equals(kind)?"ai_agent_conversation":"ai_conversation";
         if(!Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM platform."+table+" WHERE tenant_id=? AND member_id=? AND user_id=? AND conversation_id=? AND deleted=0)",Boolean.class,tenant,member,user,conversation))) throw missing();
     }
+    private void requireBoundMessagesReadable(String tenant,String member,String user,String attachmentId) {
+        var bound=jdbc.query("SELECT message_kind,conversation_id,message_id FROM platform.ai_chat_message_attachment WHERE tenant_id=? AND member_id=? AND user_id=? AND attachment_id=?",
+                (rs,n)->new Binding(rs.getString(1),rs.getString(2),rs.getString(3)),tenant,member,user,attachmentId);
+        for(Binding binding:bound) {
+            requireConversation(tenant,member,user,binding.kind,binding.conversation);
+            String table="AGENT".equals(binding.kind)?"ai_agent_message":"ai_message";
+            if(!Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM platform."+table+" WHERE tenant_id=? AND member_id=? AND user_id=? AND conversation_id=? AND id=? AND role='user' AND deleted=0)",Boolean.class,tenant,member,user,binding.conversation,binding.message)))
+                throw missing();
+        }
+    }
     private Row row(String tenant,String member,String user,String id,long version) {
         ExecutionPrincipal.requireMembershipId(member,tenant,user);
         var found=jdbc.query("SELECT a.filename,a.mime_type,a.size_bytes,a.sha256,a.object_key,a.object_version FROM platform.ai_chat_attachment a JOIN platform.ai_resource r ON r.tenant_id=a.tenant_id AND r.resource_type='OBJECT' AND r.parent_type='CHAT_ATTACHMENT' AND r.parent_id=a.attachment_id AND r.owner_member_id=a.member_id AND r.status='ACTIVE' AND r.resource_version=a.object_version AND r.resource_id=regexp_replace(a.object_key,'^.*/','') WHERE a.tenant_id=? AND a.member_id=? AND a.user_id=? AND a.attachment_id=? AND a.object_version=? AND a.status='ACTIVE'",
@@ -178,6 +191,7 @@ public class ChatAttachmentService implements ChatAttachmentPort {
         }catch(RunApiException ex){throw ex;}catch(Exception ex){throw bad("Attachment document parsing failed");}
     }
     private record Row(String id,String name,String mime,long size,String sha,String key,long version) { }
+    private record Binding(String kind,String conversation,String message) { }
     private record Ref(String id,long version) { }
     private static List<Ref> refs(JsonNode node) {
         if(node==null || !node.isArray() || node.size()>4) throw bad("attachments must be an array of at most four references");
