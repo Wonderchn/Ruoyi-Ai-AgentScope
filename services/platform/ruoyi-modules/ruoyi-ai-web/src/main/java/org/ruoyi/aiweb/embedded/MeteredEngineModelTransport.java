@@ -52,6 +52,10 @@ import java.util.regex.Pattern;
  *       完成/错误/取消三态各结算一次（恰一次，AtomicBoolean）；同步 {@code execute}
  *       从响应体同理结算；usage 缺失时按契约以状态说明结算
  *       （{@code received(callId, id, {status/error/cancelled})}，与 p2 失败分支同型）。</li>
+ *   <li>生命周期（R17-B2）：流式为 {@code Flux.defer}，每次订阅独立 spendId/结算门，
+ *       未订阅零校验零预占零出站；{@code delegate.stream} 同步抛错也在订阅内结算；
+ *       {@code execute} 的普通 RuntimeException 与 HttpTransportException 同口径先记
+ *       错误/未知事实再重抛；失败路径记账自身异常以 suppressed 保存到原异常（不吞、不换主）。</li>
  * </ul>
  *
  * <p><b>不做。</b>不改 AgentScope 任何类（包装 {@link HttpTransport} 是 Builder 公开面）；
@@ -90,41 +94,56 @@ final class MeteredEngineModelTransport implements HttpTransport {
                     usageOf(response.getBody()), null);
             return response;
         } catch (HttpTransportException e) {
-            settle(spendId, null, null, "transport-error:" + e.getClass().getSimpleName());
+            settleAfterFailure(spendId, e, "transport-error:" + e.getClass().getSimpleName());
+            throw e;
+        } catch (RuntimeException e) {
+            // 普通运行异常（连接/解析/组装等）同样必须记账：本次预占记错误/未知事实后原样重抛
+            settleAfterFailure(spendId, e, "error:" + e.getClass().getSimpleName());
             throw e;
         }
     }
 
     @Override
     public Flux<String> stream(HttpRequest request) {
-        String spendId;
-        try {
-            spendId = preflight(request);
-        } catch (RuntimeException e) {
-            // 校验/预占失败：不出站（fail-closed），错误沿引擎既有错误路径上行
-            return Flux.error(e);
-        }
-        AtomicBoolean settled = new AtomicBoolean(false);
-        StringBuilder providerRequestId = new StringBuilder();
-        String[] usage = new String[1];
-        return delegate.stream(request)
-                .doOnNext(line -> {
-                    if (providerRequestId.length() == 0) {
-                        String id = firstMatch(ID_PATTERN, line);
-                        if (id != null) {
-                            providerRequestId.append(id);
+        // 每次订阅都是独立调用生命周期：预占、delegate 构造、订阅与终止结算都发生在本次订阅内
+        return Flux.defer(() -> {
+            String spendId;
+            try {
+                spendId = preflight(request);
+            } catch (RuntimeException e) {
+                // 校验/预占失败：不出站（fail-closed），错误在订阅内沿引擎既有错误路径上行
+                return Flux.error(e);
+            }
+            AtomicBoolean settled = new AtomicBoolean(false);
+            StringBuilder providerRequestId = new StringBuilder();
+            String[] usage = new String[1];
+            Flux<String> upstream;
+            try {
+                upstream = delegate.stream(request);
+            } catch (RuntimeException e) {
+                // delegate 同步抛错：转为订阅内 onError，并沿用原结算门恰记一次错误事实
+                settleAfterFailure(settled, spendId, null, null, "error:" + e.getClass().getSimpleName(), e);
+                return Flux.error(e);
+            }
+            return upstream
+                    .doOnNext(line -> {
+                        if (providerRequestId.length() == 0) {
+                            String id = firstMatch(ID_PATTERN, line);
+                            if (id != null) {
+                                providerRequestId.append(id);
+                            }
                         }
-                    }
-                    String found = extractBalancedObject(line, USAGE_KEY_PATTERN);
-                    if (found != null) {
-                        usage[0] = found;
-                    }
-                })
-                .doOnComplete(() -> settleOnce(settled, spendId, idOrNull(providerRequestId), parse(usage[0]), null))
-                .doOnError(e -> settleOnce(settled, spendId, idOrNull(providerRequestId), parse(usage[0]),
-                        "error:" + e.getClass().getSimpleName()))
-                .doOnCancel(() -> settleOnce(settled, spendId, idOrNull(providerRequestId), parse(usage[0]),
-                        "cancelled"));
+                        String found = extractBalancedObject(line, USAGE_KEY_PATTERN);
+                        if (found != null) {
+                            usage[0] = found;
+                        }
+                    })
+                    .doOnComplete(() -> settleOnce(settled, spendId, idOrNull(providerRequestId), parse(usage[0]), null))
+                    .doOnError(e -> settleAfterFailure(settled, spendId, idOrNull(providerRequestId), parse(usage[0]),
+                            "error:" + e.getClass().getSimpleName(), e))
+                    .doOnCancel(() -> settleOnce(settled, spendId, idOrNull(providerRequestId), parse(usage[0]),
+                            "cancelled"));
+        });
     }
 
     @Override
@@ -154,6 +173,25 @@ final class MeteredEngineModelTransport implements HttpTransport {
                             Map<String, Object> usage, String statusNote) {
         if (settled.compareAndSet(false, true)) {
             settle(spendId, providerRequestId, usage, statusNote);
+        }
+    }
+
+    /** execute 失败路径：先记账再重抛原异常；记账自身异常以 suppressed 保存（不吞、不换主异常）。 */
+    private void settleAfterFailure(String spendId, Throwable primary, String statusNote) {
+        try {
+            settle(spendId, null, null, statusNote);
+        } catch (RuntimeException settleFailure) {
+            primary.addSuppressed(settleFailure);
+        }
+    }
+
+    /** stream 失败路径：与 complete/cancel 共用同一恰一次结算门；记账自身异常以 suppressed 保存到原异常。 */
+    private void settleAfterFailure(AtomicBoolean settled, String spendId, String providerRequestId,
+                                    Map<String, Object> usage, String statusNote, Throwable primary) {
+        try {
+            settleOnce(settled, spendId, providerRequestId, usage, statusNote);
+        } catch (RuntimeException settleFailure) {
+            primary.addSuppressed(settleFailure);
         }
     }
 
