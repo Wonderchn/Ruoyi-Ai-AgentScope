@@ -225,7 +225,7 @@ class ConversationHistoryAdapterTest {
     void portLivesInTheRuntimeModule() {
         assertEquals("com.nageoffer.ai.ragent.runtime.port.ConversationHistoryPort",
                 com.nageoffer.ai.ragent.runtime.port.ConversationHistoryPort.class.getName());
-        assertEquals(Set.of("appendTurn"), java.util.Arrays.stream(
+        assertEquals(Set.of("appendTurn", "appendAttachedTurn"), java.util.Arrays.stream(
                         com.nageoffer.ai.ragent.runtime.port.ConversationHistoryPort.class.getDeclaredMethods())
                 .map(java.lang.reflect.Method::getName).collect(java.util.stream.Collectors.toSet()));
     }
