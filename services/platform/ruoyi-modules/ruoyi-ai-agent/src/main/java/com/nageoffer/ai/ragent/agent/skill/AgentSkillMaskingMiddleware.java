@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.agent.skill;
 
 import com.nageoffer.ai.ragent.agent.config.ConditionalOnAgentEngine;
+import com.nageoffer.ai.ragent.agent.tool.AgentToolCatalog;
 import com.nageoffer.ai.ragent.agent.memory.AgentContextTrimmer;
 import com.nageoffer.ai.ragent.rag.core.skill.AgentSkill;
 import com.nageoffer.ai.ragent.rag.core.skill.AgentSkillRegistry;
@@ -55,7 +56,6 @@ import java.util.function.Function;
 @Slf4j
 @Component
 @ConditionalOnAgentEngine
-@RequiredArgsConstructor
 public class AgentSkillMaskingMiddleware implements MiddlewareBase {
 
     /** P3-BIND：运行上下文里的"生效档案 id"键（由 AgentChatServiceImpl 放入；缺失 ⇒ 消费侧 fail-closed）。 */
@@ -67,6 +67,23 @@ public class AgentSkillMaskingMiddleware implements MiddlewareBase {
     public static final String MASKED_TOOLS_ATTRIBUTE = "ragent_masked_tools";
 
     private final AgentSkillRegistry skillRegistry;
+
+    /** P3-BIND O-2：MCP 工具 id 全集来源与绑定来源；两者缺席 ⇒ 不做 MCP 收窄（兼容构造/老装配）。 */
+    private final org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.agent.tool.AgentToolCatalog> toolCatalog;
+    private final com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService bindingService;
+
+    public AgentSkillMaskingMiddleware(AgentSkillRegistry skillRegistry,
+                                       org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.agent.tool.AgentToolCatalog> toolCatalog,
+                                       com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService bindingService) {
+        this.skillRegistry = skillRegistry;
+        this.toolCatalog = toolCatalog;
+        this.bindingService = bindingService;
+    }
+
+    /** 兼容构造：仅注册表（不做 MCP 收窄；既有测试与老装配沿用）。 */
+    public AgentSkillMaskingMiddleware(AgentSkillRegistry skillRegistry) {
+        this(skillRegistry, null, null);
+    }
 
     /**
      * 排在最内层，看到的是压缩与改写之后的最终消息列表
@@ -123,6 +140,17 @@ public class AgentSkillMaskingMiddleware implements MiddlewareBase {
         all.stream()
                 .filter(skill -> loaded.contains(skill.skillCode()))
                 .forEach(skill -> skill.toolIds().forEach(masked::remove));
+        // O-2：MCP 工具按**生效档案的 MCP 绑定集**收窄——未绑定/空绑定 ⇒ 遮蔽；id 缺失 ⇒ 全遮蔽。
+        // 遮蔽面仍取目录全量，只有"可用集"按绑定收窄（沿用 G/L 纪律，避免反向暴露）。
+        AgentToolCatalog catalog = toolCatalog == null ? null : toolCatalog.getIfAvailable();
+        if (catalog != null) {
+            Set<String> boundMcp = agentProfileId == null || bindingService == null
+                    ? Set.of()
+                    : bindingService.boundMcpToolIds(agentProfileId);
+            catalog.mcpToolIds().stream()
+                    .filter(toolId -> !boundMcp.contains(toolId))
+                    .forEach(toolId -> masked.putIfAbsent(toolId, "__unbound_mcp__"));
+        }
         return masked;
     }
 

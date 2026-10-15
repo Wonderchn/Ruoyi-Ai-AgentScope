@@ -116,6 +116,15 @@ public class AgentToolCatalog {
         return resolveMcpTools().bindings.size();
     }
 
+    /**
+     * P3-BIND O-2：目录里 MCP 工具的 **id 全集**——仅供**运行期遮蔽计算**使用
+     * （静态 schema 不按绑定过滤；本方法不改变任何构建期产物）。
+     */
+    public java.util.Set<String> mcpToolIds() {
+        return resolveMcpTools().bindings.stream().map(McpToolBinding::toolId)
+                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+    }
+
     private String resolveKnowledgeToolDescription(Map<String, String> prompts) {
         String description = prompts.get(AgentPromptSlot.KNOWLEDGE_TOOL_DESCRIPTION.name());
         if (StrUtil.isBlank(description)) {
