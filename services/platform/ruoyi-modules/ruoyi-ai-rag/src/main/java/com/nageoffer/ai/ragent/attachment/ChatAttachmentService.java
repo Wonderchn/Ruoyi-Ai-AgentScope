@@ -159,8 +159,9 @@ public class ChatAttachmentService implements ChatAttachmentPort {
     }
     static void requireCapability(String mime,Map<String,Object> params) {
         if(!mime.startsWith("image/")) return;
-        Object value=params==null?null:params.get("attachmentModalities");
-        if(!(value instanceof List<?> list) || !list.contains("image")) throw bad("The selected published model does not support image attachments");
+        // F04：图片能力的唯一事实面是绑定 revision 的保留键（AttachmentModalities 单点解释）；
+        // 默认拒图，缺键/非法形态都不放行。
+        if(!AttachmentModalities.imageDeclared(params)) throw bad("The selected published model does not support image attachments");
     }
     private static String text(String mime,byte[] bytes) {
         try {

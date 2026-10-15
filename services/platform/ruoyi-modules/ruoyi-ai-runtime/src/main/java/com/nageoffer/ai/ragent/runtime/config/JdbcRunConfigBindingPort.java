@@ -143,7 +143,15 @@ public class JdbcRunConfigBindingPort implements RunConfigBindingPort {
             return Map.of();
         }
         try {
-            return JSON.readValue(json, new TypeReference<Map<String, Object>>() { });
+            Map<String, Object> parsed = JSON.readValue(json, new TypeReference<Map<String, Object>>() { });
+            // F04：绑定读侧同样是严格门——库里出现的非法保留键形态明确拒绝，
+            // 不静默当"没声明"（否则一次坏配置会表现为"能力悄悄消失"）。
+            try {
+                AttachmentModalities.requireValid(parsed);
+            } catch (IllegalArgumentException invalid) {
+                throw new ConfigAuthorityUnavailable(invalid.getMessage());
+            }
+            return parsed;
         } catch (JsonProcessingException e) {
             throw new ConfigAuthorityUnavailable("bound config revision params are unreadable");
         }

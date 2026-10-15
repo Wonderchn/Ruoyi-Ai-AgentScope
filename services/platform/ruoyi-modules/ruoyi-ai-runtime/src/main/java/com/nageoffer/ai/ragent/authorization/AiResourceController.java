@@ -406,11 +406,19 @@ public class AiResourceController {
 
     private void safeConfigParams(com.fasterxml.jackson.databind.JsonNode node) {
         if (!node.isObject()) { throw new P04AiException(P04AiErrorCode.BAD_REQUEST); }
+        // F04：附件能力保留键是参数面上的**受严格形态约束的**非数字键；
+        // 默认拒图（键缺席即无模态声明），合法形态唯一：["image"]（见 AttachmentModalities）。
+        try {
+            com.nageoffer.ai.ragent.runtime.config.AttachmentModalities.requireValid(node);
+        } catch (IllegalArgumentException invalid) {
+            throw new P04AiException(P04AiErrorCode.BAD_REQUEST);
+        }
         // These are generation parameters, never a second provider connection/key store.
         var allowed = java.util.Set.of("temperature", "maxTokens", "topP", "presencePenalty", "frequencyPenalty", "seed");
         var names = node.fieldNames();
         while (names.hasNext()) {
             String name = names.next();
+            if (com.nageoffer.ai.ragent.runtime.config.AttachmentModalities.KEY.equals(name)) { continue; }
             var value = node.get(name);
             if (!allowed.contains(name) || !value.isNumber() || !Double.isFinite(value.doubleValue())) {
                 throw new P04AiException(P04AiErrorCode.BAD_REQUEST);
