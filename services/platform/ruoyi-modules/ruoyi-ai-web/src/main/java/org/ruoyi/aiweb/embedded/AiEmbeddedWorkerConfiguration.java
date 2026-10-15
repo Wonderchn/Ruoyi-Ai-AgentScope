@@ -308,6 +308,31 @@ public class AiEmbeddedWorkerConfiguration {
             }
 
             /**
+             * F06:1/2-A：{@code ingestion.run} 的多节点执行器（fetcher/parser/enhancer/
+             * chunker/enricher/indexer），依赖与 documentIngestExecutor 同源，另加 run 作用域窄门
+             * {@code RuntimeModelGatewayPort}、run 绑定端口、ProviderCallBoundary/RunAccessService/
+             * RunLedgerDao 与任务面仓储/快照读取器。门控与 documentIngestExecutor 相同。
+             */
+            @Bean
+            @ConditionalOnMissingBean
+            @ConditionalOnProperty(name = "p2.executor.mode", havingValue = "real", matchIfMissing = true)
+            public com.nageoffer.ai.ragent.ingestion.runtime.IngestionPipelineExecutor ingestionPipelineExecutor(
+                    com.nageoffer.ai.ragent.ingestion.task.IngestionPipelineReader pipelines,
+                    com.nageoffer.ai.ragent.ingestion.task.IngestionTaskRepository tasks,
+                    DocumentPort documentDao, PrivateObjectStore objectStore,
+                    ObjectProvider<MinerUPort> mineru, ChunkingPort chunker, EmbeddingGateway embeddingGateway,
+                    com.nageoffer.ai.ragent.runtime.config.RuntimeModelGatewayPort chat,
+                    ObjectProvider<com.nageoffer.ai.ragent.runtime.config.RunConfigBindingPort> bindingPort,
+                    UsageLedgerService usageLedger,
+                    com.nageoffer.ai.ragent.runtime.exec.ProviderCallBoundary providerBoundary,
+                    com.nageoffer.ai.ragent.runtime.RunAccessService runAccessService,
+                    RunLedgerDao runLedgerDao, ObjectMapper objectMapper) {
+                return new com.nageoffer.ai.ragent.ingestion.runtime.IngestionPipelineExecutor(pipelines, tasks,
+                        documentDao, objectStore, mineru, chunker, embeddingGateway, chat, bindingPort, usageLedger,
+                        providerBoundary, runAccessService, runLedgerDao, objectMapper);
+            }
+
+            /**
              * 专属测试模式：{@code p2.executor.mode=synthetic}。
              *
              * <p>它与真实执行器互斥（{@link RunExecutorRegistry} 在 synthetic 模式下只认这一个），

@@ -73,4 +73,22 @@ public class AiEmbeddedIngestionConfiguration {
     @Import({IngestionPipelineServiceImpl.class, IngestionPipelineController.class})
     static class IngestionAdmin {
     }
+
+    /**
+     * F06:1/2-A（2026-10-15）：canonical **任务面**（读/写控制器 + 受理契约 + 仓储/视图 +
+     * 管线只读快照读取器）。任务面不再"未装配"——但只在 p2.enabled 下装配；
+     * 授权/交付回执沿用 run 组既有 bean；公开面由 ROUTES 六行放行。
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnEmbeddedLocal
+    @ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
+    @Import({
+            com.nageoffer.ai.ragent.ingestion.task.IngestionPipelineReader.class,
+            com.nageoffer.ai.ragent.ingestion.task.IngestionTaskRepository.class,
+            com.nageoffer.ai.ragent.ingestion.task.IngestionTaskView.class,
+            com.nageoffer.ai.ragent.ingestion.task.IngestionRunContract.class,
+            com.nageoffer.ai.ragent.ingestion.runtime.IngestionTaskRuntimeController.class
+    })
+    static class IngestionTaskRuntime {
+    }
 }

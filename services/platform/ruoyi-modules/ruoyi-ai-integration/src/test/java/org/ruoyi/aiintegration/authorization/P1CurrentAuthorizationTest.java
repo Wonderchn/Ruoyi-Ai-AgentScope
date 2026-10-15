@@ -227,7 +227,9 @@ class P1CurrentAuthorizationTest {
         // 再增**恰好 4 条**：skill.list / skill.read / skill.write / skill.delete → ai:skill:*。
         // 各批增量**分开登记、逐项集合相等**：F13-SLICE-1 的 4 条、F13-A1 的 1 条与
         // F11-A1 的 4 条各自钉死，diff 必须等于三者之并集——"增量集合"是已批准批次
-        // 的并，不再混成一个数。合并口径：34 + 4 + 1 + 4 = 43（F11-A1 四条即第 40-43 条）。
+        // 的并，不再混成一个数。
+        // F06:1/2-A（2026-10-15，维护者批）：canonical 摄取任务面再增**恰好 1 条**：
+        // ingestion.run → ai:ingestion:run。合并口径：34 + 4 + 1 + 4 + 1 = 44（第 44 条）。
         Set<String> oldFrozen = Set.of(
                 "kb.list", "kb.read", "kb.write", "kb.delete", "kb.acl.manage", "kb.retrieve",
                 "document.read", "document.download", "document.list", "document.upload",
@@ -247,9 +249,12 @@ class P1CurrentAuthorizationTest {
                 "flow.node.write");
         Set<String> approvedF11Increment = Set.of(
                 "skill.list", "skill.read", "skill.write", "skill.delete");
+        Set<String> approvedF06Increment = Set.of(
+                "ingestion.run");
         Set<String> approvedAllIncrements = new LinkedHashSet<>(approvedIncrement);
         approvedAllIncrements.addAll(approvedA1Increment);
         approvedAllIncrements.addAll(approvedF11Increment);
+        approvedAllIncrements.addAll(approvedF06Increment);
         Set<String> fullList = new LinkedHashSet<>(oldFrozen);
         fullList.addAll(approvedAllIncrements);
 
@@ -270,8 +275,8 @@ class P1CurrentAuthorizationTest {
         // ④ (动作 -> 权限) 逐项相等。Spec §5.1 第 1 条要求的是"映射"逐项相等，不只是动作名集合相等。
         // 只比名字会漏掉"值替换"这一类变异：例如把 kb.read 的权限改成 ai:kb:list，
         // 动作名集合不变、总数不变，①②③ 全绿，P1AiPermissionContractTest 也拦不住
-        // （新值同样在 sys_menu 里有行）。所以这里把全部 43 条映射钉死
-        //（合并口径 = 34 + flow.*4 + flow.node.write 1 + F11-A1 skill.*4）：
+        // （新值同样在 sys_menu 里有行）。所以这里把全部 44 条映射钉死
+        //（合并口径 = 34 + flow.*4 + flow.node.write 1 + F11-A1 skill.*4 + F06:1/2-A 1）：
         // 任何一条的值被改动，都必须显式修改本清单，否则本判据红。
         Map<String, String> expectedPairs = new LinkedHashMap<>();
         expectedPairs.put("agent.activate", "ai:agent:activate");
@@ -297,6 +302,7 @@ class P1CurrentAuthorizationTest {
         expectedPairs.put("flow.node.write", "ai:flow:design");
         expectedPairs.put("flow.read", "ai:flow:read");
         expectedPairs.put("flow.write", "ai:flow:write");
+        expectedPairs.put("ingestion.run", "ai:ingestion:run");
         expectedPairs.put("kb.acl.manage", "ai:kb:acl");
         expectedPairs.put("kb.delete", "ai:kb:delete");
         expectedPairs.put("kb.list", "ai:kb:list");

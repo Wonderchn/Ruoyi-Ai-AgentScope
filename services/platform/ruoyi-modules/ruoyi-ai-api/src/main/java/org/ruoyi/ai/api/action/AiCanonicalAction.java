@@ -98,6 +98,11 @@ public final class AiCanonicalAction {
         actions.put("skill.read", "ai:skill:read");
         actions.put("skill.write", "ai:skill:write");
         actions.put("skill.delete", "ai:skill:delete");
+        // F06:1/2-A（2026-10-15）：canonical 摄取任务面新增**恰一条**动作
+        // ingestion.run → ai:ingestion:run（第 44 条）。权限行由 V37 注册
+        // （menu_id 候选 7143；默认不分配，由 provisioning 逐码授予）。
+        // 公开路由见 AiGatewayController.ROUTES 的 /ingestion/tasks/**（6 行）。
+        actions.put("ingestion.run", "ai:ingestion:run");
         return Collections.unmodifiableMap(actions);
     }
 

@@ -242,8 +242,9 @@ public class AiGatewayController {
             //   agent.execute -> ai:agent:execute  (V6)
             // 权威值以 P1CurrentAuthorizationTest 为准：旧 34 条逐项集合相等 +
             // F13-SLICE-1 批准的 flow.* 4 条 + F13-A1 批准的 flow.node.write 1 条 +
-            // F11-A1 批准的 skill.* 4 条 = 43，
-            // 故不得新增动作（**不得新增第 44 个动作**）。
+            // F11-A1 批准的 skill.* 4 条 + F06:1/2-A 批准的 ingestion.run 1 条 = 44。
+            // （本轮由 F06:1/2-A 显式批准新增**第 44 个动作** `ingestion.run`；
+            //   再往上新增（第 45 个）仍需具名批准。）
             // （注：本条注释曾长期写作"26"、后写作"34"并引用过期行号 209，均为过期信息；
             //   此处按实测权威更正并保留说明。）
             new Route("GET", "/memories", "memory.read"),
@@ -411,6 +412,17 @@ public class AiGatewayController {
             new Route("POST", "/ingestion/pipelines", "config.publish"),
             new Route("PUT", "/ingestion/pipelines/{id}", "config.publish"),
             new Route("DELETE", "/ingestion/pipelines/{id}", "config.publish"),
+            // F06:1/2（canonical 摄取任务面，2026-10-15）。六行逐条登记；内层 handler =
+            // IngestionTaskRuntimeController（类级 /internal/ai/v1，由 AiEmbeddedIngestionConfiguration
+            // 显式装配）。三条 GET 在网关走字节分支，内层同时给整数 ApiEnvelope 与两个回执头
+            // （回执由控制器自铸 DeliveryPermits）。段数不冲突：/ingestion/tasks 为 2 段，
+            // /ingestion/tasks/{id}[/nodes|/cancel|/retry] 为 3..4 段。
+            new Route("GET", "/ingestion/tasks", "run.get"),
+            new Route("GET", "/ingestion/tasks/{id}", "run.get"),
+            new Route("GET", "/ingestion/tasks/{id}/nodes", "run.get"),
+            new Route("POST", "/ingestion/tasks", "run.submit"),
+            new Route("POST", "/ingestion/tasks/{id}/cancel", "run.cancel"),
+            new Route("POST", "/ingestion/tasks/{id}/retry", "run.submit"),
             new Route("GET", "/dashboard/overview", "run.get"),
             new Route("GET", "/dashboard/performance", "run.get"),
             new Route("GET", "/dashboard/trends", "run.get"),
