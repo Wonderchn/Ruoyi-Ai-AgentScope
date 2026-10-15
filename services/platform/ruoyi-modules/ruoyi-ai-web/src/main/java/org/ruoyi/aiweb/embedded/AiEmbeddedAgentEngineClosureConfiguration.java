@@ -194,7 +194,6 @@ import java.util.concurrent.TimeUnit;
 
         // ---------------------------------------------------------- A3 技能/工具中间件（4，其中 3 个登记点）
         AgentSkillCacheManager.class,
-        AgentSkillMaskingMiddleware.class,
         AgentToolBatchMiddleware.class,
         AgentConfirmDenialMiddleware.class,
 
@@ -363,8 +362,27 @@ public class AiEmbeddedAgentEngineClosureConfiguration {
     @Bean
     @ConditionalOnMissingBean(AgentSkillRegistry.class)
     public AgentSkillRegistry agentSkillRegistry(AgentSkillMapper agentSkillMapper,
-                                                 AgentSkillCacheManager cacheManager) {
-        return new AgentSkillRegistry(agentSkillMapper, cacheManager);
+                                                 AgentSkillCacheManager cacheManager,
+                                                 ObjectProvider<com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService> bindingService) {
+        // P3-BIND 集成（2026-10-16）：绑定权威在场时启用 F11:3 技能子集；缺席（如组件切片）维持原语义。
+        return new AgentSkillRegistry(agentSkillMapper, cacheManager, bindingService.getIfAvailable());
+    }
+
+    /**
+     * P3-BIND 集成（2026-10-16）：技能遮蔽中间件的生产装配改走显式 @Bean。
+     *
+     * <p>原因（实证）：该类有两个公开构造（3 参生产 / 1 参兼容），作为类级 {@code @Import}
+     * 时 Spring 无法在无注解多构造间选择（{@code NoSuchMethodException: <init>()}，
+     * {@code t0-p3bind-ctxcheck} 实测）；显式构造同时让"绑定权威缺席"（如闭包切片测试）
+     * 按兼容语义降级，而非启动失败。
+     */
+    @Bean
+    @ConditionalOnMissingBean(AgentSkillMaskingMiddleware.class)
+    public AgentSkillMaskingMiddleware agentSkillMaskingMiddleware(
+            AgentSkillRegistry skillRegistry,
+            ObjectProvider<AgentToolCatalog> toolCatalog,
+            ObjectProvider<com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService> bindingService) {
+        return new AgentSkillMaskingMiddleware(skillRegistry, toolCatalog, bindingService.getIfAvailable());
     }
 
     /** 记忆管线（A1 #9）：抽取/判优/合并。 */

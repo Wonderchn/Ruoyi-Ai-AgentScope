@@ -20,8 +20,11 @@ package org.ruoyi.aiweb.embedded;
 import com.nageoffer.ai.ragent.authorization.AiDeliveryPermitConfiguration;
 import com.nageoffer.ai.ragent.framework.security.RevocationGuard;
 import com.nageoffer.ai.ragent.rag.dao.entity.AgentProfileDO;
+import com.nageoffer.ai.ragent.rag.dao.mapper.AgentProfileBindingMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.AgentProfileMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.AgentPromptMapper;
+import com.nageoffer.ai.ragent.rag.dao.mapper.AgentSkillMapper;
+import com.nageoffer.ai.ragent.rag.dao.mapper.IntentNodeMapper;
 import com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority;
 import org.apache.catalina.Context;
 import org.apache.catalina.LifecycleException;
@@ -117,6 +120,10 @@ class LocalAgentOptionRouteDispatchTest {
             mock(ProductionAuthorizationProvider.class);
     private static final AgentProfileMapper agentProfileMapper = mock(AgentProfileMapper.class);
     private static final AgentPromptMapper agentPromptMapper = mock(AgentPromptMapper.class);
+    // P3-BIND 集成（2026-10-16）：目录面新增绑定权威/引用核验依赖，夹具按"切片补齐"给三件替身。
+    private static final AgentProfileBindingMapper agentProfileBindingMapper = mock(AgentProfileBindingMapper.class);
+    private static final AgentSkillMapper agentSkillMapper = mock(AgentSkillMapper.class);
+    private static final IntentNodeMapper intentNodeMapper = mock(IntentNodeMapper.class);
     private static final StringRedisTemplate stringRedisTemplate = mock(StringRedisTemplate.class);
     private static final EngineModelAuthority modelAuthority = mock(EngineModelAuthority.class);
 
@@ -392,6 +399,22 @@ class LocalAgentOptionRouteDispatchTest {
         @Bean
         AgentPromptMapper agentPromptMapper() {
             return agentPromptMapper;
+        }
+
+        // P3-BIND 集成（2026-10-16）切片补齐：绑定保存/回显与引用核验的 Mapper 替身。
+        @Bean
+        AgentProfileBindingMapper agentProfileBindingMapper() {
+            return agentProfileBindingMapper;
+        }
+
+        @Bean
+        AgentSkillMapper agentSkillMapper() {
+            return agentSkillMapper;
+        }
+
+        @Bean
+        IntentNodeMapper intentNodeMapper() {
+            return intentNodeMapper;
         }
 
         @Bean
