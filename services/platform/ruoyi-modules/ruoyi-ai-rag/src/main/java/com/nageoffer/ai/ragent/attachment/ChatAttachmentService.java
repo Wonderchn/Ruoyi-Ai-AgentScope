@@ -11,12 +11,9 @@ import com.nageoffer.ai.ragent.runtime.config.*;
 import com.nageoffer.ai.ragent.runtime.dto.AdmissionRequest;
 import com.nageoffer.ai.ragent.runtime.model.RunRecord;
 import com.nageoffer.ai.ragent.runtime.port.ChatAttachmentPort;
-import org.apache.tika.Tika;
-import org.apache.tika.metadata.Metadata;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
-import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
@@ -185,10 +182,17 @@ public class ChatAttachmentService implements ChatAttachmentPort {
     }
     private static String text(String mime,byte[] bytes) {
         try {
-            String value="text/plain".equals(mime)?new String(bytes,StandardCharsets.UTF_8):new Tika().parseToString(new ByteArrayInputStream(bytes),new Metadata(),ChatAttachmentPolicy.MAX_TEXT+1);
+            // F04：PDF 不再走 Tika 通用 facade（无页数/时间/内嵌边界），统一经 PdfBounds 有界解析；
+            // 允许的类型只有 text/plain 与 application/pdf，其余 mime 到这里即为异常事实。
+            String value;
+            if("text/plain".equals(mime)) value=new String(bytes,StandardCharsets.UTF_8);
+            else if("application/pdf".equals(mime)) value=PdfBounds.extract(bytes);
+            else throw bad("Attachment document parsing failed");
             if(value.isBlank() || value.length()>ChatAttachmentPolicy.MAX_TEXT) throw bad("Attachment has no extractable text or exceeds 16000 characters");
             return value;
-        }catch(RunApiException ex){throw ex;}catch(Exception ex){throw bad("Attachment document parsing failed");}
+        }catch(RunApiException ex){throw ex;}
+        catch(IllegalArgumentException ex){throw bad(ex.getMessage()==null?"Attachment document parsing failed":ex.getMessage());}
+        catch(Exception ex){throw bad("Attachment document parsing failed");}
     }
     private record Row(String id,String name,String mime,long size,String sha,String key,long version) { }
     private record Binding(String kind,String conversation,String message) { }
