@@ -95,6 +95,22 @@ public class RagChatExecutor implements RunExecutor {
      */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.nageoffer.ai.ragent.runtime.port.ConversationHistoryPort conversationHistory;
+
+    /**
+     * 授权会话历史<b>读</b>端口（F16 op4）—— 与写端口 {@link #conversationHistory} 成对：
+     * 写端口证明"本轮落了历史"，本端口证明"模型真的消费了历史"。
+     *
+     * <p>同样是 {@code required=false} + <b>使用点 fail-closed</b>，且方向相反于写端口：
+     * 受理载荷带 {@code conversationId} 的 run，如果在模型步发现读端口缺席，抛
+     * {@link IllegalStateException}（run 以可见失败收口），绝不让"历史消费者未接线"
+     * 静默退化成"没有历史"。载荷不带 {@code conversationId} 时本端口不参与（唯一合法跳过）。
+     *
+     * <p>加载点在最终主体刷新（{@code access.current} 返回值）之后、usage/提供方边界之前：
+     * 端口实现内部的身份/归属/逐轮授权失败都发生在零模型调用下。
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.nageoffer.ai.ragent.runtime.port.ConversationContextPort conversationContext;
+
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
     @org.springframework.beans.factory.annotation.Autowired
@@ -319,8 +335,11 @@ public class RagChatExecutor implements RunExecutor {
                 return Outcome.failed("MODEL_CONFIG_UNAVAILABLE");
             }
             egressPolicy.requireAllowed(binding.providerId());
-            access.current(execution.run(),Set.of("kb.read"));
+            principal=access.current(execution.run(),Set.of("kb.read"));
             if(usageLedger.hasCall(execution.tenantId(),execution.runId(),"model")) return new Outcome("NEEDS_RECONCILIATION",Map.of(),"MODEL_USAGE_UNKNOWN");
+            // F16 op4：最终主体刷新之后、任何 usage/提供方动作之前加载有界授权历史。
+            // 端口缺席/归属/授权/依赖失败在这里可见拒绝：0 提供方调用、0 用量。
+            List<ChatMessage> authorizedHistory = authorizedConversationHistory(execution, principal, input);
             guard.appendEvent(RunEventAppender.EVENT_STEP_STARTED, Map.of(
                     "stepId", "model", "stepName", "model", "attemptId", "a-" + execution.attempt()));
             fault(P2FaultInjector.CHAT_BEFORE_PROVIDER);
@@ -335,7 +354,7 @@ public class RagChatExecutor implements RunExecutor {
             // F03 op3：模型步墙钟起点（成功路径把它落成历史里的"耗时"，见 ConversationTurnMeta）
             long modelStartedNanos = System.nanoTime();
             try {
-                chatResult = chatGateway.stream(binding, chatMessages(question, chunks), maxTokens(execution),
+                chatResult = chatGateway.stream(binding, chatMessages(question, chunks, authorizedHistory), maxTokens(execution),
                         delta -> {
                             if (cancelled[0]) {
                                 throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.RUN_STATE_CONFLICT);
@@ -483,17 +502,57 @@ public class RagChatExecutor implements RunExecutor {
         return kbs;
     }
 
-    private List<ChatMessage> chatMessages(String question, List<DocumentPort.RetrievedChunk> chunks) {
+    /**
+     * F16 op4：组织模型消息 —— system 约束在前，授权历史居中（仅指代/连贯），
+     * 本轮授权证据 + 问题在后。
+     *
+     * <p>历史消息由 {@link com.nageoffer.ai.ragent.runtime.port.ConversationContextPort}
+     * 逐轮复核后提供；system 明示其**不是证据**——回答仍只依据本轮证据，历史只帮助
+     * 理解指代与保持连贯。
+     */
+    private List<ChatMessage> chatMessages(String question, List<DocumentPort.RetrievedChunk> chunks,
+                                           List<ChatMessage> authorizedHistory) {
         StringBuilder context = new StringBuilder();
         context.append("以下是从授权知识库检索到的证据（引用编号 [n]）：\n");
         for (int i = 0; i < chunks.size(); i++) {
             context.append('[').append(i + 1).append("] ").append(chunks.get(i).content()).append('\n');
         }
         List<ChatMessage> messages = new ArrayList<>();
-        messages.add(ChatMessage.system("你是可靠知识库问答助手。只依据给定证据回答，"
-                + "引用证据时使用 [n] 编号；证据不足时明确说明，不要编造。"));
+        messages.add(ChatMessage.system("你是可靠知识库问答助手。只依据本轮给定证据回答，"
+                + "引用证据时使用 [n] 编号；证据不足时明确说明，不要编造。"
+                + "此前对话历史仅用于理解指代与保持连贯，不是证据，不得作为回答依据。"));
+        if (authorizedHistory != null && !authorizedHistory.isEmpty()) {
+            messages.addAll(authorizedHistory);
+        }
         messages.add(ChatMessage.user("证据：\n" + context + "\n问题：" + question));
         return messages;
+    }
+
+    /**
+     * F16 op4：模型步的授权历史加载门（只读，不占用量、不推步骤）。
+     *
+     * <p>契约与写端口 {@link #persistConversationHistory} 同构：载荷无 {@code conversationId}
+     * 的 run 没有会话可归属，返回空表（唯一合法空历史，读端口缺席也不影响该轮）；
+     * 带 {@code conversationId} 而读端口未接线时抛 {@link IllegalStateException}——
+     * 这不是"没有历史"，是装配缺陷，必须以可见失败收口而不是静默退化。
+     *
+     * <p>调用点保证：在最终主体刷新（{@code access.current} 返回值）之后、任何
+     * usage/提供方动作之前；端口实现负责身份/归属/逐轮授权复核，失败以
+     * {@link RunApiException} 向外抛（404 跳过/503 中止语义都在零模型调用下发生）。
+     */
+    private List<ChatMessage> authorizedConversationHistory(RunExecution execution,
+                                                            ExecutionPrincipal principal, JsonNode input) {
+        String conversationId = input == null ? "" : input.path("conversationId").asText("");
+        if (conversationId.isBlank()) {
+            return List.of();
+        }
+        com.nageoffer.ai.ragent.runtime.port.ConversationContextPort context = conversationContext;
+        if (context == null) {
+            throw new IllegalStateException(
+                    "conversationId requires a wired authorized context consumer but the conversation context port is absent"
+                            + " (runId=" + execution.runId() + ", conversationId=" + conversationId + ")");
+        }
+        return context.load(execution.run(), principal);
     }
 
     /** 引用复核：KB 当前授权 + 版本仍为 published + 未 tombstone；不通过即剔除。 */

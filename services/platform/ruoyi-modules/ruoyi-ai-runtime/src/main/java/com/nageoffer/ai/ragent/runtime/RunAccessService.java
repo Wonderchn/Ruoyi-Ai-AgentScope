@@ -78,31 +78,67 @@ public class RunAccessService {
             else citationsCurrent(principal,run);
         } catch(RunApiException e){throw e;}catch(Exception e){throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);}
     }
+    /**
+     * 引用 provenance 复核（F16 op4 语义区分）。
+     *
+     * <p><b>三态契约（对外语义必须分开，不能一律吞成 404）：</b>
+     * <ul>
+     *   <li><b>确实不可见 → 404</b>：findDocument 空、tombstone、版本不符、明确 DENY/STALE；
+     *       空/畸形 provenance 同样保持拒绝（不得当"正常空历史"放行）；</li>
+     *   <li><b>依赖不可用 → 503</b>：findDocument / 授权判定抛普通异常，或判定返回
+     *       {@code UNKNOWN}（enum 既有语义：无法判定，对外 503 不放行）。</li>
+     * </ul>
+     * 此前所有异常都被兜底成 404，依赖故障与"来源变化"不可区分——会话历史加载器按
+     * "404 跳过该轮"的契约会把故障误当空历史（红证：
+     * {@code RunAccessServiceConversationDependencyTest.dependencyFailureIsVisibleAndNeverMasqueradesAsMissingHistory}）。
+     */
     private void citationsCurrent(ExecutionPrincipal principal,RunRecord run) {
         if(!Set.of("rag.chat","agent.run").contains(run.action())) return;
         var dao=ledger.getIfAvailable();
         if(dao==null) throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE);
         var steps="rag.chat".equals(run.action())?dao.latestCompletedStep(run.tenantId(),run.runId(),"retrieve").stream().toList():dao.listSteps(run.tenantId(),run.runId()).stream().filter(step->"COMPLETED".equals(step.state()) && step.stepId().startsWith("agent-retrieve-")).toList();
         if(steps.isEmpty()) return;
-        try {
-            for(var step:steps) {
-            var chunks=CanonicalJson.strictMapper().readTree(step.refJson()).get("chunks");
-            if(chunks==null || !chunks.isArray()) throw new IllegalArgumentException("invalid provenance");
+        for(var step:steps) {
+            var chunks=citationChunks(step);
             var docs=documents.getIfAvailable();
             if(docs==null) throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE);
             Set<String> checked=new HashSet<>();
             for(var chunk:chunks) {
                 String docId=chunk.path("docId").asText(""),versionId=chunk.path("versionId").asText("");
-                if(!docId.matches("[A-Za-z0-9_-]{1,64}") || !versionId.matches("[A-Za-z0-9_-]{1,64}")) throw new IllegalArgumentException("invalid provenance");
+                if(!docId.matches("[A-Za-z0-9_-]{1,64}") || !versionId.matches("[A-Za-z0-9_-]{1,64}")) throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
                 if(!checked.add(docId+":"+versionId)) continue;
-                var doc=docs.findDocument(principal.tenantId(),docId).orElseThrow();
-                if(doc.tombstoned() || !versionId.equals(doc.publishedVersionId())
-                        || resources().check(scoped(principal,Set.of("document.read")),"document.read","doc:"+docId)!=ResourceAuthorizationService.Verdict.GRANT)
+                var doc=findCitationDocument(docs,principal.tenantId(),docId);
+                if(doc==null || doc.tombstoned() || !versionId.equals(doc.publishedVersionId())
+                        || !documentReadGranted(principal,docId))
                     throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
             }
-            }
+        }
+    }
+    /** 解析引用 provenance：空/畸形保持拒绝（404）——不把缺 provenance 当正常可见。 */
+    private static com.fasterxml.jackson.databind.JsonNode citationChunks(RunLedgerDao.StepRow step) {
+        try {
+            var chunks=CanonicalJson.strictMapper().readTree(step.refJson()).get("chunks");
+            if(chunks==null || !chunks.isArray()) throw new IllegalArgumentException("invalid provenance");
+            return chunks;
         } catch(RunApiException e){throw e;}
         catch(Exception e){throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);}
+    }
+    /** 引用文档事实读取：指针更在却读不到（依赖异常）→ 503；确实没有 → null（调用方按 404）。 */
+    private static DocumentPort.DocumentRow findCitationDocument(DocumentPort docs,String tenantId,String docId) {
+        try {
+            return docs.findDocument(tenantId,docId).orElse(null);
+        } catch(RunApiException e){throw e;}
+        catch(RuntimeException e){throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE,"citation document lookup unavailable");}
+    }
+    /** 引用文档当前 document.read：GRANT 放行；DENY/STALE → false（404 语义）；UNKNOWN/异常 → 503。 */
+    private boolean documentReadGranted(ExecutionPrincipal principal,String docId) {
+        try {
+            var verdict=resources().check(scoped(principal,Set.of("document.read")),"document.read","doc:"+docId);
+            if(verdict==ResourceAuthorizationService.Verdict.UNKNOWN)
+                throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE,"citation authorization unresolved");
+            return verdict==ResourceAuthorizationService.Verdict.GRANT;
+        } catch(RunApiException e){throw e;}
+        catch(RuntimeException e){throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE,"citation authorization check failed");}
     }
     private void ownerAndVersions(ExecutionPrincipal principal,RunRecord run) {
         if(!principal.tenantId().equals(run.tenantId()) || !principal.membershipId().equals(run.memberId())

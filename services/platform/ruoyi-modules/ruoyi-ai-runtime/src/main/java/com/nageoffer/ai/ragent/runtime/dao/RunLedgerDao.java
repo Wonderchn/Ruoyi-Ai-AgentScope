@@ -435,6 +435,57 @@ public class RunLedgerDao {
                 tenantId, runId);
     }
 
+    // ---------------------------------------------------------------- conversation context (F16)
+
+    /**
+     * F16 op3：本会话"最近的有界完整轮"候选 —— 只返回可复核的完整链，不做任何删除。
+     *
+     * <p><b>范围是精确事实，不是推测。</b>tenant/member/subject 三元 + 受理时写入的
+     * {@code input.conversationId}（受理侧折入，D7a）+ {@code action='rag.chat'} +
+     * {@code status='SUCCEEDED'}：内容相近或时间接近都不算同一轮。当前 run 显式排除
+     * （它还没有 SUCCEEDED，排除是防重入的冗余保险）。
+     *
+     * <p><b>"完整轮"= 三个完成步骤同时存在：</b>{@code retrieve}（引用 provenance，
+     * 供调用方逐轮重判版本/授权）、{@code model}（真实模型调用完成）、
+     * {@code conversation-history}（该轮已落历史写路径）。缺任一即不是可重放轮——
+     * 尤其是 conversation-history 缺席的历史 run（写路径上线前）：其轮次未过完整写链，
+     * 保守排除。
+     *
+     * <p><b>排序契约：</b>{@code created_at DESC, run_id DESC} 取最近 {@code limit} 条
+     * （同时间戳按 run_id 稳定倒序）；<b>返回仍是倒序</b>，调用方负责翻转为正序重放。
+     * {@code limit} 由调用方给定（配置层收敛）。
+     */
+    public List<RunRecord> listCompletedConversationRuns(String tenantId, String memberId, String subject,
+                                                         String conversationId, String excludingRunId, int limit) {
+        return jdbc.query(
+                "SELECT " + RUN_COLUMNS_PREFIXED + " FROM ai_run r "
+                        + "WHERE r.tenant_id=? AND r.member_id=? AND r.subject=? AND r.action='rag.chat' "
+                        + "AND r.status='SUCCEEDED' AND r.run_id<>? "
+                        + "AND r.input->>'conversationId'=? "
+                        + "AND EXISTS (SELECT 1 FROM ai_run_step s WHERE s.tenant_id=r.tenant_id "
+                        + "AND s.run_id=r.run_id AND s.step_id='retrieve' AND s.state='COMPLETED') "
+                        + "AND EXISTS (SELECT 1 FROM ai_run_step s WHERE s.tenant_id=r.tenant_id "
+                        + "AND s.run_id=r.run_id AND s.step_id='model' AND s.state='COMPLETED') "
+                        + "AND EXISTS (SELECT 1 FROM ai_run_step s WHERE s.tenant_id=r.tenant_id "
+                        + "AND s.run_id=r.run_id AND s.step_id='conversation-history' AND s.state='COMPLETED') "
+                        + "ORDER BY r.created_at DESC, r.run_id DESC LIMIT ?",
+                RunLedgerDao::map, tenantId, memberId, subject, excludingRunId, conversationId, limit);
+    }
+
+    /**
+     * F16 op3：该 run 已完成的 assistant 答案（{@code ai_chat_message}，与恢复路径同源）。
+     *
+     * <p>只认 role=assistant 且内容非空的第一条（按 sequence）；"没有完成答案"与
+     * "答案为空"一样视为不可重放轮，由调用方跳过——不伪造、不拼接。
+     */
+    public Optional<String> loadCompletedConversationAnswer(String tenantId, String runId) {
+        List<String> rows = jdbc.query(
+                "SELECT content FROM ai_chat_message WHERE tenant_id=? AND run_id=? AND role='assistant' "
+                        + "AND content IS NOT NULL AND btrim(content)<>'' ORDER BY sequence LIMIT 1",
+                (rs, rowNum) -> rs.getString("content"), tenantId, runId);
+        return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+    }
+
     // ---------------------------------------------------------------- budget
 
     /** 锁定（或建立默认）租户预算行；必须在事务内。 */
