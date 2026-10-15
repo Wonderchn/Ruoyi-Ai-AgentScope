@@ -10,6 +10,7 @@ declare module 'vue' {
   export interface GlobalComponents {
     AccountPassword: typeof import('./../src/components/LoginDialog/components/FormLogin/AccountPassword.vue')['default']
     AgentSelect: typeof import('./../src/components/AgentSelect/index.vue')['default']
+    ChatAttachments: typeof import('./../src/components/rag/ChatAttachments.vue')['default']
     ChatSender: typeof import('./../src/components/ChatSender/index.vue')['default']
     DeepThinking: typeof import('./../src/components/DeepThinking/index.vue')['default']
     EchartsRenderer: typeof import('./../src/components/EchartsRenderer/index.vue')['default']
