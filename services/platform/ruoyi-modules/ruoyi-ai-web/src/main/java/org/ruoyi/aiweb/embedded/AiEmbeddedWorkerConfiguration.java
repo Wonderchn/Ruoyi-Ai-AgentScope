@@ -28,6 +28,8 @@ import com.nageoffer.ai.ragent.ingest.RealChatGateway;
 import com.nageoffer.ai.ragent.ingest.RealEmbeddingGateway;
 import com.nageoffer.ai.ragent.ingest.SyntheticChatGateway;
 import com.nageoffer.ai.ragent.ingest.SyntheticEmbeddingGateway;
+import com.nageoffer.ai.ragent.rag.config.MemoryProperties;
+import com.nageoffer.ai.ragent.runtime.AuthorizedRunConversationContext;
 import com.nageoffer.ai.ragent.runtime.P2FaultInjector;
 import com.nageoffer.ai.ragent.runtime.P2RuntimeProperties;
 import com.nageoffer.ai.ragent.runtime.RunEventAppender;
@@ -40,6 +42,7 @@ import com.nageoffer.ai.ragent.runtime.exec.RagChatExecutor;
 import com.nageoffer.ai.ragent.runtime.exec.RunExecutor;
 import com.nageoffer.ai.ragent.runtime.exec.RunExecutorRegistry;
 import com.nageoffer.ai.ragent.runtime.exec.SyntheticRunExecutor;
+import com.nageoffer.ai.ragent.runtime.port.ConversationContextPort;
 import com.nageoffer.ai.ragent.runtime.stream.NotificationBus;
 import com.nageoffer.ai.ragent.runtime.stream.OutboxRelay;
 import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
@@ -106,7 +109,7 @@ public class AiEmbeddedWorkerConfiguration {
         @ConditionalOnEmbeddedLocal
         @ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
         @ConditionalOnProperty(name = "p2.worker.enabled", havingValue = "true")
-        @EnableConfigurationProperties({P2RuntimeProperties.class, LocalMinerUProperties.class})
+        @EnableConfigurationProperties({P2RuntimeProperties.class, LocalMinerUProperties.class, MemoryProperties.class})
         @EnableScheduling
         public static class WorkerEnabled {
 
@@ -189,6 +192,27 @@ public class AiEmbeddedWorkerConfiguration {
                     com.nageoffer.ai.ragent.runtime.RunAccessService runAccessService,
                     ObjectProvider<com.nageoffer.ai.ragent.framework.security.RevocationGuard> revocationGuards) {
                 return new com.nageoffer.ai.ragent.runtime.exec.ProviderCallBoundary(runAccessService, revocationGuards);
+            }
+
+            /**
+             * F16 op5：canonical {@code rag.chat} 历史上下文的授权读取端口。
+             *
+             * <p>{@link RagChatExecutor} 以可选注入方式消费它：受理载荷带 {@code conversationId}
+             * 而没有本 bean 时，执行器在提供方/用量之前 fail-closed 拒绝——"没有装配"不得
+             * 静默退化成"没有历史"。{@code historyKeepTurns} 复用既有
+             * {@code rag.memory.history-keep-turns}（默认 8，{@code @Min(1) @Max(100)}）；
+             * {@code MemoryProperties} 登记进本组 {@code @EnableConfigurationProperties}。
+             */
+            @Bean
+            @ConditionalOnMissingBean
+            public ConversationContextPort conversationContextPort(
+                    RunLedgerDao runLedgerDao,
+                    com.nageoffer.ai.ragent.runtime.RunAccessService runAccessService,
+                    com.nageoffer.ai.ragent.authorization.TenantConversationReadRepository conversationReads,
+                    com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService authorization,
+                    MemoryProperties memoryProperties, ObjectMapper objectMapper) {
+                return new AuthorizedRunConversationContext(runLedgerDao, runAccessService, conversationReads,
+                        authorization, memoryProperties.getHistoryKeepTurns(), objectMapper);
             }
 
             @Bean
