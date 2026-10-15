@@ -31,6 +31,7 @@ import org.ruoyi.ai.api.runtime.DocumentPort;
 import com.nageoffer.ai.ragent.ingest.EmbeddingGateway;
 import com.nageoffer.ai.ragent.runtime.P2FaultInjector;
 import com.nageoffer.ai.ragent.runtime.RunApiException;
+import com.nageoffer.ai.ragent.runtime.RunErrorCode;
 import com.nageoffer.ai.ragent.runtime.RunEventAppender;
 import com.nageoffer.ai.ragent.runtime.port.ConversationTurnMeta;
 import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
@@ -110,6 +111,9 @@ public class RagChatExecutor implements RunExecutor {
      */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.nageoffer.ai.ragent.runtime.port.ConversationContextPort conversationContext;
+
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.nageoffer.ai.ragent.runtime.port.ChatAttachmentPort attachments;
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
@@ -340,6 +344,8 @@ public class RagChatExecutor implements RunExecutor {
             // F16 op4：最终主体刷新之后、任何 usage/提供方动作之前加载有界授权历史。
             // 端口缺席/归属/授权/依赖失败在这里可见拒绝：0 提供方调用、0 用量。
             List<ChatMessage> authorizedHistory = authorizedConversationHistory(execution, principal, input);
+            // F04：附件感知消息组装（端口缺席且载荷带附件时 BAD_REQUEST）；与历史同窗前置于 usage/提供方动作之前。
+            List<ChatMessage> modelMessages=attachmentMessages(execution.run(),binding,chatMessages(question,chunks,authorizedHistory));
             guard.appendEvent(RunEventAppender.EVENT_STEP_STARTED, Map.of(
                     "stepId", "model", "stepName", "model", "attemptId", "a-" + execution.attempt()));
             fault(P2FaultInjector.CHAT_BEFORE_PROVIDER);
@@ -354,7 +360,7 @@ public class RagChatExecutor implements RunExecutor {
             // F03 op3：模型步墙钟起点（成功路径把它落成历史里的"耗时"，见 ConversationTurnMeta）
             long modelStartedNanos = System.nanoTime();
             try {
-                chatResult = chatGateway.stream(binding, chatMessages(question, chunks, authorizedHistory), maxTokens(execution),
+                chatResult = chatGateway.stream(binding, modelMessages, maxTokens(execution),
                         delta -> {
                             if (cancelled[0]) {
                                 throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.RUN_STATE_CONFLICT);
@@ -528,6 +534,17 @@ public class RagChatExecutor implements RunExecutor {
         return messages;
     }
 
+    private List<ChatMessage> attachmentMessages(com.nageoffer.ai.ragent.runtime.model.RunRecord run,
+            com.nageoffer.ai.ragent.runtime.config.RunConfigBinding binding,List<ChatMessage> messages) {
+        if(!com.nageoffer.ai.ragent.runtime.port.ChatAttachmentPort.hasAttachments(parseInput(run.inputJson()))) return messages;
+        if(attachments==null) throw new RunApiException(RunErrorCode.BAD_REQUEST,"Chat attachments are unavailable");
+        return attachments.prepare(run,binding,messages);
+    }
+    private static JsonNode parseInput(String json) {
+        try{return com.nageoffer.ai.ragent.runtime.CanonicalJson.strictMapper().readTree(json);}
+        catch(Exception ex){throw new RunApiException(RunErrorCode.BAD_REQUEST);}
+    }
+
     /**
      * F16 op4：模型步的授权历史加载门（只读，不占用量、不推步骤）。
      *
@@ -697,8 +714,8 @@ public class RagChatExecutor implements RunExecutor {
                     "conversation history port is not wired but the accepted payload carries conversationId="
                             + conversationId + " (runId=" + execution.runId() + ")");
         }
-        history.appendTurn(execution.tenantId(), principal.membershipId(), principal.userId(),
-                conversationId, question, answer, meta);
+        history.appendAttachedTurn(execution.tenantId(), principal.membershipId(), principal.userId(),
+                conversationId, question, answer, meta, input.path("attachments"));
         guard.commitStep("conversation-history", "conversation-history",
                 toJson(Map.of("conversationId", conversationId)), null, toJson(Map.of("calls", 0)));
     }

@@ -6,6 +6,9 @@ import type { BubbleListInstance } from 'vue-element-plus-x/types/BubbleList';
 import type { ThinkingStatus } from 'vue-element-plus-x/types/Thinking';
 import type { ToolCallInfo } from './types';
 import type { UseAgentChatBaseOptions } from './useAgentChat';
+import type { ChatAttachment } from '../../../../api/ai/attachments';
+import { createAttachmentClient } from '../../../../api/ai/attachments';
+import ChatAttachments from '../../../../components/rag/ChatAttachments.vue';
 import { nextTick } from 'vue';
 import { useRoute } from 'vue-router';
 import { listKnowledgeBases } from '@/api/rag';
@@ -40,6 +43,7 @@ type MessageItem = BubbleProps & {
   messageStatus?: string;
   totalTokens?: number;
   sources?: unknown;
+  attachments?: ChatAttachment[];
 };
 
 const route = useRoute();
@@ -47,6 +51,40 @@ const chatStore = useChatStore();
 const agentStore = useAgentStore();
 const sessionStore = useSessionStore();
 const userStore = useUserStore();
+
+interface PendingAttachment { file: File; progress: number; status: 'uploading' | 'failed' | 'ready'; attachment?: ChatAttachment; error?: string }
+const pendingAttachments = ref<PendingAttachment[]>([]);
+const attachmentClient = createAttachmentClient({
+  baseUrl: import.meta.env.VITE_API_URL,
+  clientId: import.meta.env.VITE_CLIENT_ID,
+  identity: () => ({ token: userStore.token, epoch: userStore.authEpoch }),
+  onAuthExpired: () => userStore.handleAuthExpired(),
+});
+async function retryAttachment(row: PendingAttachment) {
+  const epoch = userStore.authEpoch;
+  row.status = 'uploading'; row.error = ''; row.progress = 0;
+  try {
+    const attachment = await attachmentClient.upload(row.file, percent => { if (epoch === userStore.authEpoch) row.progress = percent; });
+    if (epoch !== userStore.authEpoch) return;
+    row.attachment = attachment; row.status = 'ready';
+  }
+  catch (failure) {
+    if (epoch !== userStore.authEpoch) return;
+    row.status = 'failed'; row.error = failure instanceof Error ? failure.message : '上传失败';
+  }
+}
+async function selectAttachments(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = '';
+  if (pendingAttachments.value.length + files.length > 4) { runError.value = '每条消息最多四个附件'; return; }
+  for (const file of files) {
+    const row: PendingAttachment = reactive({ file, progress: 0, status: 'uploading' });
+    pendingAttachments.value.push(row);
+    await retryAttachment(row);
+  }
+}
+watch(() => userStore.authEpoch, () => { pendingAttachments.value = []; }, { flush: 'sync' });
 
 // 用户头像
 const avatar = computed(() => {
@@ -359,6 +397,14 @@ async function submitMessage(content: string) {
   }
   if (runRunning.value || agentStreaming.value)
     return;
+  if (pendingAttachments.value.some(row => row.status !== 'ready')) {
+    runError.value = '请等待附件上传完成，失败的附件可重试或移除';
+    return;
+  }
+  if (agentMode.value && pendingAttachments.value.length) {
+    runError.value = '当前 Agent 实时对话仅支持文本，请切换普通聊天后发送附件';
+    return;
+  }
 
   // —— 互斥模式边界（如实告知，不静默降级）——
   if (currentBinding.value) {
@@ -401,6 +447,8 @@ async function submitMessage(content: string) {
   toolCallKeyCounter = 0;
   inputValue.value = '';
   addMessage(text, true);
+  if (bubbleItems.value.length)
+    bubbleItems.value[bubbleItems.value.length - 1].attachments = pendingAttachments.value.flatMap(row => row.attachment ? [row.attachment] : []);
   addMessage('', false);
   // 这里有必要调用一下 BubbleList 组件的滚动到底部 手动触发 自动滚动
   bubbleListRef.value?.scrollToBottom();
@@ -408,7 +456,10 @@ async function submitMessage(content: string) {
   const conversationId = route.params?.id !== 'not_login' ? String(route.params?.id) : undefined;
   const resourceRefs = selectedKbIds.value.map(id => ({ type: 'knowledge_base', id }));
 
-  await submitRun({ text, conversationId, resourceRefs });
+  const sent = await submitRun({ text, conversationId, resourceRefs,
+    attachments: pendingAttachments.value.flatMap(row => row.attachment ? [{ id: row.attachment.id, version: row.attachment.version }] : []) });
+  if (sent && epoch === userStore.authEpoch)
+    pendingAttachments.value = [];
 
   // 停止打字器状态（无论成功、失败还是被取消）
   if (epoch === userStore.authEpoch && bubbleItems.value.length) {
@@ -718,6 +769,7 @@ function sendMessageByKey(key: number) {
             MessageDetails 内部对空数据返回 null，因此这里的 v-if 可以省略。
           -->
           <MessageDetails :message="item" />
+          <ChatAttachments :attachments="item.attachments" />
           <!--
             F03 op3：助手消息的整条复制（此前只有用户气泡可复制；助手正文走 XMarkdown，
             库内只保证代码块级别的复制动作）。与用户侧共用 copyToClipboard 与同一份图标状态。
@@ -783,6 +835,15 @@ function sendMessageByKey(key: number) {
       </BubbleList>
 
       <div class="sender-wrapper">
+        <div v-if="!agentMode" class="attachment-picker">
+          <input type="file" multiple accept="image/png,image/jpeg,application/pdf,text/plain" :disabled="senderBusy" aria-label="添加附件" @change="selectAttachments">
+          <div v-for="(row, index) in pendingAttachments" :key="`${row.file.name}-${index}`">
+            {{ row.file.name }} · {{ row.status === 'ready' ? '已上传' : `${row.progress}%` }} {{ row.error }}
+            <el-button v-if="row.status === 'failed'" size="small" @click="retryAttachment(row)">重试</el-button>
+            <el-button :disabled="row.status === 'uploading'" size="small" @click="pendingAttachments.splice(index, 1)">移除</el-button>
+          </div>
+          <small>PNG / JPEG / PDF / UTF-8 文本，单个 5 MiB，最多四个。图片支持由所选模型决定。</small>
+        </div>
         <ChatSender
           ref="chatSenderRef"
           v-model="inputValue"

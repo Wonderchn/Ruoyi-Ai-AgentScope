@@ -102,6 +102,9 @@ public class AgentConversationServiceImpl implements AgentConversationService {
      */
     private final ObjectProvider<AiResourceWriteService> resourceWriteServiceRef;
 
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.nageoffer.ai.ragent.runtime.port.ChatAttachmentPort attachments;
+
     @Override
     public String touchConversation(String conversationId, String userId, String question) {
         Scope scope = scope();
@@ -389,6 +392,8 @@ public class AgentConversationServiceImpl implements AgentConversationService {
                         .messageStatus(item.getMessageStatus())
                         .durationMs(item.getDurationMs())
                         .createTime(item.getCreateTime())
+                        .attachments(attachments==null?List.of():attachments.list(scope().tenantId(),scope().memberId(),
+                                userId,"AGENT",conversationId,item.getId()))
                         .build())
                 .toList();
     }

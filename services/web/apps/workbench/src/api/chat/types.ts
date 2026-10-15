@@ -65,6 +65,7 @@ export interface GetChatListParams {
  * 其中 `sources` / `recommended_questions` / `retrieved_chunks` 是 jsonb 文本。
  */
 export interface ChatMessageVo {
+  attachments?: unknown[];
   /** 消息内容 */
   content?: string;
   /** 主键 */

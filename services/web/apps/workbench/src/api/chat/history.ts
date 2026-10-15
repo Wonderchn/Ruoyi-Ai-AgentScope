@@ -33,6 +33,7 @@ export interface ConversationMessageRow {
 
 /** 历史里的一条消息（前端消费形状）。 */
 export interface ChatHistoryMessage {
+  attachments?: unknown[];
   id: string;
   sessionId: string;
   role: string;
@@ -96,7 +97,7 @@ function toDate(value: string | null | undefined): Date | undefined {
  * 这里**不重排**，否则"时间序"这个契约就有两份实现。
  */
 export function toChatHistory(
-  rows: readonly ConversationMessageRow[] | null | undefined,
+  rows: readonly (ConversationMessageRow & { attachments?: unknown })[] | null | undefined,
   sessionId: string | number,
 ): ChatHistoryMessage[] {
   if (!rows || rows.length === 0)
@@ -124,6 +125,7 @@ export function toChatHistory(
       replyToMessageId: optionalText(row.replyToMessageId),
       modelName: optionalText(row.modelName),
       totalTokens: optionalNumber(row.totalTokens),
+      attachments: Array.isArray(row.attachments) ? row.attachments : [],
     };
   });
 }

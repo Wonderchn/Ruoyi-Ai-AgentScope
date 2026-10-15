@@ -43,6 +43,8 @@ public class AgentRunExecutor implements RunExecutor {
     private final P3Properties properties;
     private final JdbcTemplate jdbc;
     private final AgentProviderBoundary boundary;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.nageoffer.ai.ragent.runtime.port.ChatAttachmentPort attachments;
     /** run 级配置绑定端口（D02/C1.2）：由已注入的 JdbcTemplate 组装，避免为改构造签名而改宿主 wiring。 */
     private final com.nageoffer.ai.ragent.runtime.config.RunConfigBindingPort bindingPort;
     @org.springframework.beans.factory.annotation.Autowired
@@ -94,8 +96,10 @@ public class AgentRunExecutor implements RunExecutor {
                 catch(RuntimeException ex){stop.set(ex);return Mono.error(ex);}
             });}
         });
+        AgentModelAdapter modelAdapter=new AgentModelAdapter(execution,ledger,access,gateway,usage,properties.isSyntheticModel(),stop,boundary,faults.getIfAvailable(),bindingPort);
+        modelAdapter.configureAttachments(attachments);
         ReActAgent agent=ReActAgent.builder().name("CoreAgent").sysPrompt("Use only the frozen tools and report retrieved evidence and resolved test-ticket results.")
-            .model(new AgentModelAdapter(execution,ledger,access,gateway,usage,properties.isSyntheticModel(),stop,boundary,faults.getIfAvailable(),bindingPort))
+            .model(modelAdapter)
             // The SDK reserves its final iteration for summarization. Application model-step
             // budgets are enforced by AgentModelAdapter; do not suppress an already admitted tool.
             .toolkit(toolkit).maxIters(12).maxRetries(1)
@@ -119,7 +123,13 @@ public class AgentRunExecutor implements RunExecutor {
                 if(!"SUCCEEDED".equals(source.state()) || source.externalId()==null) throw new IllegalStateException("inherited receipt no longer verified");
                 result.put("inheritedFrom",Map.of("runId",source.runId(),"actionId",source.id(),"externalId",source.externalId()));
             });
-            guard.commitStep("agent-final","agent.final",AgentLedger.json(result),CanonicalJson.sha256(answer),"{}");
+            guard.commitAtomic(()->{
+                if(com.nageoffer.ai.ragent.runtime.port.ChatAttachmentPort.hasAttachments(AgentModelAdapter.parse(run.inputJson()))) {
+                    if(attachments==null) throw new RunApiException(RunErrorCode.BAD_REQUEST,"Chat attachments are unavailable");
+                    attachments.persistAgentTurn(run,AgentModelAdapter.parse(run.inputJson()).path("text").asText(),answer);
+                }
+                return guard.commitStep("agent-final","agent.final",AgentLedger.json(result),CanonicalJson.sha256(answer),"{}");
+            });
             guard.appendEvent(RunEventAppender.EVENT_OUTPUT_DELTA,Map.of("text",answer));
             return Outcome.succeeded(result);
         } catch(RuntimeException ex) {

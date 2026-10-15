@@ -96,6 +96,9 @@ public class ChatMessage {
      */
     private String content;
 
+    /** Transient provider input only. Never persisted in history or logs. */
+    private List<String> imageDataUrls = List.of();
+
     /**
      * 深度思考内容（仅 ASSISTANT 角色可能携带）
      */

@@ -68,6 +68,7 @@ export interface RunChatResourceRef {
 }
 
 export interface RunChatRequestInput {
+  attachments?: Array<{ id: string; version: number }>;
   /** 会话 id；没有会话时省略（受理 DTO 允许缺省）。 */
   conversationId?: string;
   /** 本轮用户输入（受理 `input.text`）。 */
@@ -234,7 +235,7 @@ export function buildRagChatBody(input: RunChatRequestInput): RagChatBody {
   const body: RagChatBody = {
     schemaVersion: 1,
     action: 'rag.chat',
-    input: { text },
+    input: { text, ...(input.attachments?.length ? { attachments: input.attachments.map(ref => ({ id: ref.id, version: ref.version })) } : {}) },
     resourceRefs: refs.map(ref => ({ type: ref.type, id: ref.id })),
     budget: {
       maxTokens: input.budget?.maxTokens ?? RAG_CHAT_MAX_TOKENS,

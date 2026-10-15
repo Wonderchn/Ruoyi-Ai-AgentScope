@@ -111,8 +111,8 @@ public class RealChatGateway implements ChatGateway {
         RunConfigBinding bound=requireBinding(binding);
         ProviderConnectionPort.ProviderConnection connection=connection(bound);
         egress.requireAllowed(bound.providerId());
-        var serialized=messages.stream().map(m->Map.of("role",m.getRole().name().toLowerCase(Locale.ROOT),"content",m.getContent())).toList();
-        if(maxTokens<1 || maxTokens>8192 || serialized.stream().mapToInt(m->m.get("content").length()).sum()>65536) throw ProviderHttp.unavailable();
+        var serialized=serializeMessages(messages);
+        if(maxTokens<1 || maxTokens>8192 || messages.stream().mapToInt(m->m.getContent().length()).sum()>65536) throw ProviderHttp.unavailable();
         HttpURLConnection http=null;
         try {
             LinkedHashMap<String,Object> requestBody=new LinkedHashMap<>();
@@ -243,6 +243,7 @@ public class RealChatGateway implements ChatGateway {
             Object value=entry.getValue();
             Double numeric=value instanceof Number number?number.doubleValue():null;
             switch(key) {
+                case "attachmentModalities" -> { /* consumed by the bound attachment policy, never sent to provider */ }
                 case "temperature" -> {
                     if(within(numeric,0.0,2.0)) requestBody.put(key,numeric);
                     else drop(key,value);
@@ -260,6 +261,22 @@ public class RealChatGateway implements ChatGateway {
         }
     }
 
+    static List<Map<String,Object>> serializeMessages(List<ChatMessage> messages) {
+        return messages.stream().map(message->{
+            Object content=message.getContent();
+            if(message.getImageDataUrls()!=null && !message.getImageDataUrls().isEmpty()) {
+                List<Map<String,Object>> parts=new java.util.ArrayList<>();
+                parts.add(Map.of("type","text","text",message.getContent()));
+                for(String image:message.getImageDataUrls()) {
+                    if(image==null || !image.matches("data:image/(png|jpeg);base64,[A-Za-z0-9+/=]+") || image.length()>7*1024*1024)
+                        throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.BAD_REQUEST,"Invalid image provider input");
+                    parts.add(Map.of("type","image_url","image_url",Map.of("url",image)));
+                }
+                content=parts;
+            }
+            return Map.<String,Object>of("role",message.getRole().name().toLowerCase(Locale.ROOT),"content",content);
+        }).toList();
+    }
     private static boolean within(Double value,double min,double max) {
         return value!=null && !value.isNaN() && !value.isInfinite() && value>=min && value<=max;
     }

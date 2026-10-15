@@ -66,6 +66,10 @@ public class ConversationHistoryAdapter implements ConversationHistoryPort {
      * 不另写一份"差不多"的 SQL：跨租户/他人会话与"不存在"同样读不到，这里据此拒绝写入。
      */
     private final TenantConversationReadRepository conversations;
+    @Autowired(required=false)
+    private com.nageoffer.ai.ragent.runtime.port.ChatAttachmentPort attachments;
+    @Autowired(required=false)
+    private org.springframework.transaction.PlatformTransactionManager attachmentTransactions;
 
     /**
      * 租户作用域绑定端口（P0 修，s2-chathist-a2；与 ENV-B5b 的
@@ -104,6 +108,12 @@ public class ConversationHistoryAdapter implements ConversationHistoryPort {
     @Override
     public void appendTurn(String tenantId, String memberId, String userId, String conversationId,
                            String question, String answer, ConversationTurnMeta meta) {
+        appendAttachedTurn(tenantId,memberId,userId,conversationId,question,answer,meta,null);
+    }
+
+    @Override
+    public void appendAttachedTurn(String tenantId,String memberId,String userId,String conversationId,
+            String question,String answer,ConversationTurnMeta meta,com.fasterxml.jackson.databind.JsonNode refs) {
         if (StrUtil.isBlank(tenantId) || StrUtil.isBlank(memberId) || StrUtil.isBlank(userId)) {
             throw new IllegalStateException(
                     "conversation history requires run-scoped identity (tenant/member/user); "
@@ -124,7 +134,7 @@ public class ConversationHistoryAdapter implements ConversationHistoryPort {
                 "run-history-" + conversationId, "platform",
                 Instant.now().getEpochSecond(), Instant.now().getEpochSecond() + 60));
         try {
-            writeTurn(tenantId, conversationId, userId, question, answer, facts);
+            writeTurn(tenantId, conversationId, userId, question, answer, facts, refs);
         } finally {
             PrincipalContext.restore(previous);
         }
@@ -142,20 +152,25 @@ public class ConversationHistoryAdapter implements ConversationHistoryPort {
      * 不做 ignore 豁免。
      */
     private void writeTurn(String tenantId, String conversationId, String userId,
-                           String question, String answer, ConversationTurnMeta facts) {
+                           String question, String answer, ConversationTurnMeta facts, com.fasterxml.jackson.databind.JsonNode refs) {
         ObjectProvider<TenantScopeBinder> provider = tenantScopeBinder;
         TenantScopeBinder binder = provider == null ? null : provider.getIfAvailable();
         Runnable write = () -> {
             String userMessageId = conversationMessageService.addMessage(
                     message(conversationId, userId, "user", question, null, null));
+            if(refs!=null && refs.isArray() && !refs.isEmpty()) {
+                if(attachments==null) throw new IllegalStateException("Attachment history port is unavailable");
+                var principal=PrincipalContext.require();
+                attachments.bind(tenantId,principal.membershipId(),userId,"RAG",conversationId,userMessageId,refs);
+            }
             conversationMessageService.addMessage(
                     message(conversationId, userId, "assistant", answer, userMessageId, facts));
         };
-        if (binder == null) {
-            write.run();
-            return;
-        }
-        binder.runWithTenant(tenantId, write);
+        Runnable scoped=()->{if(binder==null) write.run();else binder.runWithTenant(tenantId,write);};
+        if(refs!=null && refs.isArray() && !refs.isEmpty()) {
+            if(attachmentTransactions==null) throw new IllegalStateException("Attachment history transaction is unavailable");
+            new org.springframework.transaction.support.TransactionTemplate(attachmentTransactions).executeWithoutResult(status->scoped.run());
+        } else scoped.run();
     }
 
     private ConversationMessageBO message(String conversationId, String userId, String role,
