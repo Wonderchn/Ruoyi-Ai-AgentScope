@@ -23,6 +23,23 @@ function mimeEssence(value: string): string {
 }
 
 /**
+ * 平台 API 映射把 Long 一律序列化为字符串（`PlatformObjectMapperConfig`）：纯十进制串是
+ * 线上合法形态，等价接受并归一化为数字；数字必须是整数 ≥1；其余形态（0/小数/带符号/非数字）拒绝。
+ *
+ * <p>真机锚（2026-10-16）：上传响应线上为 `{"version":"1","sizeBytes":"8"}`，
+ * 不归一化会让 blob 严格比较与回传 refs 双双失效。</p>
+ */
+export function toAttachmentInteger(value: unknown): number | undefined {
+  if (typeof value === 'number')
+    return Number.isInteger(value) && value >= 1 ? value : undefined;
+  if (typeof value === 'string' && /^[1-9]\d*$/.test(value)) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+/**
  * 最终 Blob 的严格核验（F04-HANDOFF 缺口 6）。
  *
  * 服务端只在哈希/版本一致时才释放字节，但**传输侧**也要把住最后一道：
@@ -75,7 +92,13 @@ export function createAttachmentClient(options: {
             const body = JSON.parse(request.responseText);
             if (request.status !== 201 || body.code !== 201 || !body.data?.id)
               throw new Error(body.message || body.msg || '附件上传失败');
-            resolve(body.data);
+            // 真机锚（2026-10-16）：平台 Long→字符串策略下线上形态为 {"version":"1","sizeBytes":"8"}；
+            // 在本边界归一化为数字并 fail-closed（非法形态拒绝，不落假成功）。
+            const version = toAttachmentInteger(body.data.version);
+            const sizeBytes = toAttachmentInteger(body.data.sizeBytes);
+            if (version === undefined || sizeBytes === undefined)
+              throw new Error('附件上传响应字段不合法');
+            resolve({ ...body.data, version, sizeBytes });
           }
           catch (error) { reject(error); }
         };

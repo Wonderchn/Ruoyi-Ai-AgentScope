@@ -160,6 +160,20 @@ describe('upload（XHR + 受理响应解析）', () => {
     assert.deepEqual(await promise, wire);
   });
 
+  it('平台 Long→字符串策略：响应中的 version/sizeBytes 数字串在客户端边界归一化为数字', async () => {
+    stubXhr();
+    const { client } = makeClient();
+    const promise = client.upload(uploadFile('pic.png', 'image/png', 'png-bytes'), () => {});
+    const request = FakeXhr.instances[0];
+    // 真机锚（2026-10-16）：平台 API 映射把 Long 序列化为字符串（PlatformObjectMapperConfig），
+    // 上传响应线上形态为 {"version":"1","sizeBytes":"8"}；类型必须在本边界归一化，
+    // 否则严格比较（blob.size !== sizeBytes）与回传 refs（受理要求数字/十进制串）都会破。
+    request.status = 201;
+    request.responseText = JSON.stringify({ code: 201, data: { id: ATTACH_ID, version: '1', filename: 'pic.png', mimeType: 'image/png', sizeBytes: '8', sha256: 'c'.repeat(64) } });
+    request.onload!();
+    assert.deepEqual(await promise, { id: ATTACH_ID, version: 1, filename: 'pic.png', mimeType: 'image/png', sizeBytes: 8, sha256: 'c'.repeat(64) });
+  });
+
   it('服务端错误：用后端 message 拒绝，不落假成功', async () => {
     stubXhr();
     const { client } = makeClient();

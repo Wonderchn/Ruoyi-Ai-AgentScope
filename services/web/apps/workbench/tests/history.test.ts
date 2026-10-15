@@ -136,6 +136,11 @@ describe('toChatAttachments（历史附件运行时校验）', () => {
     assert.deepEqual(attachment, VALID);
   });
 
+  it('平台 Long→字符串策略：纯十进制串 version/sizeBytes 归一化为数字并保留（真机窗修复）', () => {
+    const [attachment] = toChatAttachments([{ ...VALID, version: '3', sizeBytes: '2048' }]);
+    assert.deepEqual(attachment, VALID);
+  });
+
   it('缺字段 / 类型不符 / 越界条目逐条丢弃，其余合法条目保留', () => {
     const valid2 = { ...VALID, id: 'att-ffffffffffffffffffffffffffffffff', version: 1, filename: 'b.txt', mimeType: 'text/plain' };
     const result = toChatAttachments([
@@ -149,7 +154,10 @@ describe('toChatAttachments（历史附件运行时校验）', () => {
       { ...VALID, id: 9 },
       { ...VALID, version: 0 },
       { ...VALID, version: 1.5 },
-      { ...VALID, version: '1' },
+      // 平台 Long→字符串策略（真机锚 2026-10-16）：纯十进制串是线上合法形态（归一化保留），
+      // 非十进制串/带符号/小数形态仍按垃圾丢弃。
+      { ...VALID, version: '1.5' },
+      { ...VALID, version: 'abc' },
       { ...VALID, filename: '' },
       { ...VALID, mimeType: '' },
       { ...VALID, sizeBytes: 0 },

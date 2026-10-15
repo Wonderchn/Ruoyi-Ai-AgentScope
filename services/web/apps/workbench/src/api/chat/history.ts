@@ -17,7 +17,7 @@
  * 经 `toChatAttachments` 逐条校验后才进入视图。
  */
 
-import type { ChatAttachment } from '../ai/attachments';
+import { toAttachmentInteger, type ChatAttachment } from '../ai/attachments';
 
 /** 后端 `TenantConversationReadRepository.MessageRow` 的线上形状（jsonb 为 JSON 文本）。 */
 export interface ConversationMessageRow {
@@ -110,14 +110,18 @@ export function toChatAttachments(value: unknown): ChatAttachment[] {
     if (!entry || typeof entry !== 'object')
       continue;
     const { id, version, sizeBytes, filename, mimeType, sha256 } = entry as Record<string, unknown>;
+    // 真机锚（2026-10-16）：平台 API 映射把 Long 序列化为字符串——version/sizeBytes 在边界归一化
+    // （十进制串=数字这一线上等价形态）；0/小数/带符号/非数字仍逐条丢弃（口径不放松）。
+    const versionNumber = toAttachmentInteger(version);
+    const sizeBytesNumber = toAttachmentInteger(sizeBytes);
     if (typeof id !== 'string' || id === ''
-      || !Number.isInteger(version) || (version as number) < 1
+      || versionNumber === undefined
       || typeof filename !== 'string' || filename === ''
       || typeof mimeType !== 'string' || mimeType === ''
-      || !Number.isInteger(sizeBytes) || (sizeBytes as number) < 1
+      || sizeBytesNumber === undefined
       || typeof sha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(sha256))
       continue;
-    result.push({ id, version: version as number, filename, mimeType, sizeBytes: sizeBytes as number, sha256: sha256.toLowerCase() });
+    result.push({ id, version: versionNumber, filename, mimeType, sizeBytes: sizeBytesNumber, sha256: sha256.toLowerCase() });
   }
   return result;
 }
