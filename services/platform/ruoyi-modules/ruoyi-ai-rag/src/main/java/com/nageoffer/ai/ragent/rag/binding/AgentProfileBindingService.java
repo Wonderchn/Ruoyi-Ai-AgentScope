@@ -81,14 +81,35 @@ public class AgentProfileBindingService {
      */
     @Transactional(rollbackFor = Exception.class)
     public String saveBindings(String agentProfileId, List<BindingReference> refs) {
+        return replaceBindings(agentProfileId, validateReferences(refs));
+    }
+
+    /**
+     * 只做"在线核引用"，**不写任何行**：供需要"先校验、后落库"的调用方使用
+     * （例如保存 Agent 时先校验绑定，再插 Agent 行 ⇒ 校验失败时零持久化）。
+     *
+     * @return 归一化后的引用（去 null/trim）
+     */
+    public List<BindingReference> validateReferences(List<BindingReference> refs) {
+        String tenantId = PrincipalContext.require().tenantId();
+        List<BindingReference> normalized = normalise(refs);
+        validate(normalized, tenantId);
+        return normalized;
+    }
+
+    /**
+     * 用给定引用整体替换该 Agent 的绑定（替换语义；**调用方保证引用已校验**）。
+     *
+     * @return 新的绑定版本
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public String replaceBindings(String agentProfileId, List<BindingReference> refs) {
         if (!StringUtils.hasText(agentProfileId)) {
             throw new com.nageoffer.ai.ragent.framework.exception.ClientException("Agent 标识不能为空");
         }
         String tenantId = PrincipalContext.require().tenantId();
         String operator = PrincipalContext.require().userId();
         List<BindingReference> normalized = normalise(refs);
-        // 在线核引用：全部校验通过才允许进入写入（校验先于任何 mapper 调用 ⇒ 零部分保存）
-        validate(normalized, tenantId);
 
         bindingMapper.delete(Wrappers.lambdaQuery(AgentProfileBindingDO.class)
                 .eq(AgentProfileBindingDO::getAgentProfileId, agentProfileId)

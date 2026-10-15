@@ -56,7 +56,6 @@ import java.util.Map;
 import java.util.Optional;
 
 @Service
-@RequiredArgsConstructor
 public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
 
     /**
@@ -83,6 +82,47 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
     private final BizChangeLogContext bizChangeLogContext;
     /** 公共模板域只读仓库（R12 卡6：「取槽位默认值」的模板域回退）。 */
     private final PublicTemplateRepository templateRepository;
+
+    /** P3-BIND：绑定权威（F09:3）；保存路径先校验后落库，读取/运行消费由 Stage C/D 接。 */
+    private final com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService bindingService;
+
+    /**
+     * 生产装配：8 参（含绑定权威）。
+     */
+    public AgentProfileAdminServiceImpl(AgentProfileMapper agentProfileMapper,
+                                        AgentPromptMapper agentPromptMapper,
+                                        AgentPromptResolver agentPromptResolver,
+                                        AgentPromptCacheManager cacheManager,
+                                        OrchestrationProperties orchestrationProperties,
+                                        BizChangeLogContext bizChangeLogContext,
+                                        PublicTemplateRepository templateRepository,
+                                        com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService bindingService) {
+        this.agentProfileMapper = agentProfileMapper;
+        this.agentPromptMapper = agentPromptMapper;
+        this.agentPromptResolver = agentPromptResolver;
+        this.cacheManager = cacheManager;
+        this.orchestrationProperties = orchestrationProperties;
+        this.bizChangeLogContext = bizChangeLogContext;
+        this.templateRepository = templateRepository;
+        this.bindingService = bindingService;
+    }
+
+    /**
+     * 兼容构造：不带绑定权威（绑定为空的老路径/既有测试）。
+     *
+     * <p>只有<b>不传</b> {@code bindings} 的请求会走这条路；一旦请求携带绑定而绑定权威缺席，
+     * 显式失败（不静默跳过绑定）。
+     */
+    public AgentProfileAdminServiceImpl(AgentProfileMapper agentProfileMapper,
+                                        AgentPromptMapper agentPromptMapper,
+                                        AgentPromptResolver agentPromptResolver,
+                                        AgentPromptCacheManager cacheManager,
+                                        OrchestrationProperties orchestrationProperties,
+                                        BizChangeLogContext bizChangeLogContext,
+                                        PublicTemplateRepository templateRepository) {
+        this(agentProfileMapper, agentPromptMapper, agentPromptResolver, cacheManager, orchestrationProperties,
+                bizChangeLogContext, templateRepository, null);
+    }
 
     @Override
     public AgentProfileListVO list() {
@@ -179,9 +219,19 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
             extra = BizChangeLogContext.SNAPSHOT_EXPRESSION,
             condition = BizChangeLogContext.RECORD_CONDITION
     )
+    @Transactional(rollbackFor = Exception.class)
     public String create(AgentProfileSaveRequest requestParam) {
         String name = trimmedName(requestParam);
         assertNameAvailable(name, null);
+        java.util.List<com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService.BindingReference> bindings
+                = toBindingReferences(requestParam);
+        if (requestParam.getBindings() != null) {
+            if (bindingService == null) {
+                throw new ClientException("绑定权威未装配，拒绝保存带绑定的请求");
+            }
+            // 先核引用、后落库 ⇒ 引用不合法时零持久化（零部分保存）
+            bindingService.validateReferences(bindings);
+        }
 
         AgentProfileDO profile = AgentProfileDO.builder()
                 .name(name)
@@ -191,6 +241,12 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
                 .active(0)
                 .build();
         agentProfileMapper.insert(profile);
+        if (requestParam.getBindings() != null) {
+            if (bindingService == null) {
+                throw new ClientException("绑定权威未装配，拒绝保存带绑定的请求");
+            }
+            bindingService.replaceBindings(profile.getId(), bindings);
+        }
         bizChangeLogContext.put(profile.getId(), null, profile);
         return profile.getId();
     }
@@ -205,10 +261,20 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
             extra = BizChangeLogContext.SNAPSHOT_EXPRESSION,
             condition = BizChangeLogContext.RECORD_CONDITION
     )
+    @Transactional(rollbackFor = Exception.class)
     public void update(String id, AgentProfileSaveRequest requestParam) {
         AgentProfileDO before = mustLoadEditable(id);
         String name = trimmedName(requestParam);
         assertNameAvailable(name, id);
+        java.util.List<com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService.BindingReference> bindings
+                = toBindingReferences(requestParam);
+        if (requestParam.getBindings() != null) {
+            if (bindingService == null) {
+                throw new ClientException("绑定权威未装配，拒绝保存带绑定的请求");
+            }
+            // 先核引用、后落库 ⇒ 引用不合法时零持久化（零部分保存）
+            bindingService.validateReferences(bindings);
+        }
 
         // 用显式 set 而非 updateById：默认 NOT_NULL 策略会跳过 null，描述就清不掉
         agentProfileMapper.update(Wrappers.lambdaUpdate(AgentProfileDO.class)
@@ -216,7 +282,39 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
                 .set(AgentProfileDO::getDescription, StrUtil.trimToNull(requestParam.getDescription()))
                 .set(AgentProfileDO::getAvatar, trimmedAvatar(requestParam))
                 .eq(AgentProfileDO::getId, id));
+        if (requestParam.getBindings() != null) {
+            if (bindingService == null) {
+                throw new ClientException("绑定权威未装配，拒绝保存带绑定的请求");
+            }
+            bindingService.replaceBindings(id, bindings);
+        }
         bizChangeLogContext.put(id, before, agentProfileMapper.selectById(id));
+    }
+
+    /** 线路形状 → 绑定引用；类型闭集解析失败即拒（不静默忽略）。 */
+    private java.util.List<com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService.BindingReference>
+            toBindingReferences(AgentProfileSaveRequest requestParam) {
+        if (requestParam == null || requestParam.getBindings() == null) {
+            return java.util.List.of();
+        }
+        java.util.List<com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService.BindingReference> refs
+                = new java.util.ArrayList<>();
+        for (AgentProfileSaveRequest.BindingRef wire : requestParam.getBindings()) {
+            if (wire == null || !org.springframework.util.StringUtils.hasText(wire.getType())
+                    || !org.springframework.util.StringUtils.hasText(wire.getRefId())) {
+                throw new ClientException("绑定引用不完整（type 与 refId 都必须提供）");
+            }
+            com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService.RefType type;
+            try {
+                type = com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService.RefType
+                        .valueOf(wire.getType().trim().toUpperCase(java.util.Locale.ROOT));
+            } catch (IllegalArgumentException e) {
+                throw new ClientException("未知绑定类型：" + wire.getType());
+            }
+            refs.add(new com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService.BindingReference(
+                    type, wire.getRefId().trim()));
+        }
+        return refs;
     }
 
     @Override
