@@ -315,6 +315,35 @@ class IngestionPipelineExecutorTest {
         verify(tasks).markTerminal(eq(TENANT), eq(RUN), eq("failed"), any(), any());
     }
 
+    @Test
+    void cancelRacingAFencedFailureEndsCancelledNotFailed() {
+        // 真机窗（2026-10-16）F06.C1.2 实测竞态：取消请求与执行器围栏 CAS 相撞，节点先抛
+        // "version state conflict"；run 权威已由受理面置为 CANCELLED，任务标签必须同收口
+        // （不得留下 run=CANCELLED 与 task=failed 的矛盾对）。
+        stubCommon();
+        when(tasks.findTask(TENANT, RUN)).thenReturn(Optional.of(task(metadata(null))));
+        when(mineruProvider.getIfAvailable()).thenReturn(mineru);
+        java.util.concurrent.atomic.AtomicBoolean cancelRequested = new java.util.concurrent.atomic.AtomicBoolean(false);
+        when(guard.isCancelRequested()).thenAnswer(inv -> cancelRequested.get());
+        // 真机竞态再现（F06.C1.2 锚：IngestionStageRunner.parse 版本态 CAS 失配 → "version state conflict"；
+        // 日志时序证明该异常先于 provider 调用到达，且取消标志此刻已置真）。
+        when(documents.updateVersionStateFenced(anyString(), anyString(), anyString(), anyLong(), anyString(),
+                any(), any(), any(), any())).thenAnswer(inv -> {
+            cancelRequested.set(true);
+            return false;
+        });
+
+        RunExecutor.Outcome outcome = org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+                () -> executor().execute(execution(
+                        "{\"pipelineId\":\"pipe-1\",\"docId\":\"doc-1\",\"kbId\":\"kb-1\",\"uploadId\":\"upl-1\"}")));
+
+        assertEquals("CANCELLED", outcome.status());
+        verify(tasks).upsertNode(eq(TENANT), eq(RUN), eq(PIPE), eq("n1"), eq("parser"), anyInt(), eq("failed"),
+                anyLong(), eq("cancelled"), any(), any());
+        verify(tasks).markTerminal(TENANT, RUN, "cancelled", null, null);
+        verify(tasks, never()).markTerminal(eq(TENANT), eq(RUN), eq("failed"), any(), any());
+    }
+
     private String toJson(Object value) {
         try {
             return objectMapper.writeValueAsString(value);

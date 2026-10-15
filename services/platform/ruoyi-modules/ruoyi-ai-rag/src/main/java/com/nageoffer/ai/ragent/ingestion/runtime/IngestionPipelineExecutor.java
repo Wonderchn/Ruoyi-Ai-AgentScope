@@ -216,6 +216,27 @@ public class IngestionPipelineExecutor implements RunExecutor {
             tasks.markTerminal(tenantId, runId, "cancelled", null, null);
             return new Outcome("CANCELLED", Map.of(), null);
         } catch (RuntimeException e) {
+            // 真机窗（2026-10-16）实测竞态（F06.C1.2）：取消请求与执行器围栏 CAS 相撞时，节点/版本
+            // CAS 先抛 version state conflict 一类 RuntimeException；此时 run 权威已由受理面置为
+            // CANCELLED，若仍按失败落 task=failed 会留下 run=CANCELLED 与 task=failed 的矛盾标签。
+            // 取消已被请求 ⇒ 按取消收口（节点 failed(cancelled)、task cancelled）；原始成因仅日志留痕。
+            boolean cancelRequested;
+            try {
+                cancelRequested = guard.isCancelRequested();
+            } catch (RuntimeException guardUnavailable) {
+                cancelRequested = false;
+            }
+            if (cancelRequested) {
+                log.warn("ingestion run cancelled during failure runId={} cause={}", runId, e.getMessage());
+                if (currentNode != null) {
+                    tasks.upsertNode(tenantId, runId, pipelineId, currentNode.nodeId(), currentNode.nodeType(),
+                            currentNodeIndex, "failed", System.currentTimeMillis() - currentNodeBegan,
+                            "cancelled", null, null);
+                }
+                tasks.markTerminal(tenantId, runId, "cancelled", null, null);
+                return new Outcome("CANCELLED",
+                        currentNode == null ? Map.of() : Map.of("at", currentNode.nodeId()), null);
+            }
             log.warn("ingestion run failed runId={} cause={}", runId, e.getMessage());
             if (currentNode != null) {
                 tasks.upsertNode(tenantId, runId, pipelineId, currentNode.nodeId(), currentNode.nodeType(),
