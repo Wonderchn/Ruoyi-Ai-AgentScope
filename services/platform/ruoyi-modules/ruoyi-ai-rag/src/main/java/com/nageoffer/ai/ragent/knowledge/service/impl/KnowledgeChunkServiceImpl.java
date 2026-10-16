@@ -160,6 +160,12 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public KnowledgeChunkVO create(String docId, KnowledgeChunkCreateRequest requestParam) {
+        // R17-F05:3-M1：写身份只来自执行主体，且在最前面 fail-closed 解析（先于任何 mapper 交互）。
+        // 内嵌传输下 UserContext 恒空（UserContextInterceptor 对 /internal/ai/v1/ + PrincipalContext
+        // 跳过填充），而 ai_knowledge_chunk.created_by 是 V7 NOT NULL 且无默认值（V7:236）——
+        // 用 UserContext 取值会在 INSERT 时落 NULL（PG NOT NULL 违约 → 503「依赖不可用」）。
+        // 口径与 KnowledgeBaseServiceImpl/KnowledgeDocumentServiceImpl 的 create 一致。
+        String operator = PrincipalContext.require().userId();
         KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
         if (DocumentStatus.RUNNING.getCode().equals(documentDO.getStatus())) {
@@ -219,8 +225,8 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
                 // 人工块没有结构信息，向量文本等于正文；显式写下而不是留空，重建时才不必猜
                 .embeddingText(content)
                 .enabled(1)
-                .createdBy(UserContext.getUsername())
-                .updatedBy(UserContext.getUsername())
+                .createdBy(operator)
+                .updatedBy(operator)
                 .build();
 
         chunkMapper.insert(chunkDO);
@@ -250,6 +256,9 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
             condition = BizChangeLogContext.RECORD_CONDITION
     )
     public void update(String docId, String chunkId, KnowledgeChunkUpdateRequest requestParam) {
+        // R17-F05:3-M1：与 create 同一口径——写身份取自执行主体，内嵌态不依赖恒空的 UserContext。
+        // updated_by 列可空（V7:237），但同一写面上的操作人必须一致，避免"谁改的"在内嵌态恒为 NULL。
+        String operator = PrincipalContext.require().userId();
         KnowledgeDocumentDO documentDO = selectTenantKnowledgeDocument(docId);
         Assert.notNull(documentDO, () -> new ClientException("文档不存在"));
         if (DocumentStatus.RUNNING.getCode().equals(documentDO.getStatus())) {
@@ -276,7 +285,7 @@ public class KnowledgeChunkServiceImpl implements KnowledgeChunkService {
         chunkDO.setTokenCount(resolveTokenCount(newContent));
         // 向量文本必须跟着正文一起改：否则向量按新正文更新、库里那份还是旧文本，下次重建就用错的文本
         chunkDO.setEmbeddingText(newContent);
-        chunkDO.setUpdatedBy(UserContext.getUsername());
+        chunkDO.setUpdatedBy(operator);
 
         // P1.3a：主键更新改为租户条件更新（WHERE id + tenant_id）
         chunkMapper.update(null, Wrappers.lambdaUpdate(KnowledgeChunkDO.class)
