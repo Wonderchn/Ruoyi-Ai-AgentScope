@@ -343,8 +343,9 @@ public class AiGatewayController {
             // pageQuery、KnowledgeDocumentController.permitJson/file），**不并入**
             // AiEmbeddedAdminDeliveryConfiguration 的 advice —— 两处都铸就是双铸（契约回执泄漏）。
             //
-            // 未达面（B / 显式 NOT_RUN，不在此处冒充）：multipart 上传
-            // （POST /knowledge-base/{kbId}/docs/upload）经本地传输的部件直读、
+            // 未达面（B / 显式 NOT_RUN，不在此处冒充）：
+            // （multipart 上传 POST /knowledge-base/{kbId}/docs/upload 自 F05:1 起已由专用流
+            //   通道承接，见下方该 route 的注记——不再是未达面）
             // 真实 S3/OSS（rag.storage.type=s3|oss，F22 op3）、
             // MQ 承载的两条事务消息操作（KB 删除 / 文档重解析：内嵌无 broker 时显式 503）。
             new Route("GET", "/knowledge-base/docs/ingestion-spec-schema", "config.read"),
@@ -353,16 +354,18 @@ public class AiGatewayController {
             new Route("GET", "/knowledge-base/docs/{docId}/chunk-logs", "document.read"),
             new Route("GET", "/knowledge-base/docs/{docId}/preview", "document.read"),
             new Route("GET", "/knowledge-base/docs/{docId}/file", "document.download"),
-            // ⚠️ 该条是 17 条里唯一**带限制**的：文件部件经本地通配分支可达
-            //    （MultipartResolutionDelegate 的 getParts 回退），但 multipart **表单字段**
-            //    （sourceType/sourceLocation/processMode/pipelineId/ingestionSpec/scheduleCron/
-            //    scheduleEnabled）不随转发体转送（BodyProvidingRequest 只暴露 query）⇒ 内层
-            //    @ModelAttribute 绑成 null。管理员 UI 的上传走 workbench/P2 专用流通道
-            //    （POST /documents/uploads），不经本行；本行服务的是 ragent 管理面既有端点。
-            //    限制已登记为判据（LocalKnowledgeAdminRouteDispatchTest：表单字段断言恒 null，
-            //    将来接通专用流通道时会翻红提醒同步改注释/判据）。**不要**用"再包一层
-            //    StandardMultipartHttpServletRequest"去修：实测表单字段会变成 ApplicationPart
-            //    形态导致绑定 400（red/a1-fixfield-web/，复核 F1）。
+            // F05:1 薄适配（2026-10-16）：该 admin 上传已于运行期由专用流通道承接——
+            // AiGatewayStreamController 的精确 @PostMapping("/knowledge-base/{kbId}/docs/upload")
+            // 先于本 catch-all 生效，经 multipart 旁路排除（GatewayMultipartConfiguration /
+            // GatewayRawUploadFilter **成对**登记该路径）+ local MultipartTargetRequest 直调内层，
+            // 原始 multipart（文件 + 表单字段 sourceType/sourceLocation/processMode/pipelineId/
+            // ingestionSpec/scheduleCron/scheduleEnabled）整包到达内层 @ModelAttribute，
+            // 内层零形状改动（200 + 整数 code + KnowledgeDocumentVO）。
+            // ⚠️ 本行 route 登记**保留不动**：它是该 path/动作在路由表中的权威登记
+            //    （动作 document.upload 与专用流同一把钥匙，零新增动作/权限行/迁移）；
+            //    运行期该路径由专用流精确映射命中，不再落到下面 catch-all 的转发分支。
+            // **不要**用"再包一层 StandardMultipartHttpServletRequest"去修 catch-all 分支：
+            //    实测表单字段会变成 ApplicationPart 形态导致绑定 400（red/a1-fixfield-web/，复核 F1）。
             new Route("POST", "/knowledge-base/{kbId}/docs/upload", "document.upload"),
             new Route("POST", "/knowledge-base/docs/{docId}/chunk", "document.ingest"),
             new Route("PUT", "/knowledge-base/docs/{docId}", "kb.write"),

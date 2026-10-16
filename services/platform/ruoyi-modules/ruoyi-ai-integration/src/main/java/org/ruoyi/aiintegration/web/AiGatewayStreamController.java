@@ -63,14 +63,55 @@ public class AiGatewayStreamController {
     /** 专用流式上传：不把通用 byte[] 代理改成无界缓冲。 */
     @PostMapping("/documents/uploads")
     public void upload(HttpServletRequest request, HttpServletResponse response) {
+        forwardUpload(request, response, "document.upload", "/documents/uploads");
+    }
+
+    /**
+     * admin 知识库上传（{@code POST /api/ai/v1/knowledge-base/{kbId}/docs/upload}）。
+     *
+     * <p><b>为什么复用同一条专用流通道（F05:1 薄适配）。</b>该 admin 端点此前由网关
+     * catch-all 分支承接，multipart <b>表单字段</b>不随转送体到达内层
+     * （{@code BodyProvidingRequest} 只暴露 query）⇒ 内层 {@code @ModelAttribute} 绑成
+     * null ⇒ {@code SourceType.normalize} / {@code MethodArgumentNotValid} ⇒ 漏斗 503
+     * （F05:3 卡 §2.2:62 实录）。复用 workbench/P2 已验证的<b>传输机制</b>即等价：
+     * 精确映射（先于 catch-all 生效）+ multipart 旁路排除
+     * （{@link GatewayMultipartConfiguration} / {@link GatewayRawUploadFilter} <b>成对</b>
+     * 登记该路径）+ local 形态 {@code MultipartTargetRequest} 进程内直调，原始 multipart
+     * 部件（文件 + 表单字段）整包到内层；内层（{@code KnowledgeDocumentController} +
+     * {@code KnowledgeDocumentUploadRequest}）<b>零形状改动</b>（200 + 整数 {@code code:200} +
+     * {@code KnowledgeDocumentVO}）。
+     *
+     * <p><b>权限面零增量</b>：动作仍是既有 {@code document.upload}——与 catch-all 路由表
+     * {@code AiGatewayController} 中同一路径登记的是同一 canonical 动作、同一条权限行
+     * （V5 7118），不新增动作、不新增权限行、不新增迁移。
+     *
+     * <p><b>不建通用网关 multipart 转发</b>：只有这一条精确路径走本方法，不做
+     * {@code /knowledge-base/**} 通配。
+     */
+    @PostMapping("/knowledge-base/{kbId}/docs/upload")
+    public void uploadKnowledgeDocument(@PathVariable String kbId, HttpServletRequest request,
+                                        HttpServletResponse response) {
+        forwardUpload(request, response, "document.upload",
+                "/knowledge-base/" + kbId + "/docs/upload");
+    }
+
+    /**
+     * 两条上传路径的共用传输：授权 → 目标 URI → 净化头 → 原始体流式转发。
+     *
+     * <p>抽出来是为了让"两条路径走完全一致的传输与上限语义"成为**结构性事实**，
+     * 而不是两段复制粘贴各自漂移（同一 {@code uploadMaxBytes} 上限、同一超时换算、
+     * 同一条委托链）。与 {@link #streamAgent} 同一纪律。
+     */
+    private void forwardUpload(HttpServletRequest request, HttpServletResponse response,
+                               String action, String subPath) {
         try {
-            GatewayAuthorizer.Authorized authorized = authorizer.authorize(request, "document.upload");
+            GatewayAuthorizer.Authorized authorized = authorizer.authorize(request, action);
             long declared = request.getContentLengthLong();
             if (declared > properties.getUploadMaxBytes()) {
                 writeError(response, P04ErrorCode.BAD_REQUEST);
                 return;
             }
-            URI target = targetUri(request, "/documents/uploads");
+            URI target = targetUri(request, subPath);
             Map<String, String> headers = GatewayHeaders.sanitize(request);
             if (authorized.delegationToken() != null) {
                 headers.put("Authorization", "Bearer " + authorized.delegationToken());
