@@ -30,12 +30,14 @@ import org.ruoyi.aiintegration.web.AiGatewayClient;
 import java.io.ByteArrayInputStream;
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -54,10 +56,13 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpServletResponseWrapper;
+import jakarta.servlet.http.Part;
 import jakarta.servlet.ReadListener;
 import jakarta.servlet.WriteListener;
 
 import org.springframework.http.server.RequestPath;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.context.request.NativeWebRequest;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
@@ -809,15 +814,88 @@ public class LocalAiGatewayClient extends AiGatewayClient {
     /**
      * 目标路径 + 容器已解析的 multipart 部件：供内层 {@code @RequestPart} 处理器使用。
      * 外层已缓存的 Spring 解析路径必须替换为内层目标（与 {@link BodyProvidingRequest} 同一职责）。
+     *
+     * <p><b>F05 运行时收口（②）真断点</b>：专用流上传路径上，外层
+     * {@code GatewayRawUploadFilter} 把 {@code getParameter*}/{@code getParameterMap} 抑制为空
+     * （该路径只从 header 鉴权，绝不读 multipart 参数）。而 Spring 的
+     * {@code StandardMultipartHttpServletRequest} 只从容器部件里解析出 {@code MultipartFile}，
+     * 表单字段参数仍一律委托给底下那个被抑制的 request（{@code AbstractMultipartHttpServletRequest}
+     * 不覆写 {@code getParameter*}）。于是内层 {@code @ModelAttribute} 绑定看到的是空参数集 ⇒
+     * 字段绑成 null ⇒ 真机 W-U b：{@code http=200 code=500}（内层 {@code SourceType.normalize} 空）。
+     *
+     * <p>修法：把<b>自身部件</b>里的非文件部分显式暴露为参数（先查自身部件映射，再回落底层，
+     * 与 servlet 真解析链的等价语义一致）。只重建部件参数，不建通用 multipart 转发，也不改 P2 路径语义。
      */
     private static final class MultipartTargetRequest extends
             org.springframework.web.multipart.support.StandardMultipartHttpServletRequest {
 
         private RequestPath parsedPath;
 
+        /** 自身携带的非文件部件参数值（部件名 → 值列表）。 */
+        private final MultiValueMap<String, String> partParameters = new LinkedMultiValueMap<>();
+
         MultipartTargetRequest(HttpServletRequest request, RequestPath parsedPath) {
             super(request);
             this.parsedPath = parsedPath;
+            String encoding = request.getCharacterEncoding();
+            try {
+                for (Part part : request.getParts()) {
+                    // 带 filename 的部件是文件（已由 super 解析进 multipartFiles）；其余是表单字段参数
+                    if (part.getSubmittedFileName() == null) {
+                        partParameters.add(part.getName(), readPartText(part, encoding));
+                    }
+                }
+            } catch (Exception unreadable) {
+                throw new UpstreamUnavailableException("multipart parameters unreadable");
+            }
+        }
+
+        @Override
+        public String getParameter(String name) {
+            String value = partParameters.getFirst(name);
+            return value != null ? value : super.getParameter(name);
+        }
+
+        @Override
+        public String[] getParameterValues(String name) {
+            List<String> values = partParameters.get(name);
+            return values != null ? values.toArray(new String[0]) : super.getParameterValues(name);
+        }
+
+        @Override
+        public Map<String, String[]> getParameterMap() {
+            Map<String, String[]> merged = new LinkedHashMap<>();
+            Map<String, String[]> inherited = super.getParameterMap();
+            if (inherited != null) {
+                merged.putAll(inherited);
+            }
+            partParameters.forEach((name, values) -> merged.put(name, values.toArray(new String[0])));
+            return merged;
+        }
+
+        @Override
+        public java.util.Enumeration<String> getParameterNames() {
+            Set<String> names = new LinkedHashSet<>(partParameters.keySet());
+            java.util.Enumeration<String> inherited = super.getParameterNames();
+            while (inherited != null && inherited.hasMoreElements()) {
+                names.add(inherited.nextElement());
+            }
+            return java.util.Collections.enumeration(names);
+        }
+
+        /** 部件文本按请求编码解码（缺省 UTF-8）——参数值不是字节流，必须按字符语义取。 */
+        private static String readPartText(Part part, String encoding) throws IOException {
+            Charset charset = StandardCharsets.UTF_8;
+            if (encoding != null && !encoding.isBlank()) {
+                try {
+                    charset = Charset.forName(encoding);
+                } catch (Exception ignored) {
+                    // 非法编码名：回落 UTF-8，不因编码元数据把上传判成不可用
+                }
+            }
+            try (InputStream in = part.getInputStream()) {
+                return new String(in.readAllBytes(), charset);
+            }
         }
 
         @Override

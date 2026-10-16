@@ -27,6 +27,9 @@ import com.nageoffer.ai.ragent.infra.chat.LlmFirstPacketProbe;
 import com.nageoffer.ai.ragent.infra.chat.OllamaChatClient;
 import com.nageoffer.ai.ragent.infra.chat.RoutingLLMService;
 import com.nageoffer.ai.ragent.infra.chat.SiliconFlowChatClient;
+import com.nageoffer.ai.ragent.ingest.EmbeddingGateway;
+import com.nageoffer.ai.ragent.ingest.SyntheticEmbeddingClient;
+import com.nageoffer.ai.ragent.ingest.SyntheticEmbeddingGateway;
 import com.nageoffer.ai.ragent.infra.config.AIModelProperties;
 import com.nageoffer.ai.ragent.infra.embedding.AIHubMixEmbeddingClient;
 import com.nageoffer.ai.ragent.infra.embedding.BaiLianEmbeddingClient;
@@ -390,6 +393,34 @@ public class AiEmbeddedModelConfiguration {
             @ConditionalOnMissingBean
             public NoopRerankClient noopRerankClient() {
                 return new NoopRerankClient();
+            }
+
+            /**
+             * R17 F05 运行时收口（①）：合成嵌入 client 的<b>显式装配登记</b>。
+             *
+             * <p>真机实证（v4 窗 W-C2）：{@code Embedding provider client missing: provider=noop,
+             * modelId=synthetic-feature-hash-1536} → {@code RemoteException} → 平台 500 信封 →
+             * 网关 fail-closed 成 503。根因：{@link SyntheticEmbeddingClient}（与
+             * {@link SyntheticEmbeddingGateway} 同类）是 rag 模块里的 {@code @Component}，
+             * 而嵌入式应用是<b>显式装配</b>、扫描根为 {@code org.ruoyi}——它从来不是 bean。
+             * 网关已由 worker 组按 {@code p2.embedding.mode=synthetic} 显式登记（同为显式
+             * {@code @Bean}），client 却漏登记，于是 {@link RoutingEmbeddingService} 构造注入的
+             * {@code List<EmbeddingClient>} 收不到 noop，路由期解析不到 provider。
+             *
+             * <p>与网关<b>同条件对偶</b>：非合成模式下 client 与网关一并缺席，不做静默兜底；
+             * 合成模式下委托同一份进程内网关做特征哈希，<b>零外呼</b>。构造参数按名取 worker 组
+             * 登记的网关（声明类型是 {@code EmbeddingGateway}，这里窄化为合成实现并响亮校验）。
+             */
+            @Bean
+            @ConditionalOnMissingBean
+            @ConditionalOnProperty(name = "p2.embedding.mode", havingValue = "synthetic")
+            public SyntheticEmbeddingClient syntheticEmbeddingClient(
+                    @Qualifier("syntheticEmbeddingGateway") EmbeddingGateway embeddingGateway) {
+                if (!(embeddingGateway instanceof SyntheticEmbeddingGateway gateway)) {
+                    throw new IllegalStateException("p2.embedding.mode=synthetic 但 EmbeddingGateway bean 不是合成网关: "
+                            + embeddingGateway.getClass().getName());
+                }
+                return new SyntheticEmbeddingClient(gateway);
             }
 
             // ---------------------------------------------------------- 对外服务面
