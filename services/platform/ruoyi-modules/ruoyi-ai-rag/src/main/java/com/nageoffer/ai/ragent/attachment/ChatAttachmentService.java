@@ -18,7 +18,13 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
 
-/** Private immutable objects, registered ownership and version are checked on every use. */
+/**
+ * Private immutable objects, registered ownership and version are checked on every use.
+ *
+ * <p>F04:4（MAINTAINER-DECISIONS 45-②）：属主可见的**陈旧版本**以 409
+ * （{@link RunErrorCode#VERSION_CONFLICT}）暴露；不可见形态（未知 id/非属主/跨租户/
+ * 删除/撤权/资源非 ACTIVE）保持统一 404（不泄露存在性）。见 {@link #row} 的属主可见探测。
+ */
 public class ChatAttachmentService implements ChatAttachmentPort {
     private final JdbcTemplate jdbc;
     private final PrivateObjectStore store;
@@ -115,7 +121,10 @@ public class ChatAttachmentService implements ChatAttachmentPort {
         List<Map<String,Object>> result=new ArrayList<>();
         for(Ref ref:bound) {
             try {result.add(metadata(row(tenant,member,user,ref.id,ref.version)));}
-            catch(RunApiException ex) {if(ex.errorCode()!=RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN) throw ex;}
+            // F04:4：陈旧版本（409）与不可见（404）都保持"跳过"语义——list 是列表面，
+            // 不因某条绑定陈旧而整体失败。
+            catch(RunApiException ex) {if(ex.errorCode()!=RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN
+                    && ex.errorCode()!=RunErrorCode.VERSION_CONFLICT) throw ex;}
         }
         return List.copyOf(result);
     }
@@ -163,10 +172,31 @@ public class ChatAttachmentService implements ChatAttachmentPort {
     }
     private Row row(String tenant,String member,String user,String id,long version) {
         ExecutionPrincipal.requireMembershipId(member,tenant,user);
-        var found=jdbc.query("SELECT a.filename,a.mime_type,a.size_bytes,a.sha256,a.object_key,a.object_version FROM platform.ai_chat_attachment a JOIN platform.ai_resource r ON r.tenant_id=a.tenant_id AND r.resource_type='OBJECT' AND r.parent_type='CHAT_ATTACHMENT' AND r.parent_id=a.attachment_id AND r.owner_member_id=a.member_id AND r.status='ACTIVE' AND r.resource_version=a.object_version AND r.resource_id=regexp_replace(a.object_key,'^.*/','') WHERE a.tenant_id=? AND a.member_id=? AND a.user_id=? AND a.attachment_id=? AND a.object_version=? AND a.status='ACTIVE'",
-                (rs,n)->new Row(id,rs.getString(1),rs.getString(2),rs.getLong(3),rs.getString(4),rs.getString(5),rs.getLong(6)),tenant,member,user,id,version);
-        if(found.size()!=1) throw missing();return found.get(0);
+        var found=jdbc.query("SELECT a.filename,a.mime_type,a.size_bytes,a.sha256,a.object_key,a.object_version"
+                        +VISIBLE_ATTACHMENT_JOIN+VISIBLE_ATTACHMENT_SCOPE+" AND a.object_version=?",
+                (rs,n)->new Row(id,rs.getString(1),rs.getString(2),rs.getLong(3),rs.getString(4),rs.getString(5),rs.getLong(6)),
+                tenant,member,user,id,version);
+        if(found.size()==1) return found.get(0);
+        // F04:4（MAINTAINER-DECISIONS 45-②）：严格未命中后做一次**属主可见探测**——同一 JOIN
+        // 谓词、去掉请求版本等值、只取当前 object_version。
+        //   恰 1 行且 object_version<>请求版本 ⇒ 陈旧版本 409（仅对已确认权限的属主区分）；
+        //   探测空（未知 id/非属主/跨租户/删除/撤权/资源非 ACTIVE）或多行/其余形态 ⇒ 404 fail-closed。
+        var ownerVisible=jdbc.query("SELECT a.object_version"+VISIBLE_ATTACHMENT_JOIN+VISIBLE_ATTACHMENT_SCOPE,
+                (rs,n)->rs.getLong(1),tenant,member,user,id);
+        if(ownerVisible.size()==1 && ownerVisible.get(0)!=version)
+            throw new RunApiException(RunErrorCode.VERSION_CONFLICT);
+        throw missing();
     }
+
+    /** 严格查询与属主可见探测必须共用同一 JOIN 谓词（同一可见性事实面）。 */
+    private static final String VISIBLE_ATTACHMENT_JOIN=
+            " FROM platform.ai_chat_attachment a JOIN platform.ai_resource r"
+            +" ON r.tenant_id=a.tenant_id AND r.resource_type='OBJECT' AND r.parent_type='CHAT_ATTACHMENT'"
+            +" AND r.parent_id=a.attachment_id AND r.owner_member_id=a.member_id AND r.status='ACTIVE'"
+            +" AND r.resource_version=a.object_version AND r.resource_id=regexp_replace(a.object_key,'^.*/','')";
+    /** 属主自有作用域谓词（租户/属主/附件 + 附件 ACTIVE），探测面用时不带版本等值。 */
+    private static final String VISIBLE_ATTACHMENT_SCOPE=
+            " WHERE a.tenant_id=? AND a.member_id=? AND a.user_id=? AND a.attachment_id=? AND a.status='ACTIVE'";
     private byte[] bytes(Row row) {
         if(row.size<1 || row.size>ChatAttachmentPolicy.MAX_BYTES || !store.exists(row.key)) throw missing();
         byte[] bytes=store.get(row.key);
