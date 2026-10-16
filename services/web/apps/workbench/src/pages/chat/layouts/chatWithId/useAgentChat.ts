@@ -374,17 +374,37 @@ function createChat(options: UseAgentChatBaseOptions) {
     await refresh(pending.conversationId);
   }
 
-  /** 改写确认卡状态（按 `kind === 'confirm'` 定位，不依赖消息 id 是否被服务端换过）。 */
+  /**
+   * 改写确认卡状态（按 `kind === 'confirm'` 定位，不依赖消息 id 是否被服务端换过）。
+   *
+   * 拒绝是"从未执行"的结局：服务端结算会把关联工具一并落成 `denied`（D1/D2），FE 活态
+   * 必须同步联动，否则卡消息里 `confirm=denied` 与 `tool=awaiting` 自相矛盾，
+   * 工具卡直到 reload 回查才显示 denied（R17 W5 套件 `tool_denied=0` 即此）。
+   * 联动只认 `denied`，且按 confirm 块 `calls[].toolCallId` 匹配**同一条消息**内的工具块：
+   * approved 的工具真跑、状态由续跑事件驱动；expired 不属本包范围 —— 替它们改判就是篡改结局。
+   */
   function setConfirmStatus(status: 'submitting' | 'approved' | 'denied' | 'expired') {
+    const denyLinked = status === 'denied';
     const turns = state.value.turns.map(turn => ({
       ...turn,
       assistants: turn.assistants.map((message) => {
-        if (!message.blocks?.some(block => block.kind === 'confirm'))
+        const blocks = message.blocks ?? [];
+        if (!blocks.some(block => block.kind === 'confirm'))
           return message;
+        const deniedCalls = denyLinked
+          ? new Set(blocks.flatMap(block => (block.kind === 'confirm' ? block.calls ?? [] : []).map(call => call.toolCallId)))
+          : null;
         return {
           ...message,
           messageStatus: status === 'submitting' ? 'AWAITING_CONFIRM' as const : 'NORMAL' as const,
-          blocks: message.blocks.map(block => (block.kind === 'confirm' ? { ...block, status } : block)),
+          blocks: blocks.map((block) => {
+            if (block.kind === 'confirm')
+              return { ...block, status };
+            // 幂等：已 denied 的块原样返回（重复结算不产生新对象、不新增块）
+            if (deniedCalls !== null && block.kind === 'tool' && block.toolCallId && deniedCalls.has(block.toolCallId))
+              return block.status === 'denied' ? block : { ...block, status: 'denied' as const };
+            return block;
+          }),
         };
       }),
     }));

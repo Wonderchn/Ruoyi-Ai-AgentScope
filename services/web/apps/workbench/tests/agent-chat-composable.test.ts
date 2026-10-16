@@ -390,6 +390,79 @@ describe('确认卡（F15 op2）', () => {
     assert.equal(card?.status, 'denied');
   });
 
+  // —— R17 W5-FE 收口（V4 集成窗 §2；套件 W5 断言 `tool_denied=0`）——
+  // 服务器侧 deny 已把卡消息落成 `blocks=[tool:denied, confirm:denied]`（CD.2 绿），但 FE
+  // 活态 `setConfirmStatus` 只改 `kind='confirm'` 块 ⇒ 关联工具卡停在 awaiting，
+  // 只有 reload 从历史回查才显 denied。下面两条钉死"拒绝联动工具块"与"approved/expired 不扩面"。
+  const TOOL_PENDING_FRAME = () => frame('block', {
+    kind: 'tool', toolCallId: 'tc1', name: 'mcp_write', displayName: '写操作', status: 'running', startedAt: 1000,
+  });
+
+  async function untilConfirmWithTool(h: Harness) {
+    await h.chat.sendMessage('写点什么');
+    assert.equal(h.chat.hasPendingConfirm.value, true);
+    const message = h.chat.turns.value[0].assistants[0];
+    const tool = message.blocks?.find(block => block.kind === 'tool');
+    assert.equal(tool?.status, 'awaiting', 'confirm 帧把未执行工具落成 awaiting（挂起即拦）');
+    assert.equal(message.blocks?.find(block => block.kind === 'confirm')?.status, 'pending');
+  }
+
+  it('**W5-FE 收口**：拒绝时按 confirm 块 calls[].toolCallId 联动同消息工具块 → denied（幂等、可渲染）', async () => {
+    const h = harness({
+      chat: [sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-1' }), TOOL_PENDING_FRAME(), CONFIRM_FRAME(), done()])],
+      confirm: [sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-2' }), frame('finish', { messageId: 'm-77', messageStatus: 'NORMAL' }), done()])],
+    });
+    await untilConfirmWithTool(h);
+    await h.chat.resolveConfirm(false);
+
+    const message = h.chat.turns.value[0].assistants[0];
+    const card = message.blocks?.find(block => block.kind === 'confirm');
+    const tool = message.blocks?.find(block => block.kind === 'tool');
+    assert.equal(card?.status, 'denied', '确认卡 denied（既有状态流不变）');
+    assert.equal(tool?.status, 'denied', '被拒绝的工具块必须联动 denied —— 停在 awaiting 就是活态说了服务端没说的话');
+    // 渲染面：AgentToolCard 以 block.status 为 data-status；工具行须以 denied 出线
+    const rows = h.chat.rowsOf(h.chat.turns.value[0]);
+    const toolRow = rows.find(row => row.channel === 'tool');
+    assert.equal(toolRow?.block?.status, 'denied', '工具行出线且 data-status=denied（AgentToolCard 只读投影）');
+    // 幂等：再次结算同值（重复调用不改判、不新增块）
+    const beforeTools = message.blocks?.filter(block => block.kind === 'tool').length;
+    await h.chat.resolveConfirm(false);
+    const again = h.chat.turns.value[0].assistants[0];
+    assert.equal(again.blocks?.find(block => block.kind === 'tool')?.status, 'denied');
+    assert.equal(again.blocks?.filter(block => block.kind === 'tool').length, beforeTools, '幂等：不重复追加工具块');
+    assert.equal(again.blocks?.find(block => block.kind === 'confirm')?.status, 'denied');
+  });
+
+  it('**防扩面**：批准/失效路径不改变关联工具块（工具结局只由续跑事件与服务端说法落定）', async () => {
+    // approved：续跑未给工具帧 ⇒ 工具块维持挂起时的 awaiting，不被擅自写成 denied/done
+    const approved = harness({
+      chat: [sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-1' }), TOOL_PENDING_FRAME(), CONFIRM_FRAME(), done()])],
+      confirm: [sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-2' }), frame('finish', { messageId: 'm-77', messageStatus: 'NORMAL' }), done()])],
+    });
+    await untilConfirmWithTool(approved);
+    await approved.chat.resolveConfirm(true);
+    const approvedTool = approved.chat.turns.value[0].assistants[0].blocks?.find(block => block.kind === 'tool');
+    assert.equal(approvedTool?.status, 'awaiting', 'approved 不得改写工具块（由续跑事件驱动）');
+    assert.equal(
+      approved.chat.turns.value[0].assistants[0].blocks?.find(block => block.kind === 'confirm')?.status,
+      'approved',
+    );
+
+    // expired：服务端明确拒绝（400）⇒ 卡片 expired，工具块同样不被联动成 denied
+    const expired = harness({
+      chat: [sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-1' }), TOOL_PENDING_FRAME(), CONFIRM_FRAME(), done()])],
+      confirm: [jsonResponse({ code: 400, msg: '待确认的操作已失效，请重新提问', data: null }, 400)],
+    });
+    await untilConfirmWithTool(expired);
+    await expired.chat.resolveConfirm(true);
+    const expiredTool = expired.chat.turns.value[0].assistants[0].blocks?.find(block => block.kind === 'tool');
+    assert.equal(expiredTool?.status, 'awaiting', 'expired 不得改写工具块（不属本包范围）');
+    assert.equal(
+      expired.chat.turns.value[0].assistants[0].blocks?.find(block => block.kind === 'confirm')?.status,
+      'expired',
+    );
+  });
+
   it('**服务端拒绝（已失效）**：卡片转 expired、不装已同意、显示服务端原因、挂起解除', async () => {
     const h = harness({
       chat: [sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-1' }), CONFIRM_FRAME(), done()])],
