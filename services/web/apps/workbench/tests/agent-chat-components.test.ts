@@ -340,6 +340,8 @@ describe('AgentRawLogDrawer（原始帧：帧名 + 时间 + 原文）', () => {
       assert.match(source, /data-testid="agent-raw-frame"/);
       assert.match(source, /\{\{ frame\.ts \}\}/);
       assert.match(source, /\{\{ frame\.name \}\}/);
+      // 表头计数与帧数同源（抽屉自证："原始帧 · N"）
+      assert.match(source, /原始帧 · \{\{ frames\.length \}\}/);
     }
     finally { scope.stop(); }
   });

@@ -17,7 +17,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { ref } from 'vue';
-import { createAgentChatClient } from '../src/api/ai/agent-chat.ts';
+import { createAgentChatClient, AGENT_RAW_FRAME_LIMIT } from '../src/api/ai/agent-chat.ts';
 import { useAgentChat } from '../src/pages/chat/layouts/chatWithId/useAgentChat.ts';
 
 const encoder = new TextEncoder();
@@ -167,6 +167,58 @@ describe('提问与流式推进', () => {
     const meta = h.chat.frames.value.find(item => item.name === 'meta');
     assert.deepEqual(meta?.data, { conversationId: 'c-1', taskId: 't-1' });
     assert.match(String(meta?.ts), /^\d{2}:\d{2}:\d{2}$/);
+  });
+
+  it('原始帧缓冲：裸心跳注释（`: ping`）与许可注释逐条留存（注释面逐项覆盖）', async () => {
+    const h = harness({
+      chat: [sseResponse([
+        ': ping\n\n',
+        frame('meta', { conversationId: 'c-1', taskId: 't-1' }),
+        done(),
+      ])],
+    });
+    await h.chat.sendMessage('q');
+    const names = h.chat.frames.value.map(item => item.name);
+    assert.ok(names.includes('ping'), '裸心跳注释帧必须进抽屉（原始帧＝与线上字节逐条对账）');
+    assert.ok(names.includes('ai-delivery P-1 op-1'), '许可注释帧必须进抽屉');
+    assert.ok(names.includes('meta') && names.includes('done'), '业务帧逐条留存');
+    assert.equal(names[0], 'ping', '帧序即线上序（心跳先于 meta）');
+  });
+
+  it('原始帧缓冲上限：超 AGENT_RAW_FRAME_LIMIT 截尾（丢最旧、留最新；与传输层同口径）', async () => {
+    // 每条 frame() 会产出 2 条记录（ai-delivery 注释 ＋ 事件）⇒ 记录数 ≈ 2×；必须截到上限。
+    const parts: string[] = [];
+    for (let i = 0; i < AGENT_RAW_FRAME_LIMIT + 20; i += 1)
+      parts.push(frame('message', { type: 'answer', delta: `c${i}` }));
+    parts.push(done());
+    const h = harness({ chat: [sseResponse(parts)] });
+    await h.chat.sendMessage('q');
+    const buffered = h.chat.frames.value;
+    assert.equal(buffered.length, AGENT_RAW_FRAME_LIMIT,
+                 `抽屉缓冲必须截尾到 AGENT_RAW_FRAME_LIMIT（实际 ${buffered.length}）：长会话不得无界增长`);
+    assert.equal(buffered[buffered.length - 1]?.name, 'done', '截尾丢最旧 ⇒ 最新帧必在');
+    const ids = buffered.map(item => item.id);
+    for (let i = 1; i < ids.length; i += 1)
+      assert.ok(ids[i] > ids[i - 1], '帧 id 单调递增（身份不重复）');
+    assert.ok(ids[0] > 1, '丢的是最旧帧（保留的是最新一段）');
+  });
+
+  it('换会话清空：startNewChat 后帧缓冲归零、序号重置（跨会话不串帧）', async () => {
+    const h = harness({
+      chat: [
+        sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-1' }), done()]),
+        sseResponse([frame('meta', { conversationId: 'c-2', taskId: 't-2' }), done()]),
+      ],
+    });
+    await h.chat.sendMessage('第一句');
+    assert.ok(h.chat.frames.value.length > 0, '第一轮有帧');
+    h.chat.startNewChat(); // 页面在路由 id 变化时调用（chatWithId 路由 watcher → resetAgentChat）
+    assert.equal(h.chat.frames.value.length, 0, '换会话必须清空帧缓冲');
+    await h.chat.sendMessage('第二句');
+    assert.equal(h.chat.frames.value[0]?.id, 1, '序号随清空重置（不带走旧会话计数）');
+    const dump = JSON.stringify(h.chat.frames.value);
+    assert.equal(dump.includes('c-1'), false, '新会话缓冲不含旧会话帧（不串帧）');
+    assert.ok(dump.includes('c-2'), '新会话帧已记录');
   });
 
   it('未收 done 就断流：显示失败且本轮按失败收尾（消息 status=error）', async () => {

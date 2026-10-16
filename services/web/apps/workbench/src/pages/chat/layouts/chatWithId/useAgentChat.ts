@@ -27,7 +27,7 @@ import type {
 import type { AgentEvent, AgentTimelineContext, AgentTimelineState, PendingConfirm } from './agentTimeline';
 import type { AgentRawFrame, AgentTurn } from './types';
 import { computed, ref, shallowRef, watch } from 'vue';
-import { AgentChatFailure, createAgentChatClient, frameToRawEntry, parseAgentFrame } from '../../../../api/ai/agent-chat';
+import { AgentChatFailure, AGENT_RAW_FRAME_LIMIT, createAgentChatClient, frameToRawEntry, parseAgentFrame } from '../../../../api/ai/agent-chat';
 import { applyAgentEvent, buildTimelineRows, createAgentTimeline, projectReplayMessages } from './agentTimeline';
 
 /** 工厂拿到的选项（不含工厂本身，避免自引用）。 */
@@ -147,7 +147,9 @@ function createChat(options: UseAgentChatBaseOptions) {
     const entry = frameToRawEntry(event);
     if (entry === null)
       return;
-    frames.value = [...frames.value, { id: ++frameSeq, ts: ctx.now, name: entry.name, data: entry.data }];
+    const next = [...frames.value, { id: ++frameSeq, ts: ctx.now, name: entry.name, data: entry.data }];
+    // 上限截尾（与传输层 `agent-chat.ts:261` 同口径）：诊断面可截尾，长会话不得无界增长。
+    frames.value = next.length > AGENT_RAW_FRAME_LIMIT ? next.slice(next.length - AGENT_RAW_FRAME_LIMIT) : next;
   }
 
   /** 帧 → 状态推进（数据帧；注释帧只进抽屉）。 */
