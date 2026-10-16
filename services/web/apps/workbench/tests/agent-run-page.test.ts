@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
-import { CursorExpiredError, RunEventStreamIncompleteError, RunEventStreamProtocolError } from '@ruoyi/events/sse';
+import { CursorExpiredError, RunEventStreamIncompleteError, RunEventStreamProtocolError, toWireInteger } from '@ruoyi/events/sse';
 import ts from 'typescript';
 import * as vue from 'vue';
 import * as agentRunApi from '../src/api/ai/agent-run.ts';
@@ -74,12 +74,24 @@ function fetchStub() {
 
 /** 事件流桩：由测试决定下一个订阅会收到哪些帧。 */
 function streamStub() {
-  const state = { frames: [] as Array<{ type: string; payload: Record<string, unknown>; seq: number }>, opened: 0 };
-  const openRunStream = () => {
+  const state = {
+    frames: [] as Array<{ type: string; payload: Record<string, unknown>; seq: number }>,
+    opened: 0,
+    /** 每次订阅请求的 afterSeq（#6 判「重建游标」用）。 */
+    afterSeqs: [] as Array<number | undefined>,
+    /** 一次性 410 快照：下一次订阅立刻抛 `CursorExpiredError`（字段可给线上字符串形态）。 */
+    expireOnce: null as Record<string, unknown> | null,
+  };
+  const openRunStream = (request?: { afterSeq?: number }) => {
     state.opened += 1;
+    state.afterSeqs.push(request?.afterSeq);
     const frames = [...state.frames];
+    const expire = state.expireOnce;
+    state.expireOnce = null;
     return {
       messages: (async function* () {
+        if (expire)
+          throw new CursorExpiredError('run event cursor is outside the retention window', undefined, expire);
         for (const frame of frames) {
           yield {
             type: frame.type,
@@ -152,6 +164,8 @@ function mountPage(options: MountOptions = {}) {
       CursorExpiredError,
       RunEventStreamIncompleteError,
       RunEventStreamProtocolError,
+      // 页面在 410 处用同一口径归一化 `snapshot.nextSeq`（§4-a #6）——真函数，不复制逻辑。
+      toWireInteger,
     },
   };
 
@@ -470,5 +484,52 @@ describe('模板：关键可见位与绑定', () => {
   it('不再直接调用共享的 approveAgentAction（审批 body 由契约层构造）', () => {
     assert.equal(PAGE_SOURCE.includes('approveAgentAction'), false);
     assert.equal(PAGE_SOURCE.includes('agentRunBody'), false);
+  });
+});
+
+/**
+ * A 复核 §4-a #6：410 快照 `nextSeq` 在线上是字符串（Map 装箱 Long）——页面在边界归一，
+ * 否则「用快照重建游标并重新订阅」被静默跳过（fail-closed 降级）。
+ */
+describe('#6 边界：410 快照 nextSeq 的线上字符串形态', () => {
+  it('`nextSeq:"7"` ⇒ 仍以 nextSeq-1=6 重建订阅（不静默降级）', async () => {
+    const { page, scope, stream, fetch } = mountPage();
+    try {
+      await settle();
+      page.snapshot.value = { runId: RUN, status: 'RUNNING', version: 1 };
+      stream.state.expireOnce = { runId: RUN, status: 'RUNNING', nextSeq: '7', terminalResult: null };
+      // 410 之后页面会 refresh(runId)：GET /runs/{id} + GET actions（各一次）。
+      fetch.queue({ code: 200, msg: 'success', data: { runId: RUN, status: 'RUNNING', version: 2 } });
+      fetch.queue({ code: 200, msg: 'success', data: [] });
+
+      page.subscribe(RUN);
+      await settle();
+
+      assert.equal(stream.state.opened, 2, '字符串 nextSeq 也必须触发一次重建订阅');
+      assert.equal(stream.state.afterSeqs[0], 0, '首次订阅用页面初始游标 0');
+      assert.equal(stream.state.afterSeqs[1], 6, '重建游标必须是归一化后的 nextSeq-1=6');
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  it('非法 `nextSeq:"07"` ⇒ 不重建（保持 fail-closed，不猜游标）', async () => {
+    const { page, scope, stream, fetch } = mountPage();
+    try {
+      await settle();
+      page.snapshot.value = { runId: RUN, status: 'RUNNING', version: 1 };
+      stream.state.expireOnce = { runId: RUN, status: 'RUNNING', nextSeq: '07', terminalResult: null };
+      fetch.queue({ code: 200, msg: 'success', data: { runId: RUN, status: 'RUNNING', version: 2 } });
+      fetch.queue({ code: 200, msg: 'success', data: [] });
+
+      page.subscribe(RUN);
+      await settle();
+
+      assert.equal(stream.state.opened, 1, '非法形态不得被当成游标用于重建');
+    }
+    finally {
+      scope.stop();
+    }
   });
 });

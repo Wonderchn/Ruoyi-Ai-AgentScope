@@ -51,6 +51,7 @@
 import type { AgentAction, RequestIdentity, RunSnapshot, RunSubmitBody } from '@ruoyi/events/rag';
 import type { RunFailure, RunFailureKind } from '../chat/run-chat';
 import { agentRunBody, assertIdentity, newRequestId } from '@ruoyi/events/rag';
+import { toWireInteger } from '@ruoyi/events/sse';
 import { classifyResponse } from '@ruoyi/platform-client/identity';
 import { classifyRunFailure } from '../chat/run-chat';
 
@@ -265,12 +266,15 @@ export function buildApprovalBody(action: Pick<AgentAction, 'actionId' | 'argsHa
   return body;
 }
 
-/** `GET /runs/{id}` 快照里可用于 resume 的 version（**缺失保持 null**，不猜 0）。 */
+/** `GET /runs/{id}` 快照里可用于 resume 的 version（**缺失保持 null**，不猜 0）。
+ *
+ * 线上 `version` 是 Map 中的装箱 `Long` ⇒ **纯十进制串**（`{"version":"6",…}`，
+ * 见 `review-f04fix3/VERDICT-F04-FIX3.md` §4-a #6）；在边界按同一口径归一化为数字，
+ * 否则恢复会被静默跳过（fail-closed 降级）。非法形态仍为 `null`——不用猜的版本做 CAS。
+ */
 export function resumeVersionOf(snapshot: RunSnapshot | null | undefined): number | null {
   const version = (snapshot as { version?: unknown } | null | undefined)?.version;
-  if (typeof version === 'number' && Number.isSafeInteger(version) && version >= 0)
-    return version;
-  return null;
+  return toWireInteger(version, 0) ?? null;
 }
 
 /** run 是否终态（终态永不被改写，不能 resume）。 */

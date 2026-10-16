@@ -40,7 +40,7 @@ import { toolResultLabel, toolResultText, toToolActionView, unknownSideEffectHin
 import { downloadSource, listKnowledgeBases, terminalSummary } from '@/api/rag';
 import PrivatePdf from '@/components/rag/PrivatePdf.vue';
 import { useUserStore } from '@/stores';
-import { CursorExpiredError, openRunStream, RunEventStreamIncompleteError, RunEventStreamProtocolError } from '@/utils/sse/RunStreamClient';
+import { CursorExpiredError, openRunStream, RunEventStreamIncompleteError, RunEventStreamProtocolError, toWireInteger } from '@/utils/sse/RunStreamClient';
 
 const user = useUserStore();
 
@@ -305,8 +305,9 @@ function subscribe(runId: string) {
         return;
       if (error instanceof CursorExpiredError) {
         // 410：**必须**用快照重建游标，而不是重试同一游标。
+        // 线上快照的 `nextSeq` 是装箱 Long ⇒ 字符串（§4-a #6），先归一化再判断。
         const snapshotFromServer = (error.snapshot ?? null) as { nextSeq?: unknown } | null;
-        const nextSeq = typeof snapshotFromServer?.nextSeq === 'number' ? snapshotFromServer.nextSeq : null;
+        const nextSeq = toWireInteger(snapshotFromServer?.nextSeq, 1);
         showFailure(error, '');
         try {
           await refresh(runId, captured, currentStream);
@@ -316,7 +317,7 @@ function subscribe(runId: string) {
         }
         if (!currentStream())
           return;
-        if (nextSeq !== null && nextSeq > 1 && !['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(String(snapshot.value?.status))) {
+        if (nextSeq !== undefined && nextSeq > 1 && !['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(String(snapshot.value?.status))) {
           seq.value = nextSeq - 1;
           subscribe(runId);
         }
