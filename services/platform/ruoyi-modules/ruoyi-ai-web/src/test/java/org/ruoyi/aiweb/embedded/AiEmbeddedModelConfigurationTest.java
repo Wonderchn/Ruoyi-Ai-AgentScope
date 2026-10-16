@@ -18,11 +18,15 @@
 package org.ruoyi.aiweb.embedded;
 
 import com.nageoffer.ai.ragent.framework.convention.ChatRequest;
+import com.nageoffer.ai.ragent.ingest.EmbeddingGateway;
+import com.nageoffer.ai.ragent.ingest.SyntheticEmbeddingClient;
+import com.nageoffer.ai.ragent.ingest.SyntheticEmbeddingGateway;
 import com.nageoffer.ai.ragent.infra.chat.ChatClient;
 import com.nageoffer.ai.ragent.infra.chat.LLMService;
 import com.nageoffer.ai.ragent.infra.chat.RoutingLLMService;
 import com.nageoffer.ai.ragent.infra.config.AIModelProperties;
 import com.nageoffer.ai.ragent.infra.embedding.EmbeddingClient;
+import com.nageoffer.ai.ragent.infra.embedding.RoutingEmbeddingService;
 import com.nageoffer.ai.ragent.infra.enums.ModelCapability;
 import com.nageoffer.ai.ragent.infra.enums.ModelProvider;
 import com.nageoffer.ai.ragent.infra.enums.Tier;
@@ -95,6 +99,14 @@ class AiEmbeddedModelConfigurationTest {
     /** 真实内嵌 profile 文件：模型目录与密钥解引用的唯一权威。 */
     private static final Path EMBEDDED_YML = Path.of("..", "..", "ruoyi-admin", "src", "main",
             "resources", "application-embedded.yml").toAbsolutePath().normalize();
+
+    /** F05 合成嵌入候选（与 application-embedded.yml 登记的 id/provider 同形）。 */
+    private static final String SYNTHETIC_ID = "synthetic-feature-hash-1536";
+    private static final String[] SYNTHETIC_CANDIDATE = {
+            "ai.embedding.candidates[1].id=" + SYNTHETIC_ID,
+            "ai.embedding.candidates[1].provider=noop",
+            "ai.embedding.candidates[1].model=noop",
+            "ai.embedding.candidates[1].dimension=1536"};
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withUserConfiguration(AiEmbeddedModelConfiguration.class);
@@ -197,6 +209,63 @@ class AiEmbeddedModelConfigurationTest {
                     context.getBeansOfType(RerankClient.class).values()
                             .forEach(client -> rerankProviders.add(client.provider()));
                     assertThat(rerankProviders).contains("noop");
+                });
+    }
+
+    // ------------------------------------------------------------------ F05 运行时收口：合成嵌入 client 的真装配
+
+    /**
+     * R17 F05 运行时收口（①）：合成嵌入 client 必须在<b>真装配面</b>被显式登记，并被收进
+     * {@code routingEmbeddingService} 的 {@code List<EmbeddingClient>} 注入。
+     *
+     * <p><b>真机实证（v4 窗 W-C2）</b>：{@code Embedding provider client missing: provider=noop,
+     * modelId=synthetic-feature-hash-1536} —— rag 模块里的 {@code @Component SyntheticEmbeddingClient}
+     * 在嵌入式应用（显式装配，扫描根 {@code org.ruoyi}）<b>从来不是 bean</b>。此前判据用手工
+     * {@code List.of(new SyntheticEmbeddingClient(...))} 组装路由服务，证不了装配面。
+     *
+     * <p>本判据跑<b>真实 Spring 上下文</b>：目录里登记的合成候选（{@code provider=noop}）经容器
+     * 注入的那一份路由服务解析成功，结果逐位等于同进程合成网关（零外呼、无手工 List）。
+     */
+    @Test
+    @DisplayName("合成嵌入 client 在真装配面被收集：routingEmbeddingService 解析 synthetic-feature-hash-1536")
+    void syntheticEmbeddingClientIsRegisteredInTheRealAssembly() {
+        runner.withPropertyValues(EMBEDDED_LOCAL_MODEL_ON)
+                .withPropertyValues(catalogProperties())
+                .withPropertyValues(SYNTHETIC_CANDIDATE)
+                .withPropertyValues("p2.embedding.mode=synthetic")
+                .withBean("syntheticEmbeddingGateway", EmbeddingGateway.class,
+                        () -> new SyntheticEmbeddingGateway(1536))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    // 显式装配登记：不能靠 rag 模块 @Component 扫描（platform 扫描根是 org.ruoyi）
+                    assertThat(context).hasSingleBean(SyntheticEmbeddingClient.class);
+                    assertThat(context.getBeansOfType(EmbeddingClient.class).values())
+                            .extracting(EmbeddingClient::provider)
+                            .contains("noop");
+
+                    RoutingEmbeddingService service = context.getBean(RoutingEmbeddingService.class);
+                    List<String> texts = List.of("季度营收同比", "季度营收环比");
+                    List<List<Float>> viaRouting = service.embedBatch(texts, SYNTHETIC_ID);
+                    assertThat(viaRouting)
+                            .as("装配收集路径贯通：provider=noop 的候选命中新登记的 client"
+                                    + "（改前真机为 provider client missing → 503）")
+                            .isEqualTo(new SyntheticEmbeddingGateway(1536).embedBatch(texts));
+                    assertThat(viaRouting).hasSize(2);
+                    assertThat(viaRouting).allSatisfy(vector -> assertThat(vector).hasSize(1536));
+                });
+    }
+
+    @Test
+    @DisplayName("对偶条件：非合成模式不登记合成 client（不静默兜底）")
+    void syntheticEmbeddingClientIsAbsentOutsideSyntheticMode() {
+        runner.withPropertyValues(EMBEDDED_LOCAL_MODEL_ON)
+                .withPropertyValues(catalogProperties())
+                .withPropertyValues(SYNTHETIC_CANDIDATE)
+                .withBean("syntheticEmbeddingGateway", EmbeddingGateway.class,
+                        () -> new SyntheticEmbeddingGateway(1536))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(SyntheticEmbeddingClient.class);
                 });
     }
 

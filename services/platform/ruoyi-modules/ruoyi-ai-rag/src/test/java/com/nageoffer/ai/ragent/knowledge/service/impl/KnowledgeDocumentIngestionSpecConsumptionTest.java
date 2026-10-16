@@ -218,6 +218,69 @@ class KnowledgeDocumentIngestionSpecConsumptionTest {
         verifyNoInteractions(scheduleService, messageQueueProducer);
     }
 
+    // ------------------------------------------------------------------ 判据 1b：缺/非法来源与处理模式 → 具名 4xx（ClientException）
+
+    /**
+     * F05 运行时收口（③）：缺/非法 {@code sourceType} 必须产出具名 4xx 语义（{@code ClientException}），
+     * 而不是逃逸成平台 500 信封。
+     *
+     * <p>真机实证（v4 窗 W-U a）：仅 file 部件的上传，内层 {@code SourceType.normalize} 对空值抛
+     * {@code IllegalArgumentException} → 平台 {@code GlobalExceptionHandler} 500 信封 → 网关
+     * fail-closed 成 503「授权服务不可用」。修法：客户端输入归一化处把 IAE 驯化
+     * 为框架 {@code ClientException}（内层解析器映射为具名 4xx）。
+     */
+    @Test
+    void uploadWithoutSourceTypeIsRejectedAsNamedClientError() {
+        when(knowledgeBaseMapper.selectOne(any())).thenReturn(knowledgeBase());
+
+        ClientException ex = assertThrows(ClientException.class,
+                () -> service.upload(KB_ID, uploadRequest(null, "chunk", null), pdf("a.pdf")));
+
+        assertTrue(ex.getErrorMessage().contains("来源类型"), ex.getErrorMessage());
+        verifyNoUploadSideEffects();
+    }
+
+    @Test
+    void uploadWithUnknownSourceTypeIsRejectedAsNamedClientError() {
+        when(knowledgeBaseMapper.selectOne(any())).thenReturn(knowledgeBase());
+
+        ClientException ex = assertThrows(ClientException.class,
+                () -> service.upload(KB_ID, uploadRequest("carrier-pigeon", "chunk", null), pdf("a.pdf")));
+
+        assertTrue(ex.getErrorMessage().contains("不支持的来源类型"), ex.getErrorMessage());
+        verifyNoUploadSideEffects();
+    }
+
+    @Test
+    void uploadWithoutProcessModeIsRejectedAsNamedClientError() {
+        when(knowledgeBaseMapper.selectOne(any())).thenReturn(knowledgeBase());
+
+        ClientException ex = assertThrows(ClientException.class,
+                () -> service.upload(KB_ID, uploadRequest("file", null, null), pdf("a.pdf")));
+
+        assertTrue(ex.getErrorMessage().contains("处理模式"), ex.getErrorMessage());
+        verifyNoUploadSideEffects();
+    }
+
+    @Test
+    void uploadWithUnknownProcessModeIsRejectedAsNamedClientError() {
+        when(knowledgeBaseMapper.selectOne(any())).thenReturn(knowledgeBase());
+
+        ClientException ex = assertThrows(ClientException.class,
+                () -> service.upload(KB_ID, uploadRequest("file", "no-such-mode", null), pdf("a.pdf")));
+
+        assertTrue(ex.getErrorMessage().contains("不支持的处理模式"), ex.getErrorMessage());
+        verifyNoUploadSideEffects();
+    }
+
+    /** 非法输入必须在任何副作用之前被拒：不落对象、不落文档行、不发 MQ、不触调度。 */
+    private void verifyNoUploadSideEffects() {
+        verify(fileStorageService, never()).upload(any(), any(MultipartFile.class));
+        verify(documentMapper, never()).insert(any(KnowledgeDocumentDO.class));
+        verify(messageQueueProducer, never()).sendInTransaction(any(), any(), any(), any(), any());
+        verifyNoInteractions(scheduleService);
+    }
+
     // ------------------------------------------------------------------ 判据 2：两组配置的实际采用值
 
     /** 落库采用值：同一文档上传两次、两组 spec，落库 JSON 必须各自不同且等于提交值。 */
@@ -317,9 +380,13 @@ class KnowledgeDocumentIngestionSpecConsumptionTest {
     // ------------------------------------------------------------------ 夹具
 
     private static KnowledgeDocumentUploadRequest uploadRequest(String spec) {
+        return uploadRequest("file", "chunk", spec);
+    }
+
+    private static KnowledgeDocumentUploadRequest uploadRequest(String sourceType, String processMode, String spec) {
         KnowledgeDocumentUploadRequest request = new KnowledgeDocumentUploadRequest();
-        request.setSourceType("file");
-        request.setProcessMode("chunk");
+        request.setSourceType(sourceType);
+        request.setProcessMode(processMode);
         request.setIngestionSpec(spec);
         return request;
     }

@@ -178,6 +178,22 @@ class LocalKnowledgeAdminRouteDispatchTest {
         map.setDispatcher("REQUEST");
         ctx.addFilterMap(map);
 
+        // 生产同形（F05:1 成对排除的第二处）：{@link GatewayRawUploadFilter} 是挂在 /* 上的
+        // @Component 过滤器，专用流上传路径上它把 multipart 参数抑制为空（外层只从 header 鉴权）。
+        // 夹具若不带它，离线绿不可信——真机 W-U b 的 500 正是"被抑制 request 上取部件值"形态，
+        // 而 suppress 后 {@code @ModelAttribute} 绑不到任何字段（见 ② 的真断点定位记录）。
+        org.apache.tomcat.util.descriptor.web.FilterDef rawUpload =
+                new org.apache.tomcat.util.descriptor.web.FilterDef();
+        rawUpload.setFilterName("gatewayRawUploadFilter");
+        rawUpload.setFilter(new GatewayRawUploadFilter());
+        ctx.addFilterDef(rawUpload);
+        org.apache.tomcat.util.descriptor.web.FilterMap rawUploadMap =
+                new org.apache.tomcat.util.descriptor.web.FilterMap();
+        rawUploadMap.setFilterName("gatewayRawUploadFilter");
+        rawUploadMap.addURLPatternDecoded("/*");
+        rawUploadMap.setDispatcher("REQUEST");
+        ctx.addFilterMap(rawUploadMap);
+
         org.apache.catalina.core.StandardWrapper wrapper =
                 (org.apache.catalina.core.StandardWrapper) Tomcat.addServlet(ctx, "dispatcher",
                         new org.springframework.web.servlet.DispatcherServlet(context));
@@ -446,6 +462,12 @@ class LocalKnowledgeAdminRouteDispatchTest {
      * 接入专用流通道后（精确映射 + multipart 旁路成对排除 + local {@code MultipartTargetRequest}
      * 直调内层），文件部件与七个表单字段整包到达内层，结果仍是 admin 形状
      * （200 + 整数 {@code code:200} + {@code KnowledgeDocumentVO}）——判据面零形状改动。
+     *
+     * <p><b>F05 运行时收口（②）加固</b>：本夹具现按生产同形挂上
+     * {@link GatewayRawUploadFilter}（{@code /*}），即"同一路径的 multipart 参数被抑制为空"的
+     * 真机形态。改前那一跑（夹具已挂过滤器、产品未修）本判据<b>真实红</b>——与真机 W-U b 的
+     * {@code http=200 code=500}（内层 {@code SourceType.normalize} 空）同源；修 {@code MultipartTargetRequest}
+     * 后表单字段从自身部件映射显式暴露为参数，本判据转绿。
      */
     @Test
     @DisplayName("七字段 multipart 经专用流通道 200：字段逐项绑定 + 文件字节原样 + code:200 + VO")
