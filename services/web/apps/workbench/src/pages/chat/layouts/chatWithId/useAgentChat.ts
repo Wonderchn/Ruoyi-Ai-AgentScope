@@ -104,6 +104,27 @@ function createChat(options: UseAgentChatBaseOptions) {
    */
   let generation = 0;
 
+  /**
+   * 调用方侧收尾在飞连接（换会话 / 回放重进）。
+   *
+   * 与 `stop()` 同一语义的**另一半**：本地先撕连接；若本轮已从 meta 帧拿到引擎任务
+   * id，随之向服务端叫停 —— 引擎任务不知道浏览器侧已经离开，
+   * 会把后续帧全部写进已被撕断的连接（R17P2 收口窗证据：每次切换后首批 delta
+   * 命中死插座时触发 `SseEmitterSender "SSE send failed"` ＋ `deliverFrame
+   * "stream delivery failed"` 双签名）。fire-and-forget：服务端叫停失败不影响
+   * 换会话本身，最终状态以回放（服务端说法）为准（BD-1 同一口径）。
+   * 身份代次变化（`reset`）**不**在此叫停：服务端按许可回收语义自行收敛。
+   */
+  function stopInflight() {
+    const conn = connection;
+    const taskId = state.value.taskId ?? '';
+    connection = null;
+    if (conn !== null)
+      conn.cancel();
+    if (taskId !== '')
+      void client.stop(taskId).catch(() => {});
+  }
+
   /** 中止在飞流并清空全部状态（身份变化 / 离开页面）。 */
   function reset() {
     generation += 1;
@@ -418,8 +439,7 @@ function createChat(options: UseAgentChatBaseOptions) {
 
   /** 回放/切换会话：拉取服务端消息并重建轨迹（挂起卡也由它复原）。 */
   async function loadConversation(id: string): Promise<void> {
-    connection?.cancel();
-    connection = null;
+    stopInflight();
     error.value = '';
     notice.value = '';
     await refresh(id);
@@ -452,8 +472,7 @@ function createChat(options: UseAgentChatBaseOptions) {
   /** 换会话：清全部状态与帧缓冲。 */
   function startNewChat() {
     generation += 1;
-    connection?.cancel();
-    connection = null;
+    stopInflight();
     state.value = createAgentTimeline();
     frames.value = [];
     frameSeq = 0;

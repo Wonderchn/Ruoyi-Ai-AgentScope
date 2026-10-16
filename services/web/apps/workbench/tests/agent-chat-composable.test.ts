@@ -221,6 +221,63 @@ describe('提问与流式推进', () => {
     assert.ok(dump.includes('c-2'), '新会话帧已记录');
   });
 
+  // —— R17P2-FESTREAM-01：调用方侧取消必须把已受理的引擎任务收尾 ——
+  // （真机窗三次复现：换会话/回放撕断连接后，引擎任务继续把余下帧写进死连接，
+  //   服务端双签名 `SseEmitterSender "SSE send failed"` ＋ `deliverFrame
+  //   "stream delivery failed"`；修复＝本地中止后随 `stop(taskId)`。）
+  it('换会话取消在飞连接：已受理任务随 stop(taskId) 交还服务端', async () => {
+    // 挂起的流：meta 已受理、终帧未到且不自行关闭（等测试释放）。
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode(frame('meta', { conversationId: 'c-1', taskId: 't-1' })));
+        await gate;
+        controller.close();
+      },
+      cancel() { release(); },
+    });
+    const h = harness({ chat: [new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream;charset=UTF-8' } })] });
+    const pending = h.chat.sendMessage('q');
+    await flush();
+    assert.equal(h.chat.taskId.value, 't-1', 'meta 已到，任务已受理（taskId 已知）');
+    h.chat.startNewChat(); // 页面在路由 id 变化时调用（chatWithId 路由 watcher → resetAgentChat）
+    await flush();
+    await pending;
+    release();
+    const stops = h.jsonCalls.filter(item => item.url.includes('/agent/v1/stop'));
+    assert.equal(stops.length, 1, '换会话取消必须向服务端叫停已受理任务（恰一次）');
+    assert.match(stops[0].url, /taskId=t-1/);
+    assert.equal(h.chat.error.value, '', '调用方取消不算失败（迟到的收尾被代次隔离）');
+  });
+
+  it('零帧期换会话：taskId 未知（meta 未到）时不发 stop（没有可停的对象）', async () => {
+    // 引擎静默期真实形态：真机窗 R1×2 里首帧迟迟未达，连接仍挂着。
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        await gate;
+        controller.close();
+      },
+      cancel() { release(); },
+    });
+    const h = harness({ chat: [new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream;charset=UTF-8' } })] });
+    const pending = h.chat.sendMessage('q');
+    await flush();
+    assert.equal(h.chat.taskId.value ?? '', '', '零帧期无 taskId');
+    h.chat.startNewChat();
+    await flush();
+    await pending;
+    await flush();
+    release();
+    assert.equal(h.jsonCalls.filter(item => item.url.includes('/agent/v1/stop')).length, 0, '无 id 不发 stop');
+  });
+
   it('未收 done 就断流：显示失败且本轮按失败收尾（消息 status=error）', async () => {
     const h = harness({ chat: [sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-1' })])] });
     await h.chat.sendMessage('q');
