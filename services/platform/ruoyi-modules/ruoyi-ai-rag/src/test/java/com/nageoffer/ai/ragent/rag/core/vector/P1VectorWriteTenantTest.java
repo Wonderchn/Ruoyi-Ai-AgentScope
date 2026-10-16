@@ -156,6 +156,9 @@ class P1VectorWriteTenantTest {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         PgVectorStoreService service = new PgVectorStoreService(jdbcTemplate, new ObjectMapper());
         when(jdbcTemplate.update(anyString(), any(Object[].class))).thenReturn(1);
+        // D-VEC-1：写前先按租户读在树权威 ai_knowledge_document.version（doc_version 值源）
+        when(jdbcTemplate.queryForObject(anyString(), org.mockito.ArgumentMatchers.eq(Long.class),
+                org.mockito.ArgumentMatchers.eq(TENANT), org.mockito.ArgumentMatchers.eq(DOC_ID))).thenReturn(7L);
 
         service.updateChunk(TENANT, COLLECTION, DOC_ID, chunk());
 
@@ -167,7 +170,7 @@ class P1VectorWriteTenantTest {
         assertTrue(sql.contains("ON CONFLICT (tenant_id, id)"),
                 "冲突目标必须是复合键，实际 SQL=" + sql);
         assertTrue(sql.contains("tenant_id"), "insert 列清单必须包含 tenant_id，实际 SQL=" + sql);
-        // 参数顺序：id, tenant, collection, content, metadata, embedding
+        // 参数顺序：id, tenant, collection, document_id, doc_version, content, metadata, embedding
         assertEquals(CHUNK_ID, argsCaptor.getValue()[0]);
         assertEquals(TENANT, argsCaptor.getValue()[1], "第二个绑定参数必须是租户");
     }
@@ -217,6 +220,9 @@ class P1VectorWriteTenantTest {
     void pgBatchInsertAlsoFailsLoudly() {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         PgVectorStoreService service = new PgVectorStoreService(jdbcTemplate, new ObjectMapper());
+        // D-VEC-1：写前先按租户读在树权威 ai_knowledge_document.version（doc_version 值源）
+        when(jdbcTemplate.queryForObject(anyString(), org.mockito.ArgumentMatchers.eq(Long.class),
+                org.mockito.ArgumentMatchers.eq(TENANT), org.mockito.ArgumentMatchers.eq(DOC_ID))).thenReturn(7L);
         // batchUpdate 有多个重载，其中 <T> 版本靠 lambda 推断类型；测试里用 raw Collection 固定到同一重载
         when(jdbcTemplate.batchUpdate(anyString(), any(java.util.Collection.class), anyInt(), any()))
                 .thenThrow(new BadSqlGrammarException("test", "INSERT ...", new SQLException("column does not exist")));
