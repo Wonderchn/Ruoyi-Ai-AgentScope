@@ -95,6 +95,8 @@ import org.springframework.web.util.ServletRequestPathUtils;
  *
  * <p>安全规则逐条保留：状态契约（2xx/4xx/503 透传，其余视为异常）、
  * 恶意响应 fail-closed（非空体必须是单 JSON 对象、整数 code 与状态一致）。
+ * 异常状态收敛为 503 语义，但内层状态码与正文摘录（脱敏、有界）保留在异常材料里
+ * 供服务端日志定位（对外文案不变，见 {@link #abnormalMaterial}）。
  * 流式传输（E3 收尾）：SSE 逐帧处理（剥离 {@code : ai-delivery} 元数据、restricted 帧
  * 必须带交付行、逐帧本地回执）、私有 PDF（PDF + 交付证明 + maxBytes 复核）、
  * 上传（multipart 部件直读、声明长度与响应上限）。空闲/总时长/建连超时参数在进程内
@@ -115,6 +117,12 @@ public class LocalAiGatewayClient extends AiGatewayClient {
 
     /** SSE 单帧上限：与 HTTP 形态的 1MB 帧上限一致。 */
     private static final int MAX_STREAM_FRAME = 1024 * 1024;
+
+    /**
+     * 异常状态材料摘录上限（R17 F06:2 R1）：仅进服务端日志，截断时附
+     * {@code …(truncated)} 标记，避免无界正文灌日志。
+     */
+    private static final int ABNORMAL_MATERIAL_LIMIT = 512;
 
     private final AiIdentityPort identityPort;
     private final AiDeliveryReleaser deliveryReleaser;
@@ -139,7 +147,10 @@ public class LocalAiGatewayClient extends AiGatewayClient {
         int status = capture.status();
         boolean passthrough = (status >= 200 && status < 300) || (status >= 400 && status < 500) || status == 503;
         if (!passthrough) {
-            throw new UpstreamUnavailableException("abnormal upstream status");
+            // R17 F06:2 R1：内层真因（如 5xx 错误页正文）只在这里可见——客户端仍是
+            // 泛化 503，材料（状态码+脱敏有界摘录）进异常 message 供服务端日志归因。
+            throw new UpstreamUnavailableException(
+                    abnormalMaterial("abnormal upstream status", status, capture.bodyAsText()));
         }
         String body = capture.bodyAsText();
         if (!body.isBlank()) {
@@ -170,7 +181,8 @@ public class LocalAiGatewayClient extends AiGatewayClient {
             }
         } else {
             if (!((status >= 400 && status < 500) || status == 503)) {
-                throw new UpstreamUnavailableException("abnormal byte response");
+                throw new UpstreamUnavailableException(
+                        abnormalMaterial("abnormal byte response", status, capture.bodyAsText()));
             }
             requireSingleJsonObject(capture.bodyAsText(), status);
         }
@@ -484,6 +496,38 @@ public class LocalAiGatewayClient extends AiGatewayClient {
 
     private static String orDefault(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    /**
+     * 异常状态材料（R17 F06:2 R1 可观测性）："{@code 前缀: status=<码> body=<摘录>}"。
+     *
+     * <p>仅随异常 message 进服务端日志：<b>不改对外响应语义</b>（网关对客户端仍是
+     * 泛化 503）。摘录按 {@link #ABNORMAL_MATERIAL_LIMIT} 截断（附 {@code …(truncated)}
+     * 标记），剥离控制字符（防正文伪造日志行），空体标 {@code (empty)}。
+     */
+    private static String abnormalMaterial(String prefix, int status, String body) {
+        String excerpt = body == null ? "" : body;
+        if (excerpt.length() > ABNORMAL_MATERIAL_LIMIT) {
+            excerpt = excerpt.substring(0, ABNORMAL_MATERIAL_LIMIT) + "…(truncated)";
+        }
+        excerpt = sanitizeMaterial(excerpt);
+        if (excerpt.isBlank()) {
+            excerpt = "(empty)";
+        }
+        return prefix + ": status=" + status + " body=" + excerpt;
+    }
+
+    /** 去掉控制字符（CR/LF/TAB 等）：与平台日志脱敏同口径（{@code SysLogininforServiceImpl}）。 */
+    private static String sanitizeMaterial(String raw) {
+        StringBuilder sanitized = new StringBuilder(raw.length());
+        for (int i = 0; i < raw.length(); i++) {
+            char ch = raw.charAt(i);
+            if (ch < 0x20 || ch == 0x7f) {
+                continue;
+            }
+            sanitized.append(ch);
+        }
+        return sanitized.toString();
     }
 
     /** 转送请求包装：注入转发体，并隔离外层请求缓存的 Spring 路径解析结果。 */

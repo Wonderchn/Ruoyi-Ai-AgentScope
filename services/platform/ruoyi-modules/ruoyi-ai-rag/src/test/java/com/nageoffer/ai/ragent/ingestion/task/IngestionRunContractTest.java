@@ -49,7 +49,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * F06:1/2-A Stage B：{@code ingestion.run} 受理契约的**红判据**（入参白名单、资源引用、
- * 源权威、管线结构、重试建立独立 version）。
+ * 源权威、管线结构、重试复用父 upload 既有 version；R17 F06:2 R1 起不再新建第二条）。
  */
 @ExtendWith(MockitoExtension.class)
 @Tag("dev")
@@ -198,17 +198,27 @@ class IngestionRunContractTest {
     }
 
     @Test
-    void onAdmittedCreatesIndependentVersionForRetry() {
+    void onAdmittedReusesParentVersionForRetry() {
         when(documents.findUpload(TENANT, UPLOAD)).thenReturn(Optional.of(
                 new DocumentPort.UploadRow(UPLOAD, DOC, KB, "member-1", "report.pdf", "application/pdf",
                         10L, "sha-1", "tenants/acme/upl-1.pdf", "STORED", Instant.now())));
+        when(documents.findVersionByUpload(TENANT, DOC, UPLOAD)).thenReturn(Optional.of(
+                new DocumentPort.VersionRow("ver-parent", DOC, UPLOAD, "r-old", "STAGING", null, 0, null, null, null)));
         when(pipelines.load(TENANT, PIPE)).thenReturn(Optional.of(goodSnapshot()));
         Map<String, Object> input = validInput();
         input.put("retryNodeId", "n2");
+
         contract().onAdmitted(principal(), "r-new", request(input, "r-old"));
-        verify(documents).insertVersion(org.mockito.ArgumentMatchers.eq(TENANT), anyString(),
-                org.mockito.ArgumentMatchers.eq(DOC), org.mockito.ArgumentMatchers.eq(UPLOAD),
-                org.mockito.ArgumentMatchers.eq("r-new"));
+
+        // R17 F06:2 R1：重试复用父 upload 的既有 version，绝不新建第二条
+        // （新建会撞冻结唯一键 uk_ai_document_version_upload ⇒ retry 100% 必败）。
+        verify(documents, never()).insertVersion(anyString(), anyString(), anyString(), anyString(), anyString());
+        ArgumentCaptor<String> metadata = ArgumentCaptor.forClass(String.class);
+        verify(tasks).createTask(anyString(), org.mockito.ArgumentMatchers.eq("r-new"),
+                org.mockito.ArgumentMatchers.eq(PIPE), org.mockito.ArgumentMatchers.eq("file"), anyString(),
+                org.mockito.ArgumentMatchers.eq("report.pdf"), org.mockito.ArgumentMatchers.eq("pending"),
+                metadata.capture(), anyString());
+        org.junit.jupiter.api.Assertions.assertTrue(metadata.getValue().contains("ver-parent"));
     }
 
     @Test

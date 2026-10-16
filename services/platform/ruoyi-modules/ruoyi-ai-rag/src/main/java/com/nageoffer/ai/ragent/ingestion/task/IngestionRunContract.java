@@ -33,7 +33,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 
 /**
  * F06:1/2 规范动作 {@code ingestion.run} 的受理契约（{@link RuntimeActionContract}）。
@@ -47,8 +46,9 @@ import java.util.UUID;
  * 受理时控制器/受理服务尚未把 binding 交给契约；由执行器按 {@code MODEL_CONFIG_CHANGED}
  * 同口径拒（与 {@code DocumentIngestExecutor} 一致）。
  *
- * <p>{@code onAdmitted} 与受理同事务：建任务行（id=runId）与节点行；重试 run 另建**独立
- * version**（{@code DocumentPort.insertVersion}，run_id=新 runId）。
+ * <p>{@code onAdmitted} 与受理同事务：建任务行（id=runId）与节点行；重试 run **复用父
+ * upload 的既有 version**（每 {@code (tenant,doc,upload)} 至多一个 version，见冻结唯一键
+ * {@code uk_ai_document_version_upload}；不再新建第二条，也不改动 version.run_id）。
  */
 @Component
 public class IngestionRunContract implements RuntimeActionContract {
@@ -139,15 +139,14 @@ public class IngestionRunContract implements RuntimeActionContract {
         DocumentPort.UploadRow upload = documents.findUpload(tenantId, uploadId)
                 .orElseThrow(() -> new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
 
-        String versionId;
-        if (retryOf == null) {
-            versionId = documents.findVersionByUpload(tenantId, docId, uploadId)
-                    .orElseThrow(() -> new RunApiException(RunErrorCode.INTERNAL_ERROR, "document version missing"))
-                    .versionId();
-        } else {
-            versionId = "ver-" + UUID.randomUUID().toString().replace("-", "");
-            documents.insertVersion(tenantId, versionId, docId, uploadId, runId);
-        }
+        // R17 F06:2 R1：重试**复用父 upload 的既有 version**（不再为 retry 新建第二条）。
+        // 每 (tenant,doc,upload) 至多一个 version 是冻结唯一键
+        // uk_ai_document_version_upload（V7:2573，V1–V38 无放宽）的硬约束：新建即撞键
+        // ⇒ DuplicateKeyException ⇒ 受理兜底 RunApiException(INTERNAL_ERROR) ⇒ retry 100% 必败
+        // 且零归因。与 F06-PLAN §84「新 run 创建独立 version」冲突，已具名上报待裁决。
+        String versionId = documents.findVersionByUpload(tenantId, docId, uploadId)
+                .orElseThrow(() -> new RunApiException(RunErrorCode.INTERNAL_ERROR, "document version missing"))
+                .versionId();
 
         IngestionPipelineReader.PipelineSnapshot snapshot = pipelines.load(tenantId, pipelineId)
                 .orElseThrow(() -> new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
