@@ -65,6 +65,9 @@ import org.springframework.util.StringUtils;
  */
 @AutoConfiguration
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
+// 原生 HTTP 形态也必须整体跳过：否则只导入内层 controller、不导入 embedded 服务实现，
+// 启动会以 AgentProfileAdminService 缺失失败（native-runtime CI 实测）。
+@ConditionalOnEmbeddedLocal
 @Import({
         AgentProfileController.class,
         AgentOptionController.class,
