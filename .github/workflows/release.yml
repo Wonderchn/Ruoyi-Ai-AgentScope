@@ -103,6 +103,7 @@ jobs:
         with:
           name: release-manifest-${{ matrix.image }}
           path: release-manifest/${{ matrix.image }}.txt
+          retention-days: 90
           if-no-files-found: error
 
   manifest:
@@ -129,6 +130,7 @@ jobs:
         with:
           name: release-manifest
           path: release-manifest.json
+          retention-days: 90
           if-no-files-found: error
 
   verify-pull:
@@ -155,6 +157,7 @@ jobs:
         with:
           name: image-verification
           path: image-verification.json
+          retention-days: 90
           if-no-files-found: error
 
   promote:
@@ -189,4 +192,5 @@ jobs:
         with:
           name: image-promotion
           path: image-promotion.json
+          retention-days: 90
           if-no-files-found: error
