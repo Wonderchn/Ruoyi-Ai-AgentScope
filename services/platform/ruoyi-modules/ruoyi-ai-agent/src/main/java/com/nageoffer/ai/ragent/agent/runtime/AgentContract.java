@@ -54,7 +54,7 @@ public class AgentContract implements RuntimeActionContract {
     }
     public static void validateShape(AdmissionRequest request) {
         if(!AgentLedger.AGENT.equals(request.agentVersion())) bad();
-        JsonNode input=request.input();fields(input,Set.of("text","mode","ticket","inheritActionId"));
+        JsonNode input=request.input();fields(input,Set.of("text","mode","ticket","inheritActionId","attachments"));
         text(input.get("text"),4096);
         if(!Set.of("read","sandbox").contains(input.path("mode").asText())) bad();
         if(request.resourceRefs()==null || request.resourceRefs().isEmpty() || request.resourceRefs().stream().anyMatch(ref->!"knowledge_base".equals(ref.type()))) bad();

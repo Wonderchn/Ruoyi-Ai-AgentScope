@@ -189,6 +189,9 @@ public class RunAdmissionService {
         }
     }
 
+    private com.nageoffer.ai.ragent.runtime.port.ChatAttachmentPort attachments;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void configureAttachments(com.nageoffer.ai.ragent.runtime.port.ChatAttachmentPort attachments) {this.attachments=attachments;}
     public record AdmissionResult(String runId, String status, Instant createdAt, boolean replayed) {
     }
 
@@ -232,6 +235,10 @@ public class RunAdmissionService {
         // 0b) 维度门（WP-040 A2）：当前 PUBLISHED 版本的 embedding 维度必须等于
         //     统一向量列物理维度（1536）；失败 ⇒ 响亮拒绝，本轮受理对 DB 零写入。
         requireSupportedDimension(tenantId, request.action());
+        if(com.nageoffer.ai.ragent.runtime.port.ChatAttachmentPort.hasAttachments(request.input())) {
+            if(attachments==null) throw new RunApiException(RunErrorCode.BAD_REQUEST,"Chat attachments are unavailable in this deployment");
+            attachments.validateAdmission(principal,request,published);
+        }
         // 1) 预算：锁租户行 → 叠加预占不超上限（并发失败方 BUDGET_EXCEEDED）
         long limit = dao.lockTenantBudget(tenantId, properties.getBudget().getDefaultTenantUnits());
         long units = unitsOf(request.budget());

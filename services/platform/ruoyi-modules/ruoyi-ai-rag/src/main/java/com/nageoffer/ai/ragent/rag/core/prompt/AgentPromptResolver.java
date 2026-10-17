@@ -63,9 +63,35 @@ public class AgentPromptResolver {
 
     /**
      * 填充占位符并清理格式，语义与 PromptTemplateLoader#render 一致
+     *
+     * <p><b>F09:2 判据③：缺运行变量的必需占位符不得原样下发。</b>
+     * 保存面已拒绝"正文缺必需占位符"的内容，但渲染面仍可能遇到调用方忘了传变量：
+     * 此时字面 {@code {token}} 既不能被模型解释（它只看到花括号标识符），又可能被当成正文复述，
+     * 属于"把内部模板语法泄露给终端用户"。故在填充后、清理前，把本槽位**声明过但本次没给值**的
+     * 必需占位符移除——只动这一组（非必需占位符保持原样，不在本拒绝面内）。
      */
     public String render(AgentPromptSlot slot, Map<String, String> slots) {
-        return PromptTemplateUtils.cleanupPrompt(PromptTemplateUtils.fillSlots(resolve(slot), slots));
+        String filled = PromptTemplateUtils.fillSlots(resolve(slot), slots);
+        return PromptTemplateUtils.cleanupPrompt(stripUnfilledRequiredPlaceholders(slot, filled, slots));
+    }
+
+    private static String stripUnfilledRequiredPlaceholders(AgentPromptSlot slot, String prompt,
+                                                            Map<String, String> slots) {
+        if (slot == null || StrUtil.isEmpty(prompt) || slot.getRequiredPlaceholders().isEmpty()) {
+            return prompt;
+        }
+        String result = prompt;
+        for (String placeholder : slot.getRequiredPlaceholders()) {
+            if (placeholder == null || placeholder.length() < 3) {
+                continue;
+            }
+            String key = placeholder.substring(1, placeholder.length() - 1);
+            if (slots != null && slots.containsKey(key)) {
+                continue;
+            }
+            result = result.replace(placeholder, "");
+        }
+        return result;
     }
 
     /**
@@ -95,6 +121,23 @@ public class AgentPromptResolver {
             own.put(prompt.getSlotKey(), StrUtil.emptyIfNull(prompt.getContent()));
         }
         return own;
+    }
+
+    /**
+     * P3-BIND：当前"生效档案" id——与 {@link #loadFromDb()} 的覆盖顺序**同源**
+     * （active 行优先 → 租户 builtin → 无租户行则 empty；不另起查询路径）。
+     *
+     * <p>消费侧（技能遮蔽/载入）只认这个 id：前端入参一律不采信。
+     *
+     * @return 生效档案 id；租户域既无 active 又无 builtin 时为空
+     */
+    public Optional<String> effectiveProfileId() {
+        AgentProfileDO active = firstByFlag(AgentProfileDO::getActive);
+        if (active != null) {
+            return Optional.ofNullable(active.getId());
+        }
+        AgentProfileDO builtin = firstByFlag(AgentProfileDO::getBuiltin);
+        return builtin == null ? Optional.empty() : Optional.ofNullable(builtin.getId());
     }
 
     private Map<String, String> loadFromDb() {

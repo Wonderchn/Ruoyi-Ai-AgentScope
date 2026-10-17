@@ -165,6 +165,17 @@ ai:
         model: text-embedding-3-large
         dimension: ${rag.default.dimension}
         priority: 3
+      # S2 收尾 R17-F05:3-M2：p2 合成模式（p2.embedding.mode=synthetic）下 KB 行登记的
+      # synthetic-feature-hash-<dim> 必须能在运行时嵌入注册表解析到，否则 chunk 写腿
+      # resolveTarget 抛 RemoteException → 网关 fail-closed 503「授权服务不可用」。
+      # noop provider 免 provider 配置校验（与 rerank-noop :177-179 同形）；由
+      # SyntheticEmbeddingClient 进程内特征哈希实现——**非真实嵌入外呼**，零额度。
+      # priority 100 = 兜底档，不得抢走 default-model qwen-emb-8b。
+      - id: synthetic-feature-hash-${rag.default.dimension}
+        provider: noop
+        model: noop
+        dimension: ${rag.default.dimension}
+        priority: 100
 
   rerank:
     default-model: qwen3-rerank

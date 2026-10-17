@@ -10,7 +10,12 @@ export interface RunEventEnvelope {
   eventId?: string;
   runId?: string;
   attemptId?: string;
-  seq?: number;
+  /**
+   * 事件序号。平台 mapper 把装箱 `Long` 序列化为**纯十进制串**（`"5"`），因此**原始解析值**
+   * 可能是字符串；`VerifiedRunEventEnvelope.seq` 与 `SseMessage.cursor` 一律是数字
+   * （边界归一化见 {@link toWireInteger}）。
+   */
+  seq?: number | string;
   type?: string;
   at?: string;
   payload?: unknown;
@@ -186,7 +191,7 @@ function parseEnvelope(data: string): RunEventEnvelope | null {
 
 function toMessage(event: SseEvent): SseMessage {
   const parsed = event.isComment ? null : parseEnvelope(event.data);
-  const seq = typeof parsed?.seq === 'number' ? parsed.seq : undefined;
+  const seq = toWireInteger(parsed?.seq, 1);
   return {
     type: event.type,
     data: event.data,
@@ -205,6 +210,29 @@ export type VerifiedRunEventEnvelope = RunEventEnvelope & { runId: string; seq: 
 const SUPPORTED_SCHEMA_VERSION = 1;
 
 /**
+ * 平台 API 映射把装箱 `Long` 序列化为**纯十进制串**（`PlatformObjectMapperConfig`；
+ * 复算见 `review-f04fix3/VERDICT-F04-FIX3.md` §4-a）：`seq`/`lastSeq`/`nextSeq`/`version`
+ * 在线上是 `"5"` 而不是 `5`。纯十进制串是**合法线上形态**，因此在客户端边界等价接受并
+ * 归一化为数字；其余形态（符号/前导 0/小数/空白/科学计数/非数字/超 2^53）一律拒绝——
+ * **不放松任何守卫**（非法形态仍由调用方 fail-closed）。
+ *
+ * @param value 线上原值（数字或字符串；其它类型一律拒绝）
+ * @param min   业务下界：`seq`/`nextSeq` 是 `1`，`lastSeq`/`version` 是 `0`
+ * @returns 归一化后的安全整数；不合法时 `undefined`（调用方按自己的语义 fail-closed）
+ */
+export function toWireInteger(value: unknown, min: number): number | undefined {
+  if (typeof value === 'number')
+    return Number.isSafeInteger(value) && value >= min ? value : undefined;
+  if (typeof value !== 'string')
+    return undefined;
+  // 纯十进制：无符号、无前导 0（`'0'` 仅在下界允许 0 时才有意义）。
+  if (!/^(?:0|[1-9]\d*)$/.test(value))
+    return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= min ? parsed : undefined;
+}
+
+/**
  * Contract gate for every business frame, applied before the state machine accepts it.
  *
  * A frame proves nothing about the run while its envelope is unverifiable, so all of the
@@ -214,7 +242,9 @@ const SUPPORTED_SCHEMA_VERSION = 1;
  *   client must not guess at);
  * - `runId` names exactly the run that was subscribed to — a foreign-run frame must never
  *   be merged into this stream, let alone end it;
- * - `seq` is a safe positive integer, because it doubles as the persistence cursor;
+ * - `seq` is a safe positive integer (the platform's wire form for a boxed `Long` is a pure
+ *   decimal string — `"5"` — which is accepted here and normalised to a number), because it
+ *   doubles as the persistence cursor;
  * - the SSE `id:` agrees with `seq` when the frame carries one (contract: `id: <seq>`).
  *   A frame with no `id:` at all is tolerated: the cursor comes from the envelope `seq`.
  * - the SSE `event:` name and the envelope `type` are both present and identical. They
@@ -241,9 +271,9 @@ function validateRunEventEnvelope(message: SseMessage, expectedRunId: string): V
   if (envelope.runId !== expectedRunId) {
     throw new RunEventStreamProtocolError('run-id', `subscription is for ${expectedRunId}, frame names ${envelope.runId}`);
   }
-  const seq = envelope.seq;
-  if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 1) {
-    throw new RunEventStreamProtocolError('seq', `expected a safe positive integer, got ${String(seq)}`);
+  const seq = toWireInteger(envelope.seq, 1);
+  if (seq === undefined) {
+    throw new RunEventStreamProtocolError('seq', `expected a safe positive integer, got ${String(envelope.seq)}`);
   }
   if (message.id !== undefined && message.id !== String(seq)) {
     throw new RunEventStreamProtocolError('sse-id', `SSE id '${message.id}' does not match seq ${seq}`);
@@ -257,7 +287,9 @@ function validateRunEventEnvelope(message: SseMessage, expectedRunId: string): V
   if (envelope.type !== message.type) {
     throw new RunEventStreamProtocolError('type', `SSE event '${message.type}' but envelope type '${envelope.type}'`);
   }
-  return envelope as VerifiedRunEventEnvelope;
+  // 归一化后的 `seq` 随验证结果返回：状态机与游标一律用数字（线上字符串形态不外泄）。
+  // 上面的检查已证明 `runId`/`type` 非空，这里按既定形态收窄（与逐字段校验同一处）。
+  return { ...envelope, seq } as VerifiedRunEventEnvelope;
 }
 
 /**
@@ -330,8 +362,7 @@ export async function createRunEventStream(
         const data = (parsed as { data?: unknown }).data;
         if (data !== null && typeof data === 'object') {
           const candidate = (data as { lastSeq?: unknown }).lastSeq;
-          if (typeof candidate === 'number')
-            lastSeq = candidate;
+          lastSeq = toWireInteger(candidate, 0);
           snapshot = (data as { snapshot?: unknown }).snapshot;
         }
       }
@@ -579,7 +610,8 @@ export function isTerminalMessage(message: SseMessage): boolean {
  * the caller already applied) are dropped so consumers never render the same `seq` twice.
  *
  * Every business frame must present a verifiable envelope (`schemaVersion`, the
- * subscribed `runId`, a safe positive integer `seq`, an SSE `id` that agrees with it, and
+ * subscribed `runId`, a `seq` that normalises to a safe positive integer — pure decimal
+ * wire strings included — an SSE `id` that agrees with it, and
  * an SSE `event:` name identical to the envelope `type`) before it is accepted; a
  * violation throws {@link RunEventStreamProtocolError} instead of being retried — and a
  * terminal frame is never accepted as proof of completion while its envelope fails that

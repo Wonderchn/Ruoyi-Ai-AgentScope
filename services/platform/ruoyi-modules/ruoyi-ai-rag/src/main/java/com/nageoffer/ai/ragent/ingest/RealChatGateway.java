@@ -111,8 +111,8 @@ public class RealChatGateway implements ChatGateway {
         RunConfigBinding bound=requireBinding(binding);
         ProviderConnectionPort.ProviderConnection connection=connection(bound);
         egress.requireAllowed(bound.providerId());
-        var serialized=messages.stream().map(m->Map.of("role",m.getRole().name().toLowerCase(Locale.ROOT),"content",m.getContent())).toList();
-        if(maxTokens<1 || maxTokens>8192 || serialized.stream().mapToInt(m->m.get("content").length()).sum()>65536) throw ProviderHttp.unavailable();
+        var serialized=serializeMessages(messages);
+        if(maxTokens<1 || maxTokens>8192 || messages.stream().mapToInt(m->m.getContent().length()).sum()>65536) throw ProviderHttp.unavailable();
         HttpURLConnection http=null;
         try {
             LinkedHashMap<String,Object> requestBody=new LinkedHashMap<>();
@@ -243,6 +243,7 @@ public class RealChatGateway implements ChatGateway {
             Object value=entry.getValue();
             Double numeric=value instanceof Number number?number.doubleValue():null;
             switch(key) {
+                case "attachmentModalities" -> { /* consumed by the bound attachment policy, never sent to provider */ }
                 case "temperature" -> {
                     if(within(numeric,0.0,2.0)) requestBody.put(key,numeric);
                     else drop(key,value);
@@ -260,6 +261,51 @@ public class RealChatGateway implements ChatGateway {
         }
     }
 
+    /** Request-level image count limit: same value as the per-message 4-attachment policy; stacked messages count as ONE provider request. */
+    static final int MAX_REQUEST_IMAGES=4;
+    /** Per-image data URL limit (existing 7MiB; ASCII base64 makes 1 char = 1 byte, i.e. a pre-decode bound). */
+    static final int MAX_IMAGE_CHARS=7*1024*1024;
+    /**
+     * Request-level transfer envelope = per-image limit x count limit = 29,360,128 counted chars.
+     * <p>Honest note: this is the mathematical envelope of the two counted limits above - whenever both hold, it holds
+     * necessarily. It is still asserted explicitly as a request-level invariant so that a future relaxation of either
+     * limit surfaces HERE instead of silently stacking past the transport budget.
+     */
+    static final long MAX_REQUEST_IMAGE_CHARS=(long)MAX_REQUEST_IMAGES*MAX_IMAGE_CHARS;
+
+    static List<Map<String,Object>> serializeMessages(List<ChatMessage> messages) {
+        // F04: request-level boundary first - image input is counted per provider request, not per message.
+        int images=0;
+        long imageChars=0;
+        for(ChatMessage message:messages) {
+            List<String> dataUrls=message.getImageDataUrls();
+            if(dataUrls==null || dataUrls.isEmpty()) continue;
+            images+=dataUrls.size();
+            if(images>MAX_REQUEST_IMAGES)
+                throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.BAD_REQUEST,"Too many image inputs in one provider request");
+            for(String image:dataUrls) {
+                if(image==null || !image.matches("data:image/(png|jpeg);base64,[A-Za-z0-9+/=]+") || image.length()>MAX_IMAGE_CHARS)
+                    throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.BAD_REQUEST,"Invalid image provider input");
+                imageChars+=image.length();
+            }
+            if(imageChars>MAX_REQUEST_IMAGE_CHARS)
+                throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.BAD_REQUEST,"Image inputs exceed the provider request transfer budget");
+        }
+        return messages.stream().map(message->{
+            Object content=message.getContent();
+            if(message.getImageDataUrls()!=null && !message.getImageDataUrls().isEmpty()) {
+                List<Map<String,Object>> parts=new java.util.ArrayList<>();
+                parts.add(Map.of("type","text","text",message.getContent()));
+                for(String image:message.getImageDataUrls()) {
+                    if(image==null || !image.matches("data:image/(png|jpeg);base64,[A-Za-z0-9+/=]+") || image.length()>MAX_IMAGE_CHARS)
+                        throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.BAD_REQUEST,"Invalid image provider input");
+                    parts.add(Map.of("type","image_url","image_url",Map.of("url",image)));
+                }
+                content=parts;
+            }
+            return Map.<String,Object>of("role",message.getRole().name().toLowerCase(Locale.ROOT),"content",content);
+        }).toList();
+    }
     private static boolean within(Double value,double min,double max) {
         return value!=null && !value.isNaN() && !value.isInfinite() && value>=min && value<=max;
     }

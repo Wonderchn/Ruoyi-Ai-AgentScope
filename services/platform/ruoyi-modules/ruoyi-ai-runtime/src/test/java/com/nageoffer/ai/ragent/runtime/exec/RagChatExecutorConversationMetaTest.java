@@ -29,6 +29,7 @@ import com.nageoffer.ai.ragent.runtime.config.RunConfigBinding;
 import com.nageoffer.ai.ragent.runtime.config.RunConfigBindingPort;
 import com.nageoffer.ai.ragent.runtime.config.RuntimeModelGatewayPort;
 import com.nageoffer.ai.ragent.runtime.model.RunRecord;
+import com.nageoffer.ai.ragent.runtime.port.ConversationContextPort;
 import com.nageoffer.ai.ragent.runtime.port.ConversationHistoryPort;
 import com.nageoffer.ai.ragent.runtime.port.ConversationTurnMeta;
 import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
@@ -151,6 +152,11 @@ class RagChatExecutorConversationMetaTest {
 
         inject("runConfigBindingPort", (RunConfigBindingPort) (tenantId, runId) -> binding);
         inject("conversationHistory", historyPort);
+        // F16：本夹具 run 带 conversationId（历史写侧夹具），执行器在模型步会加载授权历史：
+        // 读端口必须接线（空表即可——本类只判写侧 meta 传递，不判历史内容）。
+        ConversationContextPort contextPort = mock(ConversationContextPort.class);
+        when(contextPort.load(any(), any())).thenReturn(List.of());
+        inject("conversationContext", contextPort);
 
         when(chatGateway.stream(any(), any(), anyInt(), any())).thenAnswer(invocation -> {
             Consumer<String> onDelta = invocation.getArgument(3);
@@ -174,7 +180,7 @@ class RagChatExecutorConversationMetaTest {
     }
 
     @Test
-    @DisplayName("F03 op3：模型步成功后，绑定模型名/usage tokens/耗时经 7 参重载交给会话历史端口")
+    @DisplayName("F03 op3：模型步成功后，绑定模型名/usage tokens/耗时经附件感知重载（appendAttachedTurn）交给会话历史端口")
     void modelStepPassesBoundModelUsageAndDurationIntoTheHistoryPort() throws Exception {
         RunExecutionGuard guard = mock(RunExecutionGuard.class);
         when(guard.isCancelRequested()).thenReturn(false);
@@ -188,15 +194,21 @@ class RagChatExecutorConversationMetaTest {
         assertEquals("SUCCEEDED", outcome.status());
 
         ArgumentCaptor<ConversationTurnMeta> captor = ArgumentCaptor.forClass(ConversationTurnMeta.class);
-        verify(historyPort).appendTurn(eq(TENANT), eq(MEMBER), eq(USER), eq(CONVERSATION),
-                eq("你好"), eq("hi"), captor.capture());
+        ArgumentCaptor<com.fasterxml.jackson.databind.JsonNode> attachmentsCaptor =
+                ArgumentCaptor.forClass(com.fasterxml.jackson.databind.JsonNode.class);
+        verify(historyPort).appendAttachedTurn(eq(TENANT), eq(MEMBER), eq(USER), eq(CONVERSATION),
+                eq("你好"), eq("hi"), captor.capture(), attachmentsCaptor.capture());
         ConversationTurnMeta meta = captor.getValue();
         assertEquals("deepseek-chat", meta.modelName(), "模型名来自 run 绑定事实（不是默认模型）");
         assertEquals(7, meta.totalTokens().intValue());
         assertNotNull(meta.durationMs());
         assertTrue(meta.durationMs() >= 0);
-        // 老 6 参重载在本次执行里不得被调用：补事实不允许丢
+        // D7a 契约：无附件载荷原样透传 MissingNode/null——不得伪造数组
+        assertTrue(attachmentsCaptor.getValue().isMissingNode() || attachmentsCaptor.getValue().isNull(),
+                "无附件载荷不得伪造数组");
+        // 老重载（6 参 / 7 参 appendTurn）在本次执行里不得被调用：补事实不允许丢
         verify(historyPort, never()).appendTurn(any(), any(), any(), any(), any(), any());
+        verify(historyPort, never()).appendTurn(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test

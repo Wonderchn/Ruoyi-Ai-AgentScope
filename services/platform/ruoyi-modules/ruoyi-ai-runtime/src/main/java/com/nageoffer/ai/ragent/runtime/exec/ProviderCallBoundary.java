@@ -31,7 +31,7 @@ public class ProviderCallBoundary {
     public ProviderCallBoundary(RunAccessService access,ObjectProvider<RevocationGuard> guards){this.access=access;this.guards=guards;}
     public RevocationGuard.Operation enter(RunExecution execution) {
         execution.guard().commitAtomic(()->null);
-        boolean ingest="document.ingest".equals(execution.run().action());
+        boolean ingest=java.util.Set.of("document.ingest","ingestion.run").contains(execution.run().action());
         var principal=access.current(execution.run(),ingest?Set.of("kb.read","document.read"):Set.of("kb.read"));
         var guard=guards.getIfAvailable();
         if(guard==null) throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE);

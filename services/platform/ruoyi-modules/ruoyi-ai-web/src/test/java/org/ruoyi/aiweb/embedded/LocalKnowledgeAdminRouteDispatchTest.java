@@ -21,6 +21,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.nageoffer.ai.ragent.framework.security.RevocationGuard;
 import com.nageoffer.ai.ragent.knowledge.controller.KnowledgeBaseController;
 import com.nageoffer.ai.ragent.knowledge.controller.KnowledgeDocumentController;
+import com.nageoffer.ai.ragent.knowledge.controller.request.KnowledgeDocumentUploadRequest;
 import com.nageoffer.ai.ragent.knowledge.controller.vo.IngestionSpecSchemaVO;
 import com.nageoffer.ai.ragent.knowledge.controller.vo.KnowledgeBaseVO;
 import com.nageoffer.ai.ragent.knowledge.controller.vo.KnowledgeDocumentChunkLogVO;
@@ -45,7 +46,10 @@ import org.ruoyi.aiintegration.config.AiIntegrationProperties;
 import org.ruoyi.aiintegration.identity.CurrentPrincipalResolver;
 import org.ruoyi.aiintegration.identity.PlatformIdentitySource;
 import org.ruoyi.aiintegration.web.AiGatewayController;
+import org.ruoyi.aiintegration.web.AiGatewayStreamController;
+import org.ruoyi.aiintegration.web.GatewayAuthorizer;
 import org.ruoyi.aiintegration.web.GatewayMultipartConfiguration;
+import org.ruoyi.aiintegration.web.GatewayRawUploadFilter;
 import org.ruoyi.aiweb.AiWebEmbeddedConfiguration;
 import org.ruoyi.aiweb.security.AiInternalAccessBoundaryFilter;
 import org.ruoyi.aiweb.transport.AiDeliveryReleaser;
@@ -53,8 +57,11 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.web.context.support.AnnotationConfigWebApplicationContext;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.multipart.MultipartResolver;
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 
 import java.io.ByteArrayInputStream;
@@ -75,6 +82,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -169,6 +177,22 @@ class LocalKnowledgeAdminRouteDispatchTest {
         map.addURLPatternDecoded("/internal/ai/v1/*");
         map.setDispatcher("REQUEST");
         ctx.addFilterMap(map);
+
+        // 生产同形（F05:1 成对排除的第二处）：{@link GatewayRawUploadFilter} 是挂在 /* 上的
+        // @Component 过滤器，专用流上传路径上它把 multipart 参数抑制为空（外层只从 header 鉴权）。
+        // 夹具若不带它，离线绿不可信——真机 W-U b 的 500 正是"被抑制 request 上取部件值"形态，
+        // 而 suppress 后 {@code @ModelAttribute} 绑不到任何字段（见 ② 的真断点定位记录）。
+        org.apache.tomcat.util.descriptor.web.FilterDef rawUpload =
+                new org.apache.tomcat.util.descriptor.web.FilterDef();
+        rawUpload.setFilterName("gatewayRawUploadFilter");
+        rawUpload.setFilter(new GatewayRawUploadFilter());
+        ctx.addFilterDef(rawUpload);
+        org.apache.tomcat.util.descriptor.web.FilterMap rawUploadMap =
+                new org.apache.tomcat.util.descriptor.web.FilterMap();
+        rawUploadMap.setFilterName("gatewayRawUploadFilter");
+        rawUploadMap.addURLPatternDecoded("/*");
+        rawUploadMap.setDispatcher("REQUEST");
+        ctx.addFilterMap(rawUploadMap);
 
         org.apache.catalina.core.StandardWrapper wrapper =
                 (org.apache.catalina.core.StandardWrapper) Tomcat.addServlet(ctx, "dispatcher",
@@ -382,22 +406,22 @@ class LocalKnowledgeAdminRouteDispatchTest {
     }
 
     /**
-     * 上传面**表单字段**：已知限制的**响亮失败**形状（复核 F1 的登记 + change-detector）。
+     * 上传面**表单字段**：F05:1 薄适配后本判据已按 javadoc 预告**反转**。
      *
-     * <p>本切片曾尝试"multipart 外请求按部件重建 wrapper"来让字段可达——**实测反被证伪**：
-     * 外请求在网关侧已被 multipartResolver 解析（`StandardMultipartHttpServletRequest`），
-     * 再包一层后字段以 `ApplicationPart` 形态进入 `@ModelAttribute` 绑定 ⇒
-     * `MethodArgumentNotValidException` ⇒ 400（证据 `red/a1-fixfield-web/`）。
-     * 回退该改动**不能**消除 400（本判据在回退后仍红过一轮，证据链见波报 §3 ⑧）——
-     * 即 400 来自"字段经 multipart 解析链以 Part 形态外露"这一既有事实，与转送 wrapper 形状无关。
+     * <p>历史（复核 F1 登记）：该路径经网关 catch-all 分支时，表单字段以 {@code ApplicationPart}
+     * 形态进入 {@code @ModelAttribute} 绑定 ⇒ 400（本判据原断言恒 400，javadoc 曾预告
+     * "接通专用流通道时本断言会翻红，须同步改本判据与 {@code AiGatewayController} 的限制注释"）。
      *
-     * <p>故把**实际形状**钉住：带表单字段的请求 → 400（不是静默丢字段、也不是 200），
-     * 且 handler 未被调用。将来若专用流通道（F23 面）接通使字段可用，本断言会翻红，
-     * 须同步改本判据与 `AiGatewayController` 上传路由的限制注释。
+     * <p>F05:1 已把该 admin 路径接入<b>专用流通道</b>（{@link AiGatewayStreamController} 精确映射 +
+     * {@link GatewayMultipartConfiguration}/{@link GatewayRawUploadFilter} 成对 multipart 旁路 +
+     * local {@code MultipartTargetRequest} 直调内层），字段因此可达：原 400 断言在适配后
+     * <b>真实翻红</b>（flip/ 证据），此处按预告同步改为 200 + 内层 handler 被调。
+     * 字段逐项绑定的完整判据见
+     * {@link #multipartFormFieldsReachTheInnerHandlerThroughTheDedicatedUploadChannel()}。
      */
     @Test
-    @DisplayName("已知限制：multipart 表单字段经通配分支响亮失败（400，不是静默丢字段）")
-    void multipartFormFieldsFailLoudlyOnTheCatchAllTransport() throws Exception {
+    @DisplayName("表单字段不再于通配分支响亮失败（400 → 200：专用流通道承接，判据按 javadoc 预告反转）")
+    void multipartFormFieldsNoLongerFailOnTheCatchAllTransport() throws Exception {
         byte[] pdf = "%PDF-1.4 f05-fields".getBytes(StandardCharsets.UTF_8);
         String boundary = "F05FIELDS";
         String body = "--" + boundary + "\r\n"
@@ -420,10 +444,143 @@ class LocalKnowledgeAdminRouteDispatchTest {
                 HttpResponse.BodyHandlers.ofString());
 
         assertThat(response.statusCode())
-                .as("限制登记（复核 F1）：表单字段以 ApplicationPart 形态进绑定 ⇒ 400；"
-                        + "字段改为可达时（专用流通道 / F23）本断言翻红，须同步改注释与判据")
-                .isEqualTo(400);
-        verify(documentService, never()).upload(anyString(), any(), any());
+                .as("F05:1 后专用流通道承接该路径：表单字段可达 ⇒ 不再是 400"
+                        + "（原断言 '400' 已按 javadoc 预告反转，flip/ 有翻红证据）")
+                .isEqualTo(200);
+        assertThat(response.body()).contains("\"code\":200");
+        verify(documentService).upload(eq("kb-1"), any(), any());
+    }
+
+    // ------------------------------------------------------------------ F05:1 专用流上传通道
+
+    /**
+     * F05:1 新判据（红先行）：admin 上传的**表单字段**经专用流通道到达内层。
+     *
+     * <p>改前该路径走网关 catch-all 分支：multipart 表单字段不随转送体到达内层
+     * （{@code BodyProvidingRequest} 只暴露 query）⇒ 内层 {@code @ModelAttribute} 绑成 null
+     * ⇒ {@code SourceType.normalize}/{@code MethodArgumentNotValid} ⇒ 400；本判据首跑因此<b>真实红</b>。
+     * 接入专用流通道后（精确映射 + multipart 旁路成对排除 + local {@code MultipartTargetRequest}
+     * 直调内层），文件部件与七个表单字段整包到达内层，结果仍是 admin 形状
+     * （200 + 整数 {@code code:200} + {@code KnowledgeDocumentVO}）——判据面零形状改动。
+     *
+     * <p><b>F05 运行时收口（②）加固</b>：本夹具现按生产同形挂上
+     * {@link GatewayRawUploadFilter}（{@code /*}），即"同一路径的 multipart 参数被抑制为空"的
+     * 真机形态。改前那一跑（夹具已挂过滤器、产品未修）本判据<b>真实红</b>——与真机 W-U b 的
+     * {@code http=200 code=500}（内层 {@code SourceType.normalize} 空）同源；修 {@code MultipartTargetRequest}
+     * 后表单字段从自身部件映射显式暴露为参数，本判据转绿。
+     */
+    @Test
+    @DisplayName("七字段 multipart 经专用流通道 200：字段逐项绑定 + 文件字节原样 + code:200 + VO")
+    void multipartFormFieldsReachTheInnerHandlerThroughTheDedicatedUploadChannel() throws Exception {
+        byte[] pdf = "%PDF-1.4 f05-seven-fields".getBytes(StandardCharsets.UTF_8);
+        String boundary = "F05SEVEN";
+        String body = "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"sourceType\"\r\n\r\nfile\r\n"
+                + "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"sourceLocation\"\r\n\r\n"
+                + "https://example.invalid/f05.pdf\r\n"
+                + "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"scheduleEnabled\"\r\n\r\ntrue\r\n"
+                + "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"scheduleCron\"\r\n\r\n0 0 * * * *\r\n"
+                + "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"processMode\"\r\n\r\nchunk\r\n"
+                + "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"ingestionSpec\"\r\n\r\n"
+                + "{\"parseProfile\":\"fast\"}\r\n"
+                + "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"pipelineId\"\r\n\r\npipe-1\r\n"
+                + "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"file\"; filename=\"f05.pdf\"\r\n"
+                + "Content-Type: application/pdf\r\n\r\n"
+                + new String(pdf, StandardCharsets.UTF_8) + "\r\n"
+                + "--" + boundary + "--\r\n";
+        HttpResponse<String> response = CLIENT.send(HttpRequest.newBuilder()
+                        .uri(URI.create("http://127.0.0.1:" + port
+                                + "/api/ai/v1/knowledge-base/kb-1/docs/upload"))
+                        .header("Authorization", "Bearer synthetic-session")
+                        .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                        .POST(HttpRequest.BodyPublishers.ofString(body)).build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        // 结果语义等价于 admin 面既有形状：200 + 整数 code:200 + KnowledgeDocumentVO（零形状改动）
+        assertThat(response.statusCode())
+                .as("七字段 multipart 必须经专用流通道 200（改前 catch-all 分支为 400）")
+                .isEqualTo(200);
+        assertThat(response.body())
+                .as("必须是 admin 形状的整数信封 + VO（不是 P2 的 201/RunApiResponses）")
+                .contains("\"code\":200")
+                .contains("\"docName\":\"f05-doc-uploaded\"")
+                .contains("\"kbId\":\"kb-1\"")
+                .doesNotContain("\"code\":\"0\"");
+
+        // 内层 handler 真实被调，七个表单字段逐项绑定到位（不是静默丢字段）
+        verify(documentService).upload(eq("kb-1"), argThat(request ->
+                "file".equals(request.getSourceType())
+                        && "https://example.invalid/f05.pdf".equals(request.getSourceLocation())
+                        && Boolean.TRUE.equals(request.getScheduleEnabled())
+                        && "0 0 * * * *".equals(request.getScheduleCron())
+                        && "chunk".equals(request.getProcessMode())
+                        && "{\"parseProfile\":\"fast\"}".equals(request.getIngestionSpec())
+                        && "pipe-1".equals(request.getPipelineId())), any());
+
+        // 文件部件字节原样到达（在请求处理中被替身读走的副本）
+        assertThat(uploadedFilename.get())
+                .as("文件部件必须原样到达内层 handler").isEqualTo("f05.pdf");
+        assertThat(uploadedBytes.get()).isEqualTo(pdf);
+    }
+
+    /**
+     * F05:1 新判据（红先行）：专用流上传的 multipart 旁路排除<b>成对</b>。
+     *
+     * <p>两处排除集必须同时含 admin 路径——只改一处的后果是外层 multipartResolver
+     * 先把请求解析掉（原始体被消费），重蹈 a1-fixfield 的 ApplicationPart 400 坑。
+     * 本判据对 {@link GatewayMultipartConfiguration}（resolver 不解析该路径）与
+     * {@link GatewayRawUploadFilter}（该路径的 multipart 参数被抑制）分别断言，
+     * 并断言非专用流路径<b>未被过度排除</b>。
+     */
+    @Test
+    @DisplayName("专用流上传旁路成对：multipartResolver 与 RawUploadFilter 同时排除两条专用流上传路径")
+    void dedicatedUploadPathsAreBypassedInBothPlaces() throws Exception {
+        // ---- 1) multipartResolver：专用流路径不被解析（否则外层先消费 multipart）
+        java.lang.reflect.Method factory = GatewayMultipartConfiguration.class
+                .getDeclaredMethod("multipartResolver");
+        factory.setAccessible(true);
+        MultipartResolver resolver = (MultipartResolver) factory.invoke(new GatewayMultipartConfiguration());
+
+        assertThat(resolver.isMultipart(multipartRequest("/api/ai/v1/documents/uploads")))
+                .as("P2/workbench 专用流上传路径不被 multipartResolver 消费").isFalse();
+        assertThat(resolver.isMultipart(multipartRequest("/api/ai/v1/knowledge-base/kb-1/docs/upload")))
+                .as("admin 上传路径同样不被 multipartResolver 消费（成对之一）").isFalse();
+        assertThat(resolver.isMultipart(multipartRequest("/api/ai/v1/knowledge-base/kb-1/docs")))
+                .as("非专用流路径仍是普通 multipart（未被过度排除）").isTrue();
+
+        // ---- 2) GatewayRawUploadFilter：同一路径集被同形抑制（成对之二）
+        assertThat(rawUploadParametersAreSuppressed("POST", "/api/ai/v1/documents/uploads"))
+                .as("P2 专用流上传路径的 multipart 参数被抑制").isTrue();
+        assertThat(rawUploadParametersAreSuppressed("POST", "/api/ai/v1/knowledge-base/kb-1/docs/upload"))
+                .as("admin 上传路径的 multipart 参数同样被抑制（与 resolver 成对）").isTrue();
+        assertThat(rawUploadParametersAreSuppressed("POST", "/api/ai/v1/knowledge-base/kb-1/docs"))
+                .as("非专用流路径不被抑制").isFalse();
+        assertThat(rawUploadParametersAreSuppressed("GET", "/api/ai/v1/knowledge-base/kb-1/docs/upload"))
+                .as("非 POST 不触发抑制").isFalse();
+    }
+
+    /** 是否经 {@link GatewayRawUploadFilter} 抑制了 multipart 参数（行为判据，不反射）。 */
+    private static boolean rawUploadParametersAreSuppressed(String method, String path) throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest(method, path);
+        request.setParameter("sourceType", "url");
+        AtomicReference<jakarta.servlet.http.HttpServletRequest> passed = new AtomicReference<>();
+        new GatewayRawUploadFilter().doFilter(request, new MockHttpServletResponse(),
+                (servletRequest, servletResponse) ->
+                        passed.set((jakarta.servlet.http.HttpServletRequest) servletRequest));
+        return passed.get().getParameter("sourceType") == null;
+    }
+
+    private static MockHttpServletRequest multipartRequest(String path) {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", path);
+        request.setContentType("multipart/form-data; boundary=PAIR");
+        return request;
     }
 
     // ------------------------------------------------------------------ 替身数据
@@ -568,7 +725,8 @@ class LocalKnowledgeAdminRouteDispatchTest {
 
     @Configuration
     @EnableWebMvc
-    @Import({AiGatewayController.class, AiWebEmbeddedConfiguration.class, GatewayMultipartConfiguration.class})
+    @Import({AiGatewayController.class, AiGatewayStreamController.class, GatewayAuthorizer.class,
+            AiWebEmbeddedConfiguration.class, GatewayMultipartConfiguration.class})
     static class FixtureConfig {
 
         @Bean

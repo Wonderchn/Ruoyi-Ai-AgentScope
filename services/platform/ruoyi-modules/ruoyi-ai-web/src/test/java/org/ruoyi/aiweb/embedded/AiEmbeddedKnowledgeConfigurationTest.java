@@ -232,6 +232,10 @@ class AiEmbeddedKnowledgeConfigurationTest {
         BadSqlGrammarException missingSchema = new BadSqlGrammarException(
                 "indexDocumentChunks", "INSERT INTO ai_knowledge_vector ...",
                 new SQLException("column \"tenant_id\" does not exist", "42703"));
+        // D-VEC-1：写前先按租户读在树权威 ai_knowledge_document.version（doc_version 值源），
+        // 让流程走到 batchUpdate，才能证伪"缺列时回落无租户旧语句"这一行为。
+        when(jdbc.queryForObject(anyString(), org.mockito.ArgumentMatchers.eq(Long.class), any(), any()))
+                .thenReturn(1L);
         when(jdbc.batchUpdate(anyString(), anyList(), any(Integer.class), any())).thenThrow(missingSchema);
 
         PgVectorStoreService service = new PgVectorStoreService(jdbc, new ObjectMapper());
@@ -260,7 +264,9 @@ class AiEmbeddedKnowledgeConfigurationTest {
                 .as("纯空白租户同样必须被拒绝（不能让 '   ' 变成一个租户名）")
                 .isInstanceOf(RuntimeException.class);
         // 反向锚点：证明上面的断言不是在"任何异常都算过"——有租户时不会在签名检查处抛错，
-        // 而是走到 SQL（batchUpdate 返回每个 chunk 的更新行数）后正常返回。
+        // 而是走到 SQL（先按租户读 ai_knowledge_document.version，再 batchUpdate 返回每个 chunk 的更新行数）后正常返回。
+        org.mockito.Mockito.when(jdbc.queryForObject(anyString(), org.mockito.ArgumentMatchers.eq(Long.class), any(), any()))
+                .thenReturn(1L);
         org.mockito.Mockito.when(jdbc.batchUpdate(anyString(), anyList(), any(Integer.class), any()))
                 .thenReturn(new int[][] {{1}});
         service.indexDocumentChunks("000000", "kb_collection_1", "doc-1", chunks);

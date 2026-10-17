@@ -77,8 +77,43 @@ function fakeAgentProfiles() {
   };
 }
 
+/**
+ * P3-BIND：绑定选择器的选项源假体（`aiApi.runtimeConfig.catalog` / `aiApi.agentSkills.list|toolOptions`）。
+ * 独立于 `agentProfiles`，便于按调用分别驱动 resolve/reject。
+ */
+function fakeBindingSources() {
+  const calls: Call[] = [];
+  const pending: Array<Pending & { promise: Promise<any>; method: string }> = [];
+  function record(method: string, args: any[]) {
+    calls.push({ method, args });
+    const item = { ...deferred(), method };
+    pending.push(item);
+    return item.promise;
+  }
+  return {
+    calls,
+    pending,
+    api: {
+      runtimeConfig: { catalog: (...args: any[]) => record('catalog', args) },
+      agentSkills: {
+        list: (...args: any[]) => record('skillList', args),
+        toolOptions: (...args: any[]) => record('toolOptions', args),
+      },
+    },
+    take(method: string) {
+      const item = [...pending].reverse().find(entry => entry.method === method);
+      assert.ok(item, `没有挂起的 ${method} 请求（实际调用：${calls.map(call => call.method).join(',')}）`);
+      return item;
+    },
+  };
+}
+
 /** 编译并挂载真实 SFC。 */
-function mountPage(agentProfiles: ReturnType<typeof fakeAgentProfiles>['api'], initialPermissions: string[]) {
+function mountPage(
+  agentProfiles: ReturnType<typeof fakeAgentProfiles>['api'],
+  initialPermissions: string[],
+  sources: ReturnType<typeof fakeBindingSources> = fakeBindingSources(),
+) {
   const permissions = vue.ref<string[]>([...initialPermissions]);
   const identity = vue.reactive({
     authEpoch: 1,
@@ -89,7 +124,7 @@ function mountPage(agentProfiles: ReturnType<typeof fakeAgentProfiles>['api'], i
   const canExact = (permission: string) => permissions.value.includes(permission);
   const modules: Record<string, unknown> = {
     vue,
-    '@/api': { aiApi: { agentProfiles } },
+    '@/api': { aiApi: { agentProfiles, ...sources.api } },
     '@/composables/usePermission': { usePermission: () => ({ can, canExact }) },
     '@/stores/identity': { useIdentityStore: () => identity },
     '@/utils': { listViewPhase, listStateTestId },
@@ -108,7 +143,7 @@ function mountPage(agentProfiles: ReturnType<typeof fakeAgentProfiles>['api'], i
   vm.runInNewContext(output, { require: requireModule, exports });
   const scope = vue.effectScope();
   const page = scope.run(() => exports.default.setup({}, { expose() {} }));
-  return { page, scope, identity, permissions };
+  return { page, scope, identity, permissions, sources };
 }
 
 async function settle(): Promise<void> {
@@ -116,6 +151,15 @@ async function settle(): Promise<void> {
     await vue.nextTick();
     await new Promise(resolve => setImmediate(resolve));
   }
+}
+
+/**
+ * SFC 在 `vm.runInNewContext` 里执行，其中构造的对象/数组属**另一 realm**，
+ * `deepStrictEqual` 会比较原型而误报"same structure but not reference-equal"。
+ * 值与线形才是判据，故比较前转成纯数据（同 `f01-system-pages.test.ts` 的 `plain`）。
+ */
+function plain<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 const ALL_PERMISSIONS = [
@@ -242,7 +286,7 @@ describe('正例：有权限时的列表/CRUD/激活/槽位', () => {
     }
   });
 
-  test('改名：**总是**提交 name/description/avatar 三个字段（防"只改名字清空描述"）', async () => {
+  test('改名：总是提交 name/description/avatar；行未携带 bindings ⇒ 不发 bindings（不改绑定）', async () => {
     const fake = fakeAgentProfiles();
     const { page, scope } = mountPage(fake.api, ALL_PERMISSIONS);
     try {
@@ -257,6 +301,9 @@ describe('正例：有权限时的列表/CRUD/激活/槽位', () => {
       page.openEdit(page.rows.value[0]);
       assert.equal(page.editTargetId.value, 'a1');
       assert.deepEqual(page.editForm.value, { name: '旧名', description: '原描述', avatar: 'av' });
+      // 安全兜底：老服务端/边界行没有 bindings ⇒ 不进入替换语义。
+      assert.equal(page.editCarriesBindings.value, false);
+      assert.deepEqual(plain(page.editBindings.value), []);
 
       page.editForm.value.name = '新名';
       const submitting = page.submitEdit();
@@ -264,6 +311,11 @@ describe('正例：有权限时的列表/CRUD/激活/槽位', () => {
       const updateCall = fake.calls.find(call => call.method === 'update');
       assert.ok(updateCall);
       assert.deepEqual(updateCall.args, ['a1', { name: '新名', description: '原描述', avatar: 'av' }]);
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(updateCall.args[1] as Record<string, unknown>, 'bindings'),
+        false,
+        '行未携带 bindings ⇒ 保存体不得带 bindings（否则会把真实绑定替换为空集）',
+      );
 
       fake.take('update').resolve(null);
       await settle();
@@ -347,6 +399,229 @@ describe('正例：有权限时的列表/CRUD/激活/槽位', () => {
     finally {
       scope.stop();
     }
+  });
+});
+
+describe('P3-BIND：绑定选择器、读侧回显与安全兜底', () => {
+  const ROW_WITH_BINDINGS = {
+    id: 'a1',
+    name: 'x',
+    bindings: [
+      { type: 'MODEL', refId: 'model-1' },
+      { type: 'SKILL', refId: 'skill-a' },
+      { type: 'MCP', refId: 'mcp-1' },
+      { type: 'ORCHESTRATION', refId: 'REACT' },
+    ],
+  };
+
+  async function mountedWithRow(fake: ReturnType<typeof fakeAgentProfiles>, sources: ReturnType<typeof fakeBindingSources>, row: any) {
+    const mounted = mountPage(fake.api, ALL_PERMISSIONS, sources);
+    await settle();
+    fake.take('list').resolve({ mode: 'AGENT', effectiveSlotTotal: 1, agents: [row] });
+    await settle();
+    return mounted;
+  }
+
+  test('openEdit 逐条回显行上 bindings（四类），保存体按替换语义带上 bindings', async () => {
+    const fake = fakeAgentProfiles();
+    const sources = fakeBindingSources();
+    const { page, scope } = await mountedWithRow(fake, sources, { ...ROW_WITH_BINDINGS });
+    try {
+      page.openEdit(page.rows.value[0]);
+      await settle();
+      assert.equal(page.editCarriesBindings.value, true);
+      assert.deepEqual(plain(page.editBindings.value), ROW_WITH_BINDINGS.bindings);
+      // 四类选择器的 computed 回填。
+      assert.deepEqual(plain(page.modelBindingIds.value), ['model-1']);
+      assert.deepEqual(plain(page.skillBindingIds.value), ['skill-a']);
+      assert.deepEqual(plain(page.mcpBindingIds.value), ['mcp-1']);
+      assert.equal(page.orchestrationMode.value, 'REACT');
+
+      const submitting = page.submitEdit();
+      await settle();
+      const updateCall = fake.calls.filter(call => call.method === 'update').at(-1);
+      assert.ok(updateCall);
+      assert.deepEqual(plain(updateCall.args), ['a1', {
+        name: 'x',
+        description: '',
+        avatar: '',
+        bindings: ROW_WITH_BINDINGS.bindings,
+      }]);
+      fake.take('update').resolve(null);
+      await settle();
+      fake.take('list').resolve({ mode: 'AGENT', effectiveSlotTotal: 0, agents: [] });
+      await submitting;
+      await settle();
+      assert.equal(page.editVisible.value, false);
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  test('清空全部 ⇒ 保存体带 bindings: []（解除全部，不是缺省不改）', async () => {
+    const fake = fakeAgentProfiles();
+    const sources = fakeBindingSources();
+    const { page, scope } = await mountedWithRow(fake, sources, { ...ROW_WITH_BINDINGS });
+    try {
+      page.openEdit(page.rows.value[0]);
+      await settle();
+      // 模拟用户把四类全清空。
+      page.modelBindingIds.value = [];
+      page.skillBindingIds.value = [];
+      page.mcpBindingIds.value = [];
+      page.orchestrationMode.value = '';
+      assert.deepEqual(plain(page.editBindings.value), []);
+      assert.equal(page.bindingEcho.value, '（未绑定任何引用）');
+
+      const submitting = page.submitEdit();
+      await settle();
+      const updateCall = fake.calls.filter(call => call.method === 'update').at(-1);
+      assert.ok(updateCall);
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(updateCall.args[1] as Record<string, unknown>, 'bindings'),
+        true,
+        '行携带过 bindings ⇒ 清空后必须显式发空集（解除全部）',
+      );
+      assert.deepEqual(plain((updateCall.args[1] as Record<string, unknown>).bindings), []);
+      fake.take('update').resolve(null);
+      await settle();
+      fake.take('list').resolve({ mode: 'AGENT', effectiveSlotTotal: 0, agents: [] });
+      await submitting;
+      await settle();
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  test('安全兜底：行 bindings 为 null（老服务端/边界）⇒ 不发 bindings', async () => {
+    const fake = fakeAgentProfiles();
+    const sources = fakeBindingSources();
+    const { page, scope } = await mountedWithRow(fake, sources, { id: 'a1', name: 'x', bindings: null });
+    try {
+      page.openEdit(page.rows.value[0]);
+      await settle();
+      assert.equal(page.editCarriesBindings.value, false);
+      assert.deepEqual(plain(page.editBindings.value), []);
+
+      const submitting = page.submitEdit();
+      await settle();
+      const updateCall = fake.calls.filter(call => call.method === 'update').at(-1);
+      assert.ok(updateCall);
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(updateCall.args[1] as Record<string, unknown>, 'bindings'),
+        false,
+        'bindings=null 不得当成"无绑定"发空集',
+      );
+      fake.take('update').resolve(null);
+      await settle();
+      fake.take('list').resolve({ mode: 'AGENT', effectiveSlotTotal: 0, agents: [] });
+      await submitting;
+      await settle();
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  test('模型清单失败 ⇒ bindingLoadError 有内容、选择器无选项（不伪造）', async () => {
+    const fake = fakeAgentProfiles();
+    const sources = fakeBindingSources();
+    const { page, scope } = await mountedWithRow(fake, sources, { id: 'a1', name: 'x' });
+    try {
+      page.openEdit(page.rows.value[0]);
+      await settle();
+      sources.take('catalog').reject({ code: 500, kind: 'business-error', message: 'boom' });
+      await settle();
+      sources.take('skillList').resolve({ records: [] });
+      await settle();
+      sources.take('toolOptions').resolve([]);
+      await settle();
+
+      assert.match(page.bindingLoadError.value, /模型清单不可用/);
+      assert.equal(page.modelOptions.value.length, 0, '失败不得伪造模型选项');
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  test('模型展示按 modelId（R-2）；MCP 走 toolOptions（R-3）', async () => {
+    const fake = fakeAgentProfiles();
+    const sources = fakeBindingSources();
+    const { page, scope } = await mountedWithRow(fake, sources, { id: 'a1', name: 'x' });
+    try {
+      page.openEdit(page.rows.value[0]);
+      await settle();
+      sources.take('catalog').resolve({
+        models: [{ id: 'r1', modelId: 'deepseek-chat' }, { id: 'r2', providerId: 'p' }],
+      });
+      await settle();
+      sources.take('skillList').resolve({ records: [{ skillCode: 's1', name: '技能一' }] });
+      await settle();
+      sources.take('toolOptions').resolve([{ toolId: 't1', name: '工具一' }]);
+      await settle();
+
+      // label 取 modelId（缺则回落 id），value 取 id。
+      assert.deepEqual(plain(page.modelOptions.value), [
+        { id: 'r1', label: 'deepseek-chat' },
+        { id: 'r2', label: 'r2' },
+      ]);
+      assert.deepEqual(plain(page.skillOptions.value), [{ skillCode: 's1', name: '技能一' }]);
+      assert.equal(page.mcpListAvailable.value, true);
+      assert.deepEqual(plain(page.mcpOptions.value), [{ toolId: 't1', name: '工具一' }]);
+      assert.ok(sources.calls.some(call => call.method === 'toolOptions'), 'R-3：MCP 选项源必须是 toolOptions');
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  test('MCP 清单不可用 ⇒ 降级受控文本输入＋提示，可手动加入 tool id', async () => {
+    const fake = fakeAgentProfiles();
+    const sources = fakeBindingSources();
+    const { page, scope } = await mountedWithRow(fake, sources, { id: 'a1', name: 'x' });
+    try {
+      page.openEdit(page.rows.value[0]);
+      await settle();
+      sources.take('catalog').resolve({ models: [] });
+      await settle();
+      sources.take('skillList').resolve({ records: [] });
+      await settle();
+      sources.take('toolOptions').reject({ code: 403, kind: 'forbidden', message: 'HTTP 403' });
+      await settle();
+
+      assert.equal(page.mcpListAvailable.value, false);
+      assert.match(page.bindingNotice.value, /MCP 工具清单不可用/);
+      page.mcpFallbackInput.value = '  mcp-x  ';
+      page.addMcpFallbackId();
+      assert.deepEqual(plain(page.editBindings.value), [{ type: 'MCP', refId: 'mcp-x' }]);
+      assert.equal(page.mcpFallbackInput.value, '');
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  test('静态锚：绑定 testid 全在；不再引用被 G-22 阻塞的 mcp.*', () => {
+    for (const id of [
+      'agents-binding-notice',
+      'agents-binding-error',
+      'agents-binding-fallback-notice',
+      'agents-binding-model',
+      'agents-binding-skill',
+      'agents-binding-mcp',
+      'agents-binding-mcp-input',
+      'agents-binding-mcp-add',
+      'agents-binding-orchestration',
+      'agents-binding-echo',
+    ]) {
+      assert.ok(PAGE_SOURCE.includes(id), `缺 testid ${id}`);
+    }
+    assert.ok(PAGE_SOURCE.includes('aiApi.agentSkills.toolOptions()'), 'R-3：MCP 走 toolOptions');
+    assert.equal(PAGE_SOURCE.includes('aiApi.mcp'), false, 'R-1/D-1：不得再调用被 G-22 阻塞的 mcp.*');
+    assert.ok(PAGE_SOURCE.includes('agents-binding-notice') && PAGE_SOURCE.includes('未绑定'));
   });
 });
 

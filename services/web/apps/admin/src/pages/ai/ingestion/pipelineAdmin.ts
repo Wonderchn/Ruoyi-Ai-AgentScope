@@ -99,3 +99,34 @@ export function pipelineNameOf(row: IngestionPipelineRow | null | undefined): st
   const value = row?.name;
   return typeof value === 'string' && value !== '' ? value : '—';
 }
+
+/** 节点编辑器「保存」门禁的状态快照（页面把各 ref 的当前值灌进来）。 */
+export interface EditorSaveGate {
+  /** 编辑器当前瞄准的 pipelineId（'' = 没有目标）。 */
+  pipelineId: string;
+  /** 最近一次**成功**加载完成的 pipelineId（'' = 尚未成功加载任何目标）。 */
+  loadedForId: string;
+  /** 当前目标的加载是否失败（失败后必须重新加载成功才允许保存）。 */
+  loadFailed: boolean;
+  /** 详情加载在途。 */
+  loading: boolean;
+  /** 保存在途。 */
+  saving: boolean;
+}
+
+/**
+ * 「保存节点」门禁：只有**当前 pipeline 已成功加载**且不在加载/保存中才放行。
+ *
+ * 为什么这么严：`savePipelineNodes` 会 `PUT {nodes: [...]}`，而服务端 `update` 对
+ * 非 null `nodes` 先按 pipelineId 物理删除原节点再插入（`upsertNodes`）。若 GET
+ * 失败后 editorNodes 还是空数组且允许保存，就会把既有节点**清空**——所以
+ * "未成功加载"必须是硬门禁（保存函数与按钮 :disabled 共用本判据），
+ * 而不是"显示错误提示但按钮仍可点"。
+ */
+export function canSaveEditor(state: EditorSaveGate): boolean {
+  return state.pipelineId !== ''
+    && state.loadedForId === state.pipelineId
+    && !state.loadFailed
+    && !state.loading
+    && !state.saving;
+}

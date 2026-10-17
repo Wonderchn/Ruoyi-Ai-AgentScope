@@ -34,6 +34,7 @@ import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMessageMapper;
 import com.nageoffer.ai.ragent.agent.dto.AgentBlock;
 import com.nageoffer.ai.ragent.agent.dto.AgentConfirmSettlement;
 import com.nageoffer.ai.ragent.agent.enums.AgentMessageStatus;
+import com.nageoffer.ai.ragent.agent.enums.AgentToolStatus;
 import com.nageoffer.ai.ragent.agent.service.AgentConversationService;
 import com.nageoffer.ai.ragent.agent.service.ConversationBatchDeleteService;
 import com.nageoffer.ai.ragent.agent.service.handler.AgentRunGate;
@@ -101,6 +102,9 @@ public class AgentConversationServiceImpl implements AgentConversationService {
      * 变成启动失败；缺 bean 时在 {@link #create(String)} 的调用点明确拒绝。
      */
     private final ObjectProvider<AiResourceWriteService> resourceWriteServiceRef;
+
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.nageoffer.ai.ragent.runtime.port.ChatAttachmentPort attachments;
 
     @Override
     public String touchConversation(String conversationId, String userId, String question) {
@@ -243,11 +247,35 @@ public class AgentConversationServiceImpl implements AgentConversationService {
             return null;
         }
         pending.block().setStatus(blockStatus);
+        if (CONFIRM_STATUS_DENIED.equals(blockStatus)) {
+            // W5/D1：拒绝结算时卡片消息里同批的工具块也要进终态。挂起时整批被推成 awaiting
+            // （AgentStreamEventBridge#onRequireUserConfirm），结算只改卡片块的话工具块永远停在
+            // awaiting——FE 工具卡永久「待确认」蒙相（DB 实证）。approve/expire 两腿保持原样：
+            // approve 的工具块留档 awaiting 由续跑新消息如实呈现，expire 无被拒工具可落。
+            denyAwaitingToolBlocks(pending.message());
+        }
         // 卡片有了终态，消息改回 NORMAL 以解除新提问的阻塞
         AgentMessageDO message = pending.message();
         message.setMessageStatus(AgentMessageStatus.NORMAL.name());
         updateMessageScoped(message);
         return message;
+    }
+
+    /**
+     * 把卡片消息里仍挂 awaiting 的工具块改写成 denied 终态（与 {@link AgentToolStatus} 词表一致）。
+     *
+     * <p>只动本消息内 kind=tool 且 status=awaiting 的块：确认卡是整批一次决策，
+     * {@code onRequireUserConfirm} 把同一批工具全部推成 awaiting，拒绝即整批不执行。
+     * 已进终态（done/denied/…）的块不动，未挂起过的历史消息无 awaiting 块可动。
+     */
+    private static void denyAwaitingToolBlocks(AgentMessageDO message) {
+        if (CollUtil.isEmpty(message.getBlocks())) {
+            return;
+        }
+        message.getBlocks().stream()
+                .filter(block -> AgentBlock.KIND_TOOL.equals(block.getKind()))
+                .filter(block -> AgentToolStatus.AWAITING.value().equals(block.getStatus()))
+                .forEach(block -> block.setStatus(AgentToolStatus.DENIED.value()));
     }
 
     /**
@@ -389,6 +417,8 @@ public class AgentConversationServiceImpl implements AgentConversationService {
                         .messageStatus(item.getMessageStatus())
                         .durationMs(item.getDurationMs())
                         .createTime(item.getCreateTime())
+                        .attachments(attachments==null?List.of():attachments.list(scope().tenantId(),scope().memberId(),
+                                userId,"AGENT",conversationId,item.getId()))
                         .build())
                 .toList();
     }

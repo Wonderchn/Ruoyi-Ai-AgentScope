@@ -11,6 +11,7 @@ import {
   RunEventStreamProtocolError,
   RunStreamHttpError,
   RunStreamStalledError,
+  toWireInteger,
 } from '../src/sse/RunStreamClient.ts';
 
 const TOKEN = 'unit-test-token';
@@ -768,5 +769,205 @@ describe('runStream: envelope contract gate', () => {
     }
     assert.deepEqual(seqs, [1, 2], 'agreeing markers deliver normally and the terminal ends the run');
     assert.equal(stream.appliedCursor(), 2);
+  });
+});
+
+/**
+ * 线上形状回归（A 复核 `review-f04fix3/VERDICT-F04-FIX3.md` §4-a #5/#7）：平台的
+ * `PlatformObjectMapperConfig` 把装箱 `Long` 序列化为**纯十进制串**——业务帧
+ * `{"seq":"5",…}`、410 `{"lastSeq":"5","snapshot":{"nextSeq":"7",…}}`。
+ * 这些用例在修复前是**红**的（`RunEventStreamProtocolError('seq')` / `lastSeq=undefined`）。
+ */
+describe('runStream: 线上 Long→字符串边界（平台 mapper）', () => {
+  /** 线上形状帧：信封里的 seq 是字符串（`id:` 仍是序号文本，与线上一致）。 */
+  function wireSeqFrame(
+    seq: unknown,
+    type: string,
+    opts: { runId?: string; id?: string; payload?: Record<string, unknown> } = {},
+  ): string {
+    const envelope = {
+      schemaVersion: 1,
+      runId: opts.runId ?? 'r-1',
+      seq,
+      type,
+      payload: opts.payload ?? {},
+    };
+    const lines = [`id: ${opts.id ?? String(seq)}`, `event: ${type}`, `data: ${JSON.stringify(envelope)}`];
+    return `${lines.join('\n')}\n\n`;
+  }
+
+  it('交付线上形状帧（`"seq":"5"`，`id: 5`）并把游标归一化为数字 5', async () => {
+    const { fetchImpl, calls } = recordingFetch(streamingResponse([
+      wireSeqFrame('5', 'run.terminal', { id: '5', payload: { status: 'SUCCEEDED' } }),
+    ]));
+    const stream = openRunStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, afterSeq: 4, fetchImpl }, { sleep: async () => {} });
+    const messages: SseMessage[] = [];
+    for await (const message of stream.messages) messages.push(message);
+
+    assert.deepEqual(messages.map(m => m.cursor), [5], '游标必须是数字 5（信封 seq 存在时不用 SSE id 回落）');
+    assert.equal(stream.appliedCursor(), 5);
+    assert.equal(calls.length, 1, '合法帧必须一次交付完，不重连');
+  });
+
+  it('字符串 seq 下状态机照常：暂缓空洞中的终态并回补（1 → 3(终态) → 回放 2,3）', async () => {
+    let attempt = 0;
+    const responses = [
+      streamingResponse([wireSeqFrame('1', 'run.accepted'), wireSeqFrame('3', 'run.terminal', { payload: { status: 'SUCCEEDED' } })]),
+      streamingResponse([
+        wireSeqFrame('2', 'run.output_delta'),
+        wireSeqFrame('3', 'run.terminal', { payload: { status: 'SUCCEEDED' } }),
+      ]),
+    ];
+    const calls: RecordedCall[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(input), init: init ?? {} });
+      return responses[Math.min(attempt++, responses.length - 1)];
+    }) as unknown as typeof fetch;
+
+    const stream = openRunStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl }, { baseDelayMs: 0, sleep: async () => {} });
+    const seqs: number[] = [];
+    for await (const message of stream.messages) {
+      if (typeof message.cursor === 'number')
+        seqs.push(message.cursor);
+    }
+
+    assert.deepEqual(seqs, [1, 2, 3], '空洞必须按最后连续 seq 回补，终态只在补齐后交付');
+    assert.equal(new URL(calls[1].url).searchParams.get('afterSeq'), '1');
+    assert.equal(stream.appliedCursor(), 3);
+  });
+
+  it('非法形态矩阵仍 fail-closed（不因归一化放宽任何守卫）', async () => {
+    const matrix: Array<[string, unknown]> = [
+      ['"05"（前导 0）', '05'],
+      ['"1.0"（小数）', '1.0'],
+      ['"0"', '0'],
+      ['"-1"（符号）', '-1'],
+      ['"+5"（符号）', '+5'],
+      ['""（空串）', ''],
+      ['" 5"（前导空白）', ' 5'],
+      ['"5 "（尾随空白）', '5 '],
+      ['"1e2"（科学计数）', '1e2'],
+      ['"abc"（非数字）', 'abc'],
+      ['19 位超宽串（超 2^53）', '9999999999999999999'],
+      ['2^53（数字，非安全整数）', 9_007_199_254_740_992],
+      ['0（数字）', 0],
+      ['-1（数字）', -1],
+      ['1.5（数字）', 1.5],
+    ];
+    for (const [label, seq] of matrix) {
+      const { fetchImpl, calls } = recordingFetch(streamingResponse([wireSeqFrame(seq, 'run.accepted', { id: '1' })]));
+      const stream = openRunStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl }, { sleep: async () => {} });
+      await assert.rejects(
+        async () => {
+          for await (const _ of stream.messages) {
+            // drain
+          }
+        },
+        (error: unknown) => {
+          assert.ok(error instanceof RunEventStreamProtocolError, `${label} ⇒ ${(error as Error)?.name}`);
+          assert.equal(error.reason, 'seq', `${label} 必须按 seq 违约拒绝`);
+          return true;
+        },
+        label,
+      );
+      assert.equal(calls.length, 1, `${label}：协议违约不得重试`);
+    }
+  });
+
+  it('id 互核用归一化值：`"seq":"1"` + `id: 1` 收，`id: 01` 拒（sse-id）', async () => {
+    const ok = recordingFetch(streamingResponse([wireSeqFrame('1', 'run.terminal', { id: '1' })]));
+    const okStream = openRunStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl: ok.fetchImpl }, { sleep: async () => {} });
+    const seen: Array<string | number | undefined> = [];
+    for await (const message of okStream.messages) seen.push(message.cursor);
+    assert.deepEqual(seen, [1]);
+
+    const bad = recordingFetch(streamingResponse([wireSeqFrame('1', 'run.terminal', { id: '01' })]));
+    const badStream = openRunStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl: bad.fetchImpl }, { sleep: async () => {} });
+    await assert.rejects(
+      async () => {
+        for await (const _ of badStream.messages) {
+          // drain
+        }
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof RunEventStreamProtocolError, `got ${(error as Error)?.name}`);
+        assert.equal(error.reason, 'sse-id');
+        return true;
+      },
+    );
+  });
+
+  it('410 `lastSeq:"3"` 归一化为数字 3（诊断信息不再丢失）', async () => {
+    const body = JSON.stringify({
+      code: 410,
+      data: { errorCode: 'CURSOR_EXPIRED', lastSeq: '3', snapshot: { status: 'RUNNING', nextSeq: '7' } },
+    });
+    const { fetchImpl } = recordingFetch(new Response(body, { status: 410 }));
+    await assert.rejects(
+      async () => {
+        for await (const _ of await createRunEventStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl })) {
+          // drain
+        }
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof CursorExpiredError);
+        assert.equal(error.lastSeq, 3);
+        assert.deepEqual(error.snapshot, { status: 'RUNNING', nextSeq: '7' });
+        return true;
+      },
+    );
+  });
+
+  it('410 `lastSeq:"0"` 合法（保留期起点；0 不是缺失）', async () => {
+    const body = JSON.stringify({ code: 410, data: { lastSeq: '0', snapshot: { status: 'SUCCEEDED' } } });
+    const { fetchImpl } = recordingFetch(new Response(body, { status: 410 }));
+    await assert.rejects(
+      async () => {
+        for await (const _ of await createRunEventStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl })) {
+          // drain
+        }
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof CursorExpiredError);
+        assert.equal(error.lastSeq, 0);
+        return true;
+      },
+    );
+  });
+
+  it('410 非法 lastSeq 保持 undefined（不猜一个数当游标）', async () => {
+    for (const bad of ['03', '1.0', '', ' 0', '0 ', '-1', '+1', 'x', '9007199254740992', 1.5]) {
+      const body = JSON.stringify({ code: 410, data: { lastSeq: bad } });
+      const { fetchImpl } = recordingFetch(new Response(body, { status: 410 }));
+      await assert.rejects(
+        async () => {
+          for await (const _ of await createRunEventStream({ baseURL: BASE, runId: 'r-1', token: TOKEN, fetchImpl })) {
+            // drain
+          }
+        },
+        (error: unknown) => {
+          assert.ok(error instanceof CursorExpiredError, String(bad));
+          assert.equal(error.lastSeq, undefined, `${String(bad)} 必须为 undefined`);
+          return true;
+        },
+      );
+    }
+  });
+});
+
+describe('toWireInteger: 纯十进制串边界的唯一口径', () => {
+  it('数字与纯十进制串等价接受；`0` 只在 min=0 通过', () => {
+    assert.equal(toWireInteger(1, 1), 1);
+    assert.equal(toWireInteger('1', 1), 1);
+    assert.equal(toWireInteger(0, 0), 0);
+    assert.equal(toWireInteger('0', 0), 0);
+    assert.equal(toWireInteger(0, 1), undefined, 'seq 的下界是 1');
+    assert.equal(toWireInteger('0', 1), undefined);
+    assert.equal(toWireInteger('5', 0), 5);
+  });
+
+  it('其余形态一律 undefined（前导 0/小数/符号/空白/科学计数/非数字/超 2^53/非标量）', () => {
+    const bad = ['01', '00', '1.0', '', ' ', '-1', '+1', ' 1', '1 ', '1e3', 'abc', '9007199254740992', 1.5, -1, 9_007_199_254_740_992, Number.NaN, Number.POSITIVE_INFINITY, undefined, null, {}, [], true];
+    for (const value of bad) assert.equal(toWireInteger(value, 0), undefined, `toWireInteger(${String(value)}, 0)`);
   });
 });

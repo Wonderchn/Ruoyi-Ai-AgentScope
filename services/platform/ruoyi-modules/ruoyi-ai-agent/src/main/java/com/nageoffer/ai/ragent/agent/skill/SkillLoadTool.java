@@ -21,6 +21,7 @@ import cn.hutool.core.util.StrUtil;
 import com.nageoffer.ai.ragent.agent.trace.AgentToolBodyTracer;
 import com.nageoffer.ai.ragent.rag.core.skill.AgentSkill;
 import com.nageoffer.ai.ragent.rag.core.skill.AgentSkillRegistry;
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
@@ -115,11 +116,24 @@ public class SkillLoadTool implements AgentTool {
         if (StrUtil.isBlank(skillCode)) {
             return failure(toolCallId, "工具参数 skill_code 不能为空");
         }
-        AgentSkill skill = skillRegistry.findByCode(skillCode);
+        // P3-BIND：按**生效档案的绑定子集**取技能；档案 id 缺失即拒载（fail-closed，不回落全量）
+        String agentProfileId = effectiveProfileIdOf(param);
+        if (agentProfileId == null) {
+            return failure(toolCallId, "当前运行未确定技能档案，技能不可加载：" + skillCode);
+        }
+        AgentSkill skill = skillRegistry.findByCodeFor(agentProfileId, skillCode);
         if (skill == null) {
-            return failure(toolCallId, "技能不存在或已停用：" + skillCode + "，可用技能见本工具说明里的清单");
+            // 与"不存在"同形：绑定前/解绑后不可见，不泄露存在性
+            return failure(toolCallId, "技能不存在或未绑定给当前档案：" + skillCode + "，可用技能见本工具说明里的清单");
         }
         return success(toolCallId, skill);
+    }
+
+    /** P3-BIND：运行上下文里的生效档案 id（**不采信前端入参**）；缺失 ⇒ null ⇒ 调用方 fail-closed。 */
+    private static String effectiveProfileIdOf(ToolCallParam param) {
+        RuntimeContext context = param.getRuntimeContext();
+        Object id = context == null ? null : context.get(AgentSkillMaskingMiddleware.AGENT_PROFILE_ID_ATTRIBUTE);
+        return id instanceof String value && StrUtil.isNotBlank(value) ? value : null;
     }
 
     private ToolResultBlock success(String toolCallId, AgentSkill skill) {

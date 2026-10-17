@@ -141,7 +141,21 @@ class AiEmbeddedKnowledgeAdminActivationTest {
                 .withBean(IngestionPipelineMapper.class, () -> mock(IngestionPipelineMapper.class))
                 .withBean(IngestionPipelineNodeMapper.class, () -> mock(IngestionPipelineNodeMapper.class))
                 .withBean(RedissonClient.class, AiEmbeddedKnowledgeAdminActivationTest::mockRedisson)
-                .withBean(DeliveryPermits.class, AiEmbeddedKnowledgeAdminActivationTest::permissivePermits);
+                .withBean(DeliveryPermits.class, AiEmbeddedKnowledgeAdminActivationTest::permissivePermits)
+                // F06:1/2 集成（T0，2026-10-16）：AiEmbeddedIngestionConfiguration 的 canonical 任务组
+                // （p2.enabled 下 @Import 5 类）构造依赖；本切片不加载 run 组，按"切片补齐"补替身。
+                // RunAccessService 同时满足两个服务替身类上的 @Autowired 字段（Spring 对 @Bean 返回的
+                // mock 实例仍做属性后处理——同 AuthChecker 先例）。
+                .withBean(com.nageoffer.ai.ragent.runtime.RunAccessService.class,
+                        () -> mock(com.nageoffer.ai.ragent.runtime.RunAccessService.class))
+                .withBean(com.nageoffer.ai.ragent.runtime.RunLifecycleService.class,
+                        () -> mock(com.nageoffer.ai.ragent.runtime.RunLifecycleService.class))
+                .withBean(com.nageoffer.ai.ragent.runtime.RunAdmissionService.class,
+                        () -> mock(com.nageoffer.ai.ragent.runtime.RunAdmissionService.class))
+                .withBean(org.ruoyi.ai.api.runtime.DocumentPort.class,
+                        () -> mock(org.ruoyi.ai.api.runtime.DocumentPort.class))
+                .withBean(com.nageoffer.ai.ragent.runtime.usage.UsageLedgerService.class,
+                        () -> mock(com.nageoffer.ai.ragent.runtime.usage.UsageLedgerService.class));
     }
 
     /**

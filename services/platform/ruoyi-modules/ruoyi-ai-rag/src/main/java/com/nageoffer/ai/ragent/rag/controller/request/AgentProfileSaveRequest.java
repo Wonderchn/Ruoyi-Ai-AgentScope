@@ -19,6 +19,8 @@ package com.nageoffer.ai.ragent.rag.controller.request;
 
 import lombok.Data;
 
+import java.util.List;
+
 /**
  * 智能体新建与改名请求
  */
@@ -29,8 +31,20 @@ public class AgentProfileSaveRequest {
 
     private String description;
 
+/** 一条绑定引用（线路形状：type=MODEL/SKILL/MCP/ORCHESTRATION，refId=资产标识）。 */
+@Data
+public static class BindingRef {
+    private String type;
+    private String refId;
+}
+
     /**
      * 头像预设标识，由前端从预设表中挑选
      */
     private String avatar;
+
+    /**
+     * P3-BIND：该 Agent 的绑定集合（F09:3；null = 本次不改绑定，空列表 = 解除全部绑定）。
+     */
+    private List<BindingRef> bindings;
 }

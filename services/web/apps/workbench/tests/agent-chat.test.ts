@@ -274,7 +274,7 @@ describe('stop 与回放（复用 engine.ts 的唯一信封实现）', () => {
       { body: { code: 200, msg: 'success', data: null } },
     ] });
     const rows = await h.client.loadMessages('c-1');
-    assert.equal(h.calls[0].url, '/api/ai/v1/conversations/c-1/messages');
+    assert.equal(h.calls[0].url, '/api/ai/v1/agent/v1/conversations/c-1/messages');
     assert.equal(h.calls[0].init.method, 'GET');
     assert.equal(rows.length, 1);
     assert.deepEqual(await h.client.loadMessages('c-2'), []);

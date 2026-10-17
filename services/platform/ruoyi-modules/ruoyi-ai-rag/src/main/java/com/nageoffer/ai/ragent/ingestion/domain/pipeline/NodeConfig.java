@@ -33,6 +33,10 @@ import lombok.NoArgsConstructor;
 @Builder
 public class NodeConfig {
 
+    /** Omitted by legacy clients means enabled; only explicit false disables a node. */
+    @Builder.Default
+    private Boolean enabled = true;
+
     /**
      * 节点的唯一标识符
      */

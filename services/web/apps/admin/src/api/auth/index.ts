@@ -2,7 +2,7 @@
  * 平台登录 / 身份 API。
  *
  * 端点与后端对应（已实测）：
- * - `POST /auth/login`        → `R<LoginVo>`（`LoginVo`：`accessToken`/`clientId`/`expireIn`/`scope`）
+ * - `POST /auth/login`        → `R<LoginVo>`（`LoginVo`：`access_token`/`client_id`/`expire_in`/`scope`，snake_case）
  * - `POST /auth/logout`       → `R<Void>`
  * - `GET  /system/user/getInfo` → `R<UserInfoVo>`（`user` + `permissions` + `roles`）
  *
@@ -29,13 +29,17 @@ export interface LoginDTO {
   uuid?: string;
 }
 
-/** 平台 `LoginVo`（字段名与后端 `org.ruoyi.system.domain.vo.LoginVo` 一致：驼峰）。 */
+/**
+ * 平台 `LoginVo` 的 **wire 形状**：与后端 `org.ruoyi.system.domain.vo.LoginVo`
+ * 的 `@JsonProperty` 逐字段一致（snake_case）。`platform-client.unwrapData`
+ * 原样返回 `data`，不做驼峰转换，所以这里必须写传输层真实的字段名。
+ */
 export interface LoginVo {
-  accessToken?: string;
-  refreshToken?: string;
-  expireIn?: number;
-  refreshExpireIn?: number;
-  clientId?: string;
+  access_token?: string;
+  refresh_token?: string;
+  expire_in?: number;
+  refresh_expire_in?: number;
+  client_id?: string;
   scope?: string;
   openid?: string;
 }

@@ -199,6 +199,7 @@ public class IngestionPipelineServiceImpl implements IngestionPipelineService {
                 continue;
             }
             IngestionPipelineNodeDO entity = IngestionPipelineNodeDO.builder()
+                    .enabled(!Boolean.FALSE.equals(node.getEnabled()))
                     .pipelineId(pipelineId)
                     .nodeId(node.getNodeId())
                     .nodeType(normalizeNodeType(node.getNodeType()))
@@ -227,6 +228,7 @@ public class IngestionPipelineServiceImpl implements IngestionPipelineService {
 
     private IngestionPipelineNodeVO toNodeVO(IngestionPipelineNodeDO node) {
         IngestionPipelineNodeVO vo = BeanUtil.toBean(node, IngestionPipelineNodeVO.class);
+        vo.setEnabled(!Boolean.FALSE.equals(node.getEnabled()));
         vo.setNodeType(normalizeNodeTypeForOutput(node.getNodeType()));
         vo.setSettings(parseJson(node.getSettingsJson()));
         vo.setCondition(parseJson(node.getConditionJson()));
@@ -235,6 +237,7 @@ public class IngestionPipelineServiceImpl implements IngestionPipelineService {
 
     private NodeConfig toNodeConfig(IngestionPipelineNodeDO node) {
         return NodeConfig.builder()
+                .enabled(!Boolean.FALSE.equals(node.getEnabled()))
                 .nodeId(node.getNodeId())
                 .nodeType(normalizeNodeType(node.getNodeType()))
                 .settings(parseJson(node.getSettingsJson()))

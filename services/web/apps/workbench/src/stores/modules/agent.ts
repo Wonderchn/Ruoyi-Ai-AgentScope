@@ -5,8 +5,10 @@ import { useUserStore } from './user';
 
 // 智能体管理
 export const useAgentStore = defineStore('agent', () => {
-  // 当前智能体
-  const currentAgentInfo = ref<AgentVO>({});
+  const userStore = useUserStore();
+
+  // 当前智能体（未选择为 null；不用空对象冒充"未选择"）
+  const currentAgentInfo = ref<AgentVO | null>(null);
 
   // 设置当前智能体
   const setCurrentAgentInfo = (agentInfo: AgentVO) => {
@@ -14,26 +16,40 @@ export const useAgentStore = defineStore('agent', () => {
   };
 
   const clearCurrentAgentInfo = () => {
-    currentAgentInfo.value = {};
+    currentAgentInfo.value = null;
   };
 
   // 智能体列表
   const agentList = ref<AgentVO[]>([]);
-  // 请求智能体列表
+  // 请求智能体列表（迟到响应按身份代次 authEpoch 丢弃；口径照 stores/modules/model.ts:52-92）
   const requestAgentList = async () => {
-    const userStore = useUserStore();
+    const epoch = userStore.authEpoch;
     if (!userStore.token) {
       return;
     }
 
     try {
       const res = await getAgentList();
+      if (epoch !== userStore.authEpoch)
+        return;
       agentList.value = res.data;
     }
     catch (error) {
+      if (epoch !== userStore.authEpoch)
+        return;
       console.error('requestAgentList错误', error);
     }
   };
+
+  // 身份代次变化（登出/切换/过期）：旧主体的列表与当前选择立即失效；
+  // 自足清理，不依赖外部调用点——用户端任何入口切换身份都不得残留旧智能体名。
+  watch(
+    () => userStore.authEpoch,
+    () => {
+      agentList.value = [];
+      currentAgentInfo.value = null;
+    },
+  );
 
   return {
     currentAgentInfo,

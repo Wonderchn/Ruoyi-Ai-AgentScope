@@ -157,6 +157,29 @@ class IngestionPipelineServiceImplTest {
     }
 
     @Test
+    void enabledSurvivesWriteReadAndDefinitionAndNullDefaultsToTrue() {
+        var pipeline = IngestionPipelineDO.builder().id("p1").name("enabled").build();
+        when(pipelineMapper.selectOne(any())).thenReturn(pipeline);
+        var disabled = IngestionPipelineNodeDO.builder().nodeId("disabled").nodeType("fetcher").enabled(false).build();
+        var legacy = IngestionPipelineNodeDO.builder().nodeId("legacy").nodeType("parser").enabled(null).build();
+        when(nodeMapper.selectList(any())).thenReturn(List.of(disabled, legacy));
+
+        assertThat(service.get("p1").getNodes()).extracting("enabled").containsExactly(false, true);
+        assertThat(service.getDefinition("p1").getNodes()).extracting("enabled").containsExactly(false, true);
+
+        var off = new IngestionPipelineNodeRequest();
+        off.setNodeId("disabled"); off.setNodeType("fetcher"); off.setEnabled(false);
+        var omitted = new IngestionPipelineNodeRequest();
+        omitted.setNodeId("legacy"); omitted.setNodeType("parser"); omitted.setEnabled(null);
+        var update = new IngestionPipelineUpdateRequest();
+        update.setNodes(List.of(off, omitted));
+        service.update("p1", update);
+        ArgumentCaptor<IngestionPipelineNodeDO> saved = ArgumentCaptor.forClass(IngestionPipelineNodeDO.class);
+        verify(nodeMapper, org.mockito.Mockito.times(2)).insert(saved.capture());
+        assertThat(saved.getAllValues()).extracting("enabled").containsExactly(false, true);
+    }
+
+    @Test
     void createRejectsWithoutAnExecutionPrincipalAndNeverTouchesTheDatabase() {
         PrincipalContext.clear();
         IngestionPipelineCreateRequest request = new IngestionPipelineCreateRequest();

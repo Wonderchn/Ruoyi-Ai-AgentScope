@@ -97,6 +97,10 @@ public class JdbcConfigRevisionPublisher implements ConfigRevisionPublisher {
         ConfigRevisionCommand command = raw == null ? null : raw.normalized();
         requireFact(tenantId, command);
 
+        // F04 第二道门：保留键 attachmentModalities 的严格形态在任何写入之前校验
+        // （发布 API 是第一道；这里兜住任何旁路写路径，非法形态 DB 零增量）。
+        requireAttachmentModalities(command.paramsJson());
+
         // A2 第一道门：维度错误在任何写入之前响亮拒绝 ⇒ DB 行数零增量。
         if (command.dimension() != REQUIRED_DIMENSION) {
             throw new ConfigAuthorityUnavailable(
@@ -240,6 +244,23 @@ public class JdbcConfigRevisionPublisher implements ConfigRevisionPublisher {
                         + "WHERE tenant_id = ?",
                 Long.class, tenantId);
         return no == null ? 1L : no;
+    }
+
+    /**
+     * F04 保留键第二道门：paramsJson 是发布者从 Map 序列化的非密钥参数，
+     * 无法解析（被外部改写/损坏）或保留键形态非法都必须**响亮拒绝**且零写入。
+     */
+    private static void requireAttachmentModalities(String paramsJson) {
+        if (paramsJson == null || paramsJson.isBlank()) {
+            return;
+        }
+        try {
+            AttachmentModalities.requireValid(new com.fasterxml.jackson.databind.ObjectMapper().readTree(paramsJson));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException unreadable) {
+            throw new ConfigAuthorityUnavailable("config revision params are unreadable");
+        } catch (IllegalArgumentException invalid) {
+            throw new ConfigAuthorityUnavailable(invalid.getMessage());
+        }
     }
 
     /**

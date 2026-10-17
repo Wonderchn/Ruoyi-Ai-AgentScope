@@ -285,12 +285,15 @@ describe('核对 / 恢复：两步且 body 恰好 {}', () => {
     assert.equal(plan.ok, true);
   });
 
-  it('resumeVersionOf：只有整数版本可用，缺失/字符串/负数一律 null（不猜 0）', () => {
+  it('resumeVersionOf：整数与线上纯十进制串可用；缺失/负数/非法形态一律 null（不猜 0）', () => {
     assert.equal(resumeVersionOf({ runId: RUN, status: 'X', version: 3 } as never), 3);
     assert.equal(resumeVersionOf({ runId: RUN, status: 'X', version: 0 } as never), 0);
     assert.equal(resumeVersionOf({ runId: RUN, status: 'X' } as never), null);
-    assert.equal(resumeVersionOf({ runId: RUN, status: 'X', version: '3' } as never), null);
+    // 线上 view 的 version 是装箱 Long ⇒ 字符串（§4-a #6）：归一化为数字（原先这里断言 null）。
+    assert.equal(resumeVersionOf({ runId: RUN, status: 'X', version: '3' } as never), 3);
     assert.equal(resumeVersionOf({ runId: RUN, status: 'X', version: -1 } as never), null);
+    assert.equal(resumeVersionOf({ runId: RUN, status: 'X', version: '-3' } as never), null);
+    assert.equal(resumeVersionOf({ runId: RUN, status: 'X', version: '03' } as never), null);
     assert.equal(resumeVersionOf(null), null);
   });
 });
@@ -407,5 +410,52 @@ describe('传输：保留 msg / 身份守卫 / 401', () => {
       }) as unknown as typeof fetch,
     });
     await assert.rejects(client.getRun(RUN), (error: unknown) => (error as { name?: string }).name === 'AbortError');
+  });
+});
+
+/**
+ * A 复核 §4-a #6 的线上形状回归：`GET /runs/{id}` 的 view 里 `version` 是 Map 中的装箱
+ * `Long` ⇒ **字符串**（`{"version":"6",…}`）。修复前 `resumeVersionOf` 返回 null，恢复按钮
+ * 与 UNKNOWN 恢复都会被静默跳过（fail-closed 降级，但不误报成功）。
+ */
+describe('#6 version 边界：线上 Long→字符串', () => {
+  it('resumeVersionOf 接受纯十进制串并归一化为数字（含 "0"）', () => {
+    assert.equal(resumeVersionOf({ version: '7' } as never), 7);
+    assert.equal(resumeVersionOf({ version: '0' } as never), 0);
+    assert.equal(resumeVersionOf({ version: 7 } as never), 7, '数字形态行为不变');
+  });
+
+  it('resumeVersionOf 对非法形态保持 null（不用猜的版本做 CAS）', () => {
+    for (const bad of ['07', '00', '7.0', '-1', '+1', '', ' 7', '7 ', 'x', '1e2', '9007199254740992']) {
+      assert.equal(resumeVersionOf({ version: bad } as never), null, `${bad} 必须为 null`);
+    }
+    assert.equal(resumeVersionOf({} as never), null, '缺失保持 null（不猜 0）');
+    assert.equal(resumeVersionOf(undefined), null);
+  });
+
+  it('UNKNOWN 恢复：GET run 返回字符串 version 时照样 resume {expectedVersion:7}', async () => {
+    const order: string[] = [];
+    const result = await runUnknownRecovery(
+      {
+        async queryReconciliation(runId, actionId) {
+          order.push(`query:${runId}:${actionId}`);
+          return { finality: 'FOUND' };
+        },
+        async getRun(runId) {
+          order.push(`getRun:${runId}`);
+          return { runId, status: 'NEEDS_RECONCILIATION', version: '7' } as never;
+        },
+        async resume(runId, version) {
+          order.push(`resume:${runId}:${version}`);
+          return {};
+        },
+      },
+      { runId: RUN, status: 'NEEDS_RECONCILIATION' } as never,
+      { actionId: ACTION.actionId, tool: 'sandbox_ticket', state: 'UNKNOWN' },
+    );
+
+    assert.deepEqual(order, [`query:${RUN}:${ACTION.actionId}`, `getRun:${RUN}`, `resume:${RUN}:7`]);
+    assert.equal(result.resumed, true);
+    assert.equal(result.version, 7, '恢复用的版本必须是数字，不是字符串');
   });
 });

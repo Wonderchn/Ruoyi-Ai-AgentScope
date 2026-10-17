@@ -17,6 +17,7 @@
 
 package com.nageoffer.ai.ragent.runtime;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
@@ -214,6 +215,12 @@ class RagChatAdmissionHistoryWiringTest {
 
     /** 把 run 行载荷原样装进 RunRecord，跑真实执行器。 */
     private RunExecutor.Outcome executeStoredRun(String storedInputJson) throws Exception {
+        return executeStoredRun(storedInputJson, null);
+    }
+
+    /** Same as above; when {@code completedStep} is non-null the named step is already COMPLETED (replay/idempotency judgment). */
+    private RunExecutor.Outcome executeStoredRun(String storedInputJson, RunLedgerDao.StepRow completedStep)
+            throws Exception {
         RunRecord run = new RunRecord(TENANT, "run-1", MEMBER, USER, "rag.chat", "RUNNING", "hash", "key",
                 storedInputJson, "{\"maxTokens\":2000}", "p2-v1", 1, 1,
                 "[{\"type\":\"knowledge_base\",\"id\":\"kb-1\"}]", 3L, 1L, 1, 7L,
@@ -221,6 +228,9 @@ class RagChatAdmissionHistoryWiringTest {
         RunExecutionGuard guard = mock(RunExecutionGuard.class);
         when(guard.isCancelRequested()).thenReturn(false);
         when(guard.findStep(anyString())).thenReturn(Optional.empty());
+        if (completedStep != null) {
+            when(guard.findStep(eq(completedStep.stepId()))).thenReturn(Optional.of(completedStep));
+        }
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(0)).get()).when(guard).commitAtomic(any());
         return executor.execute(new RunExecution(run, guard));
     }
@@ -248,8 +258,11 @@ class RagChatAdmissionHistoryWiringTest {
 
         RunExecutor.Outcome outcome = executeStoredRun(stored);
         assertEquals("SUCCEEDED", outcome.status());
-        verify(historyPort).appendTurn(eq(TENANT), eq(MEMBER), eq(USER), eq(CONV_TOP),
-                eq(QUESTION), eq(answerOf(outcome)), any(ConversationTurnMeta.class));
+        ArgumentCaptor<JsonNode> attachments = ArgumentCaptor.forClass(JsonNode.class);
+        verify(historyPort).appendAttachedTurn(eq(TENANT), eq(MEMBER), eq(USER), eq(CONV_TOP),
+                eq(QUESTION), eq(answerOf(outcome)), any(ConversationTurnMeta.class), attachments.capture());
+        assertTrue(attachments.getValue().isMissingNode() || attachments.getValue().isNull(),
+                "无附件载荷必须原样透传：不伪造 attachments 数组");
     }
 
     @Test
@@ -262,8 +275,11 @@ class RagChatAdmissionHistoryWiringTest {
 
         RunExecutor.Outcome outcome = executeStoredRun(stored);
         assertEquals("SUCCEEDED", outcome.status());
-        verify(historyPort).appendTurn(eq(TENANT), eq(MEMBER), eq(USER), eq(CONV_NESTED),
-                eq(QUESTION), eq(answerOf(outcome)), any(ConversationTurnMeta.class));
+        ArgumentCaptor<JsonNode> attachments = ArgumentCaptor.forClass(JsonNode.class);
+        verify(historyPort).appendAttachedTurn(eq(TENANT), eq(MEMBER), eq(USER), eq(CONV_NESTED),
+                eq(QUESTION), eq(answerOf(outcome)), any(ConversationTurnMeta.class), attachments.capture());
+        assertTrue(attachments.getValue().isMissingNode() || attachments.getValue().isNull(),
+                "无附件载荷必须原样透传：不伪造 attachments 数组");
     }
 
     @Test
@@ -276,8 +292,11 @@ class RagChatAdmissionHistoryWiringTest {
 
         RunExecutor.Outcome outcome = executeStoredRun(stored);
         assertEquals("SUCCEEDED", outcome.status());
-        verify(historyPort).appendTurn(eq(TENANT), eq(MEMBER), eq(USER), eq(CONV_TOP),
-                eq(QUESTION), eq(answerOf(outcome)), any(ConversationTurnMeta.class));
+        ArgumentCaptor<JsonNode> attachments = ArgumentCaptor.forClass(JsonNode.class);
+        verify(historyPort).appendAttachedTurn(eq(TENANT), eq(MEMBER), eq(USER), eq(CONV_TOP),
+                eq(QUESTION), eq(answerOf(outcome)), any(ConversationTurnMeta.class), attachments.capture());
+        assertTrue(attachments.getValue().isMissingNode() || attachments.getValue().isNull(),
+                "无附件载荷必须原样透传：不伪造 attachments 数组");
     }
 
     @Test
@@ -289,6 +308,21 @@ class RagChatAdmissionHistoryWiringTest {
                 "载荷没有 conversationId 时不得伪造一个");
 
         RunExecutor.Outcome outcome = executeStoredRun(stored);
+        assertEquals("SUCCEEDED", outcome.status());
+        verifyNoInteractions(historyPort);
+    }
+
+    @Test
+    @DisplayName("fenced checkpoint 幂等：conversation-history 已 COMPLETED → 重放不再追写历史（整轮只落一次）")
+    void completedHistoryCheckpointSkipsTheAppendOnReplay() throws Exception {
+        String stored = admitAndCaptureStoredInput(
+                request("{\"text\":\"" + QUESTION + "\"}", CONV_TOP), "idem-history-checkpoint");
+        RunLedgerDao.StepRow completed = new RunLedgerDao.StepRow("conversation-history", 1, 1,
+                "conversation-history", "COMPLETED", "{\"conversationId\":\"" + CONV_TOP + "\"}", null,
+                "{\"calls\":0}", 7L, Instant.EPOCH, Instant.EPOCH);
+
+        RunExecutor.Outcome outcome = executeStoredRun(stored, completed);
+
         assertEquals("SUCCEEDED", outcome.status());
         verifyNoInteractions(historyPort);
     }

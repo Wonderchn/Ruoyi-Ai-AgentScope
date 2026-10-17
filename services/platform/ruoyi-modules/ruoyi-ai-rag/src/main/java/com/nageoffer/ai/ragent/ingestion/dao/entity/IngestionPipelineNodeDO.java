@@ -41,6 +41,9 @@ import java.util.Date;
 @TableName("ai_ingestion_pipeline_node")
 public class IngestionPipelineNodeDO {
 
+    @Builder.Default
+    private Boolean enabled = true;
+
     /**
      * ID
      */

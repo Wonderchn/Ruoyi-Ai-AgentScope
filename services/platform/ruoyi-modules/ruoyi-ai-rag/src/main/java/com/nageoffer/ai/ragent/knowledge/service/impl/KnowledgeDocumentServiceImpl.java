@@ -173,7 +173,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         KnowledgeBaseDO kbDO = selectTenantKnowledgeBase(kbId);
         Assert.notNull(kbDO, () -> new ClientException("知识库不存在"));
 
-        SourceType sourceType = SourceType.normalize(requestParam.getSourceType());
+        SourceType sourceType = normalizeSourceType(requestParam.getSourceType());
         validateSourceAndSchedule(sourceType, requestParam);
         // 摄取配置的校验排在存文件之前：它只看请求参数，而一旦落了对象再抛异常，
         // 存储里就留下一个没有文档指向它的孤儿。纯校验一律前置到第一个副作用之前
@@ -540,7 +540,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
 
         // 如果传了 processMode，校验并更新处理配置
         if (StringUtils.hasText(requestParam.getProcessMode())) {
-            ProcessMode processMode = ProcessMode.normalize(requestParam.getProcessMode());
+            ProcessMode processMode = normalizeProcessMode(requestParam.getProcessMode());
             updateWrapper.set(KnowledgeDocumentDO::getProcessMode, processMode.getValue());
 
             if (ProcessMode.CHUNK == processMode) {
@@ -980,8 +980,35 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         }
     }
 
+    /**
+     * F05 运行时收口（③）：<b>客户端输入</b>的来源类型归一化。
+     *
+     * <p>{@link SourceType#normalize} 对缺/非法值抛 {@code IllegalArgumentException}；不驯化时会逃逸成
+     * 平台 500 信封（真机 W-U a：仅 file 部件 → 表单字段绑空 → 内层 500 → 网关 fail-closed 503）。
+     * 这里把客户端输入错误收敛为框架 {@code ClientException}，由内层异常解析器映射为具名 4xx。
+     *
+     * <p>作用面仅请求参数；从库中读回的 {@code processMode}（{@link #runChunkTask}）保持原样——
+     * 那是服务端数据/配置完整性错误，必须响亮失败，而不是 4xx。
+     */
+    private static SourceType normalizeSourceType(String value) {
+        try {
+            return SourceType.normalize(value);
+        } catch (IllegalArgumentException invalid) {
+            throw new ClientException(invalid.getMessage());
+        }
+    }
+
+    /** 同 {@link #normalizeSourceType}：请求里的处理模式缺/非法 → 具名 4xx。 */
+    private static ProcessMode normalizeProcessMode(String value) {
+        try {
+            return ProcessMode.normalize(value);
+        } catch (IllegalArgumentException invalid) {
+            throw new ClientException(invalid.getMessage());
+        }
+    }
+
     private ProcessModeConfig resolveProcessModeConfig(KnowledgeDocumentUploadRequest request) {
-        ProcessMode processMode = ProcessMode.normalize(request.getProcessMode());
+        ProcessMode processMode = normalizeProcessMode(request.getProcessMode());
         if (ProcessMode.CHUNK == processMode) {
             return new ProcessModeConfig(processMode, ingestionSpecCodec.normalize(request.getIngestionSpec()), null);
         } else {

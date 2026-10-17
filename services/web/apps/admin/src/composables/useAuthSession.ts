@@ -43,13 +43,15 @@ export function useAuthSession() {
         clientId: import.meta.env.VITE_CLIENT_ID,
         grantType: 'password',
       });
-      // 后端 `LoginVo.accessToken`；缺失时显式失败，不写入 undefined token
+      // 后端 wire 是 `LoginVo` 的 snake_case 字段；仅接受非空且类型正确的
+      // `access_token`，缺失时显式失败，不写入 undefined token
       // （否则会变成"登录成功但每个请求都 401"）。
-      if (!loginVo?.accessToken)
-        throw new Error('登录响应缺少 accessToken');
+      const token = loginVo?.access_token;
+      if (typeof token !== 'string' || token.length === 0)
+        throw new Error('登录响应缺少 access_token');
       identity.signIn({
-        token: loginVo.accessToken,
-        clientId: loginVo.clientId ?? import.meta.env.VITE_CLIENT_ID,
+        token,
+        clientId: loginVo.client_id ?? import.meta.env.VITE_CLIENT_ID,
       });
       await refreshProfile();
       return true;

@@ -17,7 +17,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { ref } from 'vue';
-import { createAgentChatClient } from '../src/api/ai/agent-chat.ts';
+import { AGENT_RAW_FRAME_LIMIT, createAgentChatClient } from '../src/api/ai/agent-chat.ts';
 import { useAgentChat } from '../src/pages/chat/layouts/chatWithId/useAgentChat.ts';
 
 const encoder = new TextEncoder();
@@ -169,6 +169,114 @@ describe('提问与流式推进', () => {
     assert.match(String(meta?.ts), /^\d{2}:\d{2}:\d{2}$/);
   });
 
+  it('原始帧缓冲：裸心跳注释（`: ping`）与许可注释逐条留存（注释面逐项覆盖）', async () => {
+    const h = harness({
+      chat: [sseResponse([
+        ': ping\n\n',
+        frame('meta', { conversationId: 'c-1', taskId: 't-1' }),
+        done(),
+      ])],
+    });
+    await h.chat.sendMessage('q');
+    const names = h.chat.frames.value.map(item => item.name);
+    assert.ok(names.includes('ping'), '裸心跳注释帧必须进抽屉（原始帧＝与线上字节逐条对账）');
+    assert.ok(names.includes('ai-delivery P-1 op-1'), '许可注释帧必须进抽屉');
+    assert.ok(names.includes('meta') && names.includes('done'), '业务帧逐条留存');
+    assert.equal(names[0], 'ping', '帧序即线上序（心跳先于 meta）');
+  });
+
+  it('原始帧缓冲上限：超 AGENT_RAW_FRAME_LIMIT 截尾（丢最旧、留最新；与传输层同口径）', async () => {
+    // 每条 frame() 会产出 2 条记录（ai-delivery 注释 ＋ 事件）⇒ 记录数 ≈ 2×；必须截到上限。
+    const parts: string[] = [];
+    for (let i = 0; i < AGENT_RAW_FRAME_LIMIT + 20; i += 1)
+      parts.push(frame('message', { type: 'answer', delta: `c${i}` }));
+    parts.push(done());
+    const h = harness({ chat: [sseResponse(parts)] });
+    await h.chat.sendMessage('q');
+    const buffered = h.chat.frames.value;
+    assert.equal(buffered.length, AGENT_RAW_FRAME_LIMIT, `抽屉缓冲必须截尾到 AGENT_RAW_FRAME_LIMIT（实际 ${buffered.length}）：长会话不得无界增长`);
+    assert.equal(buffered[buffered.length - 1]?.name, 'done', '截尾丢最旧 ⇒ 最新帧必在');
+    const ids = buffered.map(item => item.id);
+    for (let i = 1; i < ids.length; i += 1)
+      assert.ok(ids[i] > ids[i - 1], '帧 id 单调递增（身份不重复）');
+    assert.ok(ids[0] > 1, '丢的是最旧帧（保留的是最新一段）');
+  });
+
+  it('换会话清空：startNewChat 后帧缓冲归零、序号重置（跨会话不串帧）', async () => {
+    const h = harness({
+      chat: [
+        sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-1' }), done()]),
+        sseResponse([frame('meta', { conversationId: 'c-2', taskId: 't-2' }), done()]),
+      ],
+    });
+    await h.chat.sendMessage('第一句');
+    assert.ok(h.chat.frames.value.length > 0, '第一轮有帧');
+    h.chat.startNewChat(); // 页面在路由 id 变化时调用（chatWithId 路由 watcher → resetAgentChat）
+    assert.equal(h.chat.frames.value.length, 0, '换会话必须清空帧缓冲');
+    await h.chat.sendMessage('第二句');
+    assert.equal(h.chat.frames.value[0]?.id, 1, '序号随清空重置（不带走旧会话计数）');
+    const dump = JSON.stringify(h.chat.frames.value);
+    assert.equal(dump.includes('c-1'), false, '新会话缓冲不含旧会话帧（不串帧）');
+    assert.ok(dump.includes('c-2'), '新会话帧已记录');
+  });
+
+  // —— R17P2-FESTREAM-01：调用方侧取消必须把已受理的引擎任务收尾 ——
+  // （真机窗三次复现：换会话/回放撕断连接后，引擎任务继续把余下帧写进死连接，
+  //   服务端双签名 `SseEmitterSender "SSE send failed"` ＋ `deliverFrame
+  //   "stream delivery failed"`；修复＝本地中止后随 `stop(taskId)`。）
+  it('换会话取消在飞连接：已受理任务随 stop(taskId) 交还服务端', async () => {
+    // 挂起的流：meta 已受理、终帧未到且不自行关闭（等测试释放）。
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode(frame('meta', { conversationId: 'c-1', taskId: 't-1' })));
+        await gate;
+        controller.close();
+      },
+      cancel() { release(); },
+    });
+    const h = harness({ chat: [new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream;charset=UTF-8' } })] });
+    const pending = h.chat.sendMessage('q');
+    await flush();
+    assert.equal(h.chat.taskId.value, 't-1', 'meta 已到，任务已受理（taskId 已知）');
+    h.chat.startNewChat(); // 页面在路由 id 变化时调用（chatWithId 路由 watcher → resetAgentChat）
+    await flush();
+    await pending;
+    release();
+    const stops = h.jsonCalls.filter(item => item.url.includes('/agent/v1/stop'));
+    assert.equal(stops.length, 1, '换会话取消必须向服务端叫停已受理任务（恰一次）');
+    assert.match(stops[0].url, /taskId=t-1/);
+    assert.equal(h.chat.error.value, '', '调用方取消不算失败（迟到的收尾被代次隔离）');
+  });
+
+  it('零帧期换会话：taskId 未知（meta 未到）时不发 stop（没有可停的对象）', async () => {
+    // 引擎静默期真实形态：真机窗 R1×2 里首帧迟迟未达，连接仍挂着。
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        await gate;
+        controller.close();
+      },
+      cancel() { release(); },
+    });
+    const h = harness({ chat: [new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream;charset=UTF-8' } })] });
+    const pending = h.chat.sendMessage('q');
+    await flush();
+    assert.equal(h.chat.taskId.value ?? '', '', '零帧期无 taskId');
+    h.chat.startNewChat();
+    await flush();
+    await pending;
+    await flush();
+    release();
+    assert.equal(h.jsonCalls.filter(item => item.url.includes('/agent/v1/stop')).length, 0, '无 id 不发 stop');
+  });
+
   it('未收 done 就断流：显示失败且本轮按失败收尾（消息 status=error）', async () => {
     const h = harness({ chat: [sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-1' })])] });
     await h.chat.sendMessage('q');
@@ -279,6 +387,84 @@ describe('确认卡（F15 op2）', () => {
     assert.deepEqual(JSON.parse(String(h.confirmCalls[0].init.body)).approved, false);
     const card = h.chat.turns.value[0].assistants[0].blocks?.find(block => block.kind === 'confirm');
     assert.equal(card?.status, 'denied');
+  });
+
+  // —— R17 W5-FE 收口（V4 集成窗 §2；套件 W5 断言 `tool_denied=0`）——
+  // 服务器侧 deny 已把卡消息落成 `blocks=[tool:denied, confirm:denied]`（CD.2 绿），但 FE
+  // 活态 `setConfirmStatus` 只改 `kind='confirm'` 块 ⇒ 关联工具卡停在 awaiting，
+  // 只有 reload 从历史回查才显 denied。下面两条钉死"拒绝联动工具块"与"approved/expired 不扩面"。
+  const TOOL_PENDING_FRAME = () => frame('block', {
+    kind: 'tool',
+    toolCallId: 'tc1',
+    name: 'mcp_write',
+    displayName: '写操作',
+    status: 'running',
+    startedAt: 1000,
+  });
+
+  async function untilConfirmWithTool(h: Harness) {
+    await h.chat.sendMessage('写点什么');
+    assert.equal(h.chat.hasPendingConfirm.value, true);
+    const message = h.chat.turns.value[0].assistants[0];
+    const tool = message.blocks?.find(block => block.kind === 'tool');
+    assert.equal(tool?.status, 'awaiting', 'confirm 帧把未执行工具落成 awaiting（挂起即拦）');
+    assert.equal(message.blocks?.find(block => block.kind === 'confirm')?.status, 'pending');
+  }
+
+  it('**W5-FE 收口**：拒绝时按 confirm 块 calls[].toolCallId 联动同消息工具块 → denied（幂等、可渲染）', async () => {
+    const h = harness({
+      chat: [sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-1' }), TOOL_PENDING_FRAME(), CONFIRM_FRAME(), done()])],
+      confirm: [sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-2' }), frame('finish', { messageId: 'm-77', messageStatus: 'NORMAL' }), done()])],
+    });
+    await untilConfirmWithTool(h);
+    await h.chat.resolveConfirm(false);
+
+    const message = h.chat.turns.value[0].assistants[0];
+    const card = message.blocks?.find(block => block.kind === 'confirm');
+    const tool = message.blocks?.find(block => block.kind === 'tool');
+    assert.equal(card?.status, 'denied', '确认卡 denied（既有状态流不变）');
+    assert.equal(tool?.status, 'denied', '被拒绝的工具块必须联动 denied —— 停在 awaiting 就是活态说了服务端没说的话');
+    // 渲染面：AgentToolCard 以 block.status 为 data-status；工具行须以 denied 出线
+    const rows = h.chat.rowsOf(h.chat.turns.value[0]);
+    const toolRow = rows.find(row => row.channel === 'tool');
+    assert.equal(toolRow?.block?.status, 'denied', '工具行出线且 data-status=denied（AgentToolCard 只读投影）');
+    // 幂等：再次结算同值（重复调用不改判、不新增块）
+    const beforeTools = message.blocks?.filter(block => block.kind === 'tool').length;
+    await h.chat.resolveConfirm(false);
+    const again = h.chat.turns.value[0].assistants[0];
+    assert.equal(again.blocks?.find(block => block.kind === 'tool')?.status, 'denied');
+    assert.equal(again.blocks?.filter(block => block.kind === 'tool').length, beforeTools, '幂等：不重复追加工具块');
+    assert.equal(again.blocks?.find(block => block.kind === 'confirm')?.status, 'denied');
+  });
+
+  it('**防扩面**：批准/失效路径不改变关联工具块（工具结局只由续跑事件与服务端说法落定）', async () => {
+    // approved：续跑未给工具帧 ⇒ 工具块维持挂起时的 awaiting，不被擅自写成 denied/done
+    const approved = harness({
+      chat: [sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-1' }), TOOL_PENDING_FRAME(), CONFIRM_FRAME(), done()])],
+      confirm: [sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-2' }), frame('finish', { messageId: 'm-77', messageStatus: 'NORMAL' }), done()])],
+    });
+    await untilConfirmWithTool(approved);
+    await approved.chat.resolveConfirm(true);
+    const approvedTool = approved.chat.turns.value[0].assistants[0].blocks?.find(block => block.kind === 'tool');
+    assert.equal(approvedTool?.status, 'awaiting', 'approved 不得改写工具块（由续跑事件驱动）');
+    assert.equal(
+      approved.chat.turns.value[0].assistants[0].blocks?.find(block => block.kind === 'confirm')?.status,
+      'approved',
+    );
+
+    // expired：服务端明确拒绝（400）⇒ 卡片 expired，工具块同样不被联动成 denied
+    const expired = harness({
+      chat: [sseResponse([frame('meta', { conversationId: 'c-1', taskId: 't-1' }), TOOL_PENDING_FRAME(), CONFIRM_FRAME(), done()])],
+      confirm: [jsonResponse({ code: 400, msg: '待确认的操作已失效，请重新提问', data: null }, 400)],
+    });
+    await untilConfirmWithTool(expired);
+    await expired.chat.resolveConfirm(true);
+    const expiredTool = expired.chat.turns.value[0].assistants[0].blocks?.find(block => block.kind === 'tool');
+    assert.equal(expiredTool?.status, 'awaiting', 'expired 不得改写工具块（不属本包范围）');
+    assert.equal(
+      expired.chat.turns.value[0].assistants[0].blocks?.find(block => block.kind === 'confirm')?.status,
+      'expired',
+    );
   });
 
   it('**服务端拒绝（已失效）**：卡片转 expired、不装已同意、显示服务端原因、挂起解除', async () => {

@@ -23,6 +23,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.Date;
+import java.util.List;
 
 /**
  * 智能体视图对象
@@ -61,4 +62,25 @@ public class AgentProfileVO {
 
     private Date createTime;
     private Date updateTime;
+
+    /**
+     * P3-BIND：该智能体的绑定引用（F09:3 读侧回显）。
+     *
+     * <p>语义（与保存契约 {@code AgentProfileSaveRequest.bindings} 对称）：
+     * <ul>
+     *   <li>{@code []} = 确无绑定（页面可安全地按替换语义发空集 = 无操作）；</li>
+     *   <li>非空 = 当前绑定集合；</li>
+     *   <li>{@code null} = 绑定权威缺席、读不出（页面**不得**据此替换绑定，保持"本次不改"）。</li>
+     * </ul>
+     */
+    private List<BindingRef> bindings;
+
+    /** 一条绑定引用（线路形状：type=MODEL/SKILL/MCP/ORCHESTRATION，refId=资产标识）。 */
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class BindingRef {
+        private String type;
+        private String refId;
+    }
 }

@@ -74,4 +74,7 @@ public class AgentMessageVO {
      * 创建时间
      */
     private Date createTime;
+
+    /** Private attachment metadata; content always requires authenticated delivery. */
+    private List<java.util.Map<String,Object>> attachments;
 }

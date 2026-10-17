@@ -25,6 +25,7 @@ import com.nageoffer.ai.ragent.framework.security.RevocationGuard;
 import com.nageoffer.ai.ragent.rag.controller.request.AgentProfileSaveRequest;
 import com.nageoffer.ai.ragent.rag.controller.request.AgentPromptSaveRequest;
 import com.nageoffer.ai.ragent.rag.controller.vo.AgentProfileListVO;
+import com.nageoffer.ai.ragent.rag.controller.vo.AgentProfileVO;
 import com.nageoffer.ai.ragent.rag.controller.vo.AgentPromptConfigVO;
 import com.nageoffer.ai.ragent.rag.service.AgentProfileAdminService;
 import lombok.RequiredArgsConstructor;
@@ -39,6 +40,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -68,6 +70,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * permit/撤权链（对 {@code RevocationGuard|permit|enter(|PrincipalContext} 零引用）、
  * 也就**不会 bump {@code ai_acl_epoch}**，因此不存在 {@code AiResourceController:190-197}
  * 记录的"写入后旧 aclVersion ⇒ 409 提交成功响应失败"那条风险。
+ *
+ * <p><b>F09:0 增补（详情 / 导出）</b>：新增两个只读 handler（共 10 个），**复用
+ * {@code agent.read} 动作**——零新 canonical 动作、零新权限行、零迁移。两者都走
+ * {@link #reply}，因此同样满足交付 permit 协议；导出把 NDJSON 文本放在
+ * {@code ApiEnvelope.data}（单 JSON 对象包络，与网关字节分支的
+ * {@code requireSingleJsonObject} 相容），由前端物化成 {@code .ndjson} 文件下载。
  */
 @RestController
 @RequiredArgsConstructor
@@ -150,6 +158,27 @@ public class AgentProfileController {
     @GetMapping("/agents")
     public ResponseEntity<ApiEnvelope<AgentProfileListVO>> list() {
         return reply("agent.list", "agent-catalog:list", agentProfileAdminService.list());
+    }
+
+    /**
+     * 查询单个智能体详情（F09:0；复用 {@code agent.read}，双门与既有目录动作一致）
+     */
+    @GetMapping("/agents/{id}")
+    public ResponseEntity<ApiEnvelope<AgentProfileVO>> detail(@PathVariable String id) {
+        return reply("agent.read", "agent-catalog:" + id, agentProfileAdminService.detail(id));
+    }
+
+    /**
+     * 导出智能体目录（F09:0；复用 {@code agent.read}）。
+     *
+     * <p>{@code keyword} 与列表筛选同一口径；返回 NDJSON 文本（字段与掩码见
+     * {@code AgentProfileAdminServiceImpl#exportDefinition}：只有目录元数据 +
+     * 已配置槽位的 {@code slotKey}，提示词正文一律不出现）。
+     */
+    @GetMapping("/agents/export")
+    public ResponseEntity<ApiEnvelope<String>> export(
+            @RequestParam(name = "keyword", required = false) String keyword) {
+        return reply("agent.read", "agent-catalog:export", agentProfileAdminService.exportDefinition(keyword));
     }
 
     /**

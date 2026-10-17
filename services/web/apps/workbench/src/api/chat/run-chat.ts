@@ -46,6 +46,7 @@ import {
   RunEventStreamIncompleteError,
   RunEventStreamProtocolError,
   RunStreamHttpError,
+  toWireInteger,
 } from '@ruoyi/events/sse';
 import { AI_GATEWAY_PREFIX } from '../session/paths';
 
@@ -68,6 +69,7 @@ export interface RunChatResourceRef {
 }
 
 export interface RunChatRequestInput {
+  attachments?: Array<{ id: string; version: number }>;
   /** 会话 id；没有会话时省略（受理 DTO 允许缺省）。 */
   conversationId?: string;
   /** 本轮用户输入（受理 `input.text`）。 */
@@ -234,7 +236,7 @@ export function buildRagChatBody(input: RunChatRequestInput): RagChatBody {
   const body: RagChatBody = {
     schemaVersion: 1,
     action: 'rag.chat',
-    input: { text },
+    input: { text, ...(input.attachments?.length ? { attachments: input.attachments.map(ref => ({ id: ref.id, version: ref.version })) } : {}) },
     resourceRefs: refs.map(ref => ({ type: ref.type, id: ref.id })),
     budget: {
       maxTokens: input.budget?.maxTokens ?? RAG_CHAT_MAX_TOKENS,
@@ -572,7 +574,8 @@ export function createRunChatClient(deps: RunChatDeps): RunChatClient {
             yield terminal;
             return;
           }
-          const nextSeq = typeof snapshot?.nextSeq === 'number' ? snapshot.nextSeq : Number.NaN;
+          // 410 线上快照：`nextSeq` 是装箱 Long ⇒ 字符串（§4-a #6）；边界归一化后再重建。
+          const nextSeq = toWireInteger(snapshot?.nextSeq, 1) ?? Number.NaN;
           if (rebuildsLeft > 0 && Number.isSafeInteger(nextSeq) && nextSeq > 1) {
             rebuildsLeft -= 1;
             afterSeq = nextSeq - 1;

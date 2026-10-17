@@ -1,15 +1,29 @@
 package org.ruoyi.aiweb.embedded;
 
+import com.nageoffer.ai.ragent.agent.controller.AgentOptionController;
 import com.nageoffer.ai.ragent.audit.support.BizChangeLogContext;
+import com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService;
+import com.nageoffer.ai.ragent.rag.binding.DefaultBindingRefLookup;
 import com.nageoffer.ai.ragent.rag.config.OrchestrationProperties;
 import com.nageoffer.ai.ragent.rag.controller.AgentProfileController;
 import com.nageoffer.ai.ragent.rag.core.prompt.AgentPromptCacheManager;
 import com.nageoffer.ai.ragent.rag.core.prompt.AgentPromptResolver;
+import com.nageoffer.ai.ragent.rag.dao.mapper.AgentProfileMapper;
+import com.nageoffer.ai.ragent.rag.dao.mapper.AgentPromptMapper;
+import com.nageoffer.ai.ragent.rag.dao.mapper.AgentSkillMapper;
+import com.nageoffer.ai.ragent.rag.dao.mapper.IntentNodeMapper;
+import com.nageoffer.ai.ragent.rag.service.RuntimeCatalogService;
+import com.nageoffer.ai.ragent.rag.service.impl.AgentOptionReadServiceImpl;
 import com.nageoffer.ai.ragent.rag.service.impl.AgentProfileAdminServiceImpl;
 import com.nageoffer.ai.ragent.template.PublicTemplateRepository;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.util.StringUtils;
 
 /**
  * W4-9（F09 only）：Agent 定义与 Prompt 管理面的内层装配。
@@ -51,9 +65,17 @@ import org.springframework.context.annotation.Import;
  */
 @AutoConfiguration
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
+// 原生 HTTP 形态也必须整体跳过：否则只导入内层 controller、不导入 embedded 服务实现，
+// 启动会以 AgentProfileAdminService 缺失失败（native-runtime CI 实测）。
+@ConditionalOnEmbeddedLocal
 @Import({
         AgentProfileController.class,
-        AgentProfileAdminServiceImpl.class,
+        AgentOptionController.class,
+        AgentOptionReadServiceImpl.class,
+        // P3-BIND（2026-10-16，T0 集成）：绑定权威入 embedded 闭包；引用核验适配与
+        // AgentProfileAdminServiceImpl / DefaultBindingRefLookup 因"双构造无注解"改走下
+        // BindingRefLookupAssembly 的显式 @Bean（t0-p3bind-ctxcheck 实测 Spring 无法选择）。
+        AgentProfileBindingService.class,
         // 运行期读端：v6 里不是 bean（见类注释的"装配在场 ≠ 生效"段），必须由本类登记。
         AgentPromptResolver.class,
         AgentPromptCacheManager.class,
@@ -68,4 +90,71 @@ import org.springframework.context.annotation.Import;
         PublicTemplateRepository.class
 })
 public class AiEmbeddedAgentCatalogConfiguration {
+
+    /**
+     * P3-BIND M-1：MODEL 引用的在线核验适配（T0 单写；提案见 F09-3-SHARED.patch §「共享 5 项」）。
+     *
+     * <p>refId 空间＝管理面 {@code GET /runtime-config/catalog} 的模型 {@code id}
+     * （即 {@code ai_runtime_config_revision.model_id}；见 {@link RuntimeCatalogService#knownModels}）。
+     * 判据＝该租户存在**已发布权威版本** 且 版本发布历史里出现过该模型 id；
+     * 任一不满足（含无已发布版本；读失败直接上抛由协议层映射 503）⇒ 不核过，
+     * 绑定保存整体拒绝（fail-closed，不回落"看起来可用"）。
+     *
+     * <p>类级条件 {@link ConditionalOnEmbeddedLocal} 必需：嵌套组件会被平台组件扫描独立发现，
+     * 外层配置的条件不适用于它（{@code AiEmbeddedComponentScanTest} 判据一/二钉住）。
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnEmbeddedLocal
+    static class BindingRefLookupAssembly {
+
+        @Bean
+        @ConditionalOnMissingBean
+        AgentProfileBindingService.ModelRefLookup agentProfileModelRefLookup(RuntimeCatalogService catalog) {
+            return (tenantId, modelRefId) -> {
+                if (!StringUtils.hasText(tenantId) || !StringUtils.hasText(modelRefId)) {
+                    return false;
+                }
+                RuntimeCatalogService.RevisionRow current = catalog.currentRevision(tenantId);
+                if (current == null) {
+                    return false;
+                }
+                return catalog.knownModels(tenantId, 200).stream()
+                        .anyMatch(model -> modelRefId.equals(model.modelId()));
+            };
+        }
+
+        /**
+         * F09:3/D-3：绑定引用核验适配（SKILL/MCP 实查 + MODEL 端口）。显式构造规避双构造类的
+         * Spring 选择失败（见 @Import 处注释）；运行期缺 ModelRefLookup 端口时 MODEL 维持
+         * fail-closed（DefaultBindingRefLookup 内部即该语义）。
+         */
+        @Bean
+        @ConditionalOnMissingBean
+        DefaultBindingRefLookup defaultBindingRefLookup(
+                AgentSkillMapper agentSkillMapper,
+                IntentNodeMapper intentNodeMapper,
+                ObjectProvider<AgentProfileBindingService.ModelRefLookup> modelRefLookup) {
+            return new DefaultBindingRefLookup(agentSkillMapper, intentNodeMapper, modelRefLookup);
+        }
+
+        /**
+         * F09:0/F09:3：目录管理服务（详情/导出＋绑定保存/回显）。双构造（8 参生产 / 7 参兼容）
+         * 无注解 ⇒ 同样改显式 @Bean 构造生产形态（绑定权威必传）。
+         */
+        @Bean
+        @ConditionalOnMissingBean
+        AgentProfileAdminServiceImpl agentProfileAdminServiceImpl(
+                AgentProfileMapper agentProfileMapper,
+                AgentPromptMapper agentPromptMapper,
+                AgentPromptResolver agentPromptResolver,
+                AgentPromptCacheManager agentPromptCacheManager,
+                OrchestrationProperties orchestrationProperties,
+                BizChangeLogContext bizChangeLogContext,
+                PublicTemplateRepository publicTemplateRepository,
+                AgentProfileBindingService agentProfileBindingService) {
+            return new AgentProfileAdminServiceImpl(agentProfileMapper, agentPromptMapper, agentPromptResolver,
+                    agentPromptCacheManager, orchestrationProperties, bizChangeLogContext, publicTemplateRepository,
+                    agentProfileBindingService);
+        }
+    }
 }

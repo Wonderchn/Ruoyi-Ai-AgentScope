@@ -22,6 +22,8 @@
  * | 方法 + 路径（前缀省略） | 动作 | 权限串 |
  * |---|---|---|
  * | GET    `.../agents` | agent.list | `ai:agent:list` |
+ * | GET    `.../agents/{id}` | agent.read | `ai:agent:read`（F09:0 详情） |
+ * | GET    `.../agents/export` | agent.read | `ai:agent:read`（F09:0 导出；`?keyword=`） |
  * | POST   `.../agents` | agent.write | `ai:agent:write` |
  * | PUT    `.../agents/{id}` | agent.write | `ai:agent:write` |
  * | DELETE `.../agents/{id}` | agent.delete | `ai:agent:delete` |
@@ -62,6 +64,21 @@ export const AGENT_CATALOG_AGENTS_PATH = '/api/ai/v1/agent-catalog/agents';
 /** 槽位默认回落子路径（`GET /agents/prompt-slots/{slotKey}/default`）。 */
 export const AGENT_CATALOG_PROMPT_SLOTS_PATH = `${AGENT_CATALOG_AGENTS_PATH}/prompt-slots`;
 
+/**
+ * 导出子路径（`GET /agents/export?keyword=`，F09:0）。
+ *
+ * ⚠️ 与 `.../agents/{id}` 同段数：内层控制器必须把字面量 `/agents/export` 显式映射
+ * （Spring 字面量优先于变量），网关侧同理按逐条白名单登记。故该常量**不能**被
+ * 当成"某个 id"拼进 detail。
+ */
+export const AGENT_CATALOG_EXPORT_PATH = `${AGENT_CATALOG_AGENTS_PATH}/export`;
+
+/** P3-BIND：绑定引用（线路形状与服务端 `AgentProfileSaveRequest.BindingRef` 对齐）。 */
+export interface AgentProfileBindingRef {
+  type: 'MODEL' | 'SKILL' | 'MCP' | 'ORCHESTRATION';
+  refId: string;
+}
+
 /** `AgentProfileVO`（`AgentProfileController.list` 的元素）。 */
 export interface AgentProfileRow {
   id?: string;
@@ -77,6 +94,8 @@ export interface AgentProfileRow {
   effectiveSlots?: number;
   /** 已填写但当前架构读不到的槽位数（切 `ragent.engine.type` 后生效）。 */
   inactiveSlots?: number;
+  /** P3-BIND 读侧回显：该智能体的绑定引用（未绑定 ⇒ 空数组/缺失）。 */
+  bindings?: AgentProfileBindingRef[] | null;
   createTime?: string;
   updateTime?: string;
 }
@@ -129,6 +148,16 @@ export interface AgentProfileSaveBody {
   name: string;
   description?: string;
   avatar?: string;
+  /**
+   * P3-BIND：绑定集合（与服务端 `AgentProfileSaveRequest.bindings` 同形状）。
+   *
+   * - `null`/缺失 = **本次不改绑定**；
+   * - `[]` = **解除全部绑定**；
+   * - 非空 = 整体替换为该集合（服务端先在线核引用、失败即零持久化）。
+   *
+   * ⚠️ 产品行为：**未绑定任何技能/MCP ⇒ 运行期无技能、无 MCP 工具**（fail-closed）。
+   */
+  bindings?: AgentProfileBindingRef[] | null;
 }
 
 /** 单槽位保存请求体（`AgentPromptSaveRequest`）：字段名是 `content`。 */
@@ -148,6 +177,15 @@ export function createAgentProfilesApi(client: PlatformClient) {
   return {
     /** `GET /agents` → `ApiEnvelope<AgentProfileListVO>`（agent.list / ai:agent:list）。 */
     list: () => client.get<AgentProfileListVO>(base),
+    /** `GET /agents/{id}` → `ApiEnvelope<AgentProfileRow>`（F09:0 详情；agent.read）。 */
+    detail: (id: string) => client.get<AgentProfileRow>(`${base}/${encodeURIComponent(id)}`),
+    /**
+     * `GET /agents/export?keyword=` → `ApiEnvelope<String>`（F09:0 导出；agent.read）。
+     * `data` 是 **NDJSON 文本**（每行一个智能体，字段与掩码见服务端
+     * `AgentProfileAdminServiceImpl#exportDefinition`）；调用方负责物化成文件下载。
+     */
+    exportDefinition: (keyword?: string) =>
+      client.get<string>(AGENT_CATALOG_EXPORT_PATH, keyword ? { query: { keyword } } : undefined),
     /** `POST /agents` → `ApiEnvelope<String>`（新 id；agent.write / ai:agent:write）。 */
     create: (body: AgentProfileSaveBody) => client.post<string>(base, { body }),
     /** `PUT /agents/{id}` → `ApiEnvelope<null>`（agent.write）。 */

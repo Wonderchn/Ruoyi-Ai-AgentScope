@@ -61,6 +61,7 @@ export interface UseChatRunOptions {
 }
 
 export interface SubmitRunInput {
+  attachments?: Array<{ id: string; version: number }>;
   text: string;
   conversationId?: string;
   resourceRefs?: Array<{ type: string; id: string }>;
@@ -228,6 +229,7 @@ export function useChatRun(options: UseChatRunOptions) {
         text: input.text,
         conversationId: input.conversationId,
         resourceRefs: input.resourceRefs,
+        attachments: input.attachments,
         signal: controller.signal,
       })) {
         if (options.identity().epoch !== submitEpoch)

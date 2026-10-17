@@ -348,6 +348,34 @@ class AiEmbeddedWorkerConfigurationTest {
             return mock(org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate.class);
         }
 
+        /**
+         * F16 op5 落地后新增的 {@code conversationContextPort}（WorkerEnabled）构造依赖
+         * {@code TenantConversationReadRepository} / {@code AiResourceAuthorizationService}：
+         * 生产由 {@code AiEmbeddedRagConfiguration} 提供，而本切片用显式配置清单、不加载它
+         * —— 同 {@code namedParameterJdbcTemplate} 的"新增依赖 bean 要同步补齐所在切片"纪律。
+         * 行为断言不依赖这两个替身。
+         */
+        @Bean
+        com.nageoffer.ai.ragent.authorization.TenantConversationReadRepository tenantConversationReadRepository() {
+            return mock(com.nageoffer.ai.ragent.authorization.TenantConversationReadRepository.class);
+        }
+
+        @Bean
+        com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService aiResourceAuthorizationService() {
+            return mock(com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService.class);
+        }
+
+        /**
+         * 替身 {@code AiResourceAuthorizationService} 是 @Bean 返回的 Mockito 实例，Spring 仍会
+         * 后处理其类上的 @Autowired 成员：{@code configureProjection(NamedParameterJdbcTemplate)}
+         * 由本 Fixture 的 jdbc 替身满足、{@code configurePlatformFacts} 为 required=false，而
+         * {@code configurePlatformAuthorization(AuthorizationChecker)} 是必需项 —— 补上本替身。
+         */
+        @Bean
+        com.nageoffer.ai.ragent.framework.security.AuthorizationChecker authorizationChecker() {
+            return mock(com.nageoffer.ai.ragent.framework.security.AuthorizationChecker.class);
+        }
+
         @Bean
         ObjectMapper objectMapper() {
             return new ObjectMapper();
@@ -384,6 +412,19 @@ class AiEmbeddedWorkerConfigurationTest {
         @Bean
         PrivateObjectStore privateObjectStore() {
             return mock(PrivateObjectStore.class);
+        }
+
+        // F06:1/2 集成（T0，2026-10-16）：ingestionPipelineExecutor（WorkerEnabled）新增的任务面
+        // 构造依赖；生产由 AiEmbeddedIngestionConfiguration 的任务组提供，本切片用显式配置清单、
+        // 不加载它 —— 同"新增依赖 bean 要同步补齐所在切片"纪律。行为断言不依赖这两个替身。
+        @Bean
+        com.nageoffer.ai.ragent.ingestion.task.IngestionPipelineReader ingestionPipelineReader() {
+            return mock(com.nageoffer.ai.ragent.ingestion.task.IngestionPipelineReader.class);
+        }
+
+        @Bean
+        com.nageoffer.ai.ragent.ingestion.task.IngestionTaskRepository ingestionTaskRepository() {
+            return mock(com.nageoffer.ai.ragent.ingestion.task.IngestionTaskRepository.class);
         }
 
         // 注意：不要在这里定义 runLedgerDao / runEventAppender / notificationBus / outboxDao——

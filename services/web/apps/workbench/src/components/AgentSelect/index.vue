@@ -20,9 +20,7 @@ onMounted(async () => {
 });
 
 const currentAgentName = computed(
-  () => agentStore.currentAgentInfo && agentStore.currentAgentInfo.agentDescribe
-    ? agentStore.currentAgentInfo.agentDescribe
-    : agentStore.currentAgentInfo?.agentName,
+  () => agentStore.currentAgentInfo?.description || agentStore.currentAgentInfo?.name,
 );
 
 // 选择器展示文案：选了工作流 → 工作流标题；否则 → 智能体名
@@ -51,8 +49,12 @@ async function showPopover() {
   await agentStore.requestAgentList();
 }
 
-// 点击智能体：清掉工作流（切回智能体模式），再设当前智能体
+// 点击智能体：清掉工作流（切回智能体模式），再设当前智能体。
+// 非 executable 行不可选（页面已显式停用并标注；这里显式早退，不得静默把它设为当前项）。
 function handleClick(item: AgentVO) {
+  if (!item.executable) {
+    return;
+  }
   if (currentWorkflow.value) {
     chatStore.clearCurrentWorkflow();
   }
@@ -116,16 +118,18 @@ async function handleUseModel() {
         <div
           v-for="item in popoverList"
           :key="item.id"
-          class="popover-content-box-items w-full rounded-8px select-none transition-all transition-duration-300 flex items-center hover:cursor-pointer hover:bg-[rgba(0,0,0,.04)]"
+          class="popover-content-box-items w-full rounded-8px select-none transition-all transition-duration-300 flex items-center"
+          :class="item.executable ? 'hover:cursor-pointer hover:bg-[rgba(0,0,0,.04)]' : 'is-disabled'"
         >
           <div
             class="popover-content-box-item p-4px font-size-12px text-overflow line-height-16px"
-            :class="{ 'is-select': !isWorkflow && item.agentName === agentStore.currentAgentInfo?.agentName }"
+            :class="{ 'is-select': !isWorkflow && item.name === agentStore.currentAgentInfo?.name }"
+            :aria-disabled="!item.executable"
             @click="handleClick(item)"
           >
-            <div>{{ item.agentDescribe || item.agentName }}</div>
-            <div v-if="item.modelName" class="agent-sub font-size-11px opacity-60">
-              {{ item.modelName }}
+            <div>{{ item.description || item.name }}</div>
+            <div v-if="!item.executable" class="agent-sub font-size-11px opacity-60">
+              当前不可执行
             </div>
           </div>
         </div>
@@ -159,6 +163,15 @@ async function handleUseModel() {
 .popover-content-box-item.is-select {
   font-weight: 700;
   color: var(--el-color-primary, #409eff);
+}
+
+.popover-content-box-items.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.popover-content-box-items.is-disabled .popover-content-box-item {
+  cursor: not-allowed;
 }
 
 .popover-content-box {

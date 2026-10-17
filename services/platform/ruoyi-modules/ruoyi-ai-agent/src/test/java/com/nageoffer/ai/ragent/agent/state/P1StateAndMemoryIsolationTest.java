@@ -58,6 +58,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -135,9 +136,20 @@ class P1StateAndMemoryIsolationTest {
                 .contains("ON CONFLICT (tenant_id, member_id, session_id, state_key)")
                 .doesNotContain("ON CONFLICT (session_id, state_key)")
                 .contains("INSERT INTO ai_agent_state (tenant_id, member_id, user_id, session_id, state_key, payload");
+        // F-AC6-1：写侧 provenance 三列进列清单，冲突分支写 EXCLUDED 值而不是恒清 NULL
+        // （恒清 NULL 曾让真实轮次写出的行永远过不了读闸：state 上下文不跨轮积累）
+        assertThat(upsert)
+                .contains("source_refs, source_policy_version, source_acl_version")
+                .contains("#{sourceRefs}::jsonb, #{sourcePolicyVersion}, #{sourceAclVersion}");
         // user_id 只出现在展示列清单与 VALUES 里，不进冲突目标、不进 DO UPDATE
         String conflictClause = upsert.substring(upsert.indexOf("ON CONFLICT"));
         assertThat(conflictClause).doesNotContain("user_id");
+        assertThat(conflictClause)
+                .contains("source_refs = EXCLUDED.source_refs")
+                .contains("source_policy_version = EXCLUDED.source_policy_version")
+                .contains("source_acl_version = EXCLUDED.source_acl_version")
+                .as("冲突分支不得再把 provenance 三列清空（回归即 F16:2/3 读不回复现）")
+                .doesNotContain("NULL");
 
         // 其余五条全部是查询/删除：谓词恒含租户 + 成员，且完全不引用 user_id
         List<String> others = new ArrayList<>(statements);
@@ -211,7 +223,10 @@ class P1StateAndMemoryIsolationTest {
         verify(mapper).deleteBySession(TENANT_A, MEMBER_A, SESSION_ID);
         verify(mapper).deleteByKey(TENANT_A, MEMBER_A, SESSION_ID, STATE_KEY);
         // 第三参数是展示引用 userId，不参与键；换租户主体即换键
-        verify(mapper).upsert(eq(TENANT_A), eq(MEMBER_A), eq(USER_ID), eq(SESSION_ID), eq(STATE_KEY), any());
+        // 末三参＝写侧 provenance：本 store 未接授权事实（configureSources 未调用）⇒ 必须写 NULL；
+        // 降级形态与修前逐字一致（有来源才写实值，见 AgentStateProvenancePostgresTest）
+        verify(mapper).upsert(eq(TENANT_A), eq(MEMBER_A), eq(USER_ID), eq(SESSION_ID), eq(STATE_KEY), any(),
+                isNull(), isNull(), isNull());
 
         // 换成租户 B 的主体：同样的 session/key，键完全不同
         asTenant(TENANT_B);

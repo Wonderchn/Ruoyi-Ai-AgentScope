@@ -32,7 +32,7 @@ const filters = [{ value: 'all', label: '全部应用' }, { value: 'workflow', l
       <div v-loading="loading" class="market-grid" :aria-busy="loading">
         <ApplicationCard
           v-for="app in applications" :key="`${app.type}-${app.type === 'agent' ? app.data.id : app.data.uuid}`"
-          :type="app.type" :title="app.type === 'agent' ? (app.data.agentDescribe || app.data.agentName || '未命名智能体') : app.data.title"
+          :type="app.type" :title="app.type === 'agent' ? (app.data.description || app.data.name || '未命名智能体') + (app.data.executable ? '' : '（当前不可执行）') : app.data.title"
           :description="app.type === 'agent' ? '围绕你的问题，持续对话与协作。' : (app.data.remark || '将多个步骤串联为可重复运行的流程。')"
           :loading="app.type === 'workflow' && opening === app.data.uuid"
           @select="app.type === 'agent' ? selectAgent(app.data) : openWorkflow(app.data)"

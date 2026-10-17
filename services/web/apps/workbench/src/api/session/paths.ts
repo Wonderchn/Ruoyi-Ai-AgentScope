@@ -49,6 +49,14 @@ export function conversationMessagesPath(id: string): string {
   return `${conversationPath(id)}/messages`;
 }
 
+/** Agent 会话族路径（`AgentConversationController`；与 RAG 会话路径不同挂点）。 */
+export const AGENT_CONVERSATIONS_PATH = `${AI_GATEWAY_PREFIX}/agent/v1/conversations`;
+
+/** Agent 会话消息历史路径（agent-chat.ts 回放专用；真机修复 2026-10-16 十一段）。 */
+export function agentConversationMessagesPath(id: string): string {
+  return `${AGENT_CONVERSATIONS_PATH}/${encodeURIComponent(id)}/messages`;
+}
+
 /** 会话导出路径。 */
 export function conversationExportPath(id: string): string {
   return `${conversationPath(id)}/export`;

@@ -49,6 +49,13 @@ package com.nageoffer.ai.ragent.runtime.port;
  */
 public interface ConversationHistoryPort {
 
+    default void appendAttachedTurn(String tenantId,String memberId,String userId,String conversationId,
+            String question,String answer,ConversationTurnMeta meta,com.fasterxml.jackson.databind.JsonNode attachments) {
+        if(attachments!=null && attachments.isArray() && !attachments.isEmpty())
+            throw new IllegalStateException("Attached conversation history is not wired");
+        appendTurn(tenantId,memberId,userId,conversationId,question,answer,meta);
+    }
+
     /**
      * 把一轮问答追加进会话历史：先用户消息，再助手消息（助手消息回指用户消息）。
      *

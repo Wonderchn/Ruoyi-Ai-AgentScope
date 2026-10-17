@@ -27,7 +27,7 @@ import type {
 import type { AgentEvent, AgentTimelineContext, AgentTimelineState, PendingConfirm } from './agentTimeline';
 import type { AgentRawFrame, AgentTurn } from './types';
 import { computed, ref, shallowRef, watch } from 'vue';
-import { AgentChatFailure, createAgentChatClient, frameToRawEntry, parseAgentFrame } from '../../../../api/ai/agent-chat';
+import { AGENT_RAW_FRAME_LIMIT, AgentChatFailure, createAgentChatClient, frameToRawEntry, parseAgentFrame } from '../../../../api/ai/agent-chat';
 import { applyAgentEvent, buildTimelineRows, createAgentTimeline, projectReplayMessages } from './agentTimeline';
 
 /** 工厂拿到的选项（不含工厂本身，避免自引用）。 */
@@ -104,6 +104,27 @@ function createChat(options: UseAgentChatBaseOptions) {
    */
   let generation = 0;
 
+  /**
+   * 调用方侧收尾在飞连接（换会话 / 回放重进）。
+   *
+   * 与 `stop()` 同一语义的**另一半**：本地先撕连接；若本轮已从 meta 帧拿到引擎任务
+   * id，随之向服务端叫停 —— 引擎任务不知道浏览器侧已经离开，
+   * 会把后续帧全部写进已被撕断的连接（R17P2 收口窗证据：每次切换后首批 delta
+   * 命中死插座时触发 `SseEmitterSender "SSE send failed"` ＋ `deliverFrame
+   * "stream delivery failed"` 双签名）。fire-and-forget：服务端叫停失败不影响
+   * 换会话本身，最终状态以回放（服务端说法）为准（BD-1 同一口径）。
+   * 身份代次变化（`reset`）**不**在此叫停：服务端按许可回收语义自行收敛。
+   */
+  function stopInflight() {
+    const conn = connection;
+    const taskId = state.value.taskId ?? '';
+    connection = null;
+    if (conn !== null)
+      conn.cancel();
+    if (taskId !== '')
+      void client.stop(taskId).catch(() => {});
+  }
+
   /** 中止在飞流并清空全部状态（身份变化 / 离开页面）。 */
   function reset() {
     generation += 1;
@@ -147,7 +168,9 @@ function createChat(options: UseAgentChatBaseOptions) {
     const entry = frameToRawEntry(event);
     if (entry === null)
       return;
-    frames.value = [...frames.value, { id: ++frameSeq, ts: ctx.now, name: entry.name, data: entry.data }];
+    const next = [...frames.value, { id: ++frameSeq, ts: ctx.now, name: entry.name, data: entry.data }];
+    // 上限截尾（与传输层 `agent-chat.ts:261` 同口径）：诊断面可截尾，长会话不得无界增长。
+    frames.value = next.length > AGENT_RAW_FRAME_LIMIT ? next.slice(next.length - AGENT_RAW_FRAME_LIMIT) : next;
   }
 
   /** 帧 → 状态推进（数据帧；注释帧只进抽屉）。 */
@@ -351,17 +374,37 @@ function createChat(options: UseAgentChatBaseOptions) {
     await refresh(pending.conversationId);
   }
 
-  /** 改写确认卡状态（按 `kind === 'confirm'` 定位，不依赖消息 id 是否被服务端换过）。 */
+  /**
+   * 改写确认卡状态（按 `kind === 'confirm'` 定位，不依赖消息 id 是否被服务端换过）。
+   *
+   * 拒绝是"从未执行"的结局：服务端结算会把关联工具一并落成 `denied`（D1/D2），FE 活态
+   * 必须同步联动，否则卡消息里 `confirm=denied` 与 `tool=awaiting` 自相矛盾，
+   * 工具卡直到 reload 回查才显示 denied（R17 W5 套件 `tool_denied=0` 即此）。
+   * 联动只认 `denied`，且按 confirm 块 `calls[].toolCallId` 匹配**同一条消息**内的工具块：
+   * approved 的工具真跑、状态由续跑事件驱动；expired 不属本包范围 —— 替它们改判就是篡改结局。
+   */
   function setConfirmStatus(status: 'submitting' | 'approved' | 'denied' | 'expired') {
+    const denyLinked = status === 'denied';
     const turns = state.value.turns.map(turn => ({
       ...turn,
       assistants: turn.assistants.map((message) => {
-        if (!message.blocks?.some(block => block.kind === 'confirm'))
+        const blocks = message.blocks ?? [];
+        if (!blocks.some(block => block.kind === 'confirm'))
           return message;
+        const deniedCalls = denyLinked
+          ? new Set(blocks.flatMap(block => (block.kind === 'confirm' ? block.calls ?? [] : []).map(call => call.toolCallId)))
+          : null;
         return {
           ...message,
           messageStatus: status === 'submitting' ? 'AWAITING_CONFIRM' as const : 'NORMAL' as const,
-          blocks: message.blocks.map(block => (block.kind === 'confirm' ? { ...block, status } : block)),
+          blocks: blocks.map((block) => {
+            if (block.kind === 'confirm')
+              return { ...block, status };
+            // 幂等：已 denied 的块原样返回（重复结算不产生新对象、不新增块）
+            if (deniedCalls !== null && block.kind === 'tool' && block.toolCallId && deniedCalls.has(block.toolCallId))
+              return block.status === 'denied' ? block : { ...block, status: 'denied' as const };
+            return block;
+          }),
         };
       }),
     }));
@@ -416,8 +459,7 @@ function createChat(options: UseAgentChatBaseOptions) {
 
   /** 回放/切换会话：拉取服务端消息并重建轨迹（挂起卡也由它复原）。 */
   async function loadConversation(id: string): Promise<void> {
-    connection?.cancel();
-    connection = null;
+    stopInflight();
     error.value = '';
     notice.value = '';
     await refresh(id);
@@ -450,8 +492,7 @@ function createChat(options: UseAgentChatBaseOptions) {
   /** 换会话：清全部状态与帧缓冲。 */
   function startNewChat() {
     generation += 1;
-    connection?.cancel();
-    connection = null;
+    stopInflight();
     state.value = createAgentTimeline();
     frames.value = [];
     frameSeq = 0;

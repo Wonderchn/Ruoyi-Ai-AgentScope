@@ -33,7 +33,7 @@
 -->
 <script setup lang="ts">
 import type { AgentProfileForm } from './agentAdmin';
-import type { AgentProfileRow, AgentPromptSlot } from '@/api';
+import type { AgentProfileBindingRef, AgentProfileRow, AgentPromptSlot } from '@/api';
 import { computed, ref, watch } from 'vue';
 import { aiApi } from '@/api';
 import { usePermission } from '@/composables/usePermission';
@@ -68,7 +68,12 @@ const readAllowed = computed(() => mayReadCatalog(checker));
 const writeAllowed = computed(() => mayWrite(checker));
 const deleteAllowed = computed(() => mayDelete(checker));
 const activateAllowed = computed(() => mayActivate(checker));
-const readPromptsAllowed = computed(() => mayHold(checker, AGENT_PERMISSIONS.read));
+/**
+ * 同一个 `ai:agent:read`（V27）同时管三件事：槽位读取、**详情**、**导出**（F09:0）。
+ * 三者的后端动作都是 `agent.read`；前端不另立权限，按钮显示共用这一条。
+ */
+const readDetailAllowed = computed(() => mayHold(checker, AGENT_PERMISSIONS.read));
+const readPromptsAllowed = readDetailAllowed;
 
 const rows = ref<AgentProfileRow[]>([]);
 const loading = ref(false);
@@ -89,11 +94,40 @@ const phase = computed(() => listViewPhase({
   rowCount: rows.value.length,
 }));
 
+/**
+ * F09:0 列表筛选（客户端）：与导出 `keyword` **同口径**（名称/描述、大小写不敏感）。
+ * 导出按钮把同一个 `keyword` 送服务端，因此"页面筛出来的行"与"导出的行"一致。
+ */
+const keyword = ref('');
+const filterNeedle = computed(() => keyword.value.trim().toLowerCase());
+const filteredRows = computed(() => {
+  const needle = filterNeedle.value;
+  if (!needle)
+    return rows.value;
+  return rows.value.filter((row) => {
+    const name = row.name == null ? '' : String(row.name);
+    const description = row.description == null ? '' : String(row.description);
+    return `${name} ${description}`.toLowerCase().includes(needle);
+  });
+});
+
+/** 分页（客户端）；筛选变化与重新加载都回到第一页。 */
+const page = ref(1);
+const pageSize = 10;
+const pagedRows = computed(() => {
+  const start = (page.value - 1) * pageSize;
+  return filteredRows.value.slice(start, start + pageSize);
+});
+watch(filterNeedle, () => {
+  page.value = 1;
+});
+
 function clearRows() {
   rows.value = [];
   loaded.value = false;
   mode.value = '';
   effectiveSlotTotal.value = 0;
+  page.value = 1;
 }
 
 async function load() {
@@ -148,8 +182,20 @@ const createVisible = ref(false);
 const creating = ref(false);
 const createForm = ref<AgentProfileForm>(profileFormOf());
 
+const editBindings = ref<AgentProfileBindingRef[]>([]);
+/**
+ * 打开编辑时行上是否**携带**绑定数据（`Array.isArray(row.bindings)`）。
+ *
+ * 安全兜底：老服务端/边界行缺 `bindings`（`undefined`/`null`）⇒ 保存体**不发**该字段，
+ * 保持服务端 `null`＝"本次不改绑定"；仅当行确实带回数据（含空数组）才按替换语义发。
+ */
+const editCarriesBindings = ref(false);
+
 function openCreate() {
   createForm.value = profileFormOf();
+  // 创建侧本轮不接绑定（R-4 默认不落）：清空编辑态绑定，避免跨对话框串味。
+  editCarriesBindings.value = false;
+  editBindings.value = [];
   actionError.value = '';
   createVisible.value = true;
 }
@@ -191,15 +237,22 @@ function openEdit(row: AgentProfileRow) {
     return;
   editTargetId.value = id;
   editForm.value = profileFormOf(row);
+  // 安全兜底：仅当行**携带**绑定数据（数组，含空数组）才进入替换语义；
+  // 老服务端/边界行缺 `bindings`（undefined）或为 null ⇒ 保持"本次不改绑定"。
+  editCarriesBindings.value = Array.isArray(row.bindings);
+  editBindings.value = editCarriesBindings.value ? [...(row.bindings ?? [])] : [];
   actionError.value = '';
   editVisible.value = true;
+  void loadBindingOptions();
 }
 
 async function submitEdit() {
   const id = editTargetId.value;
-  const body = profileSaveBody(editForm.value);
-  if (!id || !body)
+  const base = profileSaveBody(editForm.value);
+  if (!id || !base)
     return;
+  // 携带数据 ⇒ 整体替换（空数组＝解除全部）；未携带 ⇒ 不发该字段（服务端 null＝不改绑定）。
+  const body = editCarriesBindings.value ? { ...base, bindings: editBindings.value } : base;
   const capturedAuth = identity.snapshotEpoch();
   editing.value = true;
   actionError.value = '';
@@ -219,6 +272,105 @@ async function submitEdit() {
       editing.value = false;
   }
 }
+
+// ---------------- P3-BIND：绑定选择器与读侧回显（F09:3 / F11:3） ----------------
+
+type BindingType = AgentProfileBindingRef['type'];
+/** 编排模式闭集（与服务端 ORCHESTRATION_MODES 对齐；未知码服务端拒绝）。 */
+const ORCHESTRATION_MODES = ['REACT', 'PLAN_ACT'] as const;
+
+const modelOptions = ref<Array<{ id: string; label: string }>>([]);
+const skillOptions = ref<Array<{ skillCode: string; name: string }>>([]);
+const mcpOptions = ref<Array<{ toolId: string; name: string }>>([]);
+/** MCP 清单是否可用；不可用走受控文本输入（服务端仍在保存时核验）。 */
+const mcpListAvailable = ref(false);
+const mcpFallbackInput = ref('');
+const bindingLoadError = ref('');
+const bindingNotice = ref('');
+
+function bindingsOfType(type: BindingType): string[] {
+  return editBindings.value.filter(b => b.type === type).map(b => b.refId);
+}
+function setBindingsOfType(type: BindingType, ids: string[]): void {
+  // 整体替换该类型的引用（其它类型保持不变）。
+  editBindings.value = [
+    ...editBindings.value.filter(b => b.type !== type),
+    ...ids.filter(id => id.trim()).map(id => ({ type, refId: id.trim() })),
+  ];
+}
+function addMcpFallbackId(): void {
+  const id = mcpFallbackInput.value.trim();
+  if (!id)
+    return;
+  // 去重（同 id 不重复绑定），保持加入顺序。用 Array.from 而非 `[...new Set(...)]`：
+  // 后者在测试的 ES5 transpile 目标下会退化成空数组（Set 无 length），非产品缺陷但会假红。
+  setBindingsOfType('MCP', Array.from(new Set([...bindingsOfType('MCP'), id])));
+  mcpFallbackInput.value = '';
+}
+
+async function loadBindingOptions(): Promise<void> {
+  bindingLoadError.value = '';
+  bindingNotice.value = '';
+  // 模型：运行时目录（config.read）。按 modelId 展示（同 pages/ai/models 的模型列）；
+  // 失败/403 ⇒ 禁用选择器并如实提示，不伪造选项。
+  if (modelOptions.value.length === 0) {
+    try {
+      const catalog = await aiApi.runtimeConfig.catalog();
+      modelOptions.value = (catalog?.models ?? [])
+        .map(m => ({ id: String(m.id ?? ''), label: String(m.modelId ?? m.id ?? '') }))
+        .filter(o => o.id);
+    }
+    catch (caught) {
+      bindingLoadError.value = `模型清单不可用：${agentFailureHint(caught).message}（模型绑定暂不可选）`;
+    }
+  }
+  // 技能：既有 agentSkills.list()（skill.list）。
+  if (skillOptions.value.length === 0) {
+    try {
+      const page = await aiApi.agentSkills.list({ current: 1, size: 200 });
+      skillOptions.value = (page?.records ?? [])
+        .map(r => ({ skillCode: String(r.skillCode ?? ''), name: String(r.name ?? '') }))
+        .filter(o => o.skillCode);
+    }
+    catch (caught) {
+      bindingLoadError.value = `技能清单不可用：${agentFailureHint(caught).message}`;
+    }
+  }
+  // MCP：改用 `agentSkills.toolOptions()`——其 `toolId` 正是服务端绑定核验空间
+  // （`ai_intent_node.mcp_tool_id`），且是活端点；`mcp.*` 在本形态 G-22 恒 404，不再使用。
+  // 不可用（403 / 引擎闭包门 / 清单为空）⇒ 降级受控文本输入，不抛给页面。
+  if (mcpOptions.value.length === 0) {
+    try {
+      const options = await aiApi.agentSkills.toolOptions();
+      mcpOptions.value = (Array.isArray(options) ? options : [])
+        .map(t => ({ toolId: String(t.toolId ?? ''), name: String(t.name ?? '') }))
+        .filter(o => o.toolId);
+    }
+    catch {
+      mcpOptions.value = [];
+    }
+    mcpListAvailable.value = mcpOptions.value.length > 0;
+    if (!mcpListAvailable.value) {
+      bindingNotice.value = 'MCP 工具清单不可用（需 ai:skill:list；引擎未启用或 403 时降级）：'
+        + '请直接填写 tool id 后点「添加」，保存时由服务端按意图树核验存在与启用。';
+    }
+  }
+}
+
+const modelBindingIds = computed({ get: () => bindingsOfType('MODEL'), set: v => setBindingsOfType('MODEL', v) });
+const skillBindingIds = computed({ get: () => bindingsOfType('SKILL'), set: v => setBindingsOfType('SKILL', v) });
+const mcpBindingIds = computed({ get: () => bindingsOfType('MCP'), set: v => setBindingsOfType('MCP', v) });
+const orchestrationMode = computed({
+  get: () => bindingsOfType('ORCHESTRATION')[0] ?? '',
+  set: v => setBindingsOfType('ORCHESTRATION', v ? [v] : []),
+});
+
+/** 读侧回显汇总文本（分组顺序 = 加入顺序）。 */
+const bindingEcho = computed(() => {
+  if (editBindings.value.length === 0)
+    return '（未绑定任何引用）';
+  return editBindings.value.map(b => `${b.type}:${b.refId}`).join('、');
+});
 
 /** 删除（agent.delete）。 */
 const removing = ref('');
@@ -398,6 +550,100 @@ async function copyDefault(slot: AgentPromptSlot) {
   }
 }
 
+/** F09:0 详情（agent.read）：单条读取，与列表同一投影；失败清空并如实显示服务端结论。 */
+const detailVisible = ref(false);
+const detailLoading = ref(false);
+const detailError = ref('');
+const detailRow = ref<AgentProfileRow | null>(null);
+
+async function openDetail(row: AgentProfileRow) {
+  const id = agentIdOf(row);
+  if (!id)
+    return;
+  detailVisible.value = true;
+  detailRow.value = null;
+  detailError.value = '';
+  await loadDetail(id);
+}
+
+async function loadDetail(id: string) {
+  const capturedAuth = identity.snapshotEpoch();
+  const current = () => identity.isCurrent(capturedAuth);
+  detailLoading.value = true;
+  detailError.value = '';
+  try {
+    const detail = await aiApi.agentProfiles.detail(id);
+    if (!current())
+      return;
+    detailRow.value = detail ?? null;
+  }
+  catch (caught) {
+    if (current()) {
+      // 失败必须清空：403（缺 scope／非平台管理身份）后不得继续显示上一条详情。
+      detailRow.value = null;
+      detailError.value = agentFailureHint(caught).message;
+    }
+  }
+  finally {
+    if (current())
+      detailLoading.value = false;
+  }
+}
+
+/** F09:0 导出（agent.read）：服务端回 NDJSON 文本，这里物化成 .ndjson 下载。 */
+const exporting = ref(false);
+const exportNotice = ref('');
+
+async function runExport() {
+  const capturedAuth = identity.snapshotEpoch();
+  const needle = keyword.value.trim();
+  exporting.value = true;
+  actionError.value = '';
+  exportNotice.value = '';
+  try {
+    const ndjson = await aiApi.agentProfiles.exportDefinition(needle || undefined);
+    if (!identity.isCurrent(capturedAuth))
+      return;
+    const text = typeof ndjson === 'string' ? ndjson : '';
+    const trimmed = text.trim();
+    const lineCount = trimmed === '' ? 0 : trimmed.split('\n').length;
+    downloadNdjson(exportFileName(), text);
+    exportNotice.value = lineCount === 0
+      ? '导出完成：当前筛选没有匹配的智能体（导出内容为空）。'
+      : `导出完成：${lineCount} 个智能体${needle ? `（筛选：${needle}）` : ''}；导出只含目录元数据，提示词正文按掩码排除。`;
+  }
+  catch (caught) {
+    if (identity.isCurrent(capturedAuth))
+      actionError.value = agentFailureHint(caught).message;
+  }
+  finally {
+    if (identity.isCurrent(capturedAuth))
+      exporting.value = false;
+  }
+}
+
+function exportFileName(): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `agent-catalog-${stamp}.ndjson`;
+}
+
+function onPageChange(value: number) {
+  page.value = value;
+}
+
+/** 下载文本：不引新依赖（Blob + 临时 <a>）；服务端不产二进制，物化只发生在前端。 */
+function downloadNdjson(filename: string, text: string) {
+  const blob = new Blob([text], { type: 'application/x-ndjson' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 function nameOf(row: AgentProfileRow): string {
   return row.name == null ? '' : String(row.name);
 }
@@ -422,6 +668,22 @@ function nameOf(row: AgentProfileRow): string {
             生效槽位 {{ effectiveSlotTotal }} · 共 {{ rows.length }} 条
           </span>
           <div class="toolbar-actions">
+            <ElInput
+              v-model="keyword"
+              data-testid="agents-search"
+              class="agents-search"
+              placeholder="按名称/描述筛选（导出同口径）"
+              clearable
+              @clear="keyword = ''"
+            />
+            <ElButton
+              v-if="readDetailAllowed"
+              data-testid="agents-export"
+              :loading="exporting"
+              @click="runExport()"
+            >
+              导出 NDJSON
+            </ElButton>
             <ElButton
               v-if="writeAllowed"
               type="primary"
@@ -465,76 +727,102 @@ function nameOf(row: AgentProfileRow): string {
           成功响应，当前平台目录没有智能体定义。
         </div>
 
-        <ElTable v-else :data-testid="listStateTestId('agents', phase)" :data="rows" border size="small">
-          <ElTableColumn label="ID" width="260">
-            <template #default="{ row }">
-              {{ agentIdOf(row) }}
-            </template>
-          </ElTableColumn>
-          <ElTableColumn label="名称" min-width="160">
-            <template #default="{ row }">
-              {{ nameOf(row) }}
-              <ElTag v-if="isBuiltin(row)" size="small" type="info" class="ml-1">
-                内置
-              </ElTag>
-              <ElTag v-if="row.active === true" size="small" type="success" class="ml-1">
-                激活中
-              </ElTag>
-            </template>
-          </ElTableColumn>
-          <ElTableColumn prop="description" label="描述" min-width="200" show-overflow-tooltip />
-          <ElTableColumn label="生效槽位" width="120">
-            <template #default="{ row }">
-              {{ row.effectiveSlots ?? 0 }} / {{ effectiveSlotTotal }}
-              <span v-if="row.inactiveSlots" class="card-header-meta">（另有 {{ row.inactiveSlots }} 个当前架构读不到）</span>
-            </template>
-          </ElTableColumn>
-          <ElTableColumn label="操作" width="300">
-            <template #default="{ row }">
-              <ElButton
-                v-if="readPromptsAllowed"
-                link
-                size="small"
-                data-testid="agents-open-prompts"
-                @click="openPrompts(row)"
-              >
-                提示词槽位
-              </ElButton>
-              <ElButton
-                v-if="writeAllowed && canEditRow(row)"
-                link
-                size="small"
-                :data-testid="`agents-edit-${agentIdOf(row)}`"
-                @click="openEdit(row)"
-              >
-                编辑
-              </ElButton>
-              <ElButton
-                v-if="activateAllowed && row.active !== true"
-                link
-                size="small"
-                :loading="activating === agentIdOf(row)"
-                :data-testid="`agents-activate-${agentIdOf(row)}`"
-                @click="activateRow(row)"
-              >
-                激活
-              </ElButton>
-              <ElButton
-                v-if="deleteAllowed"
-                link
-                size="small"
-                type="danger"
-                :disabled="!!deleteBlockedReason(row)"
-                :title="deleteBlockedReason(row)"
-                :loading="removing === agentIdOf(row)"
-                :data-testid="`agents-delete-${agentIdOf(row)}`"
-                @click="removeRow(row)"
-              >
-                删除
-              </ElButton>
-            </template>
-          </ElTableColumn>
-        </ElTable>
+        <template v-else>
+          <ElEmpty
+            v-if="filteredRows.length === 0"
+            data-testid="agents-filter-empty"
+            description="当前筛选没有匹配的智能体（导出同样为空）。"
+          />
+          <ElTable v-else :data-testid="listStateTestId('agents', phase)" :data="pagedRows" border size="small">
+            <ElTableColumn label="ID" width="260">
+              <template #default="{ row }">
+                {{ agentIdOf(row) }}
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="名称" min-width="160">
+              <template #default="{ row }">
+                {{ nameOf(row) }}
+                <ElTag v-if="isBuiltin(row)" size="small" type="info" class="ml-1">
+                  内置
+                </ElTag>
+                <ElTag v-if="row.active === true" size="small" type="success" class="ml-1">
+                  激活中
+                </ElTag>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn prop="description" label="描述" min-width="200" show-overflow-tooltip />
+            <ElTableColumn label="生效槽位" width="120">
+              <template #default="{ row }">
+                {{ row.effectiveSlots ?? 0 }} / {{ effectiveSlotTotal }}
+                <span v-if="row.inactiveSlots" class="card-header-meta">（另有 {{ row.inactiveSlots }} 个当前架构读不到）</span>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="操作" width="300">
+              <template #default="{ row }">
+                <ElButton
+                  v-if="readDetailAllowed"
+                  link
+                  size="small"
+                  :data-testid="`agents-detail-${agentIdOf(row)}`"
+                  @click="openDetail(row)"
+                >
+                  详情
+                </ElButton>
+                <ElButton
+                  v-if="readPromptsAllowed"
+                  link
+                  size="small"
+                  data-testid="agents-open-prompts"
+                  @click="openPrompts(row)"
+                >
+                  提示词槽位
+                </ElButton>
+                <ElButton
+                  v-if="writeAllowed && canEditRow(row)"
+                  link
+                  size="small"
+                  :data-testid="`agents-edit-${agentIdOf(row)}`"
+                  @click="openEdit(row)"
+                >
+                  编辑
+                </ElButton>
+                <ElButton
+                  v-if="activateAllowed && row.active !== true"
+                  link
+                  size="small"
+                  :loading="activating === agentIdOf(row)"
+                  :data-testid="`agents-activate-${agentIdOf(row)}`"
+                  @click="activateRow(row)"
+                >
+                  激活
+                </ElButton>
+                <ElButton
+                  v-if="deleteAllowed"
+                  link
+                  size="small"
+                  type="danger"
+                  :disabled="!!deleteBlockedReason(row)"
+                  :title="deleteBlockedReason(row)"
+                  :loading="removing === agentIdOf(row)"
+                  :data-testid="`agents-delete-${agentIdOf(row)}`"
+                  @click="removeRow(row)"
+                >
+                  删除
+                </ElButton>
+              </template>
+            </ElTableColumn>
+          </ElTable>
+          <ElPagination
+            v-if="filteredRows.length > pageSize"
+            data-testid="agents-pagination"
+            class="agents-pagination"
+            layout="prev, pager, next"
+            :current-page="page"
+            :page-size="pageSize"
+            :total="filteredRows.length"
+            @current-change="onPageChange"
+          />
+        </template>
       </ElCard>
 
       <ElDialog v-model="createVisible" title="新建智能体（POST /agent-catalog/agents）" width="520px">
@@ -582,6 +870,77 @@ function nameOf(row: AgentProfileRow): string {
           <ElFormItem label="头像标识">
             <ElInput v-model="editForm.avatar" data-testid="agents-edit-avatar" />
           </ElFormItem>
+
+          <ElAlert
+            data-testid="agents-binding-notice"
+            type="warning"
+            :closable="false"
+            class="mb-4"
+            title="绑定为空即禁用：未绑定任何技能 / MCP 工具时，该智能体运行期看不到任何技能，也看不到任何 MCP 工具。"
+          />
+          <ElAlert
+            v-if="bindingLoadError"
+            data-testid="agents-binding-error"
+            type="error"
+            :closable="false"
+            class="mb-4"
+            :title="bindingLoadError"
+          />
+          <ElAlert
+            v-if="bindingNotice"
+            data-testid="agents-binding-fallback-notice"
+            type="info"
+            :closable="false"
+            class="mb-4"
+            :title="bindingNotice"
+          />
+
+          <ElFormItem label="模型（MODEL）">
+            <ElSelect
+              v-model="modelBindingIds"
+              multiple
+              clearable
+              :disabled="modelOptions.length === 0"
+              data-testid="agents-binding-model"
+            >
+              <ElOption v-for="o in modelOptions" :key="o.id" :label="o.label" :value="o.id" />
+            </ElSelect>
+          </ElFormItem>
+          <ElFormItem label="技能（SKILL）">
+            <ElSelect v-model="skillBindingIds" multiple clearable data-testid="agents-binding-skill">
+              <ElOption
+                v-for="o in skillOptions"
+                :key="o.skillCode"
+                :label="o.name || o.skillCode"
+                :value="o.skillCode"
+              />
+            </ElSelect>
+          </ElFormItem>
+          <ElFormItem label="MCP 工具（MCP）">
+            <ElSelect v-if="mcpListAvailable" v-model="mcpBindingIds" multiple clearable data-testid="agents-binding-mcp">
+              <ElOption v-for="o in mcpOptions" :key="o.toolId" :label="o.name || o.toolId" :value="o.toolId" />
+            </ElSelect>
+            <template v-else>
+              <ElInput
+                v-model="mcpFallbackInput"
+                data-testid="agents-binding-mcp-input"
+                placeholder="MCP 清单未启用；填写 tool id 后点「添加」，保存时由服务端校验存在/启用"
+              />
+              <ElButton link size="small" data-testid="agents-binding-mcp-add" @click="addMcpFallbackId()">
+                添加
+              </ElButton>
+            </template>
+          </ElFormItem>
+          <ElFormItem label="编排模式（ORCHESTRATION）">
+            <ElSelect v-model="orchestrationMode" clearable data-testid="agents-binding-orchestration">
+              <ElOption v-for="m in ORCHESTRATION_MODES" :key="m" :label="m" :value="m" />
+            </ElSelect>
+          </ElFormItem>
+          <ElFormItem label="当前绑定（只读）">
+            <div data-testid="agents-binding-echo" class="card-header-meta">
+              {{ bindingEcho }}
+            </div>
+          </ElFormItem>
         </ElForm>
         <template #footer>
           <ElButton @click="editVisible = false">
@@ -597,6 +956,54 @@ function nameOf(row: AgentProfileRow): string {
             保存
           </ElButton>
         </template>
+      </ElDialog>
+
+      <ElAlert
+        v-if="exportNotice"
+        data-testid="agents-export-notice"
+        :title="exportNotice"
+        type="success"
+        :closable="false"
+        class="mb-4"
+      />
+
+      <ElDialog v-model="detailVisible" title="智能体详情（GET /agent-catalog/agents/{id}）" width="560px">
+        <div v-if="detailLoading" data-testid="agents-detail-loading" class="state-block">
+          正在读取详情…
+        </div>
+        <ElAlert
+          v-else-if="detailError"
+          data-testid="agents-detail-error"
+          :title="detailError"
+          type="error"
+          :closable="false"
+        />
+        <ElDescriptions v-else-if="detailRow" :column="1" border data-testid="agents-detail-body">
+          <ElDescriptionsItem label="ID">
+            {{ agentIdOf(detailRow) }}
+          </ElDescriptionsItem>
+          <ElDescriptionsItem label="名称">
+            {{ nameOf(detailRow) }}
+          </ElDescriptionsItem>
+          <ElDescriptionsItem label="描述">
+            {{ detailRow.description ?? '（空）' }}
+          </ElDescriptionsItem>
+          <ElDescriptionsItem label="头像标识">
+            {{ detailRow.avatar || '（空）' }}
+          </ElDescriptionsItem>
+          <ElDescriptionsItem label="内置 / 激活">
+            {{ detailRow.builtin ? '内置' : '普通' }} / {{ detailRow.active ? '激活中' : '未激活' }}
+          </ElDescriptionsItem>
+          <ElDescriptionsItem label="槽位">
+            {{ detailRow.effectiveSlots ?? 0 }} 生效 / {{ detailRow.inactiveSlots ?? 0 }} 当前架构读不到
+          </ElDescriptionsItem>
+          <ElDescriptionsItem label="创建时间">
+            {{ detailRow.createTime ?? '—' }}
+          </ElDescriptionsItem>
+          <ElDescriptionsItem label="更新时间">
+            {{ detailRow.updateTime ?? '—' }}
+          </ElDescriptionsItem>
+        </ElDescriptions>
       </ElDialog>
 
       <ElDrawer v-model="promptVisible" title="Prompt 槽位（GET /agent-catalog/agents/{id}/prompts）" size="55%">
@@ -736,5 +1143,14 @@ function nameOf(row: AgentProfileRow): string {
 
 .ml-1 {
   margin-left: 4px;
+}
+
+.agents-search {
+  width: 260px;
+}
+
+.agents-pagination {
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 </style>

@@ -30,7 +30,7 @@ export function useApplicationMarket() {
   const pageSize = 12;
   let requestId = 0;
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
-  const agents = computed(() => agentStore.agentList.filter(agent => `${agent.agentName} ${agent.agentDescribe}`.toLowerCase().includes(appliedQuery.value.toLowerCase())));
+  const agents = computed(() => agentStore.agentList.filter(agent => `${agent.name} ${agent.description ?? ''}`.toLowerCase().includes(appliedQuery.value.toLowerCase())));
   const applications = computed(() => [
     ...(filter.value !== 'workflow' ? agents.value.map(data => ({ type: 'agent' as const, data })) : []),
     ...(filter.value !== 'agent' ? workflows.value.map(data => ({ type: 'workflow' as const, data })) : []),
@@ -128,6 +128,11 @@ export function useApplicationMarket() {
   async function selectAgent(agent: AgentVO) {
     if (!userStore.token)
       return;
+    // 可选性口径与选择器一致：仅 executable=true 可作为对话对象，非 executable 显式拒绝（不静默回落）
+    if (!agent.executable) {
+      ElMessage.warning('该智能体当前不可执行，请选择其他智能体。');
+      return;
+    }
     chatStore.clearCurrentWorkflow();
     agentStore.setCurrentAgentInfo(agent);
     await router.push({ name: 'chat' });

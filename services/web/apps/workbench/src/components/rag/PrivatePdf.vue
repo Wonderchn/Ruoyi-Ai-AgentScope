@@ -17,6 +17,12 @@ let paintVersion = 0;
 let document: PDFDocumentProxy | null = null;
 let task: PDFDocumentLoadingTask | null = null;
 let renderTask: RenderTask | null = null;
+function clearCanvas() {
+  if (canvas.value) {
+    canvas.value.width = 0;
+    canvas.value.height = 0;
+  }
+}
 function dispose() {
   generation++;
   paintVersion++;
@@ -26,6 +32,7 @@ function dispose() {
   task = null;
   document = null;
   count.value = 0;
+  clearCanvas();
 }
 async function draw() {
   const epoch = generation;
@@ -44,25 +51,27 @@ async function draw() {
       // Cancellation completion releases the canvas before the next render.
     }
   }
-  const pdfPage = await doc.getPage(page.value);
-  if (epoch !== generation || document !== doc || paint !== paintVersion)
-    return;
-  const original = pdfPage.getViewport({ scale: 1 });
-  const scale = Math.min(1.5, 1000 / original.width, Math.sqrt(4000000 / (original.width * original.height)));
-  const viewport = pdfPage.getViewport({ scale });
-  node.width = Math.ceil(viewport.width);
-  node.height = Math.ceil(viewport.height);
-  const context = node.getContext('2d');
-  if (!context)
-    throw new Error('PDF 画布不可用');
-  const current = pdfPage.render({ canvasContext: context, viewport });
-  renderTask = current;
   try {
+    const pdfPage = await doc.getPage(page.value);
+    if (epoch !== generation || document !== doc || paint !== paintVersion)
+      return;
+    const original = pdfPage.getViewport({ scale: 1 });
+    const scale = Math.min(1.5, 1000 / original.width, Math.sqrt(4000000 / (original.width * original.height)));
+    const viewport = pdfPage.getViewport({ scale });
+    node.width = Math.ceil(viewport.width);
+    node.height = Math.ceil(viewport.height);
+    const context = node.getContext('2d');
+    if (!context)
+      throw new Error('PDF 画布不可用');
+    const current = pdfPage.render({ canvasContext: context, viewport });
+    renderTask = current;
     await current.promise;
   }
   catch (cause) {
-    if (epoch === generation && paint === paintVersion && renderTask === current && (cause as Error).name !== 'RenderingCancelledException')
+    if (epoch === generation && paint === paintVersion && document === doc && (cause as Error).name !== 'RenderingCancelledException') {
+      clearCanvas();
       error.value = 'PDF 页面绘制失败';
+    }
   }
 }
 watch(() => props.sourceUrl, async (url) => {

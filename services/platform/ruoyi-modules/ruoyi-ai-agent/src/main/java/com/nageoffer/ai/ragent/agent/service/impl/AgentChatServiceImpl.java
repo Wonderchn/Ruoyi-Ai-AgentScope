@@ -53,11 +53,13 @@ import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.ConfirmResult;
+import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.ToolCallState;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.message.UserMessage;
+import io.agentscope.core.state.AgentState;
 import io.agentscope.core.tool.mcp.McpMeta;
 import lombok.Builder;
 import lombok.RequiredArgsConstructor;
@@ -125,6 +127,12 @@ public class AgentChatServiceImpl implements AgentChatService {
      * （补存盘之后、放闸之前）。
      */
     private final AgentRunScopeRegistry runScopeRegistry;
+
+    /**
+     * P3-BIND：生效档案解析器（rag 侧 bean；字段注入 + 可选，避免改动本类既有构造签名与装配）。
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.nageoffer.ai.ragent.rag.core.prompt.AgentPromptResolver agentPromptResolver;
 
     @Override
     public void streamChat(String question, String conversationId, SseEmitter emitter) {
@@ -280,6 +288,12 @@ public class AgentChatServiceImpl implements AgentChatService {
         AgentRunScope runScope = AgentRunScope.capture(tenantScopeBinder);
         // 上下文传到底，中断时句柄从这里取根 span；捕获同时挂在工具执行上下文上供工具链读
         RuntimeContext runtimeContext = buildRuntimeContext(scope, facts, runScope);
+        // P3-BIND：放入**执行中的生效档案 id**（与提示词解析同源；前端入参不采信）。
+        // 缺失（无 active/builtin）⇒ 属性缺席 ⇒ 技能遮蔽/载入按 fail-closed 空子集/拒载。
+        if (agentPromptResolver != null) {
+            agentPromptResolver.effectiveProfileId().ifPresent(id -> runtimeContext.put(
+                    com.nageoffer.ai.ragent.agent.skill.AgentSkillMaskingMiddleware.AGENT_PROFILE_ID_ATTRIBUTE, id));
+        }
         // 许可接线：请求线程可取到执行主体；缺席（独立应用）退回裸帧形态
         DeliveryPermits permits = deliveryPermits.getIfAvailable();
         ExecutionPrincipal permitPrincipal = PrincipalContext.get();
@@ -328,6 +342,11 @@ public class AgentChatServiceImpl implements AgentChatService {
                                   AgentRunScope runScope) {
         String userId = scope.userId();
         String conversationId = scope.conversationId();
+        // W5/D2：拒绝续跑收尾先精确清掉状态里残留的 ASKING，再走补存盘与清缓存。顺序不能反
+        // ——排到清缓存之后就没有可覆写的缓存对象了。
+        if (scope.confirmMessageId() != null && !scope.confirmApproved()) {
+            runHandle.onRelease(() -> clearDeniedAskingState(agent, userId, conversationId));
+        }
         runHandle.onRelease(() -> {
             // 错误路径与强制断流框架都来不及存盘，驱逐前补存一次，否则本轮工具执行结果会丢
             // 优雅中断已由框架中断分支存盘，不重复保存
@@ -355,6 +374,54 @@ public class AgentChatServiceImpl implements AgentChatService {
         // 放在释放并发锁之后，确保记忆抽取时名额已归还
         runHandle.onRelease(() -> scheduleMemoryExtraction(userId, conversationId,
                 extractionPrincipal, extractionTenantId));
+    }
+
+    /**
+     * W5/D2：拒绝结算后把状态里残留的 ASKING 工具调用精确覆写掉。
+     *
+     * <p><b>为什么需要。</b>框架 {@code ReActAgent.CallExecution#applyConfirmResults} 对被拒调用
+     * 只往上下文尾部追加一条 {@code ToolResultState.DENIED} 的结果消息，并不改写原 assistant
+     * 消息里 tool_use 的 state；该块因此停在 ASKING，轮末存盘后 {@code ai_agent_state} 残留
+     * asking（approve 腿因工具真跑被覆盖归零，deny 腿无人覆盖——真机实证 CD.2 asking_rows=1）。
+     *
+     * <p><b>为什么在释放钩子里做。</b>选点依据：状态对象由框架在 {@code activateSlotForContext}
+     * 从 store 重新载入并放进 {@code stateCache}，随后由框架在同一条链上改写、存盘；只有等这轮
+     * 跑完（释放钩子最前、清缓存之前）拿到的才是框架已改写的当前对象。放在续跑启动前改写 ASKING，
+     * 会改到框架运行时要读的那份状态；放在清缓存之后则没有可覆写的缓存对象。两处都错。
+     *
+     * <p><b>精确性。</b>只把「最后一条带 ASKING tool_use 的 assistant 消息」里的 ASKING 改成
+     * FINISHED（框架自己的终态档，见 {@link ToolCallState}），其它消息/其它状态一概不碰；
+     * 无命中就不存盘——不给零副作用路径平添一次写。不删 state 行，会话上下文完整保留。
+     * 字面量锚：与套件 CD.2 读取的 {@code payload->'context'[].content[].state} 同源。
+     */
+    private static void clearDeniedAskingState(ReActAgent agent, String userId, String conversationId) {
+        AgentState state = agent.getAgentState(userId, conversationId);
+        if (state == null) {
+            return;
+        }
+        List<Msg> context = state.contextMutable();
+        boolean changed = false;
+        for (int i = context.size() - 1; i >= 0; i--) {
+            Msg msg = context.get(i);
+            if (msg.getRole() != MsgRole.ASSISTANT) {
+                continue;
+            }
+            List<ContentBlock> content = msg.getContent();
+            if (content.stream().noneMatch(block -> block instanceof ToolUseBlock tool
+                    && tool.getState() == ToolCallState.ASKING)) {
+                continue;
+            }
+            List<ContentBlock> rebuilt = content.stream()
+                    .map(block -> block instanceof ToolUseBlock tool && tool.getState() == ToolCallState.ASKING
+                            ? tool.withState(ToolCallState.FINISHED)
+                            : block)
+                    .toList();
+            context.set(i, msg.withContent(rebuilt));
+            changed = true;
+        }
+        if (changed) {
+            agent.saveAgentState(userId, conversationId);
+        }
     }
 
     /**

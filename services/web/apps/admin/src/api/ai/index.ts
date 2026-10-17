@@ -76,6 +76,7 @@
 import type { PlatformClient } from '@ruoyi/platform-client/http';
 import type { PageParams } from '../../utils/list';
 import { createAgentProfilesApi } from './agentProfiles';
+import { createIngestionTaskRunsApi } from './ingestionTaskRuns';
 import { createKnowledgeChunksApi } from './knowledgeChunks';
 import { createRuntimeConfigApi } from './runtimeConfig';
 
@@ -391,6 +392,18 @@ export function createAiApi(client: PlatformClient) {
       removePipeline: (id: string) =>
         client.del<unknown>(`/api/ai/v1/ingestion/pipelines/${encodeURIComponent(id)}`),
     },
+
+    /**
+     * 摄取**任务面（canonical run surface）**（F06:1/2-A，2026-10-15）—— **本形态真实可达**。
+     *
+     * 6 条 `/api/ai/v1/ingestion/tasks**` 白名单路由（`AiGatewayController.ROUTES` 逐条登记）：
+     * 读=run.get（列表/详情/节点），写=run.submit（提交/重试，头 `Idempotency-Key` 必填）/
+     * run.cancel（取消）；内层 handler = `IngestionTaskRuntimeController`（类级 `/internal/ai/v1`）。
+     * 信封 = `ApiEnvelope`（**整数** code=200），列表 `data` 是 `IPage`（`records/total/current/size`），
+     * 查询参数逐字 `pageNo`/`pageSize`/`status`；GET 走网关字节分支（交付回执由网关自行消费，
+     * **前端不得追加任何 ACK/release 请求**）。契约见 `./ingestionTaskRuns.ts`。
+     */
+    ingestionTaskRuns: createIngestionTaskRunsApi(client),
 
     /**
      * 摄取**任务面**（`IngestionTaskController`）。⚠️ 仍未装配：BLOCKED-BY-EMBEDDED-REGISTRY。

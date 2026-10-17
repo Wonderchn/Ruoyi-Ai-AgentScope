@@ -48,6 +48,9 @@ public class TenantConversationReadRepository {
 
     private final JdbcTemplate jdbc;
 
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.nageoffer.ai.ragent.runtime.port.ChatAttachmentPort attachments;
+
     public TenantConversationReadRepository(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
     }
@@ -152,6 +155,10 @@ public class TenantConversationReadRepository {
             // 空页不发起反馈查询：没有 id 可查，多发一条必空 SQL 只是噪声。
             return rows;
         }
+        if(attachments!=null) {
+            rows=rows.stream().map(row->row.withAttachments(attachments.list(tenantId,memberId,userId,
+                    "RAG",conversationId,row.id()))).toList();
+        }
         Map<String, Integer> activeVotes = loadActiveVotes(tenantId, userId, rows);
         if (activeVotes.isEmpty()) {
             return rows;
@@ -226,13 +233,25 @@ public class TenantConversationReadRepository {
                              Timestamp createTime, String thinkingContent, Integer thinkingDuration,
                              String sources, String recommendedQuestions, String retrievedChunks,
                              String replyToMessageId, String modelName, Integer totalTokens,
-                             Integer vote) {
+                             Integer vote, List<Map<String,Object>> attachments) {
+
+        public MessageRow(String id,String role,String content,String messageStatus,Timestamp createTime,
+                String thinkingContent,Integer thinkingDuration,String sources,String recommendedQuestions,
+                String retrievedChunks,String replyToMessageId,String modelName,Integer totalTokens,Integer vote) {
+            this(id,role,content,messageStatus,createTime,thinkingContent,thinkingDuration,sources,
+                    recommendedQuestions,retrievedChunks,replyToMessageId,modelName,totalTokens,vote,List.of());
+        }
+
+        MessageRow withAttachments(List<Map<String,Object>> refs) {
+            return new MessageRow(id,role,content,messageStatus,createTime,thinkingContent,thinkingDuration,
+                    sources,recommendedQuestions,retrievedChunks,replyToMessageId,modelName,totalTokens,vote,refs);
+        }
 
         /** 富化用：同一条消息换一个 vote 值（记录不可变，只能重建）。 */
         MessageRow withVote(Integer newVote) {
             return new MessageRow(id, role, content, messageStatus, createTime, thinkingContent,
                     thinkingDuration, sources, recommendedQuestions, retrievedChunks,
-                    replyToMessageId, modelName, totalTokens, newVote);
+                    replyToMessageId, modelName, totalTokens, newVote, attachments);
         }
     }
 }

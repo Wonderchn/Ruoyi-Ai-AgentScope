@@ -101,8 +101,12 @@ public class AgentChatController {
      */
     @GetMapping(value = "/agent/v1/chat", produces = "text/event-stream;charset=UTF-8")
     public SseEmitter chat(@RequestParam @ChatQuestion String question,
-                           @RequestParam(required = false) String conversationId) {
+                           @RequestParam(required = false) String conversationId,
+                           @RequestParam(required = false) String attachments) {
         ExecutionPrincipal principal = AgentEngineSurface.requireScope("run.stream");
+        if(attachments!=null && !attachments.isBlank())
+            throw new com.nageoffer.ai.ragent.runtime.RunApiException(com.nageoffer.ai.ragent.runtime.RunErrorCode.BAD_REQUEST,
+                    "Attachments require the canonical run submission endpoint; this Agent stream accepts text only");
         SseEmitter emitter = new SseEmitter(agentProperties.getSseTimeoutMs());
         AgentEngineSurface.asUser(principal, () -> {
             agentChatService.streamChat(question, conversationId, emitter);
@@ -110,6 +114,9 @@ public class AgentChatController {
         });
         return emitter;
     }
+
+    /** Source-compatible internal callers remain text-only. */
+    public SseEmitter chat(String question,String conversationId) {return chat(question,conversationId,null);}
 
     /**
      * 审批确认 SSE。scope = {@code run.approve}（C13.4 登记，V6 已播种 {@code ai:run:approve}）。

@@ -44,21 +44,35 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 @Service
-@RequiredArgsConstructor
 public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
 
     /**
      * 与 ai_agent_profile.avatar 列宽一致
      */
     private static final int AVATAR_MAX_LENGTH = 32;
+
+    /**
+     * 列表/详情/导出共用的目录排序：内置在前 → createTime 升序（nullsLast）。
+     * 抽取自 {@code list()} 的原有比较器，三处口径逐字一致（F09:0 只加读取面，不改排序）。
+     */
+    private static final Comparator<AgentProfileDO> PROFILE_ORDER =
+            Comparator.comparing((AgentProfileDO each) -> !isTrue(each.getBuiltin()))
+                    .thenComparing(AgentProfileDO::getCreateTime, Comparator.nullsLast(Comparator.naturalOrder()));
+
+    /** 导出时间列口径：ISO-8601（UTC 瞬时），保证导出可被下游解析而不依赖本地时区。 */
+    private static final DateTimeFormatter EXPORT_TIME = DateTimeFormatter.ISO_INSTANT;
 
     private final AgentProfileMapper agentProfileMapper;
     private final AgentPromptMapper agentPromptMapper;
@@ -69,6 +83,47 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
     /** 公共模板域只读仓库（R12 卡6：「取槽位默认值」的模板域回退）。 */
     private final PublicTemplateRepository templateRepository;
 
+    /** P3-BIND：绑定权威（F09:3）；保存路径先校验后落库，读取/运行消费由 Stage C/D 接。 */
+    private final com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService bindingService;
+
+    /**
+     * 生产装配：8 参（含绑定权威）。
+     */
+    public AgentProfileAdminServiceImpl(AgentProfileMapper agentProfileMapper,
+                                        AgentPromptMapper agentPromptMapper,
+                                        AgentPromptResolver agentPromptResolver,
+                                        AgentPromptCacheManager cacheManager,
+                                        OrchestrationProperties orchestrationProperties,
+                                        BizChangeLogContext bizChangeLogContext,
+                                        PublicTemplateRepository templateRepository,
+                                        com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService bindingService) {
+        this.agentProfileMapper = agentProfileMapper;
+        this.agentPromptMapper = agentPromptMapper;
+        this.agentPromptResolver = agentPromptResolver;
+        this.cacheManager = cacheManager;
+        this.orchestrationProperties = orchestrationProperties;
+        this.bizChangeLogContext = bizChangeLogContext;
+        this.templateRepository = templateRepository;
+        this.bindingService = bindingService;
+    }
+
+    /**
+     * 兼容构造：不带绑定权威（绑定为空的老路径/既有测试）。
+     *
+     * <p>只有<b>不传</b> {@code bindings} 的请求会走这条路；一旦请求携带绑定而绑定权威缺席，
+     * 显式失败（不静默跳过绑定）。
+     */
+    public AgentProfileAdminServiceImpl(AgentProfileMapper agentProfileMapper,
+                                        AgentPromptMapper agentPromptMapper,
+                                        AgentPromptResolver agentPromptResolver,
+                                        AgentPromptCacheManager cacheManager,
+                                        OrchestrationProperties orchestrationProperties,
+                                        BizChangeLogContext bizChangeLogContext,
+                                        PublicTemplateRepository templateRepository) {
+        this(agentProfileMapper, agentPromptMapper, agentPromptResolver, cacheManager, orchestrationProperties,
+                bizChangeLogContext, templateRepository, null);
+    }
+
     @Override
     public AgentProfileListVO list() {
         OrchestrationMode mode = orchestrationProperties.getMode();
@@ -76,23 +131,11 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
 
         List<AgentProfileVO> agents = agentProfileMapper.selectList(Wrappers.lambdaQuery(AgentProfileDO.class))
                 .stream()
-                .sorted(Comparator.comparing((AgentProfileDO each) -> !isTrue(each.getBuiltin()))
-                        .thenComparing(AgentProfileDO::getCreateTime, Comparator.nullsLast(Comparator.naturalOrder())))
+                .sorted(PROFILE_ORDER)
                 .map(each -> {
                     List<AgentPromptSlot> own = configuredSlots.getOrDefault(each.getId(), List.of());
                     int effective = (int) own.stream().filter(slot -> slot.isEffectiveIn(mode)).count();
-                    return AgentProfileVO.builder()
-                            .id(each.getId())
-                            .name(each.getName())
-                            .description(each.getDescription())
-                            .avatar(each.getAvatar())
-                            .builtin(isTrue(each.getBuiltin()))
-                            .active(isTrue(each.getActive()))
-                            .effectiveSlots(effective)
-                            .inactiveSlots(own.size() - effective)
-                            .createTime(each.getCreateTime())
-                            .updateTime(each.getUpdateTime())
-                            .build();
+                    return toVO(each, effective, own.size() - effective);
                 })
                 .toList();
         return AgentProfileListVO.builder()
@@ -100,6 +143,68 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
                 .effectiveSlotTotal(AgentPromptSlot.effectiveIn(mode).size())
                 .agents(agents)
                 .build();
+    }
+
+    /**
+     * F09:0 详情：单条读取，投影与 {@code list()} 同形（同一个 {@link #toVO}）。
+     *
+     * <p>不存在即 {@code ClientException}（经 {@link #mustLoad(String)}），不回落空对象、
+     * 不返回邻行——"没找到"必须与"找到但字段为空"可区分。
+     */
+    @Override
+    public AgentProfileVO detail(String id) {
+        AgentProfileDO profile = mustLoad(id);
+        OrchestrationMode mode = orchestrationProperties.getMode();
+        List<AgentPromptSlot> own = configuredSlotsOf(id);
+        int effective = (int) own.stream().filter(slot -> slot.isEffectiveIn(mode)).count();
+        return toVO(profile, effective, own.size() - effective);
+    }
+
+    /**
+     * F09:0 导出：NDJSON（一行一个智能体），字段与掩码见接口 javadoc。
+     *
+     * <p>只读：与 {@code list()} 同一 {@code PROFILE_ORDER} 排序、同一 {@code mode} 生效判定；
+     * {@code keyword} 过滤与前端列表筛选同口径（名称/描述、大小写不敏感），保证"导出的行集合
+     * == 页面上筛出来的行集合"。槽位只输出 {@code slotKey} ＋ {@code "masked":true}，
+     * 提示词正文永不进入导出（比"脱敏后仍带原文"更强）。
+     */
+    @Override
+    public String exportDefinition(String keyword) {
+        OrchestrationMode mode = orchestrationProperties.getMode();
+        String needle = StrUtil.isBlank(keyword) ? null : StrUtil.trim(keyword).toLowerCase(Locale.ROOT);
+        Map<String, List<AgentPromptSlot>> configuredSlots = loadConfiguredSlots();
+
+        StringBuilder ndjson = new StringBuilder();
+        agentProfileMapper.selectList(Wrappers.lambdaQuery(AgentProfileDO.class))
+                .stream()
+                .sorted(PROFILE_ORDER)
+                .filter(profile -> matches(profile, needle))
+                .forEach(profile -> {
+                    List<AgentPromptSlot> own = configuredSlots.getOrDefault(profile.getId(), List.of());
+                    int effective = (int) own.stream().filter(slot -> slot.isEffectiveIn(mode)).count();
+                    ndjson.append(exportLine(profile, own, effective)).append('\n');
+                });
+        return ndjson.toString();
+    }
+
+    /**
+     * P3-BIND：逐行读回该 Agent 的绑定（F09:3 读侧回显，与保存契约对称）。
+     *
+     * <ul>
+     *   <li>确无绑定 ⇒ 空列表（页面按替换语义发空集 = 无操作）；</li>
+     *   <li>绑定权威缺席（兼容构造，仅老测试路径）⇒ {@code null}：读不出就**不冒充**"无绑定"，
+     *       页面据 {@code null}/{@code undefined} 保持"本次不改绑定"。</li>
+     * </ul>
+     * 读路径直接复用既有权威 {@link AgentProfileBindingService#bindingsOf(String)}（租户收窄、enabled、排序）。
+     */
+    private List<AgentProfileVO.BindingRef> readBindings(String agentProfileId) {
+        if (bindingService == null) {
+            return null;
+        }
+        return bindingService.bindingsOf(agentProfileId).stream()
+                .map(ref -> new AgentProfileVO.BindingRef(
+                        ref.type() == null ? null : ref.type().name(), ref.refId()))
+                .toList();
     }
 
     /**
@@ -134,9 +239,19 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
             extra = BizChangeLogContext.SNAPSHOT_EXPRESSION,
             condition = BizChangeLogContext.RECORD_CONDITION
     )
+    @Transactional(rollbackFor = Exception.class)
     public String create(AgentProfileSaveRequest requestParam) {
         String name = trimmedName(requestParam);
         assertNameAvailable(name, null);
+        java.util.List<com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService.BindingReference> bindings
+                = toBindingReferences(requestParam);
+        if (requestParam.getBindings() != null) {
+            if (bindingService == null) {
+                throw new ClientException("绑定权威未装配，拒绝保存带绑定的请求");
+            }
+            // 先核引用、后落库 ⇒ 引用不合法时零持久化（零部分保存）
+            bindingService.validateReferences(bindings);
+        }
 
         AgentProfileDO profile = AgentProfileDO.builder()
                 .name(name)
@@ -146,6 +261,12 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
                 .active(0)
                 .build();
         agentProfileMapper.insert(profile);
+        if (requestParam.getBindings() != null) {
+            if (bindingService == null) {
+                throw new ClientException("绑定权威未装配，拒绝保存带绑定的请求");
+            }
+            bindingService.replaceBindings(profile.getId(), bindings);
+        }
         bizChangeLogContext.put(profile.getId(), null, profile);
         return profile.getId();
     }
@@ -160,10 +281,20 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
             extra = BizChangeLogContext.SNAPSHOT_EXPRESSION,
             condition = BizChangeLogContext.RECORD_CONDITION
     )
+    @Transactional(rollbackFor = Exception.class)
     public void update(String id, AgentProfileSaveRequest requestParam) {
         AgentProfileDO before = mustLoadEditable(id);
         String name = trimmedName(requestParam);
         assertNameAvailable(name, id);
+        java.util.List<com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService.BindingReference> bindings
+                = toBindingReferences(requestParam);
+        if (requestParam.getBindings() != null) {
+            if (bindingService == null) {
+                throw new ClientException("绑定权威未装配，拒绝保存带绑定的请求");
+            }
+            // 先核引用、后落库 ⇒ 引用不合法时零持久化（零部分保存）
+            bindingService.validateReferences(bindings);
+        }
 
         // 用显式 set 而非 updateById：默认 NOT_NULL 策略会跳过 null，描述就清不掉
         agentProfileMapper.update(Wrappers.lambdaUpdate(AgentProfileDO.class)
@@ -171,7 +302,39 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
                 .set(AgentProfileDO::getDescription, StrUtil.trimToNull(requestParam.getDescription()))
                 .set(AgentProfileDO::getAvatar, trimmedAvatar(requestParam))
                 .eq(AgentProfileDO::getId, id));
+        if (requestParam.getBindings() != null) {
+            if (bindingService == null) {
+                throw new ClientException("绑定权威未装配，拒绝保存带绑定的请求");
+            }
+            bindingService.replaceBindings(id, bindings);
+        }
         bizChangeLogContext.put(id, before, agentProfileMapper.selectById(id));
+    }
+
+    /** 线路形状 → 绑定引用；类型闭集解析失败即拒（不静默忽略）。 */
+    private java.util.List<com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService.BindingReference>
+            toBindingReferences(AgentProfileSaveRequest requestParam) {
+        if (requestParam == null || requestParam.getBindings() == null) {
+            return java.util.List.of();
+        }
+        java.util.List<com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService.BindingReference> refs
+                = new java.util.ArrayList<>();
+        for (AgentProfileSaveRequest.BindingRef wire : requestParam.getBindings()) {
+            if (wire == null || !org.springframework.util.StringUtils.hasText(wire.getType())
+                    || !org.springframework.util.StringUtils.hasText(wire.getRefId())) {
+                throw new ClientException("绑定引用不完整（type 与 refId 都必须提供）");
+            }
+            com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService.RefType type;
+            try {
+                type = com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService.RefType
+                        .valueOf(wire.getType().trim().toUpperCase(java.util.Locale.ROOT));
+            } catch (IllegalArgumentException e) {
+                throw new ClientException("未知绑定类型：" + wire.getType());
+            }
+            refs.add(new com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService.BindingReference(
+                    type, wire.getRefId().trim()));
+        }
+        return refs;
     }
 
     @Override
@@ -394,6 +557,117 @@ public class AgentProfileAdminServiceImpl implements AgentProfileAdminService {
             throw new ClientException("内置智能体不可编辑或删除，如需调整请复制一份新建");
         }
         return profile;
+    }
+
+    /**
+     * 目录投影的唯一构造点（list / detail 共用），避免两处字段口径漂移。
+     *
+     * <p>P3-BIND 集成（2026-10-16）：绑定回显并入本构造点（原 c87ddffd 在 list() 内联
+     * builder；与 F09:0 的 toVO 抽取语义合并后收敛到一处），空绑定⇒[]、权威缺席⇒null。
+     */
+    private AgentProfileVO toVO(AgentProfileDO profile, int effective, int inactive) {
+        return AgentProfileVO.builder()
+                .id(profile.getId())
+                .name(profile.getName())
+                .description(profile.getDescription())
+                .avatar(profile.getAvatar())
+                .builtin(isTrue(profile.getBuiltin()))
+                .active(isTrue(profile.getActive()))
+                .effectiveSlots(effective)
+                .inactiveSlots(inactive)
+                .createTime(profile.getCreateTime())
+                .updateTime(profile.getUpdateTime())
+                .bindings(readBindings(profile.getId()))
+                .build();
+    }
+
+    /**
+     * 单条详情的槽位集合：只查该智能体、只投影两个键（不把全表或大段正文捞回内存）。
+     * 与 {@link #loadConfiguredSlots()} 的"已配置"判定逐字一致（isNotNull + ne("")）。
+     */
+    private List<AgentPromptSlot> configuredSlotsOf(String agentId) {
+        return agentPromptMapper.selectList(Wrappers.lambdaQuery(AgentPromptDO.class)
+                        .select(AgentPromptDO::getAgentId, AgentPromptDO::getSlotKey)
+                        .eq(AgentPromptDO::getAgentId, agentId)
+                        .isNotNull(AgentPromptDO::getContent)
+                        .ne(AgentPromptDO::getContent, ""))
+                .stream()
+                .map(prompt -> AgentPromptSlot.find(prompt.getSlotKey()))
+                .flatMap(Optional::stream)
+                .toList();
+    }
+
+    /** 导出筛选：与页面列表同一口径（名称/描述、大小写不敏感包含）；needle 为 null 即不过滤。 */
+    private static boolean matches(AgentProfileDO profile, String needle) {
+        if (needle == null) {
+            return true;
+        }
+        return StrUtil.emptyIfNull(profile.getName()).toLowerCase(Locale.ROOT).contains(needle)
+                || StrUtil.emptyIfNull(profile.getDescription()).toLowerCase(Locale.ROOT).contains(needle);
+    }
+
+    /**
+     * 导出单行（NDJSON）。字段恰为：id/name/description/avatar/builtin/active/
+     * effectiveSlots/inactiveSlots/createTime/updateTime/configuredSlots；
+     * {@code configuredSlots} 只含 slotKey 与 {@code "masked":true}（提示词正文不出现）。
+     */
+    private static String exportLine(AgentProfileDO profile, List<AgentPromptSlot> own, int effective) {
+        StringBuilder slots = new StringBuilder("[");
+        for (int i = 0; i < own.size(); i++) {
+            if (i > 0) {
+                slots.append(',');
+            }
+            slots.append("{\"slotKey\":\"").append(escape(own.get(i).name())).append("\",\"masked\":true}");
+        }
+        slots.append(']');
+
+        return new StringBuilder(256)
+                .append("{\"id\":").append(jsonString(profile.getId()))
+                .append(",\"name\":").append(jsonString(profile.getName()))
+                .append(",\"description\":").append(jsonString(profile.getDescription()))
+                .append(",\"avatar\":").append(jsonString(profile.getAvatar()))
+                .append(",\"builtin\":").append(isTrue(profile.getBuiltin()))
+                .append(",\"active\":").append(isTrue(profile.getActive()))
+                .append(",\"effectiveSlots\":").append(effective)
+                .append(",\"inactiveSlots\":").append(own.size() - effective)
+                .append(",\"createTime\":").append(jsonString(isoTime(profile.getCreateTime())))
+                .append(",\"updateTime\":").append(jsonString(isoTime(profile.getUpdateTime())))
+                .append(",\"configuredSlots\":").append(slots)
+                .append('}')
+                .toString();
+    }
+
+    private static String isoTime(Date time) {
+        return time == null ? null : EXPORT_TIME.format(time.toInstant());
+    }
+
+    /** null 与空串都如实写成 JSON 字符串（不伪造、不省略键）。 */
+    private static String jsonString(String raw) {
+        return raw == null ? "null" : "\"" + escape(raw) + "\"";
+    }
+
+    /** JSON 字符串转义：控制字符走 \\uXXXX，防止名称/描述里的引号换行破坏 NDJSON 逐行可解析。 */
+    private static String escape(String raw) {
+        StringBuilder out = new StringBuilder(raw.length() + 8);
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (c == '"') {
+                out.append("\\\"");
+            } else if (c == '\\') {
+                out.append("\\\\");
+            } else if (c == '\n') {
+                out.append("\\n");
+            } else if (c == '\r') {
+                out.append("\\r");
+            } else if (c == '\t') {
+                out.append("\\t");
+            } else if (c < 0x20) {
+                out.append(String.format("\\u%04x", (int) c));
+            } else {
+                out.append(c);
+            }
+        }
+        return out.toString();
     }
 
     private static boolean isTrue(Integer flag) {

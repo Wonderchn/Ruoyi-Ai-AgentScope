@@ -37,19 +37,34 @@ import java.util.List;
 @SuppressWarnings({"SqlDialectInspection", "SqlNoDataSourceInspection", "SqlResolve"})
 public interface AgentStateMapper {
 
+    /**
+     * 写入/覆盖一行状态，并连同写侧 provenance（{@code source_refs / source_policy_version /
+     * source_acl_version}）落库（F-AC6-1）。
+     *
+     * <p>读侧（{@code PgAgentStateStore.queryPayload}）在内嵌形态（{@code ai.integration.enabled}）
+     * 要求三列非空、且来源仍是当前活事实，否则整行<b>静默读不回</b>；因此冲突分支必须写
+     * {@code EXCLUDED.*}——曾经这里把三列<b>恒清 NULL</b>，真实轮次写出的行永远过不了读闸，
+     * state 上下文不跨轮积累。三参同时为 null 表示"无可核验来源"（合法降级形态，读侧照旧拒绝）。
+     */
     @Insert("""
-            INSERT INTO ai_agent_state (tenant_id, member_id, user_id, session_id, state_key, payload, create_time, update_time)
-            VALUES (#{tenantId}, #{memberId}, #{userId}, #{sessionId}, #{stateKey}, #{payload}::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            INSERT INTO ai_agent_state (tenant_id, member_id, user_id, session_id, state_key, payload,
+              source_refs, source_policy_version, source_acl_version, create_time, update_time)
+            VALUES (#{tenantId}, #{memberId}, #{userId}, #{sessionId}, #{stateKey}, #{payload}::jsonb,
+              #{sourceRefs}::jsonb, #{sourcePolicyVersion}, #{sourceAclVersion}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT (tenant_id, member_id, session_id, state_key)
-            DO UPDATE SET payload = EXCLUDED.payload, source_refs=NULL, source_policy_version=NULL,
-              source_acl_version=NULL, update_time = CURRENT_TIMESTAMP
+            DO UPDATE SET payload = EXCLUDED.payload, source_refs = EXCLUDED.source_refs,
+              source_policy_version = EXCLUDED.source_policy_version,
+              source_acl_version = EXCLUDED.source_acl_version, update_time = CURRENT_TIMESTAMP
             """)
     void upsert(@Param("tenantId") String tenantId,
                 @Param("memberId") String memberId,
                 @Param("userId") String userId,
                 @Param("sessionId") String sessionId,
                 @Param("stateKey") String stateKey,
-                @Param("payload") String payload);
+                @Param("payload") String payload,
+                @Param("sourceRefs") String sourceRefs,
+                @Param("sourcePolicyVersion") Integer sourcePolicyVersion,
+                @Param("sourceAclVersion") Integer sourceAclVersion);
 
     @Select("""
             SELECT payload

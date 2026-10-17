@@ -116,6 +116,12 @@ public class AiGatewayController {
             new Route("POST", "/knowledge-bases/retrievals", "kb.retrieve"),
             new Route("GET", "/documents/{id}", "document.read"),
             new Route("GET", "/documents/{id}/content", "document.download"),
+            // F04 private chat attachments: authenticated gateway only (no public object URLs).
+            // Internal handlers (scan-visible, LocalWhitelistHandlerCoverageTest):
+            //  POST /internal/ai/v1/chat/attachments          <- ChatAttachmentController.upload
+            //  GET  /internal/ai/v1/chat/attachments/{id}/content <- ChatAttachmentController.content
+            new Route("POST", "/chat/attachments", "document.upload"),
+            new Route("GET", "/chat/attachments/{attachmentId}/content", "document.read"),
             new Route("GET", "/conversations", "conversation.read"),
             new Route("GET", "/conversations/{id}", "conversation.read"),
             new Route("GET", "/conversations/{id}/messages", "conversation.read"),
@@ -223,9 +229,10 @@ public class AiGatewayController {
             // （类级 @RequestMapping("/internal/ai/v1")，与 RunController/AiResourceController/
             // UploadController/AgentActionController 同形），故内层 handler 现在真实存在。
             //
-            // 只有**两条 JSON** 在此登记：
+            // 只有**三条 JSON** 在此登记：
             new Route("POST", "/agent/v1/stop", "run.cancel"),
             new Route("GET", "/agent/v1/meta", "agent.execute"),
+            new Route("GET", "/agent/v1/agents", "agent.execute"),
             // 另两条是 text/event-stream（GET /agent/v1/chat、POST /agent/v1/chat/confirm），
             // **刻意不在此登记**：本通用转发有 2s/2MiB 上限且不做 SSE，登记了只会超时或缓冲失败。
             // 它们由 AiGatewayStreamController 逐条精确映射（专用流式受限传输，先于 catch-all 生效）。
@@ -235,8 +242,9 @@ public class AiGatewayController {
             //   agent.execute -> ai:agent:execute  (V6)
             // 权威值以 P1CurrentAuthorizationTest 为准：旧 34 条逐项集合相等 +
             // F13-SLICE-1 批准的 flow.* 4 条 + F13-A1 批准的 flow.node.write 1 条 +
-            // F11-A1 批准的 skill.* 4 条 = 43，
-            // 故不得新增动作（**不得新增第 44 个动作**）。
+            // F11-A1 批准的 skill.* 4 条 + F06:1/2-A 批准的 ingestion.run 1 条 = 44。
+            // （本轮由 F06:1/2-A 显式批准新增**第 44 个动作** `ingestion.run`；
+            //   再往上新增（第 45 个）仍需具名批准。）
             // （注：本条注释曾长期写作"26"、后写作"34"并引用过期行号 209，均为过期信息；
             //   此处按实测权威更正并保留说明。）
             new Route("GET", "/memories", "memory.read"),
@@ -266,6 +274,8 @@ public class AiGatewayController {
             // 而**不登记** /agent-catalog/agent-skills 的任何路径；
             // 该缺口已由 S2-F11-A1 接管——7 条见本表末尾的 agent-skills 段（同一前缀家族）。
             new Route("GET", "/agent-catalog/agents", "agent.list"),
+            new Route("GET", "/agent-catalog/agents/export", "agent.read"),
+            new Route("GET", "/agent-catalog/agents/{id}", "agent.read"),
             new Route("POST", "/agent-catalog/agents", "agent.write"),
             new Route("PUT", "/agent-catalog/agents/{id}", "agent.write"),
             new Route("DELETE", "/agent-catalog/agents/{id}", "agent.delete"),
@@ -333,8 +343,9 @@ public class AiGatewayController {
             // pageQuery、KnowledgeDocumentController.permitJson/file），**不并入**
             // AiEmbeddedAdminDeliveryConfiguration 的 advice —— 两处都铸就是双铸（契约回执泄漏）。
             //
-            // 未达面（B / 显式 NOT_RUN，不在此处冒充）：multipart 上传
-            // （POST /knowledge-base/{kbId}/docs/upload）经本地传输的部件直读、
+            // 未达面（B / 显式 NOT_RUN，不在此处冒充）：
+            // （multipart 上传 POST /knowledge-base/{kbId}/docs/upload 自 F05:1 起已由专用流
+            //   通道承接，见下方该 route 的注记——不再是未达面）
             // 真实 S3/OSS（rag.storage.type=s3|oss，F22 op3）、
             // MQ 承载的两条事务消息操作（KB 删除 / 文档重解析：内嵌无 broker 时显式 503）。
             new Route("GET", "/knowledge-base/docs/ingestion-spec-schema", "config.read"),
@@ -343,16 +354,18 @@ public class AiGatewayController {
             new Route("GET", "/knowledge-base/docs/{docId}/chunk-logs", "document.read"),
             new Route("GET", "/knowledge-base/docs/{docId}/preview", "document.read"),
             new Route("GET", "/knowledge-base/docs/{docId}/file", "document.download"),
-            // ⚠️ 该条是 17 条里唯一**带限制**的：文件部件经本地通配分支可达
-            //    （MultipartResolutionDelegate 的 getParts 回退），但 multipart **表单字段**
-            //    （sourceType/sourceLocation/processMode/pipelineId/ingestionSpec/scheduleCron/
-            //    scheduleEnabled）不随转发体转送（BodyProvidingRequest 只暴露 query）⇒ 内层
-            //    @ModelAttribute 绑成 null。管理员 UI 的上传走 workbench/P2 专用流通道
-            //    （POST /documents/uploads），不经本行；本行服务的是 ragent 管理面既有端点。
-            //    限制已登记为判据（LocalKnowledgeAdminRouteDispatchTest：表单字段断言恒 null，
-            //    将来接通专用流通道时会翻红提醒同步改注释/判据）。**不要**用"再包一层
-            //    StandardMultipartHttpServletRequest"去修：实测表单字段会变成 ApplicationPart
-            //    形态导致绑定 400（red/a1-fixfield-web/，复核 F1）。
+            // F05:1 薄适配（2026-10-16）：该 admin 上传已于运行期由专用流通道承接——
+            // AiGatewayStreamController 的精确 @PostMapping("/knowledge-base/{kbId}/docs/upload")
+            // 先于本 catch-all 生效，经 multipart 旁路排除（GatewayMultipartConfiguration /
+            // GatewayRawUploadFilter **成对**登记该路径）+ local MultipartTargetRequest 直调内层，
+            // 原始 multipart（文件 + 表单字段 sourceType/sourceLocation/processMode/pipelineId/
+            // ingestionSpec/scheduleCron/scheduleEnabled）整包到达内层 @ModelAttribute，
+            // 内层零形状改动（200 + 整数 code + KnowledgeDocumentVO）。
+            // ⚠️ 本行 route 登记**保留不动**：它是该 path/动作在路由表中的权威登记
+            //    （动作 document.upload 与专用流同一把钥匙，零新增动作/权限行/迁移）；
+            //    运行期该路径由专用流精确映射命中，不再落到下面 catch-all 的转发分支。
+            // **不要**用"再包一层 StandardMultipartHttpServletRequest"去修 catch-all 分支：
+            //    实测表单字段会变成 ApplicationPart 形态导致绑定 400（red/a1-fixfield-web/，复核 F1）。
             new Route("POST", "/knowledge-base/{kbId}/docs/upload", "document.upload"),
             new Route("POST", "/knowledge-base/docs/{docId}/chunk", "document.ingest"),
             new Route("PUT", "/knowledge-base/docs/{docId}", "kb.write"),
@@ -402,6 +415,17 @@ public class AiGatewayController {
             new Route("POST", "/ingestion/pipelines", "config.publish"),
             new Route("PUT", "/ingestion/pipelines/{id}", "config.publish"),
             new Route("DELETE", "/ingestion/pipelines/{id}", "config.publish"),
+            // F06:1/2（canonical 摄取任务面，2026-10-15）。六行逐条登记；内层 handler =
+            // IngestionTaskRuntimeController（类级 /internal/ai/v1，由 AiEmbeddedIngestionConfiguration
+            // 显式装配）。三条 GET 在网关走字节分支，内层同时给整数 ApiEnvelope 与两个回执头
+            // （回执由控制器自铸 DeliveryPermits）。段数不冲突：/ingestion/tasks 为 2 段，
+            // /ingestion/tasks/{id}[/nodes|/cancel|/retry] 为 3..4 段。
+            new Route("GET", "/ingestion/tasks", "run.get"),
+            new Route("GET", "/ingestion/tasks/{id}", "run.get"),
+            new Route("GET", "/ingestion/tasks/{id}/nodes", "run.get"),
+            new Route("POST", "/ingestion/tasks", "run.submit"),
+            new Route("POST", "/ingestion/tasks/{id}/cancel", "run.cancel"),
+            new Route("POST", "/ingestion/tasks/{id}/retry", "run.submit"),
             new Route("GET", "/dashboard/overview", "run.get"),
             new Route("GET", "/dashboard/performance", "run.get"),
             new Route("GET", "/dashboard/trends", "run.get"),

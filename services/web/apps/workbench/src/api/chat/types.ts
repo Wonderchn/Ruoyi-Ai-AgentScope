@@ -12,6 +12,8 @@
  * 保留：工作流公开面（另一个保留模块）与历史消息行（真实读路径）。
  */
 
+import type { ChatAttachment } from '../ai/attachments';
+
 /**
  * 工作流 start 节点输入参数定义（来自 GET /workflow/{uuid} 返回的 start 节点
  * inputConfig.user_inputs）。type: 1=文本 2=数字 3=? 4=文件 5=布尔。
@@ -65,6 +67,7 @@ export interface GetChatListParams {
  * 其中 `sources` / `recommended_questions` / `retrieved_chunks` 是 jsonb 文本。
  */
 export interface ChatMessageVo {
+  attachments?: ChatAttachment[];
   /** 消息内容 */
   content?: string;
   /** 主键 */

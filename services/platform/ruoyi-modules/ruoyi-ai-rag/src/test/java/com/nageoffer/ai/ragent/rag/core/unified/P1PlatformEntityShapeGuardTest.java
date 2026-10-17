@@ -167,7 +167,7 @@ class P1PlatformEntityShapeGuardTest {
                 .as("fixed retained entity inventory after legacy module retirement; no empty or partial scan")
                 .containsOnlyKeys(
                         "AgentContextCompactionDO", "AgentConversationDO", "AgentMemoryDO",
-                        "AgentMemoryExtractionDO", "AgentMessageDO", "AgentProfileDO",
+                        "AgentMemoryExtractionDO", "AgentMessageDO", "AgentProfileBindingDO", "AgentProfileDO",
                         "AgentPromptDO", "AgentSkillDO", "AiFlowComponentDO", "AiFlowEdgeDO",
                         "AiFlowNodeDO", "AiFlowWorkflowDO", "BizChangeLogDO",
                         "ChatConfig", "ChatMessage", "ChatModel",
