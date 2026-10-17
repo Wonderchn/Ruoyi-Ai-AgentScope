@@ -33,6 +33,7 @@ import com.nageoffer.ai.ragent.rag.core.prompt.AgentPromptResolver;
 import com.nageoffer.ai.ragent.rag.core.skill.AgentSkillRegistry;
 import com.nageoffer.ai.ragent.rag.service.KnowledgeSearchFacade;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -216,6 +217,14 @@ class AiEmbeddedDualDeclarationCoexistenceTest {
                         () -> mock(com.nageoffer.ai.ragent.agent.memory.AgentMemoryRepository.class))
                 .withBean(com.nageoffer.ai.ragent.rag.core.skill.AgentSkillRegistry.class,
                         () -> mock(com.nageoffer.ai.ragent.rag.core.skill.AgentSkillRegistry.class));
+    }
+
+    @BeforeEach
+    void resetThreadContextClassLoader() {
+        // Earlier Spring/Tomcat tests can leave a stopped WebappClassLoader as the TCCL.
+        // Mockito then generates mock classes in that loader, and equals() fails later with
+        // NoClassDefFoundError for MockMethodInterceptor$ForEquals. Pin the test class loader.
+        Thread.currentThread().setContextClassLoader(getClass().getClassLoader());
     }
 
     @Test
