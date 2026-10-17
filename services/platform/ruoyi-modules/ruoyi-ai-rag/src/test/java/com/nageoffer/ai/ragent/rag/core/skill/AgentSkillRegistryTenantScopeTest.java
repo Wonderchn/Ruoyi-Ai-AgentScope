@@ -28,6 +28,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
 import java.util.List;
 import java.util.Set;
@@ -160,6 +161,30 @@ class AgentSkillRegistryTenantScopeTest {
         AgentSkillRegistry registry = new AgentSkillRegistry(agentSkillMapper, cacheManager, null);
 
         assertThat(registry.listEnabled()).extracting(AgentSkill::skillCode).containsExactly("skill-a");
+    }
+
+    /**
+     * embedded 生产装配（{@code AiEmbeddedAgentEngineClosureConfiguration#agentSkillRegistry}）用
+     * 3 参构造创建本对象——本用例复刻同一形态：@Bean 返回的实例由 Spring 在实例化后完成
+     * {@code @Autowired} 字段注入，端口因此必须可用（否则真机上仍会 tenant.context.missing）。
+     */
+    @Test
+    @DisplayName("3 参 @Bean 形态：Spring 字段注入回填端口，冷缓存查询同样在租户作用域内")
+    void beanCreatedRegistryReceivesTenantScopeBinderByFieldInjection() {
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.registerBean(AgentSkillMapper.class, () -> agentSkillMapper);
+            context.registerBean(AgentSkillCacheManager.class, () -> cacheManager);
+            context.registerBean(TenantScopeBinder.class, () -> binder);
+            context.registerBean("agentSkillRegistry", AgentSkillRegistry.class,
+                    () -> new AgentSkillRegistry(agentSkillMapper, cacheManager, null));
+            context.refresh();
+
+            List<AgentSkill> skills = context.getBean(AgentSkillRegistry.class).listEnabled();
+
+            assertThat(skills).extracting(AgentSkill::skillCode).containsExactly("skill-a", "skill-b");
+            assertThat(binderCalls.get()).isEqualTo(1);
+            assertThat(boundTenant.get()).isEqualTo(TENANT);
+        }
     }
 
     // ------------------------------------------------------------------ 夹具
