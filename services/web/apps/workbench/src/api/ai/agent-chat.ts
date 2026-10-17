@@ -32,7 +32,7 @@ import type { SseEvent } from '@ruoyi/events/sse';
 import type { AgentConfirmCall, AgentDurationSource, AgentRawFrame, AgentTextKind, AgentToolStatus } from '../../pages/chat/layouts/chatWithId/types';
 import { identityJson } from '@ruoyi/events/rag';
 import { SseFrameParser } from '@ruoyi/events/sse';
-import { AI_GATEWAY_PREFIX, agentConversationMessagesPath } from '../session/paths';
+import { agentConversationMessagesPath, AI_GATEWAY_PREFIX } from '../session/paths';
 import { createEngineApi } from './engine';
 
 /** 引擎面路径前缀（`AiGatewayController` 白名单逐字）。 */

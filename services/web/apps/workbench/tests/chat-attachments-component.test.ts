@@ -96,15 +96,17 @@ function mountComponent(attachments: Array<Record<string, unknown>> = []) {
   return { ctx, scope, user, downloads, created, revoked, requested, realmError };
 }
 
-const attachment = (overrides: Record<string, unknown> = {}) => ({
-  id: 'att-0123456789abcdef0123456789abcdef',
-  version: 1,
-  filename: '图.png',
-  mimeType: 'image/png',
-  sizeBytes: 10,
-  sha256: 'd'.repeat(64),
-  ...overrides,
-});
+function attachment(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'att-0123456789abcdef0123456789abcdef',
+    version: 1,
+    filename: '图.png',
+    mimeType: 'image/png',
+    sizeBytes: 10,
+    sha256: 'd'.repeat(64),
+    ...overrides,
+  };
+}
 const blob = (type = 'image/png') => ({ size: 10, type });
 
 async function settle(): Promise<void> {

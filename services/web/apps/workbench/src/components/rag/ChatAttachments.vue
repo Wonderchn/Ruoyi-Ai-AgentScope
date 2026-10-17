@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ChatAttachment } from '../../api/ai/attachments';
-import { createAttachmentClient } from '../../api/ai/attachments';
 import { useUserStore } from '@/stores/modules/user';
+import { createAttachmentClient } from '../../api/ai/attachments';
 import PrivatePdf from './PrivatePdf.vue';
 
 const props = defineProps<{ attachments?: ChatAttachment[] }>();
@@ -43,7 +43,10 @@ async function open(attachment: ChatAttachment) {
     error.value = failure instanceof Error ? failure.message : '附件不可用';
   }
 }
-watch(() => user.authEpoch, () => { close(); error.value = ''; }, { flush: 'sync' });
+watch(() => user.authEpoch, () => {
+  close();
+  error.value = '';
+}, { flush: 'sync' });
 onBeforeUnmount(close);
 </script>
 

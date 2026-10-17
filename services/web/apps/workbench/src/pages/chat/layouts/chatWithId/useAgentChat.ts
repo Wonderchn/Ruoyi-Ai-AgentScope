@@ -27,7 +27,7 @@ import type {
 import type { AgentEvent, AgentTimelineContext, AgentTimelineState, PendingConfirm } from './agentTimeline';
 import type { AgentRawFrame, AgentTurn } from './types';
 import { computed, ref, shallowRef, watch } from 'vue';
-import { AgentChatFailure, AGENT_RAW_FRAME_LIMIT, createAgentChatClient, frameToRawEntry, parseAgentFrame } from '../../../../api/ai/agent-chat';
+import { AGENT_RAW_FRAME_LIMIT, AgentChatFailure, createAgentChatClient, frameToRawEntry, parseAgentFrame } from '../../../../api/ai/agent-chat';
 import { applyAgentEvent, buildTimelineRows, createAgentTimeline, projectReplayMessages } from './agentTimeline';
 
 /** 工厂拿到的选项（不含工厂本身，避免自引用）。 */

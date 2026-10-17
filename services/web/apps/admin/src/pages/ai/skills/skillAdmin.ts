@@ -157,10 +157,10 @@ export const EXPORT_FIELDS = [
 ] as const;
 
 /** `key=value` / `key: value` 形式的外部凭据。 */
-const CREDENTIAL_KEY_VALUE = /((?:api[_-]?key|access[_-]?key|secret|token|password|passwd|authorization|bearer)\s*[:=]?\s*)(["']?)([A-Za-z0-9._~+/=-]{4,})/gi;
+const CREDENTIAL_KEY_VALUE = /((?:api[_-]?key|access[_-]?key|secret|token|password|passwd|authorization|bearer)\s*(?:[:=]\s*)?)(["']?)([\w.~+/=-]{4,})/gi;
 
 /** 独立形态的长令牌（`sk-…` / `ghp-…` / `xoxb-…` 等）。 */
-const CREDENTIAL_TOKEN = /\b(?:sk|pk|ghp|gho|xox[baprs])-[A-Za-z0-9_-]{6,}\b/gi;
+const CREDENTIAL_TOKEN = /\b(?:sk|pk|ghp|gho|xox[baprs])-[\w-]{6,}\b/gi;
 
 /** 外部凭据脱敏：只保留"这里有凭据"，不保留凭据本身。 */
 export function maskCredentials(value: unknown): string {

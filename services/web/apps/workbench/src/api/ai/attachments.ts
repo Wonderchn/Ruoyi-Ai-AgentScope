@@ -109,9 +109,7 @@ export function createAttachmentClient(options: {
     },
     async download(attachment: ChatAttachment): Promise<Blob> {
       const identity = options.identity();
-      const response = await fetch(withBase(options.baseUrl,
-        `/api/ai/v1/chat/attachments/${encodeURIComponent(attachment.id)}/content?version=${attachment.version}`),
-      { headers: headers(identity), cache: 'no-store' });
+      const response = await fetch(withBase(options.baseUrl, `/api/ai/v1/chat/attachments/${encodeURIComponent(attachment.id)}/content?version=${attachment.version}`), { headers: headers(identity), cache: 'no-store' });
       if (response.status === 401)
         options.onAuthExpired();
       if (!response.ok)

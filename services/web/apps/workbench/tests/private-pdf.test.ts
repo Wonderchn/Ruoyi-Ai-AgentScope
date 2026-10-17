@@ -36,7 +36,8 @@ function mounted() {
     numPages: 2,
     destroy: async () => {},
     getPage: async () => {
-      if (failPage) throw new Error('page unavailable');
+      if (failPage)
+        throw new Error('page unavailable');
       return {
         getViewport: ({ scale }: { scale: number }) => ({ width: 360 * scale, height: 480 * scale }),
         render: () => ({
@@ -63,7 +64,10 @@ function mounted() {
   const exports: Record<string, any> = {};
   vm.runInNewContext(output, {
     exports,
-    require: (name: string) => { assert.ok(name in modules, `unexpected import ${name}`); return modules[name]; },
+    require: (name: string) => {
+      assert.ok(name in modules, `unexpected import ${name}`);
+      return modules[name];
+    },
     fetch: async () => ({ ok: mode !== 'denied', status: mode === 'denied' ? 403 : 200, arrayBuffer: async () => new ArrayBuffer(8) }),
     console: { warn: () => {} },
     Uint8Array,
@@ -73,11 +77,19 @@ function mounted() {
   const ctx = scope.run(() => exports.default.setup(props, { expose: () => {} }));
   ctx.canvas.value = canvas;
   return {
-    ctx, canvas, props,
+    ctx,
+    canvas,
+    props,
     mode: (value: string) => { mode = value; },
     failPage: () => { failPage = true; },
-    rejectRender: () => { assert.ok(renderFailure); renderFailure(new Error('old paint failed')); },
-    unmount: () => { beforeUnmount(); scope.stop(); },
+    rejectRender: () => {
+      assert.ok(renderFailure);
+      renderFailure(new Error('old paint failed'));
+    },
+    unmount: () => {
+      beforeUnmount();
+      scope.stop();
+    },
   };
 }
 

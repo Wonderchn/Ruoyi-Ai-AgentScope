@@ -20,6 +20,7 @@
   纯逻辑（校验/守卫/脱敏/CSV）在 `./skillAdmin.ts`，本页只做接线与状态。
 -->
 <script setup lang="ts">
+import type { SkillRow } from './skillAdmin';
 import { computed, ref } from 'vue';
 import { aiApi } from '@/api';
 import { usePermission } from '@/composables/usePermission';
@@ -31,9 +32,9 @@ import {
   SKILL_PERMISSIONS,
   skillCreateBody,
   skillIdOf,
+
   skillUpdateBody,
   toSkillsCsv,
-  type SkillRow,
 } from './skillAdmin';
 
 const { can } = usePermission();

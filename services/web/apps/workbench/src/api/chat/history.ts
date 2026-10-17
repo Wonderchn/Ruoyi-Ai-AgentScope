@@ -17,7 +17,8 @@
  * 经 `toChatAttachments` 逐条校验后才进入视图。
  */
 
-import { toAttachmentInteger, type ChatAttachment } from '../ai/attachments';
+import type { ChatAttachment } from '../ai/attachments';
+import { toAttachmentInteger } from '../ai/attachments';
 
 /** 后端 `TenantConversationReadRepository.MessageRow` 的线上形状（jsonb 为 JSON 文本）。 */
 export interface ConversationMessageRow {
@@ -119,8 +120,9 @@ export function toChatAttachments(value: unknown): ChatAttachment[] {
       || typeof filename !== 'string' || filename === ''
       || typeof mimeType !== 'string' || mimeType === ''
       || sizeBytesNumber === undefined
-      || typeof sha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(sha256))
+      || typeof sha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(sha256)) {
       continue;
+    }
     result.push({ id, version: versionNumber, filename, mimeType, sizeBytes: sizeBytesNumber, sha256: sha256.toLowerCase() });
   }
   return result;

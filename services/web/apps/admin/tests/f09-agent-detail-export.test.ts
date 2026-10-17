@@ -96,10 +96,9 @@ describe('F09:0 页面接线（源码判据）', () => {
   it('详情与导出入口存在，且共用 ai:agent:read 读权限门', () => {
     assert.ok(page.includes('data-testid="agents-search"'), '缺少筛选输入（导出同口径）');
     assert.ok(page.includes('data-testid="agents-export"'), '缺少导出入口');
-    assert.ok(page.includes('`agents-detail-${agentIdOf(row)}`'), '缺少逐行详情入口');
+    assert.ok(/`agents-detail-\$\{agentIdOf\(row\)\}`/.test(page), '缺少逐行详情入口');
     assert.ok(page.includes('readDetailAllowed'), '详情/导出必须受读权限门约束');
-    assert.equal(/readDetailAllowed\s*=\s*computed\(\(\)\s*=>\s*mayHold\(checker,\s*AGENT_PERMISSIONS\.read\)\)/.test(page), true,
-      '读权限必须复用 AGENT_PERMISSIONS.read（ai:agent:read）');
+    assert.equal(/readDetailAllowed\s*=\s*computed\(\(\)\s*=>\s*mayHold\(checker,\s*AGENT_PERMISSIONS\.read\)\)/.test(page), true, '读权限必须复用 AGENT_PERMISSIONS.read（ai:agent:read）');
   });
 
   it('详情抽屉/对话框有加载、失败、正文三态，且导出有结果提示', () => {

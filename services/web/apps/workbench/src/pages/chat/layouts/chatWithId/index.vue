@@ -4,11 +4,9 @@ import type { AnyObject } from 'typescript-api-pro';
 import type { BubbleProps } from 'vue-element-plus-x/types/Bubble';
 import type { BubbleListInstance } from 'vue-element-plus-x/types/BubbleList';
 import type { ThinkingStatus } from 'vue-element-plus-x/types/Thinking';
+import type { ChatAttachment } from '../../../../api/ai/attachments';
 import type { ToolCallInfo } from './types';
 import type { UseAgentChatBaseOptions } from './useAgentChat';
-import type { ChatAttachment } from '../../../../api/ai/attachments';
-import { createAttachmentClient } from '../../../../api/ai/attachments';
-import ChatAttachments from '../../../../components/rag/ChatAttachments.vue';
 import { nextTick } from 'vue';
 import { useRoute } from 'vue-router';
 import { listKnowledgeBases } from '@/api/rag';
@@ -18,6 +16,8 @@ import { useChatStore } from '@/stores/modules/chat';
 import { useSessionStore } from '@/stores/modules/session';
 import { useUserStore } from '@/stores/modules/user';
 import { codeXRender } from '@/utils/markdownRenderers';
+import { createAttachmentClient } from '../../../../api/ai/attachments';
+import ChatAttachments from '../../../../components/rag/ChatAttachments.vue';
 import AgentRawLogDrawer from './components/AgentRawLogDrawer.vue';
 import AgentTurn from './components/AgentTurn.vue';
 import MessageDetails from './components/MessageDetails.vue';
@@ -62,29 +62,29 @@ const attachmentClient = createAttachmentClient({
 });
 async function retryAttachment(row: PendingAttachment) {
   const epoch = userStore.authEpoch;
-  row.status = 'uploading'; row.error = ''; row.progress = 0;
+  row.status = 'uploading';
+  row.error = '';
+  row.progress = 0;
   try {
-    const attachment = await attachmentClient.upload(row.file, percent => { if (epoch === userStore.authEpoch) row.progress = percent; });
-    if (epoch !== userStore.authEpoch) return;
-    row.attachment = attachment; row.status = 'ready';
+    const attachment = await attachmentClient.upload(row.file, (percent) => {
+      if (epoch === userStore.authEpoch)
+        row.progress = percent;
+    });
+    if (epoch !== userStore.authEpoch)
+      return;
+    row.attachment = attachment;
+    row.status = 'ready';
   }
   catch (failure) {
-    if (epoch !== userStore.authEpoch) return;
-    row.status = 'failed'; row.error = failure instanceof Error ? failure.message : '上传失败';
+    if (epoch !== userStore.authEpoch)
+      return;
+    row.status = 'failed';
+    row.error = failure instanceof Error ? failure.message : '上传失败';
   }
 }
-async function selectAttachments(event: Event) {
-  const input = event.target as HTMLInputElement;
-  const files = Array.from(input.files ?? []);
-  input.value = '';
-  if (pendingAttachments.value.length + files.length > 4) { runError.value = '每条消息最多四个附件'; return; }
-  for (const file of files) {
-    const row: PendingAttachment = reactive({ file, progress: 0, status: 'uploading' });
-    pendingAttachments.value.push(row);
-    await retryAttachment(row);
-  }
-}
-watch(() => userStore.authEpoch, () => { pendingAttachments.value = []; }, { flush: 'sync' });
+watch(() => userStore.authEpoch, () => {
+  pendingAttachments.value = [];
+}, { flush: 'sync' });
 
 // 用户头像
 const avatar = computed(() => {
@@ -224,6 +224,21 @@ const {
   cancel: cancelRun,
   reset: resetRun,
 } = chatRun;
+
+async function selectAttachments(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = '';
+  if (pendingAttachments.value.length + files.length > 4) {
+    runError.value = '每条消息最多四个附件';
+    return;
+  }
+  for (const file of files) {
+    const row: PendingAttachment = reactive({ file, progress: 0, status: 'uploading' });
+    pendingAttachments.value.push(row);
+    await retryAttachment(row);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Agent 模式（F10 op1/op5 + F15 op2）：选中智能体即走引擎面 `…/agent/v1/chat`
@@ -456,8 +471,7 @@ async function submitMessage(content: string) {
   const conversationId = route.params?.id !== 'not_login' ? String(route.params?.id) : undefined;
   const resourceRefs = selectedKbIds.value.map(id => ({ type: 'knowledge_base', id }));
 
-  const sent = await submitRun({ text, conversationId, resourceRefs,
-    attachments: pendingAttachments.value.flatMap(row => row.attachment ? [{ id: row.attachment.id, version: row.attachment.version }] : []) });
+  const sent = await submitRun({ text, conversationId, resourceRefs, attachments: pendingAttachments.value.flatMap(row => row.attachment ? [{ id: row.attachment.id, version: row.attachment.version }] : []) });
   if (sent && epoch === userStore.authEpoch)
     pendingAttachments.value = [];
 
@@ -839,8 +853,12 @@ function sendMessageByKey(key: number) {
           <input type="file" multiple accept="image/png,image/jpeg,application/pdf,text/plain" :disabled="senderBusy" aria-label="添加附件" @change="selectAttachments">
           <div v-for="(row, index) in pendingAttachments" :key="`${row.file.name}-${index}`">
             {{ row.file.name }} · {{ row.status === 'ready' ? '已上传' : `${row.progress}%` }} {{ row.error }}
-            <el-button v-if="row.status === 'failed'" size="small" @click="retryAttachment(row)">重试</el-button>
-            <el-button :disabled="row.status === 'uploading'" size="small" @click="pendingAttachments.splice(index, 1)">移除</el-button>
+            <el-button v-if="row.status === 'failed'" size="small" @click="retryAttachment(row)">
+              重试
+            </el-button>
+            <el-button :disabled="row.status === 'uploading'" size="small" @click="pendingAttachments.splice(index, 1)">
+              移除
+            </el-button>
           </div>
           <small>PNG / JPEG / PDF / UTF-8 文本，单个 5 MiB，最多四个。图片支持由所选模型决定。</small>
         </div>

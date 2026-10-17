@@ -115,7 +115,8 @@ async function editPipeline(row: Record<string, unknown>) {
     if (!editorRequestIsCurrent(seq, targetId))
       return;
     const nodes = pipeline?.nodes;
-    if (!Array.isArray(nodes)) throw new Error('流水线节点响应格式无效');
+    if (!Array.isArray(nodes))
+      throw new Error('流水线节点响应格式无效');
     editorNodes.value = nodes.map((node: Record<string, unknown>) => ({
       ...node,
       enabled: node.enabled !== false,
@@ -392,7 +393,9 @@ function str(row: Record<string, unknown>, key: string): string {
         <ElTableColumn prop="createTime" label="创建时间" width="180" />
         <ElTableColumn label="节点配置" width="140">
           <template #default="{ row }">
-            <ElButton link data-testid="ingestion-edit-nodes" @click="editPipeline(row)">条件与启停</ElButton>
+            <ElButton link data-testid="ingestion-edit-nodes" @click="editPipeline(row)">
+              条件与启停
+            </ElButton>
           </template>
         </ElTableColumn>
       </ElTable>
@@ -494,19 +497,27 @@ function str(row: Record<string, unknown>, key: string): string {
 
     <ElDrawer v-model="editorVisible" title="流水线节点条件与启停" size="65%">
       <ElAlert v-if="editorError" :title="editorError" type="error" :closable="false" />
-      <div v-if="editorLoading" class="state-block">正在加载节点…</div>
+      <div v-if="editorLoading" class="state-block">
+        正在加载节点…
+      </div>
       <ElTable v-else :data="editorNodes" border>
         <ElTableColumn prop="nodeId" label="节点" width="160" />
         <ElTableColumn prop="nodeType" label="类型" width="120" />
         <ElTableColumn label="启用" width="90">
-          <template #default="{ row }"><ElSwitch v-model="row.enabled" data-testid="ingestion-node-enabled" /></template>
+          <template #default="{ row }">
+            <ElSwitch v-model="row.enabled" data-testid="ingestion-node-enabled" />
+          </template>
         </ElTableColumn>
         <ElTableColumn label="执行条件（JSON，留空表示始终执行）" min-width="240">
-          <template #default="{ row }"><ElInput v-model="row.conditionText" type="textarea" :rows="3" data-testid="ingestion-node-condition" /></template>
+          <template #default="{ row }">
+            <ElInput v-model="row.conditionText" type="textarea" :rows="3" data-testid="ingestion-node-condition" />
+          </template>
         </ElTableColumn>
       </ElTable>
       <template #footer>
-        <ElButton :disabled="!editorSavable" :loading="editorSaving" data-testid="ingestion-save-nodes" @click="savePipelineNodes()">保存</ElButton>
+        <ElButton :disabled="!editorSavable" :loading="editorSaving" data-testid="ingestion-save-nodes" @click="savePipelineNodes()">
+          保存
+        </ElButton>
       </template>
     </ElDrawer>
 

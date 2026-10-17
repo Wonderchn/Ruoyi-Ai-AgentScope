@@ -417,7 +417,8 @@ describe('F06 编辑器加载门禁与异步隔离（红先行补丁的判据）
       assert.notEqual(page.editorError.value, '', '门禁拒绝保存后错误提示必须仍非空');
       assert.equal(page.editorVisible.value, true, '门禁拒绝不得关闭抽屉');
       // 红跑会走完 update→loadPipelines；给挂起的列表请求收尾，避免遗留未决 promise
-      if (fake.pending.length > 0) fake.take().resolve(ipage([]));
+      if (fake.pending.length > 0)
+        fake.take().resolve(ipage([]));
       await saving.catch(() => {});
     }
     finally { scope.stop(); }
@@ -463,7 +464,8 @@ describe('F06 编辑器加载门禁与异步隔离（红先行补丁的判据）
       assert.equal(fake.updates[0].id, 'p-b', '保存必须 PUT 到当前打开(B)的 pipelineId');
       assert.equal(fake.updates[0].body.nodes.length, 1);
       assert.equal(fake.updates[0].body.nodes[0].nodeId, 'b-node', 'PUT 的节点必须是 B 的');
-      if (fake.pending.length > 0) fake.take().resolve(ipage([]));
+      if (fake.pending.length > 0)
+        fake.take().resolve(ipage([]));
       await saving;
     }
     finally { scope.stop(); }
@@ -495,7 +497,8 @@ describe('F06 编辑器加载门禁与异步隔离（红先行补丁的判据）
       assert.equal(fake.updates.length, 1);
       assert.equal(fake.updates[0].id, 'p-b', '保存必须 PUT 到当前打开(B)的 pipelineId');
       assert.equal(fake.updates[0].body.nodes[0].nodeId, 'b-node');
-      if (fake.pending.length > 0) fake.take().resolve(ipage([]));
+      if (fake.pending.length > 0)
+        fake.take().resolve(ipage([]));
       await saving;
     }
     finally { scope.stop(); }

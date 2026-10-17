@@ -182,6 +182,15 @@ const createVisible = ref(false);
 const creating = ref(false);
 const createForm = ref<AgentProfileForm>(profileFormOf());
 
+const editBindings = ref<AgentProfileBindingRef[]>([]);
+/**
+ * 打开编辑时行上是否**携带**绑定数据（`Array.isArray(row.bindings)`）。
+ *
+ * 安全兜底：老服务端/边界行缺 `bindings`（`undefined`/`null`）⇒ 保存体**不发**该字段，
+ * 保持服务端 `null`＝"本次不改绑定"；仅当行确实带回数据（含空数组）才按替换语义发。
+ */
+const editCarriesBindings = ref(false);
+
 function openCreate() {
   createForm.value = profileFormOf();
   // 创建侧本轮不接绑定（R-4 默认不落）：清空编辑态绑定，避免跨对话框串味。
@@ -270,14 +279,6 @@ type BindingType = AgentProfileBindingRef['type'];
 /** 编排模式闭集（与服务端 ORCHESTRATION_MODES 对齐；未知码服务端拒绝）。 */
 const ORCHESTRATION_MODES = ['REACT', 'PLAN_ACT'] as const;
 
-const editBindings = ref<AgentProfileBindingRef[]>([]);
-/**
- * 打开编辑时行上是否**携带**绑定数据（`Array.isArray(row.bindings)`）。
- *
- * 安全兜底：老服务端/边界行缺 `bindings`（`undefined`/`null`）⇒ 保存体**不发**该字段，
- * 保持服务端 `null`＝"本次不改绑定"；仅当行确实带回数据（含空数组）才按替换语义发。
- */
-const editCarriesBindings = ref(false);
 const modelOptions = ref<Array<{ id: string; label: string }>>([]);
 const skillOptions = ref<Array<{ skillCode: string; name: string }>>([]);
 const mcpOptions = ref<Array<{ toolId: string; name: string }>>([]);
@@ -733,84 +734,84 @@ function nameOf(row: AgentProfileRow): string {
             description="当前筛选没有匹配的智能体（导出同样为空）。"
           />
           <ElTable v-else :data-testid="listStateTestId('agents', phase)" :data="pagedRows" border size="small">
-          <ElTableColumn label="ID" width="260">
-            <template #default="{ row }">
-              {{ agentIdOf(row) }}
-            </template>
-          </ElTableColumn>
-          <ElTableColumn label="名称" min-width="160">
-            <template #default="{ row }">
-              {{ nameOf(row) }}
-              <ElTag v-if="isBuiltin(row)" size="small" type="info" class="ml-1">
-                内置
-              </ElTag>
-              <ElTag v-if="row.active === true" size="small" type="success" class="ml-1">
-                激活中
-              </ElTag>
-            </template>
-          </ElTableColumn>
-          <ElTableColumn prop="description" label="描述" min-width="200" show-overflow-tooltip />
-          <ElTableColumn label="生效槽位" width="120">
-            <template #default="{ row }">
-              {{ row.effectiveSlots ?? 0 }} / {{ effectiveSlotTotal }}
-              <span v-if="row.inactiveSlots" class="card-header-meta">（另有 {{ row.inactiveSlots }} 个当前架构读不到）</span>
-            </template>
-          </ElTableColumn>
-          <ElTableColumn label="操作" width="300">
-            <template #default="{ row }">
-              <ElButton
-                v-if="readDetailAllowed"
-                link
-                size="small"
-                :data-testid="`agents-detail-${agentIdOf(row)}`"
-                @click="openDetail(row)"
-              >
-                详情
-              </ElButton>
-              <ElButton
-                v-if="readPromptsAllowed"
-                link
-                size="small"
-                data-testid="agents-open-prompts"
-                @click="openPrompts(row)"
-              >
-                提示词槽位
-              </ElButton>
-              <ElButton
-                v-if="writeAllowed && canEditRow(row)"
-                link
-                size="small"
-                :data-testid="`agents-edit-${agentIdOf(row)}`"
-                @click="openEdit(row)"
-              >
-                编辑
-              </ElButton>
-              <ElButton
-                v-if="activateAllowed && row.active !== true"
-                link
-                size="small"
-                :loading="activating === agentIdOf(row)"
-                :data-testid="`agents-activate-${agentIdOf(row)}`"
-                @click="activateRow(row)"
-              >
-                激活
-              </ElButton>
-              <ElButton
-                v-if="deleteAllowed"
-                link
-                size="small"
-                type="danger"
-                :disabled="!!deleteBlockedReason(row)"
-                :title="deleteBlockedReason(row)"
-                :loading="removing === agentIdOf(row)"
-                :data-testid="`agents-delete-${agentIdOf(row)}`"
-                @click="removeRow(row)"
-              >
-                删除
-              </ElButton>
-            </template>
-          </ElTableColumn>
-        </ElTable>
+            <ElTableColumn label="ID" width="260">
+              <template #default="{ row }">
+                {{ agentIdOf(row) }}
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="名称" min-width="160">
+              <template #default="{ row }">
+                {{ nameOf(row) }}
+                <ElTag v-if="isBuiltin(row)" size="small" type="info" class="ml-1">
+                  内置
+                </ElTag>
+                <ElTag v-if="row.active === true" size="small" type="success" class="ml-1">
+                  激活中
+                </ElTag>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn prop="description" label="描述" min-width="200" show-overflow-tooltip />
+            <ElTableColumn label="生效槽位" width="120">
+              <template #default="{ row }">
+                {{ row.effectiveSlots ?? 0 }} / {{ effectiveSlotTotal }}
+                <span v-if="row.inactiveSlots" class="card-header-meta">（另有 {{ row.inactiveSlots }} 个当前架构读不到）</span>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="操作" width="300">
+              <template #default="{ row }">
+                <ElButton
+                  v-if="readDetailAllowed"
+                  link
+                  size="small"
+                  :data-testid="`agents-detail-${agentIdOf(row)}`"
+                  @click="openDetail(row)"
+                >
+                  详情
+                </ElButton>
+                <ElButton
+                  v-if="readPromptsAllowed"
+                  link
+                  size="small"
+                  data-testid="agents-open-prompts"
+                  @click="openPrompts(row)"
+                >
+                  提示词槽位
+                </ElButton>
+                <ElButton
+                  v-if="writeAllowed && canEditRow(row)"
+                  link
+                  size="small"
+                  :data-testid="`agents-edit-${agentIdOf(row)}`"
+                  @click="openEdit(row)"
+                >
+                  编辑
+                </ElButton>
+                <ElButton
+                  v-if="activateAllowed && row.active !== true"
+                  link
+                  size="small"
+                  :loading="activating === agentIdOf(row)"
+                  :data-testid="`agents-activate-${agentIdOf(row)}`"
+                  @click="activateRow(row)"
+                >
+                  激活
+                </ElButton>
+                <ElButton
+                  v-if="deleteAllowed"
+                  link
+                  size="small"
+                  type="danger"
+                  :disabled="!!deleteBlockedReason(row)"
+                  :title="deleteBlockedReason(row)"
+                  :loading="removing === agentIdOf(row)"
+                  :data-testid="`agents-delete-${agentIdOf(row)}`"
+                  @click="removeRow(row)"
+                >
+                  删除
+                </ElButton>
+              </template>
+            </ElTableColumn>
+          </ElTable>
           <ElPagination
             v-if="filteredRows.length > pageSize"
             data-testid="agents-pagination"

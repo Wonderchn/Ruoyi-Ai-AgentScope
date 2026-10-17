@@ -108,15 +108,17 @@ function fakeAttachmentClient() {
   return client;
 }
 
-const attachmentOf = (overrides: Record<string, unknown> = {}) => ({
-  id: 'att-1',
-  version: 1,
-  filename: '报告.pdf',
-  mimeType: 'application/pdf',
-  sizeBytes: 12,
-  sha256: 'b'.repeat(64),
-  ...overrides,
-});
+function attachmentOf(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'att-1',
+    version: 1,
+    filename: '报告.pdf',
+    mimeType: 'application/pdf',
+    sizeBytes: 12,
+    sha256: 'b'.repeat(64),
+    ...overrides,
+  };
+}
 
 const fakeFile = (name: string, type: string, size = 12) => ({ name, type, size });
 const fileEvent = (files: unknown[]) => ({ target: { files, value: '' } }) as unknown as Event;

@@ -17,7 +17,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { ref } from 'vue';
-import { createAgentChatClient, AGENT_RAW_FRAME_LIMIT } from '../src/api/ai/agent-chat.ts';
+import { AGENT_RAW_FRAME_LIMIT, createAgentChatClient } from '../src/api/ai/agent-chat.ts';
 import { useAgentChat } from '../src/pages/chat/layouts/chatWithId/useAgentChat.ts';
 
 const encoder = new TextEncoder();
@@ -194,8 +194,7 @@ describe('提问与流式推进', () => {
     const h = harness({ chat: [sseResponse(parts)] });
     await h.chat.sendMessage('q');
     const buffered = h.chat.frames.value;
-    assert.equal(buffered.length, AGENT_RAW_FRAME_LIMIT,
-                 `抽屉缓冲必须截尾到 AGENT_RAW_FRAME_LIMIT（实际 ${buffered.length}）：长会话不得无界增长`);
+    assert.equal(buffered.length, AGENT_RAW_FRAME_LIMIT, `抽屉缓冲必须截尾到 AGENT_RAW_FRAME_LIMIT（实际 ${buffered.length}）：长会话不得无界增长`);
     assert.equal(buffered[buffered.length - 1]?.name, 'done', '截尾丢最旧 ⇒ 最新帧必在');
     const ids = buffered.map(item => item.id);
     for (let i = 1; i < ids.length; i += 1)
@@ -395,7 +394,12 @@ describe('确认卡（F15 op2）', () => {
   // 活态 `setConfirmStatus` 只改 `kind='confirm'` 块 ⇒ 关联工具卡停在 awaiting，
   // 只有 reload 从历史回查才显 denied。下面两条钉死"拒绝联动工具块"与"approved/expired 不扩面"。
   const TOOL_PENDING_FRAME = () => frame('block', {
-    kind: 'tool', toolCallId: 'tc1', name: 'mcp_write', displayName: '写操作', status: 'running', startedAt: 1000,
+    kind: 'tool',
+    toolCallId: 'tc1',
+    name: 'mcp_write',
+    displayName: '写操作',
+    status: 'running',
+    startedAt: 1000,
   });
 
   async function untilConfirmWithTool(h: Harness) {

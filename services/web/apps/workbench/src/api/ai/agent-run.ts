@@ -266,7 +266,8 @@ export function buildApprovalBody(action: Pick<AgentAction, 'actionId' | 'argsHa
   return body;
 }
 
-/** `GET /runs/{id}` 快照里可用于 resume 的 version（**缺失保持 null**，不猜 0）。
+/**
+ * `GET /runs/{id}` 快照里可用于 resume 的 version（**缺失保持 null**，不猜 0）。
  *
  * 线上 `version` 是 Map 中的装箱 `Long` ⇒ **纯十进制串**（`{"version":"6",…}`，
  * 见 `review-f04fix3/VERDICT-F04-FIX3.md` §4-a #6）；在边界按同一口径归一化为数字，
