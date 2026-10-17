@@ -66,15 +66,17 @@ public class RecommendedQuestionGenerator {
         try {
             int count = DEFAULT_RECOMMEND_COUNT;
             // 唯一的 prompt 输入预算权威：问题/答案/片段全在模型调用边界统一截断，避免与上游装配重复限制、也不受遗留数据影响
+            // {chunks} 必须作为槽位值传给 render：render 会剥离"未传值的必需占位符"，
+            // 事后 replace 时占位符已被剥离，等于片段永远进不了模型（F09:2-D1）
             String prompt = agentPromptResolver.render(
                     AgentPromptSlot.RECOMMENDED_QUESTIONS,
                     Map.of(
                             "question", StrUtil.subPre(StrUtil.nullToEmpty(question), MAX_QUESTION_CHARS),
                             "answer", StrUtil.subPre(StrUtil.nullToEmpty(answer), MAX_ANSWER_CHARS),
-                            "count", String.valueOf(count)
+                            "count", String.valueOf(count),
+                            "chunks", buildChunksText(chunks)
                     )
             );
-            prompt = prompt.replace("{chunks}", buildChunksText(chunks));
 
             ChatRequest request = ChatRequest.builder()
                     .messages(List.of(ChatMessage.user(prompt)))
