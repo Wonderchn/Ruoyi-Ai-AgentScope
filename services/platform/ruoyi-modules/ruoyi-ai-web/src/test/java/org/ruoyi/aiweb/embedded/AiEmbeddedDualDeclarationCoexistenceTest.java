@@ -33,7 +33,6 @@ import com.nageoffer.ai.ragent.rag.core.prompt.AgentPromptResolver;
 import com.nageoffer.ai.ragent.rag.core.skill.AgentSkillRegistry;
 import com.nageoffer.ai.ragent.rag.service.KnowledgeSearchFacade;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -219,14 +218,6 @@ class AiEmbeddedDualDeclarationCoexistenceTest {
                         () -> mock(com.nageoffer.ai.ragent.rag.core.skill.AgentSkillRegistry.class));
     }
 
-    @BeforeEach
-    void resetThreadContextClassLoader() {
-        // Earlier Spring/Tomcat tests can leave a stopped WebappClassLoader as the TCCL.
-        // Mockito then generates mock classes in that loader, and equals() fails later with
-        // NoClassDefFoundError for MockMethodInterceptor$ForEquals. Pin the test class loader.
-        Thread.currentThread().setContextClassLoader(getClass().getClassLoader());
-    }
-
     @Test
     @DisplayName("两配置同容器：启动成功、两个名字各恰好一个 bean、赢家是会话配置、关闭覆盖下不抛")
     void bothDeclarationsCoexistWithExactlyOneBeanPerName() {
@@ -326,10 +317,39 @@ class AiEmbeddedDualDeclarationCoexistenceTest {
         assertThat(fromEngine.getClass())
                 .as("%s：同一组协作者下，两侧必须构造出同一个具体类", beanName)
                 .isEqualTo(fromConversation.getClass());
-        assertThat(fieldValues(fromEngine))
-                .as("%s：同一组协作者下，两侧产物必须逐字段等价（引用按同一性）。"
-                        + "不等价即意味着【谁赢】会改变行为，必须补显式顺序契约", beanName)
-                .isEqualTo(fieldValues(fromConversation));
+        assertFieldValuesIdentical(beanName, fromEngine, fromConversation);
+    }
+
+    /**
+     * 逐字段比较两侧产物：基本值/字符串按值，其余对象按<b>同一性</b>。
+     *
+     * <p>不能直接用 {@code Map.equals}：它会对 Mockito 替身调用 {@code equals}，而在
+     * 前面的 Tomcat 测试之后，替身的 {@code equals} 可能尝试从已停止的 WebappClassLoader
+     * 加载 {@code MockMethodInterceptor$ForEquals} 并抛 {@code NoClassDefFoundError}。
+     * 本判据要的本来就是"引用按同一性"，逐项比较更贴近契约且不触发替身 equals。
+     */
+    private static void assertFieldValuesIdentical(String beanName, Object fromEngine, Object fromConversation) {
+        Map<String, Object> engineValues = fieldValues(fromEngine);
+        Map<String, Object> conversationValues = fieldValues(fromConversation);
+        assertThat(engineValues.keySet())
+                .as("%s：两侧产物的字段集合必须相同", beanName)
+                .isEqualTo(conversationValues.keySet());
+        for (String field : engineValues.keySet()) {
+            Object engineValue = engineValues.get(field);
+            Object conversationValue = conversationValues.get(field);
+            if (engineValue == null || conversationValue == null
+                    || engineValue instanceof String || engineValue instanceof Number
+                    || engineValue instanceof Boolean || engineValue instanceof Character
+                    || engineValue instanceof Enum<?>) {
+                assertThat(engineValue)
+                        .as("%s.%s：基本值/字符串必须相等", beanName, field)
+                        .isEqualTo(conversationValue);
+            } else {
+                assertThat(engineValue)
+                        .as("%s.%s：对象引用必须同一（不调用替身 equals）", beanName, field)
+                        .isSameAs(conversationValue);
+            }
+        }
     }
 
     /** 按<b>名字</b>在类自身与全部嵌套类里找 {@code @Bean} 方法；找不到返回 {@code null}，由调用方断言。 */
