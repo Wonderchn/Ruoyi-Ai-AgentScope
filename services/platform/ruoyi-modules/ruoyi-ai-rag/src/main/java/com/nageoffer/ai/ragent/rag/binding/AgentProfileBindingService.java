@@ -20,10 +20,11 @@ package com.nageoffer.ai.ragent.rag.binding;
 import cn.hutool.crypto.SecureUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.rag.dao.entity.AgentProfileBindingDO;
 import com.nageoffer.ai.ragent.rag.dao.mapper.AgentProfileBindingMapper;
-import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -32,6 +33,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * P3-BIND：Agent 绑定的保存/读取（F09:3 权威；F11:3 复用）。
@@ -48,7 +50,6 @@ import java.util.Set;
  * </ul>
  */
 @Service
-@RequiredArgsConstructor
 public class AgentProfileBindingService {
 
     /** 四类绑定引用（闭集）。 */
@@ -83,6 +84,34 @@ public class AgentProfileBindingService {
 
     private final AgentProfileBindingMapper bindingMapper;
     private final ObjectProvider<RefLookup> refLookup;
+    /**
+     * P3-BIND 运行修复（F09:3-D1，2026-10-18）：租户作用域绑定端口。
+     *
+     * <p>agent 引擎线程（boundedElastic）没有 Sa-Token 登录主体/动态租户，平台侧 MyBatis
+     * 租户行拦截器（{@code tenant.enable=true}）会在 SQL 下发前拒绝（真机原文
+     * {@code tenant.context.missing}）。查询必须经本端口在 {@code TenantHelper.dynamic}
+     * 等价作用域内执行。端口缺席（独立应用无拦截器）⇒ 按原样直跑。
+     */
+    private final ObjectProvider<TenantScopeBinder> tenantScopeBinder;
+
+    /**
+     * 生产构造（Spring 装配）：3 参；构造上标 {@link Autowired}，避免"双公开构造无注解"
+     * 时 Spring 无法选择（同模块既有教训，见 embedded 装配注释）。
+     */
+    @Autowired
+    public AgentProfileBindingService(AgentProfileBindingMapper bindingMapper,
+                                      ObjectProvider<RefLookup> refLookup,
+                                      ObjectProvider<TenantScopeBinder> tenantScopeBinder) {
+        this.bindingMapper = bindingMapper;
+        this.refLookup = refLookup;
+        this.tenantScopeBinder = tenantScopeBinder;
+    }
+
+    /** 兼容构造：无租户作用域绑定端口（既有测试/老装配；按"无拦截器"直跑）。 */
+    public AgentProfileBindingService(AgentProfileBindingMapper bindingMapper,
+                                      ObjectProvider<RefLookup> refLookup) {
+        this(bindingMapper, refLookup, null);
+    }
 
     /**
      * 保存某 Agent 的绑定集合（替换语义）：全量校验通过后，先作废旧行再逐条落库。
@@ -142,9 +171,30 @@ public class AgentProfileBindingService {
         return bindingVersion(normalized);
     }
 
-    /** 读取该 Agent 的生效绑定（租户收窄、enabled=1、按 sortOrder）。未绑定 ⇒ 空列表。 */
+    /**
+     * 读取该 Agent 的生效绑定（租户收窄、enabled=1、按 sortOrder）。未绑定 ⇒ 空列表。
+     *
+     * <p>运行期（agent 引擎线程）没有 Sa-Token 登录主体/动态租户：租户行拦截器会在查询前
+     * 拒绝。有 {@link TenantScopeBinder} 时把查询包进该主体的租户作用域；端口缺席
+     * （独立应用无拦截器）按原样直跑。查询失败**不吞**——是否 fail-closed 由调用方决定。
+     */
     public List<BindingReference> bindingsOf(String agentProfileId) {
         String tenantId = PrincipalContext.require().tenantId();
+        TenantScopeBinder binder = tenantScopeBinder == null ? null : tenantScopeBinder.getIfAvailable();
+        if (binder == null) {
+            return readBindings(agentProfileId, tenantId);
+        }
+        AtomicReference<List<BindingReference>> holder = new AtomicReference<>();
+        binder.runWithTenant(tenantId, () -> holder.set(readBindings(agentProfileId, tenantId)));
+        List<BindingReference> bindings = holder.get();
+        if (bindings == null) {
+            // 绑定端口没有执行给定动作 ⇒ 不冒充"空绑定"（读不出要响亮失败）
+            throw new IllegalStateException("租户作用域绑定端口未执行绑定查询");
+        }
+        return bindings;
+    }
+
+    private List<BindingReference> readBindings(String agentProfileId, String tenantId) {
         return bindingMapper.selectList(Wrappers.lambdaQuery(AgentProfileBindingDO.class)
                         .eq(AgentProfileBindingDO::getAgentProfileId, agentProfileId)
                         .eq(AgentProfileBindingDO::getEnabled, 1)

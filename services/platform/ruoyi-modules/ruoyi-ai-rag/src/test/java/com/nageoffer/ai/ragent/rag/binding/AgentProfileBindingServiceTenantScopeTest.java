@@ -41,6 +41,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -129,7 +131,8 @@ class AgentProfileBindingServiceTenantScopeTest {
     @Test
     @DisplayName("租户作用域内查询失败仍向上抛（服务内不吞异常）")
     void bindingReadFailurePropagates() {
-        when(bindingMapper.selectList(any())).thenThrow(new TenantContextMissingException());
+        // doThrow 覆写既有 stub：when(...) 会先执行上一版 thenAnswer（那里正抛拦截器异常）
+        doThrow(new TenantContextMissingException()).when(bindingMapper).selectList(any());
 
         assertThatThrownBy(() -> service(binder).bindingsOf(AGENT))
                 .isInstanceOf(TenantContextMissingException.class)
@@ -141,7 +144,7 @@ class AgentProfileBindingServiceTenantScopeTest {
     @Test
     @DisplayName("binder 缺席（独立应用无租户拦截器）：按原样直跑")
     void withoutBinderRunsDirectly() {
-        when(bindingMapper.selectList(any())).thenReturn(List.of(row(RefType.SKILL, "skill-a", 0)));
+        doReturn(List.of(row(RefType.SKILL, "skill-a", 0))).when(bindingMapper).selectList(any());
 
         AgentProfileBindingService service = new AgentProfileBindingService(bindingMapper, provider(refLookup));
 

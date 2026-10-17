@@ -101,8 +101,21 @@ public class AgentSkillMaskingMiddleware implements MiddlewareBase {
             Object profileId = runtimeContext == null ? null : runtimeContext.get(AGENT_PROFILE_ID_ATTRIBUTE);
             masked = maskedTools(input.messages(), profileId instanceof String id ? id : null);
         } catch (Exception e) {
-            log.warn("技能遮蔽计算异常, 本轮按全量工具推理", e);
-            return next.apply(input);
+            // F11:3 fail-closed（F09:3-D1，真机 2026-10-18）：遮蔽算不出来时**不得**回退全量工具。
+            // 旧实现"本轮按全量工具推理"会在绑定查询失败（如 tenant.context.missing）时把
+            // 未加载手册的写工具放回模型，等于一次查询异常就取消全部技能门。
+            Map<String, String> fallback = failClosedMaskedTools();
+            log.warn("技能遮蔽计算异常, 本轮按 fail-closed 遮蔽（{} 个工具，不回退全量）", fallback.size(), e);
+            if (runtimeContext != null) {
+                runtimeContext.put(MASKED_TOOLS_ATTRIBUTE, fallback);
+            }
+            if (fallback.isEmpty()) {
+                return next.apply(input);
+            }
+            List<ToolSchema> tools = input.tools().stream()
+                    .filter(tool -> !fallback.containsKey(tool.getName()))
+                    .toList();
+            return next.apply(new ReasoningInput(input.messages(), tools, input.options()));
         }
         if (runtimeContext != null) {
             runtimeContext.put(MASKED_TOOLS_ATTRIBUTE, masked);
@@ -114,6 +127,34 @@ public class AgentSkillMaskingMiddleware implements MiddlewareBase {
                 .filter(tool -> !masked.containsKey(tool.getName()))
                 .toList();
         return next.apply(new ReasoningInput(input.messages(), tools, input.options()));
+    }
+
+    /**
+     * 遮蔽计算失败时的兜底遮蔽面：技能清单的 {@code toolIds} 与 MCP 目录的 id 全集
+     * （各自尽力而为，读取失败只损失该来源的覆盖，不改变 fail-closed 方向）。
+     *
+     * <p>取值 {@code "__mask_error__"} 让工具执行前的复查（{@code McpToolProxy}）同样拒绝。
+     */
+    private Map<String, String> failClosedMaskedTools() {
+        Map<String, String> fallback = new LinkedHashMap<>();
+        try {
+            List<AgentSkill> enabled = skillRegistry.listEnabled();
+            if (enabled != null) {
+                enabled.forEach(skill -> skill.toolIds()
+                        .forEach(toolId -> fallback.putIfAbsent(toolId, "__mask_error__")));
+            }
+        } catch (Exception e) {
+            log.warn("技能清单读取失败, 兜底遮蔽面缺少技能工具集", e);
+        }
+        try {
+            AgentToolCatalog catalog = toolCatalog == null ? null : toolCatalog.getIfAvailable();
+            if (catalog != null) {
+                catalog.mcpToolIds().forEach(toolId -> fallback.putIfAbsent(toolId, "__mask_error__"));
+            }
+        } catch (Exception e) {
+            log.warn("MCP 工具目录读取失败, 兜底遮蔽面缺少 MCP 工具集", e);
+        }
+        return fallback;
     }
 
     /**
