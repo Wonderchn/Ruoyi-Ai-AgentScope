@@ -34,6 +34,7 @@ import com.nageoffer.ai.ragent.authorization.TenantRunReadRepository;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.exception.ServiceException;
+import com.nageoffer.ai.ragent.framework.security.AuthorizationChecker;
 import com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict;
 import com.nageoffer.ai.ragent.framework.security.RevocationGuard;
 import org.junit.jupiter.api.AfterEach;
@@ -44,6 +45,7 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.aop.support.AopUtils;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 
 import java.util.Set;
 
@@ -95,6 +97,8 @@ class AiResourceAuditCoverageTest {
             .withBean(BizChangeLogMapper.class, () -> mapper)
             .withBean(BizChangeLogContext.class, () -> new BizChangeLogContext(new ObjectMapper()))
             .withBean(RevocationGuard.class, () -> mock(RevocationGuard.class))
+            .withBean(AuthorizationChecker.class, () -> mock(AuthorizationChecker.class))
+            .withBean(NamedParameterJdbcTemplate.class, () -> mock(NamedParameterJdbcTemplate.class))
             .withBean(AuthorizedDownloadService.class, () -> mock(AuthorizedDownloadService.class))
             .withBean(AuthorizedExportService.class, () -> mock(AuthorizedExportService.class))
             .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))

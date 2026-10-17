@@ -37,7 +37,6 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -127,13 +126,43 @@ class BizChangeLogMemberRouteTest {
 
     @Test
     @DisplayName("无执行主体：mine 两条都 fail-closed，不调用服务（不降级全量）")
-    void mineRoutesFailClosedWithoutPrincipal() {
-        assertThatThrownBy(() -> mockMvc.perform(get("/internal/ai/v1/biz-change-logs/mine")))
-                .as("缺主体必须抛 ClientException，而不是返回全量列表")
-                .hasRootCauseInstanceOf(ClientException.class);
-        assertThatThrownBy(() -> mockMvc.perform(get("/internal/ai/v1/biz-change-logs/mine/log-1")))
-                .hasRootCauseInstanceOf(ClientException.class);
+    void mineRoutesFailClosedWithoutPrincipal() throws Exception {
+        assertFailClosedWithClientException("/internal/ai/v1/biz-change-logs/mine");
+        assertFailClosedWithClientException("/internal/ai/v1/biz-change-logs/mine/log-1");
         verifyNoInteractions(service);
+    }
+
+    /**
+     * Spring Framework 7 的 MockMvc 不保证把未处理异常从 {@code perform} 抛出：
+     * 多数情况下响应已提交为 500，异常经 {@link org.springframework.test.web.servlet.MvcResult#getResolvedException()}
+     * 暴露。两种形状都接受，但最终必须是 {@link ClientException}（缺主体），且状态不得是 2xx。
+     */
+    private void assertFailClosedWithClientException(String path) throws Exception {
+        Throwable thrown = null;
+        org.springframework.test.web.servlet.MvcResult result = null;
+        try {
+            result = mockMvc.perform(get(path)).andReturn();
+        } catch (Throwable ex) {
+            thrown = ex;
+        }
+        if (thrown != null) {
+            assertThat(rootCause(thrown)).isInstanceOf(ClientException.class);
+            return;
+        }
+        assertThat(result.getResponse().getStatus())
+                .as("%s 缺主体不得返回成功状态", path)
+                .isBetween(400, 599);
+        assertThat(result.getResolvedException())
+                .as("%s 缺主体必须以 ClientException 拒绝（fail-closed）", path)
+                .isInstanceOf(ClientException.class);
+    }
+
+    private static Throwable rootCause(Throwable throwable) {
+        Throwable cursor = throwable;
+        while (cursor.getCause() != null && cursor.getCause() != cursor) {
+            cursor = cursor.getCause();
+        }
+        return cursor;
     }
 
     @SuppressWarnings("unchecked")
