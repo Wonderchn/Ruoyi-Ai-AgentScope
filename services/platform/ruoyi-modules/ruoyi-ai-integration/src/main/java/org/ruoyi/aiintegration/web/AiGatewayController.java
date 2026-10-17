@@ -433,6 +433,15 @@ public class AiGatewayController {
             new Route("GET", "/rag/traces/runs/{traceId}", "run.get"),
             new Route("GET", "/rag/traces/runs/{traceId}/nodes", "run.events"),
             new Route("GET", "/biz-change-logs", "run.get"),
+            // F18:2（2026-10-18）：成员端读面。动作复用 `run.get`（成员读自己的变更日志，
+            // **不新增 canonical 动作、不新增权限行、不新增迁移**）。
+            // ⚠️ 声明序：两段字面量 `/biz-change-logs/mine` 必须排在
+            // `GET /biz-change-logs/{id}` **之前**——matchRoute 取声明序首个命中，
+            // 否则 "mine" 会被 {id} 当成管理端详情 id 吃掉（admin 语义被静默改写）。
+            // 3 段 `/biz-change-logs/mine/{id}` 与 2 段 `{id}` 不同形，但仍紧随字面量登记，
+            // 使成员面在表中成对可读。
+            new Route("GET", "/biz-change-logs/mine", "run.get"),
+            new Route("GET", "/biz-change-logs/mine/{id}", "run.get"),
             new Route("GET", "/biz-change-logs/{id}", "run.get"),
             new Route("GET", "/rag/eval", "kb.retrieve"),
             // F13-SLICE-1（AIFlow 工作流定义面）。逐条登记，不用通配 `/flows/**`

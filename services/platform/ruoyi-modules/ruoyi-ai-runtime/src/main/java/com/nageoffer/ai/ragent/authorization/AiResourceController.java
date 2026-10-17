@@ -17,6 +17,10 @@
 
 package com.nageoffer.ai.ragent.authorization;
 
+import com.mzt.logapi.starter.annotation.LogRecord;
+import com.nageoffer.ai.ragent.audit.constant.BizChangeBizType;
+import com.nageoffer.ai.ragent.audit.constant.BizChangeOperationType;
+import com.nageoffer.ai.ragent.audit.support.BizChangeLogContext;
 import com.nageoffer.ai.ragent.authorization.dao.AiResourceMapper;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
@@ -118,6 +122,22 @@ public class AiResourceController {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void configureDeliveryPermits(AiDeliveryPermitConfiguration.DeliveryPermitHolder deliveryPermits){
         this.deliveryPermits=deliveryPermits;
+    }
+
+    /**
+     * 业务变更审计上下文（F18:2）：复数资源面 {@code /knowledge-bases} 的 KB 创建/删除
+     * 必须与单数管理面（{@code KnowledgeBaseServiceImpl} 的 {@code @LogRecord}）同口径落
+     * {@code platform.ai_biz_change_log}。
+     *
+     * <p>用 {@code @Autowired(required=false)} setter 注入：不改公共构造签名，
+     * 非 embedded/切片上下文没有该 bean 时只是不写审计，业务结果与失败形状完全不变
+     * （审计绝不吞错，也绝不改写返回/异常）。
+     */
+    private BizChangeLogContext bizChangeLogContext;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setBizChangeLogContext(BizChangeLogContext bizChangeLogContext) {
+        this.bizChangeLogContext = bizChangeLogContext;
     }
     private org.springframework.beans.factory.ObjectProvider<org.ruoyi.ai.api.runtime.AuthorizedRetrievalPort<com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope, com.nageoffer.ai.ragent.framework.convention.RetrievedChunk>> retrievers;
     private org.springframework.beans.factory.ObjectProvider<com.nageoffer.ai.ragent.ingest.EmbeddingGateway> p2Embeddings;
@@ -553,8 +573,24 @@ public class AiResourceController {
 
     // ------------------------------------------------------------ KB 写入
 
-    /** 创建 KB：归属来自主体；同一事务写元数据 + registry + owner ACL + epoch bump。 */
+    /**
+     * 创建 KB：归属来自主体；同一事务写元数据 + registry + owner ACL + epoch bump。
+     *
+     * <p>F18:2：复数资源面必须落审计（{@code KNOWLEDGE_BASE/CREATE}，bizId=kbId）。
+     * 注解由 embedded 的 {@code @EnableLogRecord} advisor 代理；快照在写服务返回后
+     * 经 {@link BizChangeLogContext} 放入。失败路径由注解的 {@code fail} 模板落
+     * {@code success=false} 行（既有 {@code @LogRecord} 默认行为，不改变业务失败形状）。
+     */
     @PostMapping("/knowledge-bases")
+    @LogRecord(
+            success = "创建知识库：{{#bizChangeBizId}}",
+            fail = "创建知识库失败：{{#_errorMsg}}",
+            type = BizChangeBizType.KNOWLEDGE_BASE,
+            subType = BizChangeOperationType.CREATE,
+            bizNo = BizChangeLogContext.BIZ_ID_EXPRESSION,
+            extra = BizChangeLogContext.SNAPSHOT_EXPRESSION,
+            condition = BizChangeLogContext.RECORD_CONDITION
+    )
     public ResponseEntity<ApiEnvelope<Map<String, Object>>> createKnowledgeBase(
             @RequestBody CreateKnowledgeBaseRequest request) {
         PrincipalContext.require();
@@ -570,18 +606,51 @@ public class AiResourceController {
                 new AiResourceWriteService.KnowledgeBaseDraft(
                         request == null ? null : request.name(),
                         model,collection));
+        if (bizChangeLogContext != null) {
+            Map<String, Object> snapshot = new LinkedHashMap<>();
+            snapshot.put("kbId", kbId);
+            snapshot.put("name", request == null ? null : request.name());
+            snapshot.put("embeddingModel", model);
+            snapshot.put("collectionName", collection);
+            bizChangeLogContext.put(kbId, null, snapshot);
+        }
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("kbId", kbId);
         return ResponseEntity.ok(ApiEnvelope.ok(data));
     }
 
-    /** 删除 KB（tombstone）：判定层 kb.delete 通过后同事务 tombstone + epoch bump。 */
+    /**
+     * 删除 KB（tombstone）：判定层 kb.delete 通过后同事务 tombstone + epoch bump。
+     *
+     * <p>F18:2：复数资源面必须落审计（{@code KNOWLEDGE_BASE/DELETE}，bizId=kbId）。
+     * 先把 bizId 放进上下文（授权/删除失败时失败行也能指到目标 KB），成功后再补
+     * after 快照（{@code status=TOMBSTONED}）；失败行由注解的 {@code fail} 模板落
+     * {@code success=false}。
+     */
     @DeleteMapping("/knowledge-bases/{kbId}")
+    @LogRecord(
+            success = "删除知识库：{{#bizChangeBizId}}",
+            fail = "删除知识库失败：{{#_errorMsg}}",
+            type = BizChangeBizType.KNOWLEDGE_BASE,
+            subType = BizChangeOperationType.DELETE,
+            bizNo = BizChangeLogContext.BIZ_ID_EXPRESSION,
+            extra = BizChangeLogContext.SNAPSHOT_EXPRESSION,
+            condition = BizChangeLogContext.RECORD_CONDITION
+    )
     public ResponseEntity<ApiEnvelope<Map<String, Object>>> deleteKnowledgeBase(@PathVariable String kbId) {
         ExecutionPrincipal principal = PrincipalContext.require();
+        if (bizChangeLogContext != null) {
+            bizChangeLogContext.put(kbId, null, null);
+        }
         requireGrant(principal, ACTION_KB_DELETE,
                 AiResourceAuthorizationService.resourceRef(AiResourceMapper.TYPE_KB, kbId));
         writeService.tombstoneKnowledgeBase(kbId);
+        if (bizChangeLogContext != null) {
+            Map<String, Object> snapshot = new LinkedHashMap<>();
+            snapshot.put("kbId", kbId);
+            snapshot.put("status", "TOMBSTONED");
+            bizChangeLogContext.put(kbId, null, snapshot);
+        }
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("kbId", kbId);
         data.put("status", "TOMBSTONED");

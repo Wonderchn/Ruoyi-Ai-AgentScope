@@ -62,6 +62,25 @@ public class BizChangeLogController {
         return reply(bizChangeLogService.get(id, BizChangeLogReadScope.tenantWideCurrent()));
     }
 
+    /**
+     * 成员端列表（F18:2）：只返回当前执行主体自己的变更日志。
+     *
+     * <p>管理端 {@code /biz-change-logs} 保持 {@link BizChangeLogReadScope#tenantWideCurrent()}
+     * 不变；本方法只换限域，不换服务实现。缺主体时 {@code memberOnlyCurrent()} fail-closed。
+     */
+    @GetMapping("/biz-change-logs/mine")
+    public ResponseEntity<ApiEnvelope<IPage<BizChangeLogVO>>> minePage(BizChangeLogPageRequest requestParam) {
+        return reply(bizChangeLogService.page(requestParam, BizChangeLogReadScope.memberOnlyCurrent()));
+    }
+
+    /**
+     * 成员端详情（F18:2）：限域到当前成员；他人/跨租户 id 与不存在同外显。
+     */
+    @GetMapping("/biz-change-logs/mine/{id}")
+    public ResponseEntity<ApiEnvelope<BizChangeLogVO>> mineGet(@PathVariable String id) {
+        return reply(bizChangeLogService.get(id, BizChangeLogReadScope.memberOnlyCurrent()));
+    }
+
     private static <T> ResponseEntity<ApiEnvelope<T>> reply(T data) {
         return ResponseEntity.ok().header("Cache-Control", "no-store").body(ApiEnvelope.ok(data));
     }
