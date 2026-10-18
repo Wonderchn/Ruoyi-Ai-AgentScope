@@ -25,6 +25,7 @@ import com.nageoffer.ai.ragent.coding.workspace.CodingWorkspaceService;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.TextBlock;
+import io.agentscope.core.message.ThinkingBlock;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.GenerateOptions;
@@ -172,6 +173,43 @@ class CodingToolLoopHardeningTest {
     }
 
     /**
+     * DeepSeek thinking 模式：带 tool_calls 的 assistant 消息必须回传 reasoning_content。
+     * 首回合的 ThinkingBlock 要落进 assistant(tool_calls) 消息，并在下一回合请求中原样回传。
+     */
+    @Test
+    void r1ToolCallTurnReasoningIsPersistedAndResent() {
+        HarnessRunState run = buildRunWithApprovedPlan(1);
+        appendRequirement();
+        QueueModel model = new QueueModel(List.of(
+                toolUseWithThinking("call-reason", "read_file", Map.of("path", "a.txt"),
+                        "I need to read the file first"),
+                text("done")));
+
+        processor(model).process(owner, session.sessionId(), run.runId());
+
+        HarnessMessage assistantToolCall = store.readMessages(owner, session.sessionId(), 0, 100)
+                .stream()
+                .filter(message -> message.role() == HarnessMessageRole.ASSISTANT
+                        && !message.toolCalls().isEmpty())
+                .findFirst().orElseThrow();
+        assertThat(assistantToolCall.thinking())
+                .as("reasoning_content must be persisted on the assistant tool_call message")
+                .isEqualTo("I need to read the file first");
+
+        assertThat(model.requests()).hasSizeGreaterThanOrEqualTo(2);
+        Msg followUpAssistant = model.requests().get(1).stream()
+                .filter(message -> message.getRole() == io.agentscope.core.message.MsgRole.ASSISTANT)
+                .filter(message -> message.getContent() != null && message.getContent().stream()
+                        .anyMatch(block -> block instanceof ToolUseBlock))
+                .findFirst().orElseThrow();
+        assertThat(followUpAssistant.getContent())
+                .filteredOn(block -> block instanceof ThinkingBlock)
+                .singleElement()
+                .satisfies(block -> assertThat(((ThinkingBlock) block).getThinking())
+                        .isEqualTo("I need to read the file first"));
+    }
+
+    /**
      * B1：审批恢复不推进 iteration；恢复后的新工具调用必须有自己的 assistant(tool_calls)，
      * 否则新 TOOL 结果没有配对消息。
      */
@@ -259,6 +297,13 @@ class CodingToolLoopHardeningTest {
                 .id(id).name(name).input(input).build())).build();
     }
 
+    private ChatResponse toolUseWithThinking(String id, String name, Map<String, Object> input,
+                                             String thinking) {
+        return ChatResponse.builder().content(List.of(
+                ThinkingBlock.builder().thinking(thinking).build(),
+                ToolUseBlock.builder().id(id).name(name).input(input).build())).build();
+    }
+
     private ChatResponse text(String text) {
         return ChatResponse.builder()
                 .content(List.of(TextBlock.builder().text(text).build())).build();
@@ -281,6 +326,10 @@ class CodingToolLoopHardeningTest {
                     ? Flux.just(ChatResponse.builder()
                     .content(List.of(TextBlock.builder().text("done").build())).build())
                     : Flux.just(next);
+        }
+
+        List<List<Msg>> requests() {
+            return requests;
         }
 
         @Override

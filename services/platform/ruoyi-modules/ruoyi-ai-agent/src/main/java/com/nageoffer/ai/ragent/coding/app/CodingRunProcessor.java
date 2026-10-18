@@ -170,7 +170,7 @@ public class CodingRunProcessor {
                 return;
             }
             if (!turn.toolCalls().isEmpty()) {
-                if (handleToolCalls(owner, sessionId, runId, session, turn.toolCalls())) {
+                if (handleToolCalls(owner, sessionId, runId, session, turn)) {
                     return;
                 }
                 continue;
@@ -300,7 +300,8 @@ public class CodingRunProcessor {
     /** C1：本回合带 toolCalls 的 ASSISTANT 消息；同回合同调用集合重试才复用。 */
     private HarnessMessage appendAssistantToolCallMessageIfMissing(HarnessOwner owner,
                                                                    HarnessRunState run,
-                                                                   List<ModelToolCall> calls) {
+                                                                   ModelTurn turn) {
+        List<ModelToolCall> calls = turn.toolCalls();
         Set<String> callIds = callIds(calls);
         HarnessMessage existing = findAssistantToolCallMessage(owner, run.sessionId(),
                 run.runId(), run.iteration(), callIds);
@@ -315,9 +316,12 @@ public class CodingRunProcessor {
         metadata.put("iteration", run.iteration());
         metadata.put("toolCalls", true);
         metadata.put("toolCallIds", List.copyOf(callIds));
+        // DeepSeek thinking 模式：带 tool_calls 的 assistant 消息必须回传本轮
+        // reasoning_content；thinking 随消息落盘，下一回合由 adapter 组回 ThinkingBlock。
+        String content = turn.content() == null ? "" : turn.content();
         return store.appendMessage(owner, HarnessMessage.draft(run.sessionId(), run.runId(),
-                HarnessMessageRole.ASSISTANT, "", null, toolCalls, null, null, false, null,
-                metadata, now()));
+                HarnessMessageRole.ASSISTANT, content, turn.thinking(), toolCalls, null, null,
+                false, null, metadata, now()));
     }
 
     /**
@@ -399,7 +403,8 @@ public class CodingRunProcessor {
     }
 
     private boolean handleToolCalls(HarnessOwner owner, String sessionId, String runId,
-                                    HarnessSessionState session, List<ModelToolCall> calls) {
+                                    HarnessSessionState session, ModelTurn turn) {
+        List<ModelToolCall> calls = turn.toolCalls();
         Path workspace = Path.of(session.workspace());
         HarnessRunState initial = store.findRun(owner, sessionId, runId)
                 .orElseThrow(() -> new HarnessStoreException("Unknown run: " + runId));
@@ -407,7 +412,7 @@ public class CodingRunProcessor {
             return true;
         }
         // C1：先落盘本回合的 assistant(tool_calls)，保证下一回合 transcript 与 TOOL 结果配对。
-        appendAssistantToolCallMessageIfMissing(owner, initial, calls);
+        appendAssistantToolCallMessageIfMissing(owner, initial, turn);
         List<ToolApproval> pendingApprovals = new ArrayList<>();
         for (ModelToolCall call : calls) {
             HarnessRunState current = store.findRun(owner, sessionId, runId)
