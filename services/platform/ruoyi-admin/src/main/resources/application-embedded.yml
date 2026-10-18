@@ -273,7 +273,9 @@ p3:
 # 内嵌形态只装配 PG——`PgVectorStoreService`/`PgVectorRetrieverService`/`PgVectorStoreAdmin`
 # 自身就带 `@ConditionalOnProperty(rag.vector.type=pg)`；这里显式写出，让"内嵌态用哪套后端"
 # 在配置里可读，不依赖条件注解潜在的 matchIfMissing 语义。
-# milvus / es / lightrag 是可选技术后端（WP-053）：本轮不装配，也不冒充已启用。
+# milvus / es / lightrag 是可选技术后端（WP-053）：F22:2 起由
+# AiEmbeddedF22BackendsConfiguration 按显式 type（milvus|es|lightrag）条件装配；
+# shipped 默认仍是 pg / none / 无 graph，不冒充已启用。
 rag:
   vector:
     type: pg
