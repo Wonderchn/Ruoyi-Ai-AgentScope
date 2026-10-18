@@ -301,6 +301,19 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
             }
         }
         if (text.isEmpty() && calls.isEmpty()) {
+            StringBuilder diag = new StringBuilder("empty turn: responses=")
+                    .append(responses.size()).append(" thinkingChars=").append(thinking.length());
+            for (ChatResponse response : responses) {
+                diag.append(" finish=").append(response.getFinishReason()).append(" blocks=");
+                List<ContentBlock> blocks = response.getContent();
+                if (blocks != null) {
+                    for (ContentBlock block : blocks) {
+                        diag.append(block.getClass().getSimpleName()).append(',');
+                    }
+                }
+            }
+            org.slf4j.LoggerFactory.getLogger(AgentModelFactoryCodingModelGateway.class)
+                    .warn(diag.toString());
             throw new CodingModelUnavailableException(
                     CodingModelUnavailableException.MODEL_TURN_FAILED,
                     "coding model returned an empty turn");
