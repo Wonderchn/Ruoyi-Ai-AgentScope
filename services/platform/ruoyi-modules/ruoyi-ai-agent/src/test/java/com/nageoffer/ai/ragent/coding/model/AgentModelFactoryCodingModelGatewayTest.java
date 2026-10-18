@@ -293,6 +293,81 @@ class AgentModelFactoryCodingModelGatewayTest {
                 .doesNotContain("Approved execution plan", "Plan revision requested");
     }
 
+    @Test
+    void blankToolUseIdGetsAStableGeneratedIdAndDeduplicatesStreamChunks() {
+        HarnessSessionState session = session();
+        HarnessRunState run = buildRun(session);
+        ToolUseBlock duplicated = ToolUseBlock.builder().id("").name("read_file")
+                .input(Map.of("path", "a.txt")).build();
+        CapturingModel model = new CapturingModel(Flux.just(
+                ChatResponse.builder().content(List.of(TextBlock.builder().text("working").build(),
+                        duplicated)).build(),
+                ChatResponse.builder().content(List.of(duplicated)).build()));
+        AgentModelFactoryCodingModelGateway gateway = new AgentModelFactoryCodingModelGateway(
+                (tenantId, modelId) -> model, mapper);
+
+        ModelTurn first = gateway.complete(new CodingModelRequest(owner, session, run,
+                transcript(), tools()));
+        ModelTurn second = gateway.complete(new CodingModelRequest(owner, session, run,
+                transcript(), tools()));
+
+        assertThat(first.toolCalls()).hasSize(1);
+        assertThat(first.toolCalls().get(0).toolCallId()).startsWith("call-").hasSize(21);
+        assertThat(first.toolCalls().get(0).toolName()).isEqualTo("read_file");
+        assertThat(first.toolCalls().get(0).arguments()).containsEntry("path", "a.txt");
+        assertThat(second.toolCalls()).hasSize(1);
+        assertThat(second.toolCalls().get(0).toolCallId())
+                .as("generated ids must be stable for the same name+input")
+                .isEqualTo(first.toolCalls().get(0).toolCallId());
+        assertThat(first.content()).isEqualTo("working");
+    }
+
+    @Test
+    void blankToolUseNameIsSkippedWithoutLosingOtherBlocks() {
+        HarnessSessionState session = session();
+        HarnessRunState run = buildRun(session);
+        CapturingModel model = new CapturingModel(Flux.just(ChatResponse.builder()
+                .content(List.of(
+                        TextBlock.builder().text("done").build(),
+                        ToolUseBlock.builder().id("bad-1").name("")
+                                .input(Map.of("path", "x")).build(),
+                        ToolUseBlock.builder().id("call-9").name("read_file")
+                                .input(Map.of("path", "b.txt")).build(),
+                        ToolUseBlock.builder().id("").name("list_dir")
+                                .input(Map.of("path", ".")).build()))
+                .build()));
+        AgentModelFactoryCodingModelGateway gateway = new AgentModelFactoryCodingModelGateway(
+                (tenantId, modelId) -> model, mapper);
+
+        ModelTurn turn = gateway.complete(new CodingModelRequest(owner, session, run,
+                transcript(), tools()));
+
+        assertThat(turn.content()).isEqualTo("done");
+        assertThat(turn.toolCalls()).extracting(ModelToolCall::toolName)
+                .containsExactlyInAnyOrder("read_file", "list_dir");
+        assertThat(turn.toolCalls()).allSatisfy(call ->
+                assertThat(call.toolCallId()).isNotBlank());
+    }
+
+    @Test
+    void onlyBlankToolUseNameFailsAsAnEmptyTurn() {
+        HarnessSessionState session = session();
+        HarnessRunState run = buildRun(session);
+        CapturingModel model = new CapturingModel(Flux.just(ChatResponse.builder()
+                .content(List.of(ToolUseBlock.builder().id("bad-1").name("")
+                        .input(Map.of()).build()))
+                .build()));
+        AgentModelFactoryCodingModelGateway gateway = new AgentModelFactoryCodingModelGateway(
+                (tenantId, modelId) -> model, mapper);
+
+        assertThatThrownBy(() -> gateway.complete(new CodingModelRequest(owner, session, run,
+                transcript(), tools())))
+                .isInstanceOf(CodingModelUnavailableException.class)
+                .satisfies(error -> assertThat(
+                        ((CodingModelUnavailableException) error).code())
+                        .isEqualTo("MODEL_TURN_FAILED"));
+    }
+
     private static final class CapturingModel implements Model {
         private final Flux<ChatResponse> response;
         private List<Msg> capturedMessages = List.of();

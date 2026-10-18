@@ -30,13 +30,19 @@ import io.agentscope.core.model.ChatUsage;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ToolSchema;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * F20-A2 目标 A：把 AgentScope {@link Model} 适配为 coding harness 的模型端口。
@@ -49,6 +55,9 @@ import java.util.Map;
  * 计划 JSON；解析失败即 {@code PLAN_JSON_REQUIRED}，绝不伪造计划。
  */
 public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(AgentModelFactoryCodingModelGateway.class);
 
     private static final Duration MODEL_TIMEOUT = Duration.ofSeconds(90);
 
@@ -323,6 +332,8 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
         StringBuilder thinking = new StringBuilder();
         Map<String, ModelToolCall> calls = new LinkedHashMap<>();
         UsageTotal usage = new UsageTotal();
+        int generatedIds = 0;
+        int skippedNoName = 0;
         for (ChatResponse response : responses) {
             usage.add(response.getUsage());
             List<ContentBlock> blocks = response.getContent();
@@ -335,10 +346,31 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
                 } else if (block instanceof ThinkingBlock thinkingBlock) {
                     thinking.append(thinkingBlock.getThinking());
                 } else if (block instanceof ToolUseBlock toolUse) {
-                    calls.put(toolUse.getId(), new ModelToolCall(toolUse.getId(), toolUse.getName(),
-                            toolUse.getInput() == null ? Map.of() : toolUse.getInput()));
+                    String name = toolUse.getName();
+                    if (name == null || name.isBlank()) {
+                        // 不可执行的块：跳过，但不影响同回合其它文本/工具块。
+                        skippedNoName++;
+                        continue;
+                    }
+                    Map<String, Object> input = toolUse.getInput() == null
+                            ? Map.of() : toolUse.getInput();
+                    String id = toolUse.getId();
+                    if (id == null || id.isBlank()) {
+                        // DeepSeek 流式工具调用可能只在部分块携带 id：按 name+input 生成稳定 id，
+                        // 同回合同 name+input 只保留一次，避免流式重复块变多条调用。
+                        id = generatedToolCallId(name, input);
+                        generatedIds++;
+                        calls.putIfAbsent(id, new ModelToolCall(id, name, input));
+                    } else {
+                        calls.put(id, new ModelToolCall(id, name, input));
+                    }
                 }
             }
+        }
+        if (generatedIds > 0 || skippedNoName > 0) {
+            // 脱敏诊断：只记录计数，不记录参数、端点或凭据。
+            log.warn("coding model tool blocks normalized: generatedIds={}, skippedNoName={}",
+                    generatedIds, skippedNoName);
         }
         if (text.isEmpty() && calls.isEmpty()) {
             StringBuilder diag = new StringBuilder("empty turn: responses=")
@@ -361,6 +393,18 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
         return new ModelTurn(text.toString(),
                 thinking.isEmpty() ? null : thinking.toString(),
                 List.copyOf(calls.values()), null, usage.toHarnessUsage());
+    }
+
+    /** Stable id for a tool block that did not carry one: call-<sha256(name+input)[0..16]>. */
+    static String generatedToolCallId(String name, Map<String, Object> input) {
+        String canonical = name + "\u0000" + new TreeMap<>(input == null ? Map.of() : input);
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.getBytes(StandardCharsets.UTF_8));
+            return "call-" + java.util.HexFormat.of().formatHex(digest).substring(0, 16);
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
     }
 
     private ModelTurn parsePlanTurn(List<ChatResponse> responses) {
