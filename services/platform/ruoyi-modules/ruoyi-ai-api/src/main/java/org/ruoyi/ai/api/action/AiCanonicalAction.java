@@ -83,6 +83,15 @@ public final class AiCanonicalAction {
         // 不适用 PLATFORM_ADMIN_ACTIONS）。权限行由 V32 注册（menu_id 7203，
         // 默认不分配，由 provisioning 逐码授予）。
         actions.put("flow.node.write", "ai:flow:design");
+        // F13-M1（2026-10-18，维护者 B 批项 5 已批「V34 迁移号使用＋发布/公开语义」）：
+        // 发布面新增**恰一条**动作 flow.publish → ai:flow:publish（第 45 条）。
+        // 资源仍是 ai_flow_workflow（带 tenant_id ⇒ 租户级，**不进** PLATFORM_ADMIN_ACTIONS，
+        // 与 flow.node.write 同口径）；启停与公开开关共用这一条写权限，
+        // 公开搜索/详情复用既有 flow.list/flow.read（不新增读动作）。
+        // 权限行由 V34__aiflow_publish_permission.sql 注册（menu_id 7149，默认不分配，
+        // 由 provisioning 逐码授予）。公开语义写死：同租户、跨用户、只读；
+        // 跨租户永不因 is_public 可见。
+        actions.put("flow.publish", "ai:flow:publish");
         // F11-A1（2026-10-11，维护者批"新建最小样本＋安全约束＋本期范围"）：Skills 管理面
         // 接线批新增**恰四条**动作——skill.list / skill.read / skill.write / skill.delete
         // → ai:skill:*（第 40-43 条）。七条既有端点对号：列表与 tool-options 归 skill.list（Spec §6-P3），

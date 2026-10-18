@@ -83,10 +83,14 @@ class P1AiPermissionContractTest {
         assertThat(declared)
                 .as("锚点：必须真的从迁移里读到权限行，否则本判据是空跑")
                 .hasSizeGreaterThanOrEqualTo(25)
-                .contains("ai:kb:list", "ai:run:submit", "ai:agent:execute", "ai:conversation:read");
+                .contains("ai:kb:list", "ai:run:submit", "ai:agent:execute", "ai:conversation:read",
+                        // F13-M1：V34 的单行权限必须被真实读到。
+                        "ai:flow:publish");
         assertThat(canonicalPermissions)
                 .as("锚点：规范动作表必须真的读到 25 个权限")
-                .hasSizeGreaterThanOrEqualTo(25);
+                .hasSizeGreaterThanOrEqualTo(25)
+                // F13-M1（2026-10-18）：发布面动作与 V34 权限行必须同时进入两侧锚点。
+                .contains("ai:flow:publish");
 
         assertThat(declared)
                 .as("有路由/动作却没有可授予的权限行 → 作用域永远拿不到它，端点恒 403")
@@ -103,7 +107,9 @@ class P1AiPermissionContractTest {
         assertThat(actions)
                 .as("锚点：必须真的读到网关路由表")
                 .hasSizeGreaterThanOrEqualTo(30)
-                .contains("kb.list", "run.submit", "conversation.read");
+                .contains("kb.list", "run.submit", "conversation.read",
+                        // F13-M1：发布/公开面路由动作必须在表内。
+                        "flow.publish");
 
         List<String> unknown = new ArrayList<>();
         for (String action : actions) {

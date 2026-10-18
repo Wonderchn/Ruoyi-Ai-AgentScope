@@ -233,8 +233,11 @@ class P1CurrentAuthorizationTest {
         // F12-M1（2026-10-18，维护者「授权 B+C+D 全部」B 批项 1/2；协调者 2026-10-18 明确追加）：
         // MCP 管理面再增**恰好 5 条**：mcp.list / mcp.read / mcp.write / mcp.delete / mcp.test
         // → ai:mcp:*。权限行由 V39__mcp_catalog_permissions.sql 注册（7144-7148，默认不分配）。
-        // 合并口径：34 + 4 + 1 + 4 + 1 + 5 = 49（第 45-49 条）。
-        // **不放宽任何既有断言**：F12 增量单独成集合，仍要求 diff 逐项相等。
+        // F13-M1（2026-10-18，维护者 B 批项 5）：AIFlow 发布/公开面再增**恰好 1 条**：
+        // flow.publish → ai:flow:publish（权限行 V34，menu_id 7149，默认不分配）。
+        // 启停/公开开关共用这一条写权限；公开搜索/详情复用既有 flow.list/flow.read。
+        // 合并口径：34 + 4 + 1 + 4 + 1 + 5 + 1 = 50（mcp.* 第 45-49 条，flow.publish 第 50 条）。
+        // **不放宽任何既有断言**：两批增量各自单独成集合，仍要求 diff 逐项相等。
         Set<String> oldFrozen = Set.of(
                 "kb.list", "kb.read", "kb.write", "kb.delete", "kb.acl.manage", "kb.retrieve",
                 "document.read", "document.download", "document.list", "document.upload",
@@ -258,11 +261,14 @@ class P1CurrentAuthorizationTest {
                 "ingestion.run");
         Set<String> approvedF12Increment = Set.of(
                 "mcp.list", "mcp.read", "mcp.write", "mcp.delete", "mcp.test");
+        Set<String> approvedF13M1Increment = Set.of(
+                "flow.publish");
         Set<String> approvedAllIncrements = new LinkedHashSet<>(approvedIncrement);
         approvedAllIncrements.addAll(approvedA1Increment);
         approvedAllIncrements.addAll(approvedF11Increment);
         approvedAllIncrements.addAll(approvedF06Increment);
         approvedAllIncrements.addAll(approvedF12Increment);
+        approvedAllIncrements.addAll(approvedF13M1Increment);
         Set<String> fullList = new LinkedHashSet<>(oldFrozen);
         fullList.addAll(approvedAllIncrements);
 
@@ -274,7 +280,8 @@ class P1CurrentAuthorizationTest {
                 "old frozen actions must be fully preserved; missing=" + diff(oldFrozen, actual));
         // ② 批准增量逐项集合相等：多的、少的、改名的都要红
         assertEquals(approvedAllIncrements, diff(new LinkedHashSet<>(actual), oldFrozen),
-                "approved increments must equal the union of F13-SLICE-1 + F13-A1 + F11-A1 + F06 + F12-M1 sets exactly");
+                "approved increments must equal the union of F13-SLICE-1 + F13-A1 + F11-A1 + "
+                        + "F06:1/2-A + F12-M1 + F13-M1 sets exactly");
         // ③ 总数等于完整清单（作为 ①② 的推论，仍显式断言）
         assertEquals(fullList.size(), actual.size(),
                 "total must equal the complete list, not merely be >= 34");
@@ -283,9 +290,9 @@ class P1CurrentAuthorizationTest {
         // ④ (动作 -> 权限) 逐项相等。Spec §5.1 第 1 条要求的是"映射"逐项相等，不只是动作名集合相等。
         // 只比名字会漏掉"值替换"这一类变异：例如把 kb.read 的权限改成 ai:kb:list，
         // 动作名集合不变、总数不变，①②③ 全绿，P1AiPermissionContractTest 也拦不住
-        // （新值同样在 sys_menu 里有行）。所以这里把全部 49 条映射钉死
+        // （新值同样在 sys_menu 里有行）。所以这里把全部 50 条映射钉死
         //（合并口径 = 34 + flow.*4 + flow.node.write 1 + F11-A1 skill.*4 + F06:1/2-A 1
-        //  + F12-M1 mcp.*5）：
+        //  + F12-M1 mcp.*5 + F13-M1 flow.publish 1）：
         // 任何一条的值被改动，都必须显式修改本清单，否则本判据红。
         Map<String, String> expectedPairs = new LinkedHashMap<>();
         expectedPairs.put("agent.activate", "ai:agent:activate");
@@ -309,6 +316,8 @@ class P1CurrentAuthorizationTest {
         expectedPairs.put("flow.delete", "ai:flow:delete");
         expectedPairs.put("flow.list", "ai:flow:list");
         expectedPairs.put("flow.node.write", "ai:flow:design");
+        // F13-M1（2026-10-18，维护者 B 批项 5）：发布/公开开关动作（V34/7149）。
+        expectedPairs.put("flow.publish", "ai:flow:publish");
         expectedPairs.put("flow.read", "ai:flow:read");
         expectedPairs.put("flow.write", "ai:flow:write");
         expectedPairs.put("ingestion.run", "ai:ingestion:run");
@@ -347,6 +356,7 @@ class P1CurrentAuthorizationTest {
         assertEquals(expectedPairs, actualPairs,
                 "every (action -> permission) pair must match exactly; a swapped value must go red");
         assertEquals(Optional.of("ai:flow:design"), AiActionRegistry.permissionOf("flow.node.write"));
+        assertEquals(Optional.of("ai:flow:publish"), AiActionRegistry.permissionOf("flow.publish"));
         assertEquals(Optional.of("ai:config:read"), AiActionRegistry.permissionOf("config.read"));
         assertEquals(Optional.of("ai:config:publish"), AiActionRegistry.permissionOf("config.publish"));
         assertEquals(Optional.of("ai:config:revoke"), AiActionRegistry.permissionOf("config.revoke"));

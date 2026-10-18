@@ -451,6 +451,29 @@ public class AiGatewayController {
             // 四条动作 flow.list/read/write/delete 默认授予全为"否"。
             // 两条 GET 在网关走字节分支，故内层必须同时给整数 ApiEnvelope 与两个回执头。
             new Route("GET", "/flows", "flow.list"),
+            // F13-M1（2026-10-18，维护者 B 批项 5）：发布/公开面 6 条。
+            // 公开语义写死：同租户、跨用户、只读；跨租户永不因 is_public 可见
+            // （服务层谓词 = is_public=1 AND is_enable=1 AND is_deleted=0 AND tenant_id=当前）。
+            //
+            // ⚠️ 声明序：四条 /flows/public/** 必须排在既有 GET /flows/{uuid} 与
+            // GET /flows/{uuid}/nodes **之前**——matchRoute 取声明序首个命中，
+            // 否则 "public" 会被 {uuid} 当成工作流 uuid 吃掉，公开面被静默改写成
+            // 「我的工作流详情 / 图读」语义。公开详情 404 由控制器直接返回
+            // （同文案「工作流不存在」，私有/停用/软删/跨租户不泄露存在性）。
+            //
+            // 动作映射：搜索 → flow.list；操作符 → flow.list（静态目录，无 DB）；
+            // 公开组件库 → flow.read；公开详情 → flow.read；
+            // 启停/公开开关 → **flow.publish**（→ V34 播种的 ai:flow:publish，
+            // 租户级、不进 PLATFORM_ADMIN_ACTIONS，与 flow.node.write 同口径）。
+            // 三条 GET（搜索/操作符/组件库）与公开详情都在网关走字节分支，
+            // 控制器必须自铸整数 ApiEnvelope + 两个交付回执头；两条写面走 JSON 分支、
+            // 内层**不铸**回执（JSON 分支铸造 = 永久 ACTIVE 许可泄漏）。
+            new Route("GET", "/flows/public/search", "flow.list"),
+            new Route("GET", "/flows/public/operators", "flow.list"),
+            new Route("GET", "/flows/public/component/list", "flow.read"),
+            new Route("GET", "/flows/public/{uuid}", "flow.read"),
+            new Route("POST", "/flows/{uuid}/enabled", "flow.publish"),
+            new Route("POST", "/flows/{uuid}/public", "flow.publish"),
             new Route("GET", "/flows/{uuid}", "flow.read"),
             new Route("POST", "/flows", "flow.write"),
             new Route("PUT", "/flows/{uuid}", "flow.write"),
