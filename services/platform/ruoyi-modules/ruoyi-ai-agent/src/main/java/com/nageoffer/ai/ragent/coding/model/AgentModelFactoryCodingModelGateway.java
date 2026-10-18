@@ -145,7 +145,22 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
                     CodingModelUnavailableException.MODEL_TURN_FAILED,
                     "coding model returned an empty response");
         }
-        return planTurn ? parsePlanTurn(responses) : parseCodingTurn(responses);
+        try {
+            return planTurn ? parsePlanTurn(responses) : parseCodingTurn(responses);
+        } catch (CodingModelUnavailableException unavailable) {
+            throw unavailable;
+        } catch (RuntimeException failure) {
+            String detail = String.valueOf(failure.getMessage())
+                    .replaceAll("https?://\\S+", "<url>")
+                    .replaceAll("sk-[A-Za-z0-9_-]+", "<key>");
+            org.slf4j.LoggerFactory.getLogger(AgentModelFactoryCodingModelGateway.class)
+                    .warn("coding model response parse failed: {}: {}",
+                            failure.getClass().getSimpleName(),
+                            detail.length() > 300 ? detail.substring(0, 300) : detail);
+            throw new CodingModelUnavailableException(
+                    CodingModelUnavailableException.MODEL_TURN_FAILED,
+                    "coding model response failed");
+        }
     }
 
     private Model resolveModel(CodingModelRequest request) {
