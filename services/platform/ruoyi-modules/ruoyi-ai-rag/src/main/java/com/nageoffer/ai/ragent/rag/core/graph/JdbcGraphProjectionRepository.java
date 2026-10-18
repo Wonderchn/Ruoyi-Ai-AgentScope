@@ -109,7 +109,7 @@ public class JdbcGraphProjectionRepository implements GraphProjectionRepository 
             """;
 
     static final String SQL_FIND_LABELS = """
-            SELECT e.name AS label, COUNT(*) AS occurrences
+            SELECT e.name AS label
             FROM platform.ai_graph_entity e
             JOIN platform.ai_knowledge_document d
               ON d.tenant_id = e.tenant_id AND d.id = e.doc_id AND d.kb_id = e.kb_id AND d.deleted = 0
@@ -121,7 +121,7 @@ public class JdbcGraphProjectionRepository implements GraphProjectionRepository 
               AND (CAST(:keywordPattern AS VARCHAR) IS NULL
                    OR e.name ILIKE :keywordPattern OR e.entity_key ILIKE :keywordPattern)
             GROUP BY e.name
-            ORDER BY occurrences DESC, label ASC
+            ORDER BY COUNT(*) DESC, e.name ASC
             LIMIT :limitValue
             """;
 
