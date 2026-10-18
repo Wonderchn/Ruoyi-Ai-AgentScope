@@ -32,6 +32,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
@@ -191,6 +192,64 @@ class P1AiPermissionContractTest {
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * F12-M1（2026-10-18，维护者批 B 批 G-22）：MCP 管理面。
+     *
+     * <p>在既有双向相等判据之外补两条锚点：
+     * <ol>
+     *   <li>五个 canonical 动作逐条映射到 {@code ai:mcp:*}，且 V39 的五行权限真的落库；</li>
+     *   <li>18 条公开路由逐条登记，且不存在 {@code /mcp/**} 通配——
+     *       通配会把同前缀下任何将来新增端点一起放行，等于取消白名单。</li>
+     * </ol>
+     */
+    @Test
+    @DisplayName("F12-M1：MCP 管理面 5 动作 ↔ 权限行，18 条路由逐条登记且禁止通配")
+    void mcpAdminSurfaceIsRegisteredIndividually() throws Exception {
+        Map<String, String> actions = new java.util.LinkedHashMap<>();
+        actions.put("mcp.list", "ai:mcp:list");
+        actions.put("mcp.read", "ai:mcp:read");
+        actions.put("mcp.write", "ai:mcp:write");
+        actions.put("mcp.delete", "ai:mcp:delete");
+        actions.put("mcp.test", "ai:mcp:test");
+        actions.forEach((action, permission) -> assertThat(AiCanonicalAction.permissionOf(action))
+                .as("规范动作 %s 必须映射到 %s", action, permission)
+                .contains(permission));
+        assertThat(declaredPermissions())
+                .as("V39 必须注册五行 ai:mcp:* 权限（默认不分配）")
+                .containsAll(actions.values());
+
+        List<String> patterns = whitelistedPatterns();
+        assertThat(patterns)
+                .as("18 条 MCP 管理路由逐条登记")
+                .contains(
+                        "GET /mcp/markets",
+                        "GET /mcp/markets/all",
+                        "GET /mcp/markets/export",
+                        "GET /mcp/markets/{id}",
+                        "GET /mcp/markets/{id}/tools",
+                        "POST /mcp/markets/{id}/refresh",
+                        "POST /mcp/markets/{id}/status",
+                        "DELETE /mcp/markets/{ids}",
+                        "GET /mcp/tools",
+                        "GET /mcp/tools/all",
+                        "GET /mcp/tools/options",
+                        "GET /mcp/tools/export",
+                        "GET /mcp/tools/{id}",
+                        "POST /mcp/tools/{id}/status",
+                        "POST /mcp/tools/{id}/test",
+                        "DELETE /mcp/tools/{ids}",
+                        "POST /mcp/market-tools/{id}/load",
+                        "POST /mcp/market-tools/batch-load");
+        assertThat(patterns)
+                .as("禁止 /mcp/** 通配")
+                .noneMatch(pattern -> pattern.contains("/mcp/**"));
+        assertThat(whitelistedActions())
+                .as("18 条路由只使用五个新动作")
+                .contains("mcp.list", "mcp.read", "mcp.write", "mcp.delete", "mcp.test");
+    }
+
+    // ------------------------------------------------------------------ helpers (reflection / SQL)
 
     /** 反射读网关的私有路由表：白名单是运行期固定表，测试要枚举它而不是抄一份。 */
     private static List<String> whitelistedActions() throws Exception {

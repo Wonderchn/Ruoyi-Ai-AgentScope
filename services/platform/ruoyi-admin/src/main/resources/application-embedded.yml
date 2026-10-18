@@ -228,6 +228,12 @@ p2:
 agent:
   conversation:
     enabled: true
+  # F12-M1：MCP 受控端点 allow-list（fail-closed，默认空 = 刷新/连接测试零网络）。
+  # 真实目标由协调者在启动 env 注入（AGENT_MCP_ALLOW_LIST_ENDPOINTS_0=scheme://host:port），
+  # shipped 配置与代码不写死任何地址/端口；条目按 scheme+host+port 精确匹配。
+  mcp:
+    allow-list:
+      endpoints: []
 
 # P3 受控动作面（动作账本/审批/对账）——与独立 AI 应用同一开关。
 # 沙箱票据客户端指向独立沙箱进程（有界回环端点）；未启用时以 SANDBOX_CLOSED fail-closed。

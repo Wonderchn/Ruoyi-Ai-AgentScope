@@ -25,3 +25,4 @@ org.ruoyi.aiweb.embedded.AiEmbeddedDashboardConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedKnowledgeScheduleConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedAgentSkillConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedAttachmentConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedMcpAdminConfiguration

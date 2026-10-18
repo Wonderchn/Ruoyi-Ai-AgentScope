@@ -505,7 +505,37 @@ public class AiGatewayController {
             new Route("POST", "/agent-catalog/agent-skills/{id}/enabled", "skill.write"),
             // F11:4 技能包导出（GET 字节分支 + 交付回执）；import 走 AiGatewayStreamController
             // 专用上传通道（精确映射先于 catch-all），此处刻意不登记 import（避免死路由）。
-            new Route("GET", "/agent-catalog/agent-skills/{id}/export", "skill.read"));
+            new Route("GET", "/agent-catalog/agent-skills/{id}/export", "skill.read"),
+            // F12-M1（2026-10-18，维护者批 B 批 G-22）：MCP 管理面 18 条，逐条登记、禁止通配。
+            // 内层 handler = McpAdminController（类级 /internal/ai/v1/mcp），由
+            // AiEmbeddedMcpAdminConfiguration 显式装配；三件套已归位（前缀＋整数 ApiEnvelope＋
+            // GET 交付回执）。动作映射见 brief §2.3：列表/全部/选项/市场工具列表 → mcp.list；
+            // 详情/导出 → mcp.read；启停/刷新/加载/批量加载 → mcp.write；删除 → mcp.delete；
+            // 连接测试 → mcp.test。五条动作全部进 PLATFORM_ADMIN_ACTIONS 第二道门，
+            // 权限行由 V39 注册（7144-7148，默认不分配）。
+            // 声明序（matchRoute 取声明序首个命中）：同为 3 段的字面量 all/export/options
+            // 必须排在 {id} 之前，否则会被当成 id 吃掉；4 段 {id}/tools 与 3 段 {id} 不同形。
+            // 六条 GET 在网关走字节分支，故内层必须同时给整数 ApiEnvelope 与两个回执头；
+            // 写面走 JSON 分支、内层不铸回执。
+            new Route("GET", "/mcp/markets", "mcp.list"),
+            new Route("GET", "/mcp/markets/all", "mcp.list"),
+            new Route("GET", "/mcp/markets/export", "mcp.read"),
+            new Route("GET", "/mcp/markets/{id}", "mcp.read"),
+            new Route("GET", "/mcp/markets/{id}/tools", "mcp.list"),
+            new Route("POST", "/mcp/markets/{id}/refresh", "mcp.write"),
+            new Route("POST", "/mcp/markets/{id}/status", "mcp.write"),
+            new Route("DELETE", "/mcp/markets/{ids}", "mcp.delete"),
+            new Route("GET", "/mcp/tools", "mcp.list"),
+            new Route("GET", "/mcp/tools/all", "mcp.list"),
+            new Route("GET", "/mcp/tools/options", "mcp.list"),
+            new Route("GET", "/mcp/tools/export", "mcp.read"),
+            new Route("GET", "/mcp/tools/{id}", "mcp.read"),
+            new Route("POST", "/mcp/tools/{id}/status", "mcp.write"),
+            new Route("POST", "/mcp/tools/{id}/test", "mcp.test"),
+            new Route("DELETE", "/mcp/tools/{ids}", "mcp.delete"),
+            // 3 段字面量 batch-load 排在 4 段变量形 {id}/load 之前（literal-before-variable）
+            new Route("POST", "/mcp/market-tools/batch-load", "mcp.write"),
+            new Route("POST", "/mcp/market-tools/{id}/load", "mcp.write"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;

@@ -103,6 +103,21 @@ public final class AiCanonicalAction {
         // （menu_id 候选 7143；默认不分配，由 provisioning 逐码授予）。
         // 公开路由见 AiGatewayController.ROUTES 的 /ingestion/tasks/**（6 行）。
         actions.put("ingestion.run", "ai:ingestion:run");
+        // F12-M1（2026-10-18，维护者批 B 批 G-22）：MCP 管理面新增**恰五条**动作——
+        // mcp.list / mcp.read / mcp.write / mcp.delete / mcp.test → ai:mcp:*（第 45-49 条）。
+        // 对号（brief §2.3）：市场/工具列表、全部、选项、市场工具列表归 mcp.list；
+        // 详情与导出归 mcp.read；启停/刷新/加载/批量加载归 mcp.write；删除归 mcp.delete；
+        // 连接测试归 mcp.test。Add/Edit 端点不在本包（台账行未要求），故无对应动作。
+        // 权限行由 V39__mcp_catalog_permissions.sql 注册（menu_id 7144-7148，
+        // parent 7100，order 62-66；默认不分配，由 provisioning 逐码授予）。
+        // 公开路由见 AiGatewayController.ROUTES 的 /mcp/**（18 行，逐条登记、禁止通配）。
+        // 五条动作**全部进 PLATFORM_ADMIN_ACTIONS 第二道门**：与 skill.* 同口径，
+        // MCP 目录属平台管理的目录面（V9 既有三表；两个先例口径张力继续登记）。
+        actions.put("mcp.list", "ai:mcp:list");
+        actions.put("mcp.read", "ai:mcp:read");
+        actions.put("mcp.write", "ai:mcp:write");
+        actions.put("mcp.delete", "ai:mcp:delete");
+        actions.put("mcp.test", "ai:mcp:test");
         return Collections.unmodifiableMap(actions);
     }
 
@@ -149,7 +164,8 @@ public final class AiCanonicalAction {
      */
     private static final Set<String> PLATFORM_ADMIN_ACTIONS = Set.of(
             "agent.list", "agent.read", "agent.write", "agent.delete", "agent.activate",
-            "skill.list", "skill.read", "skill.write", "skill.delete");
+            "skill.list", "skill.read", "skill.write", "skill.delete",
+            "mcp.list", "mcp.read", "mcp.write", "mcp.delete", "mcp.test");
 
     /**
      * @param action 规范动作标识
