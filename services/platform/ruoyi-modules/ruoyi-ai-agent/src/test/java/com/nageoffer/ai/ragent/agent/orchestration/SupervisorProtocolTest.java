@@ -87,7 +87,7 @@ class SupervisorProtocolTest {
     }
 
     @Test
-    @DisplayName("顶层只允许 text/agents：模型/凭据/工具/预算等客户端字段一律 400")
+    @DisplayName("顶层只允许 text/agents/appId：模型/凭据/工具/预算等客户端字段一律 400")
     void unknownInputFieldsAreRejected() {
         for (String field : new String[]{"model", "provider", "tool", "tools", "resourceRefs", "budget",
                 "systemPrompt", "mode", "agentVersion", "action", "maxSteps"}) {

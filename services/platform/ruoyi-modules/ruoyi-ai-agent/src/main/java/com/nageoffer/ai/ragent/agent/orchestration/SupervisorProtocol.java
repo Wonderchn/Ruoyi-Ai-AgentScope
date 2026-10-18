@@ -88,7 +88,13 @@ public final class SupervisorProtocol {
     public static final String FINAL_STEP = "supervisor-final";
 
     private static final Pattern AGENT_NAME = Pattern.compile("[a-z][a-z0-9_-]{1,15}");
-    private static final Set<String> INPUT_FIELDS = Set.of("text", "agents");
+    /**
+     * F14:2：可选市场应用 id 的形状。
+     *
+     * <p>V43 的 {@code uuid varchar(32)}，与工作流 uuid 同一形状（32 位小写十六进制）。
+     */
+    private static final Pattern APP_ID = Pattern.compile("[0-9a-f]{32}");
+    private static final Set<String> INPUT_FIELDS = Set.of("text", "agents", "appId");
     private static final Set<String> AGENT_FIELDS = Set.of("name", "instruction");
     private static final Set<String> DELEGATE_FIELDS = Set.of("kind", "agent", "task", "reason");
     private static final Set<String> FINAL_FIELDS = Set.of("kind", "answer");
@@ -197,11 +203,23 @@ public final class SupervisorProtocol {
         if (text == null || !text.isTextual() || text.asText().isBlank() || text.asText().length() > MAX_TEXT) {
             throw bad("text must be non-blank and <= " + MAX_TEXT + " characters");
         }
-        JsonNode agents = input.get("agents");
+        roster(input.get("agents"));
+        // F14:2/D2：appId 可选；在场即校验形状（可见性/名册一致性在受理事务内复核）。
+        optionalAppId(input);
+    }
+
+    /**
+     * 从 {@code agents} JSON 数组解析名册（与受理同一套约束）。
+     *
+     * <p>供受理校验、执行期复验与市场投影三处共用：形状规则只有这一份。
+     * 失败抛 {@code 400}（市场投影会捕获后按"不可用"收敛）。
+     */
+    public static Roster roster(JsonNode agents) {
         if (agents == null || !agents.isArray() || agents.size() < MIN_AGENTS || agents.size() > MAX_AGENTS) {
             throw bad("agents must contain " + MIN_AGENTS + ".." + MAX_AGENTS + " entries");
         }
         Set<String> names = new HashSet<>();
+        List<Agent> roster = new ArrayList<>(agents.size());
         for (JsonNode agent : agents) {
             if (agent == null || !agent.isObject()) {
                 throw bad("each agent must be an object");
@@ -223,7 +241,27 @@ public final class SupervisorProtocol {
                     || instruction.asText().length() > MAX_INSTRUCTION) {
                 throw bad("instruction must be non-blank and <= " + MAX_INSTRUCTION + " characters");
             }
+            roster.add(new Agent(name.asText(), instruction.asText()));
         }
+        return new Roster(roster);
+    }
+
+    /**
+     * 可选 {@code appId}（F14:2/D2）：缺省或显式 null → {@code null}；在场则必须是
+     * 32 位小写十六进制 uuid。形状错误在受理事务之前 400。
+     */
+    public static String optionalAppId(JsonNode input) {
+        if (input == null || !input.isObject()) {
+            return null;
+        }
+        JsonNode appId = input.get("appId");
+        if (appId == null || appId.isNull()) {
+            return null;
+        }
+        if (!appId.isTextual() || !APP_ID.matcher(appId.asText()).matches()) {
+            throw bad("appId must match " + APP_ID.pattern());
+        }
+        return appId.asText();
     }
 
     /** 从 run 行持久化的 input 解析名册（执行期；受理已校验，这里是防御性复验）。 */
@@ -235,10 +273,7 @@ public final class SupervisorProtocol {
             throw bad("invalid supervisor input");
         }
         validateInput(node);
-        List<Agent> agents = new ArrayList<>();
-        node.get("agents").forEach(agent -> agents.add(new Agent(agent.get("name").asText(),
-                agent.get("instruction").asText())));
-        return new Input(node.get("text").asText(), new Roster(agents));
+        return new Input(node.get("text").asText(), roster(node.get("agents")));
     }
 
     // ------------------------------------------------------------ 模型输出

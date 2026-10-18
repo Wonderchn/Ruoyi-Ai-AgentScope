@@ -17,9 +17,11 @@
 
 package com.nageoffer.ai.ragent.agent.orchestration;
 
+import com.nageoffer.ai.ragent.agent.market.MultiAgentAppService;
 import com.nageoffer.ai.ragent.agent.runtime.P3Properties;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.ingest.SyntheticChatGateway;
+import com.nageoffer.ai.ragent.runtime.CanonicalJson;
 import com.nageoffer.ai.ragent.runtime.RunAccessService;
 import com.nageoffer.ai.ragent.runtime.RunApiException;
 import com.nageoffer.ai.ragent.runtime.RunErrorCode;
@@ -27,6 +29,8 @@ import com.nageoffer.ai.ragent.runtime.RuntimeActionContract;
 import com.nageoffer.ai.ragent.runtime.dao.RunLedgerDao;
 import com.nageoffer.ai.ragent.runtime.dto.AdmissionRequest;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -38,9 +42,11 @@ import java.util.Set;
  * 对应需求。运行期授权在 {@link SupervisorProviderBoundary} 里以 {@code agent.execute}
  * 逐次复核。
  *
- * <p><b>冻结输入（§2.1）。</b>顶层仅 {@code text}/{@code agents}；{@code agents} 2–3 个、
- * alias {@code [a-z][a-z0-9_-]{1,15}} 唯一、instruction 非空 ≤1024；{@code resourceRefs}
- * 必须为空（没有知识库/文档授权面）；{@code agentVersion=supervisor-v1}。
+ * <p><b>冻结输入（§2.1）。</b>顶层仅 {@code text}/{@code agents}（F14:2 起可选 {@code appId}）；
+ * {@code agents} 2–3 个、alias {@code [a-z][a-z0-9_-]{1,15}} 唯一、instruction 非空 ≤1024；
+ * {@code resourceRefs} 必须为空（没有知识库/文档授权面）；{@code agentVersion=supervisor-v1}。
+ * 带 {@code appId} 时，受理事务内按 tenant+公开+启用+未删复核且名册必须一致（D2）；
+ * 不带时旧行为不变。
  */
 public class SupervisorRunContract implements RuntimeActionContract {
 
@@ -48,13 +54,21 @@ public class SupervisorRunContract implements RuntimeActionContract {
     private final SupervisorLedger ledger;
     private final RunLedgerDao runs;
     private final RunAccessService access;
+    /** F14:2 市场复核端口；旧构造器保持缺席（此时带 appId 的请求 503 fail-closed）。 */
+    private final MultiAgentAppService market;
 
     public SupervisorRunContract(P3Properties properties, SupervisorLedger ledger, RunLedgerDao runs,
                                  RunAccessService access) {
+        this(properties, ledger, runs, access, null);
+    }
+
+    public SupervisorRunContract(P3Properties properties, SupervisorLedger ledger, RunLedgerDao runs,
+                                 RunAccessService access, MultiAgentAppService market) {
         this.properties = properties;
         this.ledger = ledger;
         this.runs = runs;
         this.access = access;
+        this.market = market;
     }
 
     @Override
@@ -102,6 +116,10 @@ public class SupervisorRunContract implements RuntimeActionContract {
      */
     @Override
     public void onAdmitted(ExecutionPrincipal principal, String runId, AdmissionRequest request) {
+        // F14:2/D2：appId 可选。无 appId 时该方法零副作用，旧受理路径逐字节不变；
+        // 有 appId 时先按"tenant+公开+启用+未删"复核可见性，再比对名册一致性——
+        // 任何拒绝都发生在 run 读回与账本写入之前（调用点已处于受理事务内）。
+        verifyAppBinding(principal, request);
         var run = runs.findRun(principal.tenantId(), runId).orElseThrow(
                 () -> new RunApiException(RunErrorCode.INTERNAL_ERROR, "run readback failed"));
         if (properties.isSyntheticModel()) {
@@ -114,6 +132,57 @@ public class SupervisorRunContract implements RuntimeActionContract {
                     "engine model authority is not wired; refusing to record an admitted model");
         }
         ledger.admitted(run, request, authority.requirePublished(action()).modelId());
+    }
+
+    /**
+     * appId 复核（受理事务内，run 读回之前）。
+     *
+     * <p>不可见（不存在/跨租户/私有/停用/软删）⇒ 404 同一文案「应用不存在」；
+     * 名册与受理输入不一致 ⇒ 400；库内名册不可解析 ⇒ 500（不伪装成"应用不存在"）。
+     * 市场端口缺席 ⇒ 503 fail-closed：带 appId 的请求不能在没有复核的情况下被受理。
+     */
+    private void verifyAppBinding(ExecutionPrincipal principal, AdmissionRequest request) {
+        String appId = SupervisorProtocol.optionalAppId(request.input());
+        if (appId == null) {
+            return;
+        }
+        if (market == null) {
+            throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE,
+                    "multi-agent app service is not wired");
+        }
+        var app = market.findVisible(principal.tenantId(), appId).orElseThrow(
+                () -> new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN, "应用不存在"));
+        SupervisorProtocol.Roster stored;
+        try {
+            stored = SupervisorProtocol.roster(CanonicalJson.strictMapper().readTree(app.agentsJson()));
+        } catch (Exception unreadable) {
+            throw new RunApiException(RunErrorCode.INTERNAL_ERROR,
+                    "multi-agent app roster is unreadable");
+        }
+        if (!sameRoster(stored, request.input().get("agents"))) {
+            throw new RunApiException(RunErrorCode.BAD_REQUEST,
+                    "multi-agent app roster does not match admitted agents");
+        }
+    }
+
+    /** 名册一致性：按 alias → instruction 精确比较（顺序无关；alias 唯一由两侧协议保证）。 */
+    private static boolean sameRoster(SupervisorProtocol.Roster stored, com.fasterxml.jackson.databind.JsonNode requested) {
+        if (requested == null || !requested.isArray() || requested.size() != stored.agents().size()) {
+            return false;
+        }
+        Map<String, String> instructions = new HashMap<>();
+        for (SupervisorProtocol.Agent agent : stored.agents()) {
+            instructions.put(agent.name(), agent.instruction());
+        }
+        for (com.fasterxml.jackson.databind.JsonNode agent : requested) {
+            var name = agent.get("name");
+            var instruction = agent.get("instruction");
+            if (name == null || instruction == null
+                    || !instruction.asText().equals(instructions.get(name.asText()))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority modelAuthority;

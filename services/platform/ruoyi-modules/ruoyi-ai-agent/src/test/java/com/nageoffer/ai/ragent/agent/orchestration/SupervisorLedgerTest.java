@@ -57,7 +57,7 @@ import static org.mockito.Mockito.when;
  * <p>账本断言：受理写恰一行 {@code ai_agent_run}；预算默认 3000/9/1；spendStep/addTokens
  * 受 max_steps/max_tokens 约束；绑定兼容是纯函数。
  *
- * <p>护栏断言：canonical 仍 56 条且无 {@code agent.supervisor}；迁移最高仍 V42；
+ * <p>护栏断言：canonical 仍 56 条且无 {@code agent.supervisor}；迁移最高 V43（F14:2 市场表）；
  * 网关源码无 supervisor 路由；orchestration 包无 {@code @TableName}、无第二账本写入、
  * 不写 {@code ai_tool_call}/{@code ai_agent_checkpoint}/{@code ai_run_event}。
  */
@@ -210,7 +210,7 @@ class SupervisorLedgerTest {
     // ------------------------------------------------------------ R17：零新增共享面
 
     @Test
-    @DisplayName("R17：canonical 仍 56 条、无 agent.supervisor；迁移最高 V42；网关无 supervisor 路由")
+    @DisplayName("R17：canonical 仍 56 条、无 agent.supervisor；迁移最高 V43（F14:2 市场表）；网关无 supervisor 路由")
     void zeroNewCanonicalMigrationOrRoute() throws Exception {
         Set<String> actions = org.ruoyi.ai.api.action.AiCanonicalAction.knownActions();
         assertEquals(56, actions.size());
@@ -230,7 +230,7 @@ class SupervisorLedgerTest {
                 }
             }
         }
-        assertEquals(42, max, "migration version must stay frozen at V42");
+        assertEquals(43, max, "migration version must stay frozen at V43 (F14:2 ai_multi_agent_app)");
 
         Path gateway = platformRoot().resolve(
                 "ruoyi-modules/ruoyi-ai-integration/src/main/java/org/ruoyi/aiintegration/web/AiGatewayController.java");

@@ -17,10 +17,12 @@
  * 保留：会话历史的真实读路径（AI 网关面）与工作流公开面（另一个保留模块，不属本卡）。
  */
 import type { ConversationMessageRow } from './history';
+import type { MultiAgentApp, MultiAgentAppPage } from './multi-agent-market';
 import type { ChatMessageVo, GetChatListParams, PageResult, PublicFlowInputs, WorkflowResp, workflowVo } from './types';
 import { get } from '@/utils/request';
 import { buildPublicFlowSearchUrl, publicFlowInputsPath } from './flow-market';
 import { toChatHistory } from './history';
+import { buildMultiAgentSearchUrl, multiAgentDetailPath } from './multi-agent-market';
 
 export * from './run-chat';
 
@@ -58,4 +60,14 @@ export function getWorkflowList(params: workflowVo) {
 // 响应只含 uuid/title/inputs/nodes，不含 node_config / prompt / 所有者 / 租户。
 export function getWorkflowDetail(uuid: string) {
   return get<PublicFlowInputs>(publicFlowInputsPath(uuid)).json();
+}
+
+// F14:2：多 Agent 市场公开面。列表参数只有 `current/size/keyword`；
+// 详情投影只含 uuid/name/description/mode/agents（无所有者/租户/开关列）。
+export function getMultiAgentAppList(params: { current?: number; size?: number; keyword?: string } = {}) {
+  return get<MultiAgentAppPage>(buildMultiAgentSearchUrl(params)).json();
+}
+
+export function getMultiAgentAppDetail(uuid: string) {
+  return get<MultiAgentApp>(multiAgentDetailPath(uuid)).json();
 }
