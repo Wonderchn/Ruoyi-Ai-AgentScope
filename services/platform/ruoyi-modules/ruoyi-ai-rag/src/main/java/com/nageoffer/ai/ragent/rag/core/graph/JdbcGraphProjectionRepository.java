@@ -89,7 +89,7 @@ public class JdbcGraphProjectionRepository implements GraphProjectionRepository 
               ON k.tenant_id = e.tenant_id AND k.id = e.kb_id AND k.deleted = 0
             WHERE e.tenant_id = :tenant AND e.deleted = 0
               AND e.kb_id IN (:kbs)
-              AND (:docId IS NULL OR e.doc_id = :docId)
+              AND (CAST(:docId AS VARCHAR) IS NULL OR e.doc_id = :docId)
             ORDER BY e.node_id ASC, e.doc_id ASC
             """;
 
@@ -104,7 +104,7 @@ public class JdbcGraphProjectionRepository implements GraphProjectionRepository 
               ON k.tenant_id = r.tenant_id AND k.id = r.kb_id AND k.deleted = 0
             WHERE r.tenant_id = :tenant AND r.deleted = 0
               AND r.kb_id IN (:kbs)
-              AND (:docId IS NULL OR r.doc_id = :docId)
+              AND (CAST(:docId AS VARCHAR) IS NULL OR r.doc_id = :docId)
             ORDER BY r.source_node_id ASC, r.target_node_id ASC, r.relation_label ASC, r.doc_id ASC
             """;
 
@@ -117,8 +117,8 @@ public class JdbcGraphProjectionRepository implements GraphProjectionRepository 
               ON k.tenant_id = e.tenant_id AND k.id = e.kb_id AND k.deleted = 0
             WHERE e.tenant_id = :tenant AND e.deleted = 0
               AND e.kb_id IN (:kbs)
-              AND (:docId IS NULL OR e.doc_id = :docId)
-              AND (:keywordPattern IS NULL
+              AND (CAST(:docId AS VARCHAR) IS NULL OR e.doc_id = :docId)
+              AND (CAST(:keywordPattern AS VARCHAR) IS NULL
                    OR e.name ILIKE :keywordPattern OR e.entity_key ILIKE :keywordPattern)
             GROUP BY e.name
             ORDER BY occurrences DESC, label ASC
@@ -134,7 +134,7 @@ public class JdbcGraphProjectionRepository implements GraphProjectionRepository 
               ON k.tenant_id = e.tenant_id AND k.id = e.kb_id AND k.deleted = 0
             WHERE e.tenant_id = :tenant AND e.deleted = 0
               AND e.kb_id IN (:kbs)
-              AND (:docId IS NULL OR e.doc_id = :docId)
+              AND (CAST(:docId AS VARCHAR) IS NULL OR e.doc_id = :docId)
               AND (d.id IS NULL OR k.id IS NULL)
             """;
 
@@ -147,7 +147,7 @@ public class JdbcGraphProjectionRepository implements GraphProjectionRepository 
               ON k.tenant_id = r.tenant_id AND k.id = r.kb_id AND k.deleted = 0
             WHERE r.tenant_id = :tenant AND r.deleted = 0
               AND r.kb_id IN (:kbs)
-              AND (:docId IS NULL OR r.doc_id = :docId)
+              AND (CAST(:docId AS VARCHAR) IS NULL OR r.doc_id = :docId)
               AND (d.id IS NULL OR k.id IS NULL)
             """;
 
