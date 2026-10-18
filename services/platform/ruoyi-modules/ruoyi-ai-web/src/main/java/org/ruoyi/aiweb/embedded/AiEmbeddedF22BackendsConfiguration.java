@@ -41,6 +41,7 @@ import com.nageoffer.ai.ragent.rag.config.KeywordProperties;
 import com.nageoffer.ai.ragent.rag.config.MilvusConfig;
 import com.nageoffer.ai.ragent.rag.config.RAGDefaultProperties;
 import com.nageoffer.ai.ragent.rag.config.SearchChannelProperties;
+import com.nageoffer.ai.ragent.rag.config.VectorSpaceInitializer;
 import com.nageoffer.ai.ragent.rag.core.graph.LightRagClient;
 import com.nageoffer.ai.ragent.rag.core.keyword.EsKeywordIndexService;
 import com.nageoffer.ai.ragent.rag.core.keyword.EsKeywordRetrieverService;
@@ -50,9 +51,11 @@ import com.nageoffer.ai.ragent.rag.core.retrieval.channel.KeywordSearchChannel;
 import com.nageoffer.ai.ragent.rag.core.vector.MilvusVectorRetrieverService;
 import com.nageoffer.ai.ragent.rag.core.vector.MilvusVectorStoreAdmin;
 import com.nageoffer.ai.ragent.rag.core.vector.MilvusVectorStoreService;
+import com.nageoffer.ai.ragent.rag.core.vector.VectorStoreAdmin;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorStoreService;
 import io.milvus.v2.client.MilvusClientV2;
 import okhttp3.OkHttpClient;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
@@ -237,6 +240,29 @@ public class AiEmbeddedF22BackendsConfiguration {
         public MilvusVectorStoreAdmin milvusVectorStoreAdmin(
                 MilvusClientV2 milvusClient, RAGDefaultProperties ragDefaultProperties) {
             return new MilvusVectorStoreAdmin(milvusClient, ragDefaultProperties);
+        }
+
+        /**
+         * 共享向量空间启动初始化器（F22:2 真机第七缺口）。
+         *
+         * <p>{@code VectorSpaceInitializer} 负责在启动期幂等创建共享 collection
+         * （{@code rag_default_store}）。它此前不在内嵌 @Import / F22 组里，消费链首次
+         * {@code deleteDocumentVectors} 得到 {@code collection not found}；PG 下依赖迁移建表、
+         * 该初始化器为空操作，所以直到 Milvus 窗才暴露。
+         *
+         * <p>门控语义沿用本体：boundary 缺席/关闭时 {@code @PostConstruct} 自行跳过
+         * （零向量后端/Redis 调用）；开启时先查存在、再取 Redisson 锁、双重检查后建。
+         * 不改本体，也不改变 PG/ES/LightRAG 组。
+         */
+        @Bean
+        @ConditionalOnMissingBean
+        public VectorSpaceInitializer vectorSpaceInitializer(
+                VectorStoreAdmin vectorStoreAdmin,
+                RAGDefaultProperties ragDefaultProperties,
+                RedissonClient redissonClient,
+                ObjectProvider<SaasCapabilityBoundary> capabilityBoundary) {
+            return new VectorSpaceInitializer(vectorStoreAdmin, ragDefaultProperties,
+                    redissonClient, capabilityBoundary);
         }
     }
 

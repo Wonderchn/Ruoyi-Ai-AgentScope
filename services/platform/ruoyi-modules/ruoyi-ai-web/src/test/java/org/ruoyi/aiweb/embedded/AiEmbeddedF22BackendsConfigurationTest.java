@@ -26,6 +26,8 @@ import com.nageoffer.ai.ragent.core.ingest.DefaultIngestionKernel;
 import com.nageoffer.ai.ragent.core.ingest.embed.ChunkEmbeddingService;
 import com.nageoffer.ai.ragent.core.ingest.sink.ChunkIndexWriter;
 import com.nageoffer.ai.ragent.core.parser.registry.ParserRegistry;
+import com.nageoffer.ai.ragent.framework.integration.SaasBoundaryProperties;
+import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
 import com.nageoffer.ai.ragent.infra.embedding.EmbeddingService;
 import com.nageoffer.ai.ragent.infra.token.TokenCounterService;
 import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeBaseMapper;
@@ -39,6 +41,7 @@ import com.nageoffer.ai.ragent.rag.config.GraphSyncVectorStorePostProcessor;
 import com.nageoffer.ai.ragent.rag.config.KeywordProperties;
 import com.nageoffer.ai.ragent.rag.config.RAGDefaultProperties;
 import com.nageoffer.ai.ragent.rag.config.SearchChannelProperties;
+import com.nageoffer.ai.ragent.rag.config.VectorSpaceInitializer;
 import com.nageoffer.ai.ragent.rag.core.graph.LightRagClient;
 import com.nageoffer.ai.ragent.rag.core.keyword.EsKeywordIndexService;
 import com.nageoffer.ai.ragent.rag.core.keyword.EsKeywordRetrieverService;
@@ -52,6 +55,8 @@ import com.nageoffer.ai.ragent.rag.core.vector.PgVectorStoreAdmin;
 import com.nageoffer.ai.ragent.rag.core.vector.PgVectorRetrieverService;
 import com.nageoffer.ai.ragent.rag.core.vector.PgVectorStoreService;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorRetrieverService;
+import com.nageoffer.ai.ragent.rag.core.vector.VectorSpaceId;
+import com.nageoffer.ai.ragent.rag.core.vector.VectorSpaceSpec;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorStoreAdmin;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorStoreService;
 import com.nageoffer.ai.ragent.rag.core.vector.sink.VectorChunkSink;
@@ -65,13 +70,22 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionOperations;
 
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * F22:2：内嵌形态三条可选检索后端（Milvus / ES 关键词 / LightRAG 图谱）的条件装配判据。
@@ -168,6 +182,7 @@ class AiEmbeddedF22BackendsConfigurationTest {
                     assertThat(context.getBean(VectorStoreAdmin.class))
                             .isInstanceOf(MilvusVectorStoreAdmin.class);
                     assertThat(context).hasSingleBean(RAGDefaultProperties.class);
+                    assertThat(context).hasSingleBean(VectorSpaceInitializer.class);
 
                     assertThat(context).doesNotHaveBean(PgVectorStoreService.class);
                     assertThat(context).doesNotHaveBean(ElasticsearchClient.class);
@@ -223,6 +238,65 @@ class AiEmbeddedF22BackendsConfigurationTest {
                     assertThat(context).hasSingleBean(VectorTargetResolver.class);
                     assertThat(context).hasSingleBean(KnowledgeChunkService.class);
                 });
+    }
+
+    /**
+     * 真机 Milvus 窗缺口：共享 collection 的启动初始化器不在内嵌装配清单里，
+     * 消费链首次 delete/insert 得到 collection not found。boundary 开时必须幂等 ensure。
+     */
+    @Test
+    @DisplayName("milvus 启动初始化器：boundary 开 -> 幂等 ensure 共享 collection；二次调用不重复建")
+    void milvusInitializerEnsuresSharedCollectionWhenBoundaryOpen() {
+        FakeVectorStoreAdmin admin = new FakeVectorStoreAdmin();
+        RAGDefaultProperties ragDefaultProperties = ragDefaultProperties();
+
+        runner.withPropertyValues(EMBEDDED_LOCAL)
+                .withPropertyValues("rag.vector.type=milvus",
+                        "milvus.uri=http://127.0.0.1:19530")
+                .withBean(MilvusClientV2.class, () -> mock(MilvusClientV2.class))
+                .withBean(VectorStoreAdmin.class, () -> admin)
+                .withBean(RAGDefaultProperties.class, () -> ragDefaultProperties)
+                .withBean(SaasCapabilityBoundary.class, () -> new SaasCapabilityBoundary(
+                        new SaasBoundaryProperties(true, true,
+                                new SaasBoundaryProperties.CustomerApi(true), true)))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(VectorSpaceInitializer.class);
+                    assertThat(admin.ensureCalls)
+                            .as("启动期必须确保共享 collection 存在（真机 collection not found 的根因）")
+                            .hasValue(1);
+                    assertThat(admin.existsCalls.get()).isGreaterThanOrEqualTo(2);
+
+                    // 二次调用：exists=true 直接返回，不重复建
+                    context.getBean(VectorSpaceInitializer.class).initVectorSpace();
+                    assertThat(admin.ensureCalls).hasValue(1);
+                });
+    }
+
+    @Test
+    @DisplayName("milvus 启动初始化器：无 boundary -> 跳过且不碰后端（不建、不查）")
+    void milvusInitializerSkipsBackendWhenBoundaryAbsent() {
+        FakeVectorStoreAdmin admin = new FakeVectorStoreAdmin();
+
+        runner.withPropertyValues(EMBEDDED_LOCAL)
+                .withPropertyValues("rag.vector.type=milvus",
+                        "milvus.uri=http://127.0.0.1:19530")
+                .withBean(MilvusClientV2.class, () -> mock(MilvusClientV2.class))
+                .withBean(VectorStoreAdmin.class, () -> admin)
+                .withBean(RAGDefaultProperties.class, AiEmbeddedF22BackendsConfigurationTest::ragDefaultProperties)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(VectorSpaceInitializer.class);
+                    assertThat(admin.existsCalls).hasValue(0);
+                    assertThat(admin.ensureCalls).hasValue(0);
+                });
+    }
+
+    private static RAGDefaultProperties ragDefaultProperties() {
+        RAGDefaultProperties properties = new RAGDefaultProperties();
+        properties.setCollectionName("rag_default_store");
+        properties.setDimension(1536);
+        return properties;
     }
 
     // ------------------------------------------------------------ ES 关键词
@@ -423,6 +497,47 @@ class AiEmbeddedF22BackendsConfigurationTest {
         @Bean
         BizChangeLogContext bizChangeLogContext() {
             return mock(BizChangeLogContext.class);
+        }
+
+        /** VectorSpaceInitializer 的分布式锁协作件；stub 后 locked=true，业务断言不依赖真 Redis。 */
+        @Bean
+        RedissonClient redissonClient() {
+            RedissonClient client = mock(RedissonClient.class);
+            RLock lock = mock(RLock.class);
+            when(client.getLock(anyString())).thenReturn(lock);
+            try {
+                when(lock.tryLock(anyLong(), any(TimeUnit.class))).thenReturn(true);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
+            when(lock.isHeldByCurrentThread()).thenReturn(true);
+            return client;
+        }
+    }
+
+    /** 只记录 ensure/exists 调用的 VectorStoreAdmin 替身（不连 Milvus）。 */
+    static final class FakeVectorStoreAdmin implements VectorStoreAdmin {
+
+        final AtomicInteger existsCalls = new AtomicInteger();
+        final AtomicInteger ensureCalls = new AtomicInteger();
+        private volatile boolean exists;
+
+        @Override
+        public void ensureVectorSpace(VectorSpaceSpec spec) {
+            ensureCalls.incrementAndGet();
+            exists = true;
+        }
+
+        @Override
+        public boolean vectorSpaceExists(VectorSpaceId spaceId) {
+            existsCalls.incrementAndGet();
+            return exists;
+        }
+
+        @Override
+        public void dropVectorSpace(String tenantId, String collectionName) {
+            // no-op：本测试不验证清理路径
         }
     }
 
