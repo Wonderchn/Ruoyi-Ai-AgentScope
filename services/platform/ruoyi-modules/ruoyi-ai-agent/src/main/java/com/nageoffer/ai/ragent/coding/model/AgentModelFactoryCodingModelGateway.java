@@ -113,6 +113,9 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
         try {
             Flux<ChatResponse> stream = model.stream(messages, tools, options);
             if (stream == null) {
+                org.slf4j.LoggerFactory.getLogger(AgentModelFactoryCodingModelGateway.class)
+                        .warn("coding model stream is null: planTurn={} messages={} tools={}",
+                                planTurn, messages.size(), tools.size());
                 throw new CodingModelUnavailableException(
                         CodingModelUnavailableException.MODEL_TURN_FAILED,
                         "coding model returned no stream");
@@ -135,6 +138,9 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
                     "coding model turn failed");
         }
         if (responses == null || responses.isEmpty()) {
+            org.slf4j.LoggerFactory.getLogger(AgentModelFactoryCodingModelGateway.class)
+                    .warn("coding model returned no responses: planTurn={} messages={} tools={} null={}",
+                            planTurn, messages.size(), tools.size(), responses == null);
             throw new CodingModelUnavailableException(
                     CodingModelUnavailableException.MODEL_TURN_FAILED,
                     "coding model returned an empty response");
