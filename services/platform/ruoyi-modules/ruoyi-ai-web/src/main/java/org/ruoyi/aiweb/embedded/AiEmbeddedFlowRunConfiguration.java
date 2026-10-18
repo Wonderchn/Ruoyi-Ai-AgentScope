@@ -59,7 +59,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * 缺一即启动期/使用点响亮失败，不做半装配。
  *
  * <p><b>门控。</b>主装配跟随 {@code p2.enabled}；执行器另跟随
- * {@code p2.executor.mode=real}（与既有 RagChatExecutor/DocumentIngestExecutor 同口径）。
+ * {@code p2.worker.enabled=true} 与 {@code p2.executor.mode=real}（与既有
+ * RagChatExecutor/DocumentIngestExecutor 同口径）。worker 关闭时执行器不装配——
+ * 它依赖的 {@link UsageLedgerService}/{@link ProviderCallBoundary} 由 worker 组提供，
+ * 盲装会在启动期以缺 bean 失败；受理/读面仍可用（run 留在队列，不静默降级）。
  */
 @AutoConfiguration
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
@@ -107,6 +110,7 @@ public class AiEmbeddedFlowRunConfiguration {
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnEmbeddedLocal
     @ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
+    @ConditionalOnProperty(name = "p2.worker.enabled", havingValue = "true")
     @ConditionalOnProperty(name = "p2.executor.mode", havingValue = "real", matchIfMissing = true)
     static class ExecutorEnabled {
 
