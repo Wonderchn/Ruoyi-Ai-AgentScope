@@ -146,6 +146,8 @@ interface MountOptions {
   kbRows?: Array<{ kbId: string; name: string }>;
   kbError?: Error;
   attachmentClient?: ReturnType<typeof fakeAttachmentClient>;
+  /** F03:0：工作流首句的会话创建客户端；缺省返回 conv-created 并记录调用。 */
+  conversationClient?: { createConversation: (title: string) => Promise<{ conversationId: string; created?: boolean }> };
 }
 
 function mountPage(options: MountOptions = {}) {
@@ -171,9 +173,13 @@ function mountPage(options: MountOptions = {}) {
   const session = {
     pendingFirstMessage: '',
     takePendingFirstMessage: () => '',
+    setCurrentSession: () => {},
   };
   const route = vue.reactive({ params: { id: options.routeId ?? 'c-1' } });
   const attachments = options.attachmentClient ?? fakeAttachmentClient();
+  const conversations = options.conversationClient ?? {
+    createConversation: async () => ({ conversationId: 'conv-created', created: true }),
+  };
 
   const modules: Record<string, unknown> = {
     'vue': { ...vue, nextTick: vue.nextTick },
@@ -214,6 +220,8 @@ function mountPage(options: MountOptions = {}) {
     '@/stores/modules/chat': { useChatStore: () => chat },
     '@/stores/modules/model': { useModelStore: () => ({ requestModelList: async () => {} }) },
     '@/stores/modules/session': { useSessionStore: () => session },
+    // F03:0：页面 setup 阶段构造会话写入口；工作流首句无会话 id 时先创建会话。
+    '@/api/session/conversations': { createConversationApi: () => conversations },
     '@/stores/modules/user': { useUserStore: () => user },
     '@/utils/markdownRenderers': { codeXRender: () => '' },
     // 页面按「无 client」/「带 client」区分普通聊天与工作流两条编排。
@@ -431,6 +439,56 @@ describe('工作流模式走 flow.run（替代旧“如实拒绝”）', () => {
       assert.equal(bubbles.at(-1).messageStatus, 'SUCCEEDED');
       assert.equal(page.flowTerminal.value, 'SUCCEEDED');
       assert.equal(page.flowOutput.value, '最终输出');
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  it('F03:0 无会话 id 首句进入 workflow：先 createConversation，再以新 id 提交', async () => {
+    const calls: string[] = [];
+    const { page, scope, getFlowRun } = mountPage({
+      workflow,
+      routeId: '',
+      conversationClient: {
+        async createConversation(title: string) {
+          calls.push(title);
+          return { conversationId: 'conv-new', created: true };
+        },
+      },
+    });
+    try {
+      await settle();
+      await page.submitMessage('你好');
+      await settle();
+
+      assert.deepEqual(calls, ['你好'], '首句必须先创建会话');
+      const submitted = getFlowRun().submits[0];
+      assert.equal(submitted.conversationId, 'conv-new', 'flow.run 必须带新建会话 id');
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  it('F03:0 创建会话失败 → 不发起 flow.run，错误可见', async () => {
+    const { page, scope, getFlowRun, run } = mountPage({
+      workflow,
+      routeId: '',
+      conversationClient: {
+        async createConversation() {
+          // 跨 vm realm 的 Error 不满足页面的 instanceof 判断；断言用两侧共同的文案前缀。
+          throw new Error('创建会话失败（测试）');
+        },
+      },
+    });
+    try {
+      await settle();
+      await page.submitMessage('你好');
+      await settle();
+
+      assert.equal(getFlowRun().submits.length, 0, '会话创建失败不得发起运行');
+      assert.match(run.error.value, /创建会话失败/);
     }
     finally {
       scope.stop();

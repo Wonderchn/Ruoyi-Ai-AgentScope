@@ -131,6 +131,7 @@ function mountPage(options: MountOptions = {}) {
   });
   const session = {
     takePendingFirstMessage: () => '',
+    setCurrentSession: () => {},
   };
   const route = vue.reactive({ params: { id: options.routeId ?? 'c-1' } });
 
@@ -142,6 +143,12 @@ function mountPage(options: MountOptions = {}) {
     '@/stores/modules/agent': { useAgentStore: () => agentStore },
     '@/stores/modules/chat': { useChatStore: () => chat },
     '@/stores/modules/session': { useSessionStore: () => session },
+    // F03:0：页面 setup 阶段构造会话写入口（本文件只关心 Agent 分流，给最小桩）。
+    '@/api/session/conversations': {
+      createConversationApi: () => ({
+        createConversation: async () => ({ conversationId: 'conv-agent', created: true }),
+      }),
+    },
     '@/stores/modules/user': { useUserStore: () => user },
     '@/utils/markdownRenderers': { codeXRender: () => '' },
     './useChatRun': {
