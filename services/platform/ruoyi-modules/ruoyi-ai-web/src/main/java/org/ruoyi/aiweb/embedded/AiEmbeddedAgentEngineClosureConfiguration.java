@@ -20,6 +20,7 @@ package org.ruoyi.aiweb.embedded;
 import cn.hutool.core.thread.ThreadFactoryBuilder;
 import cn.hutool.core.util.StrUtil;
 import com.alibaba.ttl.threadpool.TtlExecutors;
+import com.nageoffer.ai.ragent.agent.config.AgentModelFactory;
 import com.nageoffer.ai.ragent.agent.config.AgentProperties;
 import com.nageoffer.ai.ragent.agent.config.ReActAgentProvider;
 import com.nageoffer.ai.ragent.agent.confirm.AgentConfirmDenialMiddleware;
@@ -56,6 +57,7 @@ import com.nageoffer.ai.ragent.infra.chat.LLMService;
 import com.nageoffer.ai.ragent.infra.config.AIModelProperties;
 import com.nageoffer.ai.ragent.infra.enums.ModelProvider;
 import com.nageoffer.ai.ragent.knowledge.service.impl.ChunkMetadataResolver;
+import com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService;
 import com.nageoffer.ai.ragent.rag.config.GuidanceProperties;
 import com.nageoffer.ai.ragent.rag.config.OrchestrationProperties;
 import com.nageoffer.ai.ragent.rag.config.RAGConfigProperties;
@@ -91,6 +93,7 @@ import com.nageoffer.ai.ragent.rag.core.source.CitationContextEnricher;
 import com.nageoffer.ai.ragent.rag.dao.mapper.AgentSkillMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.IntentNodeMapper;
 import com.nageoffer.ai.ragent.rag.service.KnowledgeSearchFacade;
+import com.nageoffer.ai.ragent.rag.service.RuntimeCatalogService;
 import io.agentscope.core.tracing.OtelTracingMiddleware;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import io.agentscope.extensions.model.openai.compat.deepseek.DeepSeekFormatter;
@@ -326,10 +329,35 @@ public class AiEmbeddedAgentEngineClosureConfiguration {
                                                  AgentSkillMaskingMiddleware skillMaskingMiddleware,
                                                  AgentToolBatchMiddleware toolBatchMiddleware,
                                                  ObjectProvider<OtelTracingMiddleware> otelTracingMiddleware,
-                                                 ObjectProvider<AgentTraceEnrichmentMiddleware> traceEnrichmentMiddleware) {
-        return new ReActAgentProvider(agentPromptResolver, toolCatalog, agentChatModel, agentStateStore,
-                agentProperties, userMemoryMiddleware, contextCompactionMiddleware, confirmDenialMiddleware,
-                skillMaskingMiddleware, toolBatchMiddleware, otelTracingMiddleware, traceEnrichmentMiddleware);
+                                                 ObjectProvider<AgentTraceEnrichmentMiddleware> traceEnrichmentMiddleware,
+                                                 ObjectProvider<AgentProfileBindingService> bindingService,
+                                                 ObjectProvider<AgentModelFactory> modelFactory) {
+        ReActAgentProvider provider = new ReActAgentProvider(agentPromptResolver, toolCatalog, agentChatModel,
+                agentStateStore, agentProperties, userMemoryMiddleware, contextCompactionMiddleware,
+                confirmDenialMiddleware, skillMaskingMiddleware, toolBatchMiddleware,
+                otelTracingMiddleware, traceEnrichmentMiddleware);
+        // F09:3-C：保留既有 12 参构造，两端口经显式装配入口传入（字段注入亦覆盖扫描形态）
+        provider.bindModelOrchestration(bindingService, modelFactory);
+        return provider;
+    }
+
+    /**
+     * F09:3-C：绑定 MODEL 的运行时工厂（内嵌形态）。
+     *
+     * <p>解析顺序与 fail-closed 口径见 {@link EmbeddedAgentModelFactory}：目录
+     * {@code currentRevision} 优先、{@code knownModels} 唯一 provider 兜底，歧义/未知/配置缺失即抛；
+     * 端点与凭据只来自既有 {@code ai.providers.*}（可选连接引导），不新增凭据。
+     */
+    @Bean
+    @ConditionalOnMissingBean(AgentModelFactory.class)
+    public AgentModelFactory embeddedAgentModelFactory(
+            RuntimeCatalogService runtimeCatalogService,
+            AIModelProperties aiModelProperties,
+            com.nageoffer.ai.ragent.runtime.usage.EgressPolicy engineEgressPolicy,
+            com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope engineProviderSpendEnvelope,
+            ObjectProvider<com.nageoffer.ai.ragent.runtime.config.ProviderConnectionPort> providerConnectionPort) {
+        return new EmbeddedAgentModelFactory(runtimeCatalogService, aiModelProperties, engineEgressPolicy,
+                engineProviderSpendEnvelope, providerConnectionPort);
     }
 
     /** 工具目录（A1 #2）：KB 检索 + 意图树 + MCP + 记忆 + 技能读端的聚合点。 */
