@@ -235,7 +235,8 @@ public class CodingToolRuntime {
                 })
                 .toList();
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("root", listing.root());
+        // B2：不回传工作区绝对路径（含租户哈希/用户 id），只给工作区相对根。
+        data.put("root", ".");
         data.put("fileCount", listing.fileCount());
         data.put("entries", entries);
         return ToolExecutionResult.ok("list_dir", data);

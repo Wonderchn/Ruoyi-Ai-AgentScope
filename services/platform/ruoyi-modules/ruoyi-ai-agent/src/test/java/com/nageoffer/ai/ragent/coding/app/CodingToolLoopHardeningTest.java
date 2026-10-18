@@ -2,6 +2,8 @@ package com.nageoffer.ai.ragent.coding.app;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.agent.config.AgentModelFactory;
+import com.nageoffer.ai.ragent.coding.approval.ApprovalDecision;
+import com.nageoffer.ai.ragent.coding.approval.ToolApproval;
 import com.nageoffer.ai.ragent.coding.event.HarnessEventHub;
 import com.nageoffer.ai.ragent.coding.model.AgentModelFactoryCodingModelGateway;
 import com.nageoffer.ai.ragent.coding.model.HarnessApprovalPolicy;
@@ -11,6 +13,7 @@ import com.nageoffer.ai.ragent.coding.model.HarnessModelRoute;
 import com.nageoffer.ai.ragent.coding.model.HarnessOwner;
 import com.nageoffer.ai.ragent.coding.model.HarnessPermissionMode;
 import com.nageoffer.ai.ragent.coding.model.HarnessRunState;
+import com.nageoffer.ai.ragent.coding.model.HarnessRunStatus;
 import com.nageoffer.ai.ragent.coding.model.HarnessSessionState;
 import com.nageoffer.ai.ragent.coding.model.HarnessToolCall;
 import com.nageoffer.ai.ragent.coding.plan.CodingPlanState;
@@ -83,13 +86,19 @@ class CodingToolLoopHardeningTest {
     }
 
     private HarnessRunState buildRunWithApprovedPlan(int iteration) {
+        return buildRunWithApprovedPlan(session, "r1", iteration);
+    }
+
+    private HarnessRunState buildRunWithApprovedPlan(HarnessSessionState targetSession,
+                                                     String runId, int iteration) {
         long now = NOW;
         CodingPlanState draft = CodingPlanState.create("do it", now)
                 .replacePlan("1. read the file", List.of(new PlanStepState("s1", "read", List.of())), now);
         CodingPlanState approved = draft.approve(draft.taskId(), draft.revision(),
                 draft.canonicalHash(), "k", now);
-        HarnessRunState run = HarnessRunState.createWithId("r1", session, "do it", null,
-                new HarnessModelRoute(1, session.model(), session.model()), ALL_ACTIONS, now)
+        HarnessRunState run = HarnessRunState.createWithId(runId, targetSession, "do it", null,
+                new HarnessModelRoute(1, targetSession.model(), targetSession.model()),
+                ALL_ACTIONS, now)
                 .withCounters(iteration, 0, now)
                 .withPlan(approved, now);
         return store.createRun(owner, run);
@@ -160,6 +169,89 @@ class CodingToolLoopHardeningTest {
         assertThat(toolResults).extracting(HarnessMessage::toolCallId).doesNotHaveDuplicates();
         assertThat(toolResults).allSatisfy(message ->
                 assertThat(message.content()).contains("hello-from-tool"));
+    }
+
+    /**
+     * B1：审批恢复不推进 iteration；恢复后的新工具调用必须有自己的 assistant(tool_calls)，
+     * 否则新 TOOL 结果没有配对消息。
+     */
+    @Test
+    void b1ApprovalResumeTheSecondCallGetsItsOwnAssistantToolCallMessage() {
+        HarnessSessionState approvalSession = store.createSession(
+                HarnessSessionState.createWithId("s-approval", owner,
+                        workspace.resolveHarnessRoot(owner, null).toString(), "deepseek-flash",
+                        HarnessPermissionMode.WORKSPACE_WRITE, HarnessApprovalPolicy.ON_REQUEST,
+                        "s", NOW));
+        HarnessRunState run = buildRunWithApprovedPlan(approvalSession, "r-approval", 1);
+        store.appendMessage(owner, HarnessMessage.draft("s-approval", "r-approval",
+                HarnessMessageRole.USER, "do it", null, List.of(), null, null, false, null,
+                Map.of(), NOW));
+        QueueModel model = new QueueModel(List.of(
+                toolUse("call-approved-1", "write_file",
+                        Map.of("path", "b.txt", "content", "one")),
+                toolUse("call-after-approval-2", "read_file", Map.of("path", "a.txt")),
+                text("done")));
+        CodingRunProcessor processor = processor(model);
+
+        processor.process(owner, approvalSession.sessionId(), run.runId());
+        HarnessRunState waiting = store.findRun(owner, approvalSession.sessionId(), run.runId())
+                .orElseThrow();
+        assertThat(waiting.status()).isEqualTo(HarnessRunStatus.WAITING_FOR_APPROVAL);
+        assertThat(waiting.iteration()).as("approval path must not advance iteration").isEqualTo(1);
+        ToolApproval pending = waiting.toolApprovals().values().iterator().next();
+        ToolApproval approved = pending.resolve("d-b1", ApprovalDecision.APPROVE,
+                pending.revision(), pending.argumentsSha256(), owner,
+                approvalSession.sessionId(), "go", NOW + 1);
+        store.saveRun(owner, waiting.withToolApproval(approved, NOW + 1), waiting.revision());
+
+        // 恢复：先消费已批准调用，随后同一 iteration 产生新的工具调用。
+        processor.process(owner, approvalSession.sessionId(), run.runId());
+
+        List<HarnessMessage> messages = store.readMessages(owner, approvalSession.sessionId(),
+                0, 100);
+        List<HarnessMessage> assistantToolCalls = messages.stream()
+                .filter(message -> message.role() == HarnessMessageRole.ASSISTANT
+                        && !message.toolCalls().isEmpty())
+                .toList();
+        assertThat(assistantToolCalls)
+                .as("B1: same iteration with a different call set must append a new assistant message")
+                .hasSize(2);
+        assertThat(assistantToolCalls).allSatisfy(message ->
+                assertThat(message.metadata().get("iteration")).isEqualTo(1));
+        assertThat(assistantToolCalls.get(1).toolCalls())
+                .extracting(HarnessToolCall::toolCallId)
+                .containsExactly("call-after-approval-2");
+        HarnessMessage pairedToolResult = messages.stream()
+                .filter(message -> message.role() == HarnessMessageRole.TOOL
+                        && "call-after-approval-2".equals(message.toolCallId()))
+                .findFirst().orElseThrow();
+        assertThat(pairedToolResult.sequence())
+                .isGreaterThan(assistantToolCalls.get(1).sequence());
+        assertThat(pairedToolResult.content()).contains("hello-from-tool");
+    }
+
+    /** B2：list_dir 的 data.root 进入 TOOL content/模型请求时不得泄漏绝对路径、租户哈希或用户 id。 */
+    @Test
+    void b2ListDirToolOutputDoesNotLeakWorkspaceIdentity() {
+        HarnessRunState run = buildRunWithApprovedPlan(1);
+        appendRequirement();
+        QueueModel model = new QueueModel(List.of(
+                toolUse("call-list", "list_dir", Map.of("path", ".")),
+                text("done")));
+
+        processor(model).process(owner, session.sessionId(), run.runId());
+
+        HarnessMessage toolResult = store.readMessages(owner, session.sessionId(), 0, 100)
+                .stream()
+                .filter(message -> message.role() == HarnessMessageRole.TOOL
+                        && "list_dir".equals(message.toolName()))
+                .findFirst().orElseThrow();
+        assertThat(toolResult.content())
+                .contains("a.txt")
+                .contains("\"root\":\".\"")
+                .doesNotContain("t_")
+                .doesNotContain(workspaceRoot.toString())
+                .doesNotContain("42");
     }
 
     private ChatResponse toolUse(String id, String name, Map<String, Object> input) {

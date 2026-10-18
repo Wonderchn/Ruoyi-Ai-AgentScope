@@ -27,11 +27,14 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.function.UnaryOperator;
+import java.util.stream.Collectors;
 
 /**
  * Durable single-run loop.
@@ -294,12 +297,13 @@ public class CodingRunProcessor {
         return null;
     }
 
-    /** C1：本回合带 toolCalls 的 ASSISTANT 消息；同回合重试复用，不重复追加。 */
+    /** C1：本回合带 toolCalls 的 ASSISTANT 消息；同回合同调用集合重试才复用。 */
     private HarnessMessage appendAssistantToolCallMessageIfMissing(HarnessOwner owner,
                                                                    HarnessRunState run,
                                                                    List<ModelToolCall> calls) {
+        Set<String> callIds = callIds(calls);
         HarnessMessage existing = findAssistantToolCallMessage(owner, run.sessionId(),
-                run.runId(), run.iteration());
+                run.runId(), run.iteration(), callIds);
         if (existing != null) {
             return existing;
         }
@@ -310,30 +314,59 @@ public class CodingRunProcessor {
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("iteration", run.iteration());
         metadata.put("toolCalls", true);
+        metadata.put("toolCallIds", List.copyOf(callIds));
         return store.appendMessage(owner, HarnessMessage.draft(run.sessionId(), run.runId(),
                 HarnessMessageRole.ASSISTANT, "", null, toolCalls, null, null, false, null,
                 metadata, now()));
     }
 
+    /**
+     * B1：复用键 = iteration + 本回合调用 id 集合。审批恢复不推进 iteration，但恢复后的
+     * 新工具调用集合不同，必须追加新的 assistant(tool_calls)，否则新 TOOL 无配对。
+     */
     private HarnessMessage findAssistantToolCallMessage(HarnessOwner owner, String sessionId,
-                                                        String runId, int iteration) {
+                                                        String runId, int iteration,
+                                                        Set<String> callIds) {
         for (HarnessMessage message : readRunMessages(owner, sessionId, runId)) {
             if (message.role() == HarnessMessageRole.ASSISTANT
                     && !message.toolCalls().isEmpty()
                     && String.valueOf(iteration).equals(
                     String.valueOf(message.metadata().get("iteration")))) {
-                return message;
+                Set<String> existingIds = message.toolCalls().stream()
+                        .map(HarnessToolCall::toolCallId)
+                        .collect(Collectors.toCollection(LinkedHashSet::new));
+                if (existingIds.equals(callIds)) {
+                    return message;
+                }
             }
         }
         return null;
+    }
+
+    private static Set<String> callIds(List<ModelToolCall> calls) {
+        return calls.stream().map(ModelToolCall::toolCallId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     /** C2：把工具 data 渲染为有界 JSON（失败保留 code/message）；不添加端点/凭据/租户。 */
     private String renderToolOutput(ToolExecutionResult result) {
         String payload;
         if (result.error()) {
+            StringBuilder error = new StringBuilder(result.code());
             Object message = result.data().get("message");
-            payload = result.code() + (message == null ? "" : ": " + message);
+            if (message != null) {
+                error.append(": ").append(message);
+            }
+            // N2：进程失败时把有界 stderr/stdout 摘要带回模型（不添加端点/凭据/租户）。
+            Object stderr = result.data().get("stderr");
+            if (stderr != null && !String.valueOf(stderr).isBlank()) {
+                error.append("\nstderr: ").append(stderr);
+            }
+            Object stdout = result.data().get("stdout");
+            if (stdout != null && !String.valueOf(stdout).isBlank()) {
+                error.append("\nstdout: ").append(stdout);
+            }
+            payload = error.toString();
         } else {
             try {
                 payload = objectMapper.writeValueAsString(result.data());
