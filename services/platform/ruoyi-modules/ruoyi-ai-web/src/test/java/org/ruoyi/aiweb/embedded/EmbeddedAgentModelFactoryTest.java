@@ -93,8 +93,9 @@ class EmbeddedAgentModelFactoryTest {
                 modelRow("deepseek", "deepseek-chat")));
         providers("deepseek", "http://127.0.0.1:9", Map.of("chat", "/v1/chat/completions"), "");
 
-        Model first = factory().create(TENANT, "deepseek-chat");
-        Model second = factory().create(TENANT, "deepseek-chat");
+        EmbeddedAgentModelFactory factory = factory();
+        Model first = factory.create(TENANT, "deepseek-chat");
+        Model second = factory.create(TENANT, "deepseek-chat");
 
         assertThat(second).isSameAs(first);
         verify(catalog, times(1)).currentRevision(TENANT);
