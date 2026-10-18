@@ -135,6 +135,17 @@ public final class AiCanonicalAction {
         actions.put("mcp.write", "ai:mcp:write");
         actions.put("mcp.delete", "ai:mcp:delete");
         actions.put("mcp.test", "ai:mcp:test");
+        // F20-A（2026-10-18，维护者「F20快做」＋ D1 批）：编程助手 Harness 面新增**恰四条**动作
+        // coding.use / coding.write / coding.approve / coding.command → ai:coding:*（第 51-54 条）。
+        // 资源是租户级工作区/会话（tenant_id + 属主 user_id 双重限定）⇒ **不进**
+        // PLATFORM_ADMIN_ACTIONS。权限行由 V41__coding_harness_permissions.sql 注册
+        // （menu_id 7204-7207，order 68-71，默认不分配任何角色）。
+        // 公开路由见 AiGatewayController.ROUTES 的 /coding/**（22 条 JSON）与
+        // AiGatewayStreamController 的两条 SSE 精确映射（/coding/chat、.../events/stream）。
+        actions.put("coding.use", "ai:coding:use");
+        actions.put("coding.write", "ai:coding:write");
+        actions.put("coding.approve", "ai:coding:approve");
+        actions.put("coding.command", "ai:coding:command");
         return Collections.unmodifiableMap(actions);
     }
 

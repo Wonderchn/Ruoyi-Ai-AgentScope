@@ -223,6 +223,28 @@ p2:
   outbox:
     relay-enabled: true
 
+# F20-A 编程助手 Harness（内嵌）。shipped 默认全 fail-closed：
+# - 模型网关未配置 ⇒ run 以 MODEL_NOT_CONFIGURED 终态结束，不发起任何提供方调用；
+# - execute_process 关闭，且 Docker 沙箱缺任一配置即 SANDBOX_NOT_CONFIGURED（零执行）；
+# - 模型目录为空表示"未登记可用模型"，会话仍可创建但真实运行会 fail-closed。
+# 数据目录只写相对路径；绝对路径/凭据由部署环境变量注入。
+coding:
+  harness:
+    data-dir: ${CODING_HARNESS_DATA_DIR:./data/coding-harness}
+    workspace:
+      owner-root: ${CODING_HARNESS_WORKSPACE_OWNER_ROOT:./data/coding-workspaces}
+      shared-root: ${CODING_HARNESS_WORKSPACE_SHARED_ROOT:}
+    models: ${CODING_HARNESS_MODELS:}
+    tools:
+      execute-process:
+        enabled: ${CODING_HARNESS_EXECUTE_PROCESS_ENABLED:false}
+        sandbox:
+          docker-executable: ${CODING_HARNESS_DOCKER_EXECUTABLE:}
+          docker-executable-sha256: ${CODING_HARNESS_DOCKER_EXECUTABLE_SHA256:}
+          docker-config-directory: ${CODING_HARNESS_DOCKER_CONFIG_DIRECTORY:}
+          docker-host: ${CODING_HARNESS_DOCKER_HOST:}
+          image: ${CODING_HARNESS_SANDBOX_IMAGE:}
+
 # Agent 会话面必须在实际 embedded profile 中启用；需要 Redis 保护在途会话删除。
 # 与 ReAct 引擎开关独立，缺 Redis 时明确启动失败，不绕过运行闸门。
 agent:

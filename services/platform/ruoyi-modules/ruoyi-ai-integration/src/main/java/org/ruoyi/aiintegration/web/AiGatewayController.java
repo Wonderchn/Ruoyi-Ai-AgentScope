@@ -582,7 +582,51 @@ public class AiGatewayController {
             new Route("DELETE", "/mcp/tools/{ids}", "mcp.delete"),
             // 3 段字面量 batch-load 排在 4 段变量形 {id}/load 之前（literal-before-variable）
             new Route("POST", "/mcp/market-tools/batch-load", "mcp.write"),
-            new Route("POST", "/mcp/market-tools/{id}/load", "mcp.write"));
+            new Route("POST", "/mcp/market-tools/{id}/load", "mcp.write"),
+            // F20-A（2026-10-18，维护者「F20快做」＋ D1 批）：编程助手 Harness 面 22 条 JSON 路由。
+            // 内层 handler = CodingHarnessController（类级 /internal/ai/v1/coding），由
+            // AiEmbeddedCodingConfiguration 显式装配。动作映射（brief §2）：
+            //   读（会话/消息/运行/事件/模型/工作区/文件读）→ coding.use
+            //   写（建会话/置顶/删除/恢复/建运行/输入/取消/恢复运行/文件写）→ coding.write
+            //   审批与计划（工具审批 resolve / plan approve / plan revision）→ coding.approve
+            //   命令（execute_process）→ coding.command
+            // 权限行由 V41__coding_harness_permissions.sql 注册（7204-7207，默认不分配；
+            // 租户级 ⇒ 不进 PLATFORM_ADMIN_ACTIONS）。
+            // **两条 SSE 不在此登记**：POST /coding/chat 与 GET .../events/stream 由
+            // AiGatewayStreamController 精确映射（先于 catch-all 生效）；登记了也不会被
+            // 本通用转发承接，只会变成不可达死路由。
+            // 段数互不遮蔽：/coding/sessions 2 段；{sessionId} 3 段；
+            // {sessionId}/runs 与 {sessionId}/messages 4 段；runs/{runId} 5 段；
+            // .../events 6 段；.../inputs|cancel|resume 与 plan/approve|revision 7 段；
+            // approvals/{approvalId}/resolve 8 段。
+            // 八条 GET 在网关走字节分支 ⇒ 控制器自铸 DeliveryPermits 回执头；
+            // 写面走 JSON 分支，内层不铸回执（铸造 = 永久 ACTIVE 许可泄漏）。
+            new Route("POST", "/coding/sessions", "coding.write"),
+            new Route("GET", "/coding/sessions", "coding.use"),
+            new Route("GET", "/coding/sessions/{sessionId}", "coding.use"),
+            new Route("PUT", "/coding/sessions/{sessionId}/pin", "coding.write"),
+            new Route("DELETE", "/coding/sessions/{sessionId}", "coding.write"),
+            new Route("POST", "/coding/sessions/{sessionId}/restore", "coding.write"),
+            new Route("GET", "/coding/sessions/{sessionId}/messages", "coding.use"),
+            new Route("POST", "/coding/sessions/{sessionId}/runs", "coding.write"),
+            new Route("GET", "/coding/sessions/{sessionId}/runs", "coding.use"),
+            new Route("GET", "/coding/sessions/{sessionId}/runs/{runId}", "coding.use"),
+            new Route("GET", "/coding/sessions/{sessionId}/runs/{runId}/events", "coding.use"),
+            new Route("POST", "/coding/sessions/{sessionId}/runs/{runId}/inputs", "coding.write"),
+            new Route("POST", "/coding/sessions/{sessionId}/runs/{runId}/cancel", "coding.write"),
+            new Route("POST", "/coding/sessions/{sessionId}/runs/{runId}/resume", "coding.write"),
+            new Route("POST",
+                    "/coding/sessions/{sessionId}/runs/{runId}/approvals/{approvalId}/resolve",
+                    "coding.approve"),
+            new Route("POST", "/coding/sessions/{sessionId}/runs/{runId}/plan/approve",
+                    "coding.approve"),
+            new Route("POST", "/coding/sessions/{sessionId}/runs/{runId}/plan/revision",
+                    "coding.approve"),
+            new Route("GET", "/coding/models", "coding.use"),
+            new Route("GET", "/coding/workspace", "coding.use"),
+            new Route("GET", "/coding/file", "coding.use"),
+            new Route("PUT", "/coding/file", "coding.write"),
+            new Route("POST", "/coding/command", "coding.command"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;

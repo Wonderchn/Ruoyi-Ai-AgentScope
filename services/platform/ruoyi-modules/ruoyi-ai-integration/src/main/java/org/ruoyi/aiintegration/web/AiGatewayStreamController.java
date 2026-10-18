@@ -232,6 +232,71 @@ public class AiGatewayStreamController {
     }
 
     /**
+     * F20-A 编程助手对话 SSE（{@code POST /api/ai/v1/coding/chat}）。
+     *
+     * <p>与 Agent 对话同一条专用流通道：精确映射（先于 catch-all 生效）、独立建连/空闲/总时长
+     * 预算、经同一委托链。scope 是 {@code coding.write}（创建会话/运行属于写面）。body 是小
+     * JSON（会话/模型/需求/幂等键），上限 {@value #CODING_CHAT_MAX_BYTES} 字节。
+     *
+     * <p>刻意不做 {@code /coding/**} 通配：同一前缀下的 22 条 JSON 路由由 ROUTES 逐条放行，
+     * 这里的流只映射这一条路径。
+     */
+    @PostMapping("/coding/chat")
+    public void codingChat(HttpServletRequest request, HttpServletResponse response) {
+        try {
+            long declared = request.getContentLengthLong();
+            if (declared > CODING_CHAT_MAX_BYTES) {
+                writeError(response, P04ErrorCode.BAD_REQUEST);
+                return;
+            }
+            byte[] body;
+            try (java.io.InputStream in = request.getInputStream()) {
+                body = in.readNBytes(CODING_CHAT_MAX_BYTES + 1);
+            }
+            if (body.length > CODING_CHAT_MAX_BYTES) {
+                writeError(response, P04ErrorCode.BAD_REQUEST);
+                return;
+            }
+            streamAgent(request, response, "coding.write", "POST", "/coding/chat", body);
+        } catch (P04Exception e) {
+            writeError(response, e.errorCode());
+        } catch (AiGatewayClient.UpstreamUnavailableException e) {
+            writeError(response, P04ErrorCode.AUTHORIZATION_UNAVAILABLE);
+        } catch (java.io.IOException e) {
+            writeError(response, P04ErrorCode.BAD_REQUEST);
+        }
+    }
+
+    /**
+     * F20-A 运行事件 SSE（{@code GET /api/ai/v1/coding/sessions/{sessionId}/runs/{runId}/events/stream}）。
+     *
+     * <p>scope 是 {@code coding.use}（读面）。路径形状逐段校验，不做通配；建连后逐帧交付回执，
+     * 断线可由 {@code Last-Event-ID} 续订（内层读取该头）。
+     */
+    @GetMapping("/coding/sessions/{sessionId}/runs/{runId}/events/stream")
+    public void codingEvents(@PathVariable String sessionId, @PathVariable String runId,
+                             HttpServletRequest request, HttpServletResponse response) {
+        try {
+            if (sessionId == null || sessionId.isBlank()
+                    || !sessionId.matches("[A-Za-z0-9_-]{1,128}")
+                    || runId == null || runId.isBlank()
+                    || !runId.matches("[A-Za-z0-9_-]{1,128}")) {
+                writeError(response, P04ErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
+                return;
+            }
+            streamAgent(request, response, "coding.use", "GET",
+                    "/coding/sessions/" + sessionId + "/runs/" + runId + "/events/stream", null);
+        } catch (P04Exception e) {
+            writeError(response, e.errorCode());
+        } catch (AiGatewayClient.UpstreamUnavailableException e) {
+            writeError(response, P04ErrorCode.AUTHORIZATION_UNAVAILABLE);
+        }
+    }
+
+    /** F20-A 对话体上限：需求文本 + 会话/模型字段，远小于通用转发上限。 */
+    static final int CODING_CHAT_MAX_BYTES = 256 * 1024;
+
+    /**
      * 两条 Agent SSE 的共用传输：授权 → 目标 URI → 净化头 → 专用事件流。
      *
      * <p>与 {@link #events} 逐项同形，唯一区别是方法/体由调用方给出。抽出来是为了让
