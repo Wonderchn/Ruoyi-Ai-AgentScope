@@ -71,10 +71,13 @@ public final class McpConfigJson {
     }
 
     /**
-     * 响应/导出用的 config 掩码：headers 每个值替换为 {@code "***"}，其余字段原样。
+     * 响应/导出用的 config 掩码（<b>严格白名单 + fail-closed</b>）。
      *
-     * <p>没有 headers 时返回原文（便于前端/测试原样展示许可字段）；
-     * JSON 解析失败时整体替换为 {@code "***"}（fail-closed，不回显可疑原文）。
+     * <p>只回传四个可展示字段：{@code baseUrl / headers(masked) / inputSchema / requiresConfirm}；
+     * 其余顶层字段（包括未知的敏感字段）一律丢弃。`headers` 存在但不是对象时整体替换为
+     * {@code "***"}（不能把可疑原文回显）；JSON 解析失败同样整体替换为 {@code "***"}。
+     *
+     * <p>没有 headers 时仍按白名单重建（不回传原文），保证未知字段不外泄。
      */
     public static String maskConfigJson(String configJson) {
         if (configJson == null || configJson.isBlank()) {
@@ -85,16 +88,30 @@ public final class McpConfigJson {
             return "***";
         }
         JsonNode headers = root.get("headers");
-        if (headers == null || !headers.isObject() || headers.isEmpty()) {
-            return configJson;
+        if (headers != null && !headers.isObject()) {
+            return "***";
         }
-        ObjectNode masked = ((ObjectNode) root).deepCopy();
-        ObjectNode maskedHeaders = JSON.createObjectNode();
-        Iterator<String> names = headers.fieldNames();
-        while (names.hasNext()) {
-            maskedHeaders.put(names.next(), "***");
+        ObjectNode masked = JSON.createObjectNode();
+        JsonNode baseUrl = root.get("baseUrl");
+        if (baseUrl != null) {
+            masked.set("baseUrl", baseUrl);
         }
-        masked.set("headers", maskedHeaders);
+        if (headers != null) {
+            ObjectNode maskedHeaders = JSON.createObjectNode();
+            Iterator<String> names = headers.fieldNames();
+            while (names.hasNext()) {
+                maskedHeaders.put(names.next(), "***");
+            }
+            masked.set("headers", maskedHeaders);
+        }
+        JsonNode inputSchema = root.get("inputSchema");
+        if (inputSchema != null) {
+            masked.set("inputSchema", inputSchema);
+        }
+        JsonNode requiresConfirm = root.get("requiresConfirm");
+        if (requiresConfirm != null) {
+            masked.set("requiresConfirm", requiresConfirm);
+        }
         try {
             return JSON.writeValueAsString(masked);
         } catch (Exception e) {

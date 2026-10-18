@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.mcp.admin;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.agent.dao.entity.McpToolDO;
 import com.nageoffer.ai.ragent.agent.dao.mapper.McpMarketMapper;
@@ -180,6 +181,47 @@ class McpAdminServiceToolTest {
         assertThat(result.success()).isFalse();
         assertThat(result.message()).isEqualTo("连接失败");
         verify(toolMapper, never()).insert(any(McpToolDO.class));
+    }
+
+    @Test
+    @DisplayName("C1：headers 存在但不是对象 → 整体 fail-closed 为 \"***\"（不回显可疑原文）")
+    void maskingFailsClosedWhenHeadersIsNotObject() throws Exception {
+        String hostile = "{\"baseUrl\":\"http://127.0.0.1:18080/mcp\",\"headers\":\"secret\",\"secret\":\"s\"}";
+        when(toolMapper.selectOne(any())).thenReturn(tool(14L, "hostile", hostile));
+        when(toolMapper.selectList(any())).thenReturn(List.of(tool(14L, "hostile", hostile)));
+
+        McpToolVO vo = service.getTool(14L);
+        assertThat(vo.getConfigJson()).isEqualTo("***");
+        assertThat(vo.getAuthMasked()).isNull();
+
+        String export = service.exportTools(null, null, null);
+        assertThat(export).contains("\"configJson\":\"***\"").doesNotContain("\"secret\":\"s\"");
+    }
+
+    @Test
+    @DisplayName("C1：掩码只保留白名单四字段，未知顶层敏感字段被丢弃")
+    void maskingKeepsOnlyWhitelistedFields() throws Exception {
+        String withUnknown = """
+                {"baseUrl":"http://127.0.0.1:18080/mcp",
+                 "headers":{"X":"env:X"},
+                 "inputSchema":{"type":"object"},
+                 "requiresConfirm":true,
+                 "secret":"s"}
+                """;
+        when(toolMapper.selectOne(any())).thenReturn(tool(15L, "whitelist", withUnknown));
+        when(toolMapper.selectList(any())).thenReturn(List.of(tool(15L, "whitelist", withUnknown)));
+
+        McpToolVO vo = service.getTool(15L);
+        JsonNode masked = objectMapper.readTree(vo.getConfigJson());
+        java.util.List<String> names = new java.util.ArrayList<>();
+        masked.fieldNames().forEachRemaining(names::add);
+        assertThat(names).containsExactlyInAnyOrder("baseUrl", "headers", "inputSchema", "requiresConfirm");
+        assertThat(masked.path("headers").path("X").asText()).isEqualTo("***");
+        assertThat(vo.getConfigJson()).doesNotContain("secret");
+
+        String export = service.exportTools(null, null, null);
+        assertThat(export).doesNotContain("\"secret\":\"s\"")
+                .contains("\"X\":\"***\"");
     }
 
     private static McpToolDO tool(Long id, String name, String configJson) {
