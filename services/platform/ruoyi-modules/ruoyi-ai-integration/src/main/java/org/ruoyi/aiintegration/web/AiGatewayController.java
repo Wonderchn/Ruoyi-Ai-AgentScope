@@ -502,7 +502,10 @@ public class AiGatewayController {
             new Route("POST", "/agent-catalog/agent-skills", "skill.write"),
             new Route("PUT", "/agent-catalog/agent-skills/{id}", "skill.write"),
             new Route("DELETE", "/agent-catalog/agent-skills/{id}", "skill.delete"),
-            new Route("POST", "/agent-catalog/agent-skills/{id}/enabled", "skill.write"));
+            new Route("POST", "/agent-catalog/agent-skills/{id}/enabled", "skill.write"),
+            // F11:4 技能包导出（GET 字节分支 + 交付回执）；import 走 AiGatewayStreamController
+            // 专用上传通道（精确映射先于 catch-all），此处刻意不登记 import（避免死路由）。
+            new Route("GET", "/agent-catalog/agent-skills/{id}/export", "skill.read"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;

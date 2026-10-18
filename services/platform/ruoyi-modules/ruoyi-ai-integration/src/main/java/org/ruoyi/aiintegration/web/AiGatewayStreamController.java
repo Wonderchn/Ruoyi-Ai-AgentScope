@@ -96,6 +96,23 @@ public class AiGatewayStreamController {
     }
 
     /**
+     * 技能包导入（F11:4）：5 MiB 级 multipart 不能走通用网关（2 MiB 上限、且 local
+     * 通用转发不保 multipart 字段），故复用本专用上传通道——与知识库上传同一传输与上限
+     * 语义（{@code uploadMaxBytes}）、同一委托链。
+     *
+     * <p><b>权限面零增量</b>：动作复用既有 {@code skill.write}；该动作在
+     * {@code PLATFORM_ADMIN_ACTIONS} 内，{@link GatewayAuthorizer} 已补平台管理第二道门，
+     * 只持 scope 的非平台管理员在此 403（与既有 skill 路由同口径）。
+     *
+     * <p><b>不要**在 ROUTES 再登记 import**：本方法为精确映射、先于 catch-all 生效；
+     * 额外 ROUTES 行会成为不可达死路由。export 仍走 ROUTES（GET 字节分支）。
+     */
+    @PostMapping("/agent-catalog/agent-skills/import")
+    public void importSkillPackage(HttpServletRequest request, HttpServletResponse response) {
+        forwardUpload(request, response, "skill.write", "/agent-catalog/agent-skills/import");
+    }
+
+    /**
      * 两条上传路径的共用传输：授权 → 目标 URI → 净化头 → 原始体流式转发。
      *
      * <p>抽出来是为了让"两条路径走完全一致的传输与上限语义"成为**结构性事实**，

@@ -29,7 +29,9 @@ public class GatewayRawUploadFilter extends OncePerRequestFilter {
     /** 与 {@code GatewayMultipartConfiguration} 的同一路径形状（成对，逐字一致）。 */
     private static boolean isRawStreamUpload(String path) {
         return "/api/ai/v1/documents/uploads".equals(path)
-                || path.matches("/api/ai/v1/knowledge-base/[^/]+/docs/upload");
+                || path.matches("/api/ai/v1/knowledge-base/[^/]+/docs/upload")
+                // F11:4 技能包导入：与 GatewayMultipartConfiguration 成对登记
+                || "/api/ai/v1/agent-catalog/agent-skills/import".equals(path);
     }
 
     @Override protected boolean shouldNotFilter(HttpServletRequest request) {

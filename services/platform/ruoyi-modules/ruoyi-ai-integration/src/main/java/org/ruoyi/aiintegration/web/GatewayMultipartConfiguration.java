@@ -32,7 +32,10 @@ public class GatewayMultipartConfiguration {
      */
     private static boolean isRawStreamUpload(String path) {
         return "/api/ai/v1/documents/uploads".equals(path)
-                || path.matches("/api/ai/v1/knowledge-base/[^/]+/docs/upload");
+                || path.matches("/api/ai/v1/knowledge-base/[^/]+/docs/upload")
+                // F11:4 技能包导入（5 MiB 级 multipart；通用转发 2 MiB 上限不适用，
+                // 必须走专用流通道并经 GatewayRawUploadFilter 成对排除）
+                || "/api/ai/v1/agent-catalog/agent-skills/import".equals(path);
     }
 
     @Bean(name = "multipartResolver")

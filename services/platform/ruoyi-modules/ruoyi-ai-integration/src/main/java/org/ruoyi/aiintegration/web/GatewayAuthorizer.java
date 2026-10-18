@@ -77,6 +77,14 @@ public class GatewayAuthorizer {
         if (!identity.scopes().contains(requiredPermission)) {
             throw new P04Exception(P04ErrorCode.FORBIDDEN);
         }
+        // F11:4：专用流通道（上传/技能包导入）与通用网关共用同一最小 scope 链，
+        // 但此前只有通用网关应用了"平台管理身份"第二道门。skill.write/skill.read 在
+        // PLATFORM_ADMIN_ACTIONS 内，若专用通道只查 scope，仅持 scope 的租户管理员
+        // 即可导入技能包——相对既有 skill 路由是权限回退。此处补齐同一道门。
+        if (AiActionRegistry.requiresPlatformAdmin(action)
+                && !principalResolver.isPlatformAdmin()) {
+            throw new P04Exception(P04ErrorCode.FORBIDDEN);
+        }
         // transport=local（E3/C3）：同进程转送不铸造委托凭证（身份经 AiIdentityPort 桥接），
         // 与 AiGatewayController 同一口径；http 形态缺密钥即 503（不降级放行）。
         String delegationToken = null;
