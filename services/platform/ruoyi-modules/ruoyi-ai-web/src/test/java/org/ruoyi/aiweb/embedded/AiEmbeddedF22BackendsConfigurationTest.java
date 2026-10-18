@@ -19,9 +19,21 @@ package org.ruoyi.aiweb.embedded;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.nageoffer.ai.ragent.audit.support.BizChangeLogContext;
 import com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService;
+import com.nageoffer.ai.ragent.core.chunk.ChunkingService;
+import com.nageoffer.ai.ragent.core.ingest.DefaultIngestionKernel;
+import com.nageoffer.ai.ragent.core.ingest.embed.ChunkEmbeddingService;
+import com.nageoffer.ai.ragent.core.ingest.sink.ChunkIndexWriter;
+import com.nageoffer.ai.ragent.core.parser.registry.ParserRegistry;
 import com.nageoffer.ai.ragent.infra.embedding.EmbeddingService;
+import com.nageoffer.ai.ragent.infra.token.TokenCounterService;
+import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeBaseMapper;
 import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeChunkMapper;
+import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeDocumentMapper;
+import com.nageoffer.ai.ragent.knowledge.service.KnowledgeChunkService;
+import com.nageoffer.ai.ragent.knowledge.sink.RelationalChunkSink;
+import com.nageoffer.ai.ragent.knowledge.support.VectorTargetResolver;
 import com.nageoffer.ai.ragent.rag.config.GraphProperties;
 import com.nageoffer.ai.ragent.rag.config.GraphSyncVectorStorePostProcessor;
 import com.nageoffer.ai.ragent.rag.config.KeywordProperties;
@@ -42,6 +54,7 @@ import com.nageoffer.ai.ragent.rag.core.vector.PgVectorStoreService;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorRetrieverService;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorStoreAdmin;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorStoreService;
+import com.nageoffer.ai.ragent.rag.core.vector.sink.VectorChunkSink;
 import io.milvus.v2.client.MilvusClientV2;
 import okhttp3.OkHttpClient;
 import org.junit.jupiter.api.DisplayName;
@@ -51,9 +64,11 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionOperations;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -181,6 +196,32 @@ class AiEmbeddedF22BackendsConfigurationTest {
                     assertThat(context.getStartupFailure())
                             .hasStackTraceContaining("rag.vector.type=milvus 已选择")
                             .hasStackTraceContaining("milvus.uri");
+                });
+    }
+
+    /**
+     * 真机首启缺口（app-6044-f222.log:95-124）：Milvus 组只镜像了 RAGDefaultProperties，
+     * PG 组里与向量后端无关的摄取链 bean（ChunkEmbeddingService 等）在 milvus 模式下缺席，
+     * {@code DefaultIngestionKernel} 构造失败。本用例把真实摄取闭包装进上下文，
+     * 让这类缺口在离线装配期就变红。
+     */
+    @Test
+    @DisplayName("milvus 组满足摄取闭包：DefaultIngestionKernel 的全部构造依赖可解析（真机缺口回归）")
+    void milvusBackendSatisfiesTheIngestionClosure() {
+        runner.withUserConfiguration(IngestionClosure.class)
+                .withPropertyValues(EMBEDDED_LOCAL)
+                .withPropertyValues("rag.vector.type=milvus",
+                        "milvus.uri=http://127.0.0.1:19530")
+                .withBean(MilvusClientV2.class, () -> mock(MilvusClientV2.class))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(DefaultIngestionKernel.class);
+                    assertThat(context).hasSingleBean(ChunkIndexWriter.class);
+                    assertThat(context).hasSingleBean(ChunkEmbeddingService.class);
+                    assertThat(context).hasSingleBean(TokenCounterService.class);
+                    assertThat(context).hasSingleBean(RelationalChunkSink.class);
+                    assertThat(context).hasSingleBean(VectorTargetResolver.class);
+                    assertThat(context).hasSingleBean(KnowledgeChunkService.class);
                 });
     }
 
@@ -362,6 +403,45 @@ class AiEmbeddedF22BackendsConfigurationTest {
         @Bean
         KnowledgeChunkMapper knowledgeChunkMapper() {
             return mock(KnowledgeChunkMapper.class);
+        }
+
+        @Bean
+        KnowledgeDocumentMapper knowledgeDocumentMapper() {
+            return mock(KnowledgeDocumentMapper.class);
+        }
+
+        @Bean
+        KnowledgeBaseMapper knowledgeBaseMapper() {
+            return mock(KnowledgeBaseMapper.class);
+        }
+
+        @Bean
+        TransactionOperations transactionOperations() {
+            return mock(TransactionOperations.class);
+        }
+
+        @Bean
+        BizChangeLogContext bizChangeLogContext() {
+            return mock(BizChangeLogContext.class);
+        }
+    }
+
+    /**
+     * 真实摄取闭包的最小等价上下文：{@link DefaultIngestionKernel} + 写入器 + 向量落点。
+     * 解析/分块两件是内核的构造依赖，行为断言不需要真实实现，用替身即可。
+     */
+    @Configuration(proxyBeanMethods = false)
+    @Import({DefaultIngestionKernel.class, ChunkIndexWriter.class, VectorChunkSink.class})
+    static class IngestionClosure {
+
+        @Bean
+        ParserRegistry parserRegistry() {
+            return mock(ParserRegistry.class);
+        }
+
+        @Bean
+        ChunkingService chunkingService() {
+            return mock(ChunkingService.class);
         }
     }
 }

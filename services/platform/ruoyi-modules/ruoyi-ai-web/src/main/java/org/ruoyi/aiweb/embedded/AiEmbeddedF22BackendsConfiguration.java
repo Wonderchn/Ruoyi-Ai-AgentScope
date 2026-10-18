@@ -21,8 +21,19 @@ import cn.hutool.core.thread.ThreadFactoryBuilder;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import com.alibaba.ttl.threadpool.TtlExecutors;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.nageoffer.ai.ragent.audit.support.BizChangeLogContext;
+import com.nageoffer.ai.ragent.core.ingest.embed.ChunkEmbeddingService;
 import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
 import com.nageoffer.ai.ragent.infra.embedding.EmbeddingService;
+import com.nageoffer.ai.ragent.infra.token.HeuristicTokenCounterService;
+import com.nageoffer.ai.ragent.infra.token.TokenCounterService;
+import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeBaseMapper;
+import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeChunkMapper;
+import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeDocumentMapper;
+import com.nageoffer.ai.ragent.knowledge.service.KnowledgeChunkService;
+import com.nageoffer.ai.ragent.knowledge.service.impl.KnowledgeChunkServiceImpl;
+import com.nageoffer.ai.ragent.knowledge.sink.RelationalChunkSink;
+import com.nageoffer.ai.ragent.knowledge.support.VectorTargetResolver;
 import com.nageoffer.ai.ragent.rag.config.EsClientConfig;
 import com.nageoffer.ai.ragent.rag.config.GraphProperties;
 import com.nageoffer.ai.ragent.rag.config.GraphSyncVectorStorePostProcessor;
@@ -39,6 +50,7 @@ import com.nageoffer.ai.ragent.rag.core.retrieval.channel.KeywordSearchChannel;
 import com.nageoffer.ai.ragent.rag.core.vector.MilvusVectorRetrieverService;
 import com.nageoffer.ai.ragent.rag.core.vector.MilvusVectorStoreAdmin;
 import com.nageoffer.ai.ragent.rag.core.vector.MilvusVectorStoreService;
+import com.nageoffer.ai.ragent.rag.core.vector.VectorStoreService;
 import io.milvus.v2.client.MilvusClientV2;
 import okhttp3.OkHttpClient;
 import org.springframework.beans.factory.ObjectProvider;
@@ -56,6 +68,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.env.Environment;
+import org.springframework.transaction.support.TransactionOperations;
 import org.springframework.util.StringUtils;
 
 import java.util.concurrent.Executor;
@@ -136,6 +149,68 @@ public class AiEmbeddedF22BackendsConfiguration {
         @ConditionalOnMissingBean
         public RAGDefaultProperties ragDefaultProperties() {
             return new RAGDefaultProperties();
+        }
+
+        // ---------------------------------------------------- 与向量后端无关的摄取/管理协作件
+        //
+        // 这些 bean 原先只登记在 PG 分支（AiEmbeddedKnowledgeConfiguration.PgVectorEnabled /
+        // AiEmbeddedKnowledgeAdminConfiguration.ChunkAdmin）。它们与"向量存到哪里"无关，却是
+        // 摄取闭包与知识管理闭包的构造依赖：只切 rag.vector.type=milvus 时它们全部缺席，
+        // DefaultIngestionKernel 会以 "required ChunkEmbeddingService" 启动失败
+        // （真机 app-6044-f222.log:95-124）。此处按 missing-bean 补齐，pg 模式本组不激活，
+        // 因此不会重复注册。
+
+        /** 摄取链的 token 计数（chunk sink 写 token_count 用；无外部依赖）。 */
+        @Bean
+        @ConditionalOnMissingBean
+        public TokenCounterService tokenCounterService() {
+            return new HeuristicTokenCounterService();
+        }
+
+        /** 摄取链的 chunk → 向量步骤（嵌入服务由模型组提供，与向量落点无关）。 */
+        @Bean
+        @ConditionalOnMissingBean
+        public ChunkEmbeddingService chunkEmbeddingService(EmbeddingService embeddingService) {
+            return new ChunkEmbeddingService(embeddingService);
+        }
+
+        /** 关系型 chunk 落库（知识资产的权威存储；向量表只是索引）。 */
+        @Bean
+        @ConditionalOnMissingBean
+        public RelationalChunkSink relationalChunkSink(
+                KnowledgeChunkMapper chunkMapper, TokenCounterService tokenCounterService) {
+            return new RelationalChunkSink(chunkMapper, tokenCounterService);
+        }
+
+        /** 向量落点解析（维度 fail-closed；与具体后端无关）。 */
+        @Bean
+        @ConditionalOnMissingBean
+        public VectorTargetResolver vectorTargetResolver(RAGDefaultProperties ragDefaultProperties) {
+            return new VectorTargetResolver(ragDefaultProperties);
+        }
+
+        /**
+         * 分块管理服务：知识文档面（FullAdmin）的构造依赖。
+         *
+         * <p>pg 模式下由 {@code AiEmbeddedKnowledgeAdminConfiguration.ChunkAdmin} 注册；
+         * milvus 模式下 ChunkAdmin 不激活，这里按接口 missing-bean 补齐。
+         * 控制器仍留在 pg 门内（公开面不变）。
+         */
+        @Bean
+        @ConditionalOnMissingBean(KnowledgeChunkService.class)
+        public KnowledgeChunkServiceImpl knowledgeChunkService(
+                KnowledgeChunkMapper chunkMapper,
+                KnowledgeDocumentMapper documentMapper,
+                KnowledgeBaseMapper knowledgeBaseMapper,
+                ChunkEmbeddingService chunkEmbeddingService,
+                VectorTargetResolver vectorTargetResolver,
+                TokenCounterService tokenCounterService,
+                VectorStoreService vectorStoreService,
+                TransactionOperations transactionOperations,
+                BizChangeLogContext bizChangeLogContext) {
+            return new KnowledgeChunkServiceImpl(chunkMapper, documentMapper, knowledgeBaseMapper,
+                    chunkEmbeddingService, vectorTargetResolver, tokenCounterService,
+                    vectorStoreService, transactionOperations, bizChangeLogContext);
         }
 
         /** 向量写入（共享物理 collection，租户字段是隔离边界）。 */
