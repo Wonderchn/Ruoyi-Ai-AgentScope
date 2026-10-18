@@ -84,10 +84,29 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
 
     @Override
     public ModelTurn complete(CodingModelRequest request) {
-        Model model = resolveModel(request);
-        boolean planTurn = isPlanTurn(request);
-        List<Msg> messages = toMessages(request, planTurn);
-        List<ToolSchema> tools = planTurn ? List.of() : toToolSchemas(request.tools());
+        Model model;
+        boolean planTurn;
+        List<Msg> messages;
+        List<ToolSchema> tools;
+        try {
+            model = resolveModel(request);
+            planTurn = isPlanTurn(request);
+            messages = toMessages(request, planTurn);
+            tools = planTurn ? List.of() : toToolSchemas(request.tools());
+        } catch (CodingModelUnavailableException unavailable) {
+            throw unavailable;
+        } catch (RuntimeException failure) {
+            String detail = String.valueOf(failure.getMessage())
+                    .replaceAll("https?://\\S+", "<url>")
+                    .replaceAll("sk-[A-Za-z0-9_-]+", "<key>");
+            org.slf4j.LoggerFactory.getLogger(AgentModelFactoryCodingModelGateway.class)
+                    .warn("coding model request build failed: {}: {}",
+                            failure.getClass().getSimpleName(),
+                            detail.length() > 300 ? detail.substring(0, 300) : detail);
+            throw new CodingModelUnavailableException(
+                    CodingModelUnavailableException.MODEL_TURN_FAILED,
+                    "coding model request failed");
+        }
         GenerateOptions options = GenerateOptions.builder().stream(Boolean.TRUE).build();
 
         List<ChatResponse> responses;
