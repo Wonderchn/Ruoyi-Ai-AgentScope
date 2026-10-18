@@ -223,4 +223,73 @@ class CodingHarnessControllerTest {
             PrincipalContext.clear();
         }
     }
+
+    private com.nageoffer.ai.ragent.coding.model.HarnessRunState createRun(String sessionId) {
+        PrincipalContext.set(principal(Set.of("coding.use", "coding.write"), "T1", "42"));
+        try {
+            ResponseEntity<?> response = controller.createRun(sessionId,
+                    new CodingHarnessController.CreateRunRequest("do it", null, "run-key"));
+            assertThat(response.getStatusCode().value()).isEqualTo(200);
+            return (com.nageoffer.ai.ragent.coding.model.HarnessRunState)
+                    ((ApiEnvelope<?>) response.getBody()).data();
+        } finally {
+            PrincipalContext.clear();
+        }
+    }
+
+    @Test
+    void chatWithInvalidBodyReturnsAJsonEnvelope() {
+        PrincipalContext.set(principal(Set.of("coding.use", "coding.write"), "T1", "42"));
+        try {
+            ResponseEntity<?> response = controller.chat(new CodingHarnessController.ChatRequest(
+                    null, null, "deepseek-flash", "", null, null, null, null));
+            assertThat(response.getStatusCode().value()).isEqualTo(400);
+            assertThat(response.getHeaders().getContentType())
+                    .isEqualTo(org.springframework.http.MediaType.APPLICATION_JSON);
+            ApiEnvelope<?> body = (ApiEnvelope<?>) response.getBody();
+            assertThat(body).isNotNull();
+            assertThat(((java.util.Map<?, ?>) body.data()).get("errorCode"))
+                    .isEqualTo(RunErrorCode.BAD_REQUEST.name());
+        } finally {
+            PrincipalContext.clear();
+        }
+    }
+
+    @Test
+    void invalidStreamRequestsReturn404And400InsteadOf503() {
+        HarnessSessionState session = createSession("T1", "42", Set.of("coding.use", "coding.write"));
+        var run = createRun(session.sessionId());
+
+        PrincipalContext.set(principal(Set.of("coding.use"), "T2", "43"));
+        try {
+            ResponseEntity<?> foreign = controller.streamEvents(session.sessionId(), run.runId(),
+                    null, null);
+            assertThat(foreign.getStatusCode().value()).isEqualTo(404);
+        } finally {
+            PrincipalContext.clear();
+        }
+
+        PrincipalContext.set(principal(Set.of("coding.use"), "T1", "42"));
+        try {
+            ResponseEntity<?> negative = controller.streamEvents(session.sessionId(), run.runId(),
+                    -1L, null);
+            assertThat(negative.getStatusCode().value()).isEqualTo(400);
+            ResponseEntity<?> badLastEvent = controller.streamEvents(session.sessionId(),
+                    run.runId(), null, "not-a-number");
+            assertThat(badLastEvent.getStatusCode().value()).isEqualTo(400);
+        } finally {
+            PrincipalContext.clear();
+        }
+    }
+
+    @Test
+    void restoreUnknownSessionIs404() {
+        PrincipalContext.set(principal(Set.of("coding.use", "coding.write"), "T1", "42"));
+        try {
+            ResponseEntity<?> response = controller.restoreSession("s_missing");
+            assertThat(response.getStatusCode().value()).isEqualTo(404);
+        } finally {
+            PrincipalContext.clear();
+        }
+    }
 }

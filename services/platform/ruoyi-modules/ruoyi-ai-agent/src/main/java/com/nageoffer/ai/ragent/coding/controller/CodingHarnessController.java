@@ -185,7 +185,7 @@ public class CodingHarnessController {
             }
             return service.createRun(owner(), sessionId,
                     new CodingHarnessApplicationService.CreateRunCommand(request.requirement(),
-                            request.budget(), request.idempotencyKey()));
+                            request.budget(), request.idempotencyKey(), principal().scopes()));
         });
     }
 
@@ -209,43 +209,57 @@ public class CodingHarnessController {
                 () -> service.readEvents(owner(), sessionId, runId, afterSequence, limit));
     }
 
-    @GetMapping(value = "/sessions/{sessionId}/runs/{runId}/events/stream",
-            produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter streamEvents(@PathVariable String sessionId, @PathVariable String runId,
-                                   @RequestParam(required = false) Long afterSequence,
-                                   @RequestHeader(value = "Last-Event-ID", required = false)
-                                   String lastEventId) {
-        ExecutionPrincipal principal = principal();
-        require(principal, "coding.use");
-        HarnessOwner owner = owner(principal);
-        service.getRun(owner, sessionId, runId);
-        long cursor = resolveCursor(afterSequence, lastEventId);
-        SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MILLIS);
-        AtomicBoolean closed = new AtomicBoolean(false);
-        HarnessEventSubscription subscription = eventHub.subscribe(owner, sessionId, runId, cursor,
-                event -> sendEvent(emitter, event, closed),
-                error -> {
-                    if (closed.compareAndSet(false, true)) {
-                        try {
-                            emitter.completeWithError(error);
-                        } catch (IllegalStateException ignored) {
-                            // The client already disconnected.
+    @GetMapping("/sessions/{sessionId}/runs/{runId}/events/stream")
+    public ResponseEntity<?> streamEvents(@PathVariable String sessionId, @PathVariable String runId,
+                                          @RequestParam(required = false) Long afterSequence,
+                                          @RequestHeader(value = "Last-Event-ID", required = false)
+                                          String lastEventId) {
+        String requestId = requestId();
+        try {
+            ExecutionPrincipal principal = principal();
+            require(principal, "coding.use");
+            HarnessOwner owner = owner(principal);
+            service.getRun(owner, sessionId, runId);
+            long cursor = resolveCursor(afterSequence, lastEventId);
+            SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MILLIS);
+            AtomicBoolean closed = new AtomicBoolean(false);
+            HarnessEventSubscription subscription = eventHub.subscribe(owner, sessionId, runId,
+                    cursor,
+                    event -> sendEvent(emitter, event, closed, principal, "coding.use",
+                            "run:" + runId),
+                    error -> {
+                        if (closed.compareAndSet(false, true)) {
+                            try {
+                                emitter.completeWithError(error);
+                            } catch (IllegalStateException ignored) {
+                                // The client already disconnected.
+                            }
                         }
-                    }
-                });
-        emitter.onCompletion(() -> {
-            closed.set(true);
-            subscription.close();
-        });
-        emitter.onTimeout(() -> {
-            closed.set(true);
-            subscription.close();
-        });
-        emitter.onError(ignored -> {
-            closed.set(true);
-            subscription.close();
-        });
-        return emitter;
+                    });
+            emitter.onCompletion(() -> {
+                closed.set(true);
+                subscription.close();
+            });
+            emitter.onTimeout(() -> {
+                closed.set(true);
+                subscription.close();
+            });
+            emitter.onError(ignored -> {
+                closed.set(true);
+                subscription.close();
+            });
+            return ResponseEntity.ok().contentType(MediaType.TEXT_EVENT_STREAM)
+                    .header("X-Request-Id", requestId).body(emitter);
+        } catch (RunApiException error) {
+            return fail(error.errorCode(), error.getMessage(), requestId);
+        } catch (CodingNotFoundException notFound) {
+            return fail(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN, notFound.getMessage(),
+                    requestId);
+        } catch (IllegalArgumentException invalid) {
+            return fail(RunErrorCode.BAD_REQUEST, invalid.getMessage(), requestId);
+        } catch (RuntimeException failure) {
+            return fail(RunErrorCode.INTERNAL_ERROR, requestId);
+        }
     }
 
     @PostMapping("/sessions/{sessionId}/runs/{runId}/inputs")
@@ -257,7 +271,8 @@ public class CodingHarnessController {
             }
             return service.queueInput(owner(), sessionId, runId,
                     new CodingHarnessApplicationService.QueueInputCommand(request.kind(),
-                            request.content(), request.idempotencyKey()));
+                            request.content(), request.idempotencyKey(),
+                            principal().scopes()));
         });
     }
 
@@ -396,7 +411,7 @@ public class CodingHarnessController {
     }
 
     /** SSE chat: creates (or reuses) a session, creates a run, and streams its durable events. */
-    @PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @PostMapping("/chat")
     public ResponseEntity<?> chat(@RequestBody ChatRequest request) {
         String requestId = requestId();
         try {
@@ -424,11 +439,13 @@ public class CodingHarnessController {
                     ? "chat-run:" + UUID.randomUUID() : "chat-run:" + request.idempotencyKey();
             HarnessRunState run = service.createRun(owner, sessionId,
                     new CodingHarnessApplicationService.CreateRunCommand(request.requirement(),
-                            null, runKey));
+                            null, runKey, principal.scopes()));
             SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MILLIS);
             AtomicBoolean closed = new AtomicBoolean(false);
+            String chatResource = "run:" + run.runId();
             HarnessEventSubscription subscription = eventHub.subscribe(owner, sessionId,
-                    run.runId(), 0, event -> sendEvent(emitter, event, closed),
+                    run.runId(), 0,
+                    event -> sendEvent(emitter, event, closed, principal, "coding.write", chatResource),
                     error -> {
                         if (closed.compareAndSet(false, true)) {
                             try {
@@ -532,21 +549,36 @@ public class CodingHarnessController {
         data.put("retryable", status.is5xxServerError());
         data.put("requestId", requestId);
         return ResponseEntity.status(status).header("X-Request-Id", requestId)
+                .contentType(MediaType.APPLICATION_JSON)
                 .body(new ApiEnvelope<>(status.value(), message, data));
     }
 
-    private void sendEvent(SseEmitter emitter, HarnessEvent event, AtomicBoolean closed) {
+    private void sendEvent(SseEmitter emitter, HarnessEvent event, AtomicBoolean closed,
+                           ExecutionPrincipal principal, String action, String resource) {
         if (closed.get()) {
             return;
         }
+        DeliveryPermits.Permit permit = null;
         try {
-            emitter.send(SseEmitter.event().id(Long.toString(event.sequence()))
-                    .name(event.type()).data(objectMapper.writeValueAsString(event),
-                            MediaType.APPLICATION_JSON));
+            // B1：每一帧都必须携带 `: ai-delivery <permit> <operation>`；本地/HTTP 网关对
+            // 裸 id/event/data 帧 fail-closed（"unprotected stream frame"）。
+            permit = deliveryPermits.enter(principal, action, resource);
+            String json = objectMapper.writeValueAsString(event);
+            emitter.send(CodingSseFrames.event(permit.permitId(), permit.operationId(),
+                    event.sequence(), event.type(), json));
             if (event.isTerminalType() && closed.compareAndSet(false, true)) {
                 emitter.complete();
             }
         } catch (IOException | IllegalStateException error) {
+            if (closed.compareAndSet(false, true)) {
+                try {
+                    emitter.completeWithError(error);
+                } catch (IllegalStateException ignored) {
+                    // The response is already complete.
+                }
+            }
+        } catch (RuntimeException error) {
+            // Missing permit port / serialization failure: never emit an unprotected frame.
             if (closed.compareAndSet(false, true)) {
                 try {
                     emitter.completeWithError(error);
@@ -639,6 +671,7 @@ public class CodingHarnessController {
         data.put("requestId", requestId);
         return ResponseEntity.status(error.errorCode().status())
                 .header("X-Request-Id", requestId)
+                .contentType(MediaType.APPLICATION_JSON)
                 .body(new ApiEnvelope<>(error.errorCode().status().value(), error.getMessage(),
                         data));
     }

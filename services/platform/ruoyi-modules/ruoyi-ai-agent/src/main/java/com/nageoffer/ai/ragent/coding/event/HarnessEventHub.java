@@ -100,6 +100,8 @@ public class HarnessEventHub {
         if (store.findRun(owner, sessionId, runId).isEmpty()) {
             throw new IllegalArgumentException("Unknown run: " + runId);
         }
+        // C2：终态落盘后、终态事件发布前崩溃时，订阅方也必须看到终态，而不是轮询到 emitter 超时。
+        ensureTerminalEvent(owner, sessionId, runId);
         Subscription subscription = new Subscription(key, owner, afterSequence, consumer,
                 errorConsumer);
         try {
@@ -292,6 +294,7 @@ public class HarnessEventHub {
                 new ArrayBlockingQueue<>(SUBSCRIBER_QUEUE_CAPACITY);
         private final AtomicBoolean closed = new AtomicBoolean(false);
         private long cursor;
+        private long lastTerminalRepair = System.currentTimeMillis();
 
         private Subscription(RunKey key, HarnessOwner owner, long afterSequence,
                              Consumer<HarnessEvent> consumer, Consumer<Throwable> errorConsumer) {
@@ -343,6 +346,11 @@ public class HarnessEventHub {
                     HarnessEvent event = queue.poll(500, java.util.concurrent.TimeUnit.MILLISECONDS);
                     if (event != null && event.sequence() > cursor) {
                         deliver(event);
+                    }
+                    if (!closed.get()
+                            && System.currentTimeMillis() - lastTerminalRepair >= 5_000L) {
+                        lastTerminalRepair = System.currentTimeMillis();
+                        ensureTerminalEvent(owner, key.sessionId(), key.runId());
                     }
                 }
             } catch (InterruptedException interrupted) {

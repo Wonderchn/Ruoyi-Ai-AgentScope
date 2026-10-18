@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /** Durable control-plane snapshot for one execution of a session. */
@@ -20,6 +21,7 @@ public record HarnessRunState(
         String originalRequirement,
         HarnessPermissionMode permissionMode,
         long permissionRevision,
+        Set<String> authorizedActions,
         HarnessBudget budget,
         HarnessModelRoute modelRoute,
         CodingPlanState plan,
@@ -40,6 +42,7 @@ public record HarnessRunState(
         pendingInputs = pendingInputs == null ? List.of() : List.copyOf(pendingInputs);
         toolApprovals = toolApprovals == null ? Map.of() : Map.copyOf(toolApprovals);
         budget = budget == null ? HarnessBudget.defaults() : budget;
+        authorizedActions = authorizedActions == null ? Set.of() : Set.copyOf(authorizedActions);
         if (schemaVersion < 1 || runId == null || runId.isBlank() || sessionId == null
                 || sessionId.isBlank() || tenantId == null || tenantId.isBlank() || userId == null
                 || userId <= 0 || status == null || originalRequirement == null
@@ -61,12 +64,19 @@ public record HarnessRunState(
     public static HarnessRunState createWithId(String runId, HarnessSessionState session,
                                                String requirement, HarnessBudget budget,
                                                HarnessModelRoute modelRoute, long now) {
+        return createWithId(runId, session, requirement, budget, modelRoute, Set.of(), now);
+    }
+
+    public static HarnessRunState createWithId(String runId, HarnessSessionState session,
+                                               String requirement, HarnessBudget budget,
+                                               HarnessModelRoute modelRoute,
+                                               Set<String> authorizedActions, long now) {
         if (modelRoute == null) {
             throw new IllegalArgumentException("modelRoute is required");
         }
         return new HarnessRunState(CURRENT_SCHEMA_VERSION, runId, session.sessionId(),
                 session.tenantId(), session.userId(), HarnessRunStatus.QUEUED, requirement,
-                session.permissionMode(), session.revision(),
+                session.permissionMode(), session.revision(), authorizedActions,
                 budget == null ? HarnessBudget.defaults() : budget, modelRoute, null,
                 List.of(), Map.of(), 0, 0, false, null, now, now, 0);
     }
@@ -146,8 +156,8 @@ public record HarnessRunState(
                                  int newIteration, int newToolCallCount, boolean cancelRequested,
                                  String newError, long now, long newRevision) {
         return new HarnessRunState(schemaVersion, runId, sessionId, tenantId, userId, newStatus,
-                originalRequirement, permissionMode, permissionRevision, budget, modelRoute,
-                newPlan, newInputs, newApprovals, newIteration, newToolCallCount, cancelRequested,
-                newError, createdAt, now, newRevision);
+                originalRequirement, permissionMode, permissionRevision, authorizedActions, budget,
+                modelRoute, newPlan, newInputs, newApprovals, newIteration, newToolCallCount,
+                cancelRequested, newError, createdAt, now, newRevision);
     }
 }

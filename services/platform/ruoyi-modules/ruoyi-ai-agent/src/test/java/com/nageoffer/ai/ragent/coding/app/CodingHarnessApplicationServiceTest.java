@@ -54,6 +54,8 @@ class CodingHarnessApplicationServiceTest {
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final HarnessOwner owner = new HarnessOwner("T1", 42L);
+    private static final java.util.Set<String> ALL_ACTIONS = java.util.Set.of(
+            "coding.use", "coding.write", "coding.approve", "coding.command");
     private ScriptedGateway gateway;
     private CodingHarnessApplicationService service;
 
@@ -78,7 +80,8 @@ class CodingHarnessApplicationServiceTest {
 
     private HarnessRunState run(HarnessSessionState session, String key) {
         return service.createRun(owner, session.sessionId(),
-                new CodingHarnessApplicationService.CreateRunCommand("do the task", null, key));
+                new CodingHarnessApplicationService.CreateRunCommand("do the task", null, key,
+                        ALL_ACTIONS));
     }
 
     @Test
@@ -137,7 +140,8 @@ class CodingHarnessApplicationServiceTest {
         assertThat(replay.runId()).isEqualTo(first.runId());
 
         assertThatThrownBy(() -> service.createRun(owner, session.sessionId(),
-                new CodingHarnessApplicationService.CreateRunCommand("different", null, "r-key")))
+                new CodingHarnessApplicationService.CreateRunCommand("different", null, "r-key",
+                        ALL_ACTIONS)))
                 .isInstanceOf(CodingConflictException.class);
     }
 
@@ -249,7 +253,7 @@ class CodingHarnessApplicationServiceTest {
 
         assertThatThrownBy(() -> service.queueInput(owner, session.sessionId(), waiting.runId(),
                 new CodingHarnessApplicationService.QueueInputCommand(HarnessInputKind.STEER,
-                        "steer", "i-1")))
+                        "steer", "i-1", ALL_ACTIONS)))
                 .isInstanceOf(CodingConflictException.class);
     }
 

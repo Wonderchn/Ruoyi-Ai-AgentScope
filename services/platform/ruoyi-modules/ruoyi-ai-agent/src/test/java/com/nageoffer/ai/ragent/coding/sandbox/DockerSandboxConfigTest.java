@@ -98,4 +98,18 @@ class DockerSandboxConfigTest {
         assertThatThrownBy(() -> DockerSandboxConfig.rejectControlOrComma("/tmp/a\nb", "path"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void containerWorkdirTracksTheValidatedWorkspaceCwd() {
+        DockerSandboxConfig config = DockerSandboxConfig.configured("/usr/bin/docker", "a".repeat(64),
+                "/tmp", DockerSandboxConfig.localDockerHost(), "sha256:" + "b".repeat(64));
+        List<String> args = DockerSandboxCommandBuilder.hardenedArguments(config,
+                Path.of("/tmp/ws"), "sh", List.of("-c", "true"), "/workspace/sub");
+        assertThat(args).containsSequence("--workdir", "/workspace/sub");
+        assertThat(args).contains("--cgroupns", "private", "--no-healthcheck");
+        assertThatThrownBy(() -> DockerSandboxCommandBuilder.hardenedArguments(config,
+                Path.of("/tmp/ws"), "sh", List.of(), "/etc"))
+                .isInstanceOf(SandboxCommandException.class)
+                .hasMessageContaining("inside /workspace");
+    }
 }

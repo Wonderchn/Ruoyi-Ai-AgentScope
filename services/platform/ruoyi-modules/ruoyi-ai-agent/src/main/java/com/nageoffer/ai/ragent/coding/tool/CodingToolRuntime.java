@@ -54,9 +54,21 @@ public class CodingToolRuntime {
     }
 
     public ToolExecutionResult execute(String toolName, Map<String, Object> arguments,
-                                       Path workspace, String runId) {
+                                       Path workspace, String runId,
+                                       java.util.Set<String> authorizedActions) {
         if (toolName == null || toolName.isBlank()) {
             return ToolExecutionResult.error("unknown", "UNKNOWN_TOOL", "tool name is required");
+        }
+        String requiredAction = requiredAction(toolName);
+        if (requiredAction == null) {
+            return ToolExecutionResult.error(toolName, "UNKNOWN_TOOL",
+                    "Unknown coding tool: " + toolName);
+        }
+        // Scope check precedes approval/execution: a client-chosen approvalPolicy=NEVER can never
+        // grant a capability the caller does not hold.
+        if (authorizedActions == null || !authorizedActions.contains(requiredAction)) {
+            return ToolExecutionResult.error(toolName, "FORBIDDEN",
+                    "The run is not authorized for " + requiredAction);
         }
         Map<String, Object> args = arguments == null ? Map.of() : arguments;
         try {
@@ -76,6 +88,19 @@ public class CodingToolRuntime {
         }
     }
 
+    /** Canonical action required by a built-in tool; {@code null} for unknown tools. */
+    public static String requiredAction(String toolName) {
+        if (toolName == null) {
+            return null;
+        }
+        return switch (toolName) {
+            case "read_file", "list_dir" -> "coding.use";
+            case "write_file" -> "coding.write";
+            case "execute_process" -> "coding.command";
+            default -> null;
+        };
+    }
+
     public CommandExecutionResult executeCommand(Path workspace, String executable,
                                                  List<String> argv, String cwd, Long timeoutMs) {
         if (!executeProcessEnabled) {
@@ -86,7 +111,7 @@ public class CodingToolRuntime {
         Path workingDirectory = resolveWorkingDirectory(workspace, cwd);
         List<String> arguments = argv == null ? List.of() : argv;
         List<String> command = DockerSandboxCommandBuilder.hardenedArguments(sandbox, workspace,
-                executable, arguments);
+                executable, arguments, containerWorkingDirectory(workspace, workingDirectory));
         long timeout = normalizeTimeout(timeoutMs);
         Process process = null;
         try {
@@ -211,6 +236,20 @@ public class CodingToolRuntime {
                     "cwd must be an existing workspace directory");
         }
         return target;
+    }
+
+    /** Maps a validated workspace directory to the single bind mount's container path. */
+    private static String containerWorkingDirectory(Path workspace, Path workingDirectory) {
+        Path relative = workspace.toAbsolutePath().normalize()
+                .relativize(workingDirectory.toAbsolutePath().normalize());
+        if (relative.toString().isEmpty()) {
+            return DockerSandboxCommandBuilder.CONTAINER_WORKSPACE;
+        }
+        StringBuilder path = new StringBuilder(DockerSandboxCommandBuilder.CONTAINER_WORKSPACE);
+        for (Path segment : relative) {
+            path.append('/').append(segment.toString().replace('\\', '/'));
+        }
+        return path.toString();
     }
 
     private static long normalizeTimeout(Long timeoutMs) {

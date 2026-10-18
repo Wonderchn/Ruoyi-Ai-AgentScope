@@ -599,7 +599,7 @@ public class AiGatewayController {
             // {sessionId}/runs 与 {sessionId}/messages 4 段；runs/{runId} 5 段；
             // .../events 6 段；.../inputs|cancel|resume 与 plan/approve|revision 7 段；
             // approvals/{approvalId}/resolve 8 段。
-            // 八条 GET 在网关走字节分支 ⇒ 控制器自铸 DeliveryPermits 回执头；
+            // 九条 GET 在网关走字节分支 ⇒ 控制器自铸 DeliveryPermits 回执头；
             // 写面走 JSON 分支，内层不铸回执（铸造 = 永久 ACTIVE 许可泄漏）。
             new Route("POST", "/coding/sessions", "coding.write"),
             new Route("GET", "/coding/sessions", "coding.use"),

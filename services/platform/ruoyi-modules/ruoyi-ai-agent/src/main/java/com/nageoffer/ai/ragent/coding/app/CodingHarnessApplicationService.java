@@ -66,10 +66,11 @@ public class CodingHarnessApplicationService {
     }
 
     public record CreateRunCommand(String requirement, HarnessBudget budget,
-                                   String idempotencyKey) {
+                                   String idempotencyKey, java.util.Set<String> authorizedActions) {
     }
 
-    public record QueueInputCommand(HarnessInputKind kind, String content, String idempotencyKey) {
+    public record QueueInputCommand(HarnessInputKind kind, String content, String idempotencyKey,
+                                    java.util.Set<String> authorizedActions) {
     }
 
     // ------------------------------------------------------------------ sessions
@@ -127,6 +128,9 @@ public class CodingHarnessApplicationService {
     }
 
     public HarnessSessionState restoreSession(HarnessOwner owner, String sessionId) {
+        // C4：restore 必须能命中"已软删"的会话，但未知/非属主仍然 404。
+        store.findSession(owner, sessionId)
+                .orElseThrow(() -> new CodingNotFoundException("session", sessionId));
         return store.setSessionDeleted(owner, sessionId, false);
     }
 
@@ -153,30 +157,41 @@ public class CodingHarnessApplicationService {
         }
         HarnessBudget budget = command.budget() == null
                 ? HarnessBudget.defaults() : command.budget();
+        java.util.Set<String> authorizedActions = command.authorizedActions() == null
+                ? java.util.Set.of() : java.util.Set.copyOf(command.authorizedActions());
         HarnessSessionState session = getSession(owner, sessionId);
         String runId = stableId("run", owner, sessionId, command.idempotencyKey());
         HarnessRunState existing = store.findRun(owner, sessionId, runId).orElse(null);
         if (existing != null) {
             if (!existing.originalRequirement().equals(command.requirement())
-                    || !existing.budget().equals(budget)) {
+                    || !existing.budget().equals(budget)
+                    || !existing.authorizedActions().equals(authorizedActions)) {
                 throw new CodingConflictException(
                         "idempotencyKey was already used for a different run request");
             }
+            // C1 repair: the run snapshot is durable even if the event publish previously failed.
+            publishRunCreated(owner, existing);
             return existing;
         }
         requireNoActiveRun(owner, session);
         long now = now();
         HarnessModelRoute route = new HarnessModelRoute(1, session.model(), session.model());
         HarnessRunState run = HarnessRunState.createWithId(runId, session, command.requirement(),
-                budget, route, now);
+                budget, route, authorizedActions, now);
         run = store.createRun(owner, run);
-        publish(owner, HarnessEvent.draftWithId("run-created:" + runId, sessionId, runId,
-                "run.created", null, null, null,
-                Map.of("status", run.status().name(), "model", route.selectedModel()), now));
         store.saveSession(owner, session.withActiveRun(runId, now), session.revision());
         appendInitialMessageIfMissing(owner, run, now);
+        // C1：快照（run + 会话指针 + 首条消息）全部落盘后才发布事件。
+        publishRunCreated(owner, run);
         runExecutor.start(owner, sessionId, runId);
         return store.findRun(owner, sessionId, runId).orElse(run);
+    }
+
+    private void publishRunCreated(HarnessOwner owner, HarnessRunState run) {
+        publish(owner, HarnessEvent.draftWithId("run-created:" + run.runId(),
+                run.sessionId(), run.runId(), "run.created", null, null, null,
+                Map.of("status", "QUEUED", "model", run.modelRoute().selectedModel()),
+                run.createdAt()));
     }
 
     public HarnessRunState queueInput(HarnessOwner owner, String sessionId, String runId,
@@ -190,7 +205,7 @@ public class CodingHarnessApplicationService {
             if (command.kind() == HarnessInputKind.FOLLOW_UP) {
                 return createRun(owner, sessionId, new CreateRunCommand(command.content(),
                         HarnessBudget.forFollowUp(run.budget()),
-                        "follow-up:" + command.idempotencyKey()));
+                        "follow-up:" + command.idempotencyKey(), command.authorizedActions()));
             }
             throw new CodingConflictException("Cannot steer a terminal run");
         }
@@ -205,21 +220,27 @@ public class CodingHarnessApplicationService {
                     "idempotencyKey was already used for a different queued input");
         }
         HarnessRunState next = run;
-        if (existing == null) {
+        HarnessQueuedInput input = existing;
+        if (input == null) {
             requirePendingInputCapacity(run, command.content());
-            HarnessQueuedInput input = HarnessQueuedInput.createWithId(inputId, command.kind(),
-                    command.content(), now);
+            input = HarnessQueuedInput.createWithId(inputId, command.kind(), command.content(), now);
             next = next.enqueue(input, now);
-            publish(owner, HarnessEvent.draftWithId(
-                    "input-queued:" + inputId, sessionId, runId, "input.queued", null, null, null,
-                    Map.of("inputId", inputId, "kind", command.kind().name()), now));
         }
         boolean wake = next.status() == HarnessRunStatus.WAITING_FOR_INPUT;
         if (wake) {
             next = next.transition(HarnessRunStatus.QUEUED, null, now);
         }
-        HarnessRunState saved = next == run ? run : store.saveRun(owner, next, run.revision());
+        HarnessRunState saved;
+        try {
+            saved = next == run ? run : store.saveRun(owner, next, run.revision());
+        } catch (com.nageoffer.ai.ragent.coding.store.HarnessOptimisticLockException conflict) {
+            throw new CodingConflictException("concurrent run update", conflict);
+        }
         appendControlMessageIfMissing(owner, run, inputId, command.content(), now);
+        // C1：输入/状态快照先落盘，事件再用 input.createdAt 的稳定时间戳发布（重试同 id 同 payload）。
+        publish(owner, HarnessEvent.draftWithId(
+                "input-queued:" + inputId, sessionId, runId, "input.queued", null, null, null,
+                Map.of("inputId", inputId, "kind", command.kind().name()), input.createdAt()));
         if (wake) {
             runExecutor.start(owner, sessionId, runId);
             return store.findRun(owner, sessionId, runId).orElse(saved);
@@ -291,6 +312,9 @@ public class CodingHarnessApplicationService {
             throw new CodingConflictException(conflict.getMessage(), conflict);
         }
         if (resolved == approval) {
+            // C1 repair: the resolution snapshot is durable; republish its stable event if a
+            // previous attempt failed between save and publish.
+            publishApprovalResolved(owner, run, approval);
             return run;
         }
         HarnessRunState next = run.withToolApproval(resolved, now);
@@ -299,16 +323,32 @@ public class CodingHarnessApplicationService {
         if (schedule) {
             next = next.transition(HarnessRunStatus.QUEUED, null, now);
         }
-        publish(owner, HarnessEvent.draftWithId(
-                "approval-resolved:" + approvalId + ":" + decisionId, sessionId, runId,
-                "approval.resolved", null, approval.toolCallId(), approvalId,
-                Map.of("decision", decision.name(), "state", resolved.state().name()), now));
-        HarnessRunState saved = store.saveRun(owner, next, run.revision());
+        HarnessRunState saved;
+        try {
+            saved = store.saveRun(owner, next, run.revision());
+        } catch (com.nageoffer.ai.ragent.coding.store.HarnessOptimisticLockException conflict) {
+            throw new CodingConflictException("concurrent approval resolution", conflict);
+        }
+        // C1：先落盘再发布。事件 id 只按 approvalId 唯一；时间戳取已持久化的 resolvedAt，
+        // 同一 decisionId 的重试因此复用同一 payload（不因 now() 漂移）。
+        publishApprovalResolved(owner, saved, resolved);
         if (schedule) {
             runExecutor.start(owner, sessionId, runId);
             return store.findRun(owner, sessionId, runId).orElse(saved);
         }
         return saved;
+    }
+
+    private void publishApprovalResolved(HarnessOwner owner, HarnessRunState run,
+                                         ToolApproval resolved) {
+        if (resolved.decisionId() == null || resolved.decision() == null) {
+            return;
+        }
+        publish(owner, HarnessEvent.draftWithId(
+                "approval-resolved:" + resolved.approvalId(), run.sessionId(), run.runId(),
+                "approval.resolved", null, resolved.toolCallId(), resolved.approvalId(),
+                Map.of("decision", resolved.decision().name(), "decisionId", resolved.decisionId(),
+                        "state", resolved.state().name()), resolved.resolvedAt()));
     }
 
     // ------------------------------------------------------------------ plan
@@ -329,6 +369,7 @@ public class CodingHarnessApplicationService {
             throw new CodingConflictException(conflict.getMessage(), conflict);
         }
         if (approved == plan) {
+            publishPlanApproved(owner, run, approved, idempotencyKey);
             return run;
         }
         HarnessRunState next = run.withPlan(approved, now);
@@ -336,17 +377,33 @@ public class CodingHarnessApplicationService {
         if (schedule) {
             next = next.transition(HarnessRunStatus.QUEUED, null, now);
         }
-        publish(owner, HarnessEvent.draftWithId(
-                "plan-approved:" + approved.taskId() + ":" + idempotencyKey, sessionId, runId,
-                "plan.approved", null, null, null,
-                Map.of("taskId", approved.taskId().toString(), "revision", approved.revision(),
-                        "hash", approved.canonicalHash(), "idempotencyKey", idempotencyKey), now));
-        HarnessRunState saved = store.saveRun(owner, next, run.revision());
+        HarnessRunState saved;
+        try {
+            saved = store.saveRun(owner, next, run.revision());
+        } catch (com.nageoffer.ai.ragent.coding.store.HarnessOptimisticLockException conflict) {
+            throw new CodingConflictException("concurrent plan approval", conflict);
+        }
+        // C1：先落盘再发布；时间戳取已持久化的审批回执，重试不漂移。
+        publishPlanApproved(owner, saved, approved, idempotencyKey);
         if (schedule) {
             runExecutor.start(owner, sessionId, runId);
             return store.findRun(owner, sessionId, runId).orElse(saved);
         }
         return saved;
+    }
+
+    private void publishPlanApproved(HarnessOwner owner, HarnessRunState run,
+                                     CodingPlanState approved, String idempotencyKey) {
+        var receipt = approved.approvalReceipts().get(idempotencyKey);
+        if (receipt == null) {
+            return;
+        }
+        publish(owner, HarnessEvent.draftWithId(
+                "plan-approved:" + approved.taskId() + ":" + idempotencyKey, run.sessionId(),
+                run.runId(), "plan.approved", null, null, null,
+                Map.of("taskId", approved.taskId().toString(), "revision", approved.revision(),
+                        "hash", approved.canonicalHash(), "idempotencyKey", idempotencyKey),
+                receipt.approvedAt()));
     }
 
     public HarnessRunState requestPlanRevision(HarnessOwner owner, String sessionId, String runId,
@@ -384,6 +441,7 @@ public class CodingHarnessApplicationService {
             throw new CodingConflictException(conflict.getMessage(), conflict);
         }
         if (!result.changed()) {
+            publishPlanRevision(owner, run, result.plan(), feedbackId, plan.taskId());
             return run;
         }
         HarnessRunState next = run.withPlan(result.plan(), now);
@@ -391,21 +449,35 @@ public class CodingHarnessApplicationService {
         if (schedule) {
             next = next.transition(HarnessRunStatus.QUEUED, null, now);
         }
-        PlanFeedbackState durable = result.plan().feedbackHistory().stream()
-                .filter(feedback -> feedback.feedbackId().equals(feedbackId))
-                .findFirst().orElseThrow();
-        publish(owner, HarnessEvent.draftWithId(
-                "plan-revision:" + feedbackId, sessionId, runId, "plan.revision.requested",
-                null, null, null,
-                Map.of("taskId", taskId.toString(), "feedbackId", feedbackId,
-                        "revision", result.plan().revision(),
-                        "hash", result.plan().canonicalHash()), durable.createdAt()));
-        HarnessRunState saved = store.saveRun(owner, next, run.revision());
+        HarnessRunState saved;
+        try {
+            saved = store.saveRun(owner, next, run.revision());
+        } catch (com.nageoffer.ai.ragent.coding.store.HarnessOptimisticLockException conflict) {
+            throw new CodingConflictException("concurrent plan revision", conflict);
+        }
+        // C1：先落盘再发布；feedback.createdAt 是已持久化的稳定时间戳。
+        publishPlanRevision(owner, saved, result.plan(), feedbackId, plan.taskId());
         if (schedule) {
             runExecutor.start(owner, sessionId, runId);
             return store.findRun(owner, sessionId, runId).orElse(saved);
         }
         return saved;
+    }
+
+    private void publishPlanRevision(HarnessOwner owner, HarnessRunState run,
+                                     CodingPlanState plan, String feedbackId, UUID taskId) {
+        PlanFeedbackState durable = plan.feedbackHistory().stream()
+                .filter(feedback -> feedback.feedbackId().equals(feedbackId))
+                .findFirst().orElse(null);
+        if (durable == null) {
+            return;
+        }
+        publish(owner, HarnessEvent.draftWithId(
+                "plan-revision:" + feedbackId, run.sessionId(), run.runId(),
+                "plan.revision.requested", null, null, null,
+                Map.of("taskId", taskId.toString(), "feedbackId", feedbackId,
+                        "revision", plan.revision(), "hash", plan.canonicalHash()),
+                durable.createdAt()));
     }
 
     // ------------------------------------------------------------------ reads

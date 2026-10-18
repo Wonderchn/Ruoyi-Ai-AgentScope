@@ -25,6 +25,13 @@ public final class DockerSandboxCommandBuilder {
     /** Pure argv construction: no process starts and the Docker executable is not probed. */
     public static List<String> hardenedArguments(DockerSandboxConfig sandbox, Path workspace,
                                                  String executable, List<String> arguments) {
+        return hardenedArguments(sandbox, workspace, executable, arguments, CONTAINER_WORKSPACE);
+    }
+
+    /** As above, with an explicit (already validated) container working directory. */
+    public static List<String> hardenedArguments(DockerSandboxConfig sandbox, Path workspace,
+                                                 String executable, List<String> arguments,
+                                                 String containerWorkingDirectory) {
         if (sandbox == null) {
             throw new SandboxCommandException("SANDBOX_NOT_CONFIGURED",
                     "Docker sandbox policy is required");
@@ -35,6 +42,13 @@ public final class DockerSandboxCommandBuilder {
         DockerSandboxConfig.rejectControlOrComma(executable, "Container executable");
         Path mount = workspace.toAbsolutePath().normalize();
         DockerSandboxConfig.rejectControlOrComma(mount.toString(), "Workspace path");
+        String workdir = containerWorkingDirectory == null || containerWorkingDirectory.isBlank()
+                ? CONTAINER_WORKSPACE : containerWorkingDirectory;
+        if (!workdir.equals(CONTAINER_WORKSPACE) && !workdir.startsWith(CONTAINER_WORKSPACE + "/")) {
+            throw new SandboxCommandException("UNSAFE_WORKDIR",
+                    "Container working directory must stay inside " + CONTAINER_WORKSPACE);
+        }
+        DockerSandboxConfig.rejectControlOrComma(workdir, "Container working directory");
 
         List<String> args = new ArrayList<>(48 + (arguments == null ? 0 : arguments.size()));
         args.add(sandbox.dockerExecutable());
@@ -53,16 +67,18 @@ public final class DockerSandboxCommandBuilder {
                 "--memory-swap", Long.toString(sandbox.memoryBytes()),
                 "--cpus", sandbox.cpuLimit(),
                 "--ipc", "none",
+                "--cgroupns", "private",
                 "--ulimit", "nofile=1024:1024",
                 "--ulimit", "core=0",
                 "--restart", "no",
                 "--stop-timeout", "1",
+                "--no-healthcheck",
                 "--init",
                 "--user", sandbox.user(),
                 "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=" + sandbox.tmpfsBytes(),
                 "--mount", "type=bind,source=" + mount + ",target=" + CONTAINER_WORKSPACE
                         + ",bind-propagation=rprivate,bind-recursive=disabled",
-                "--workdir", CONTAINER_WORKSPACE,
+                "--workdir", workdir,
                 "--entrypoint", executable,
                 sandbox.pinnedImage()));
         if (arguments != null) {
