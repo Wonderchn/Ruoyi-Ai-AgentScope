@@ -242,9 +242,16 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         // （F22:2 真机第五缺口：VectorTargetResolver 需要 PrincipalContext）。
         ExecutionPrincipal principal = PrincipalContext.require();
         String tenantId = principal.tenantId();
+        // 内嵌传输下 UserContext 恒空（AiEmbeddedAgentConversationConfiguration 注释与
+        // KnowledgeBaseServiceImpl.create 已实证），而 ai_knowledge_chunk.created_by 是
+        // NOT NULL。缺旧用户名时回退到已验签主体的 userId（与 KB 创建同一口径），
+        // 事件与事务闭包的 updatedBy 统一使用这个局部，避免两处来源分叉。
+        String legacyOperator = UserContext.getUsername();
+        // 单次赋值，保持 effectively final：同一 operator 要被事件构造与事务闭包同时捕获。
+        String operator = StrUtil.isBlank(legacyOperator) ? principal.userId() : legacyOperator;
         KnowledgeDocumentChunkEvent event = KnowledgeDocumentChunkEvent.builder()
                 .docId(docId)
-                .operator(UserContext.getUsername())
+                .operator(operator)
                 .tenantId(tenantId)
                 .principalRef(AsyncPrincipalReference.from(principal))
                 .build();
@@ -259,7 +266,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                     int updated = documentMapper.update(
                             new LambdaUpdateWrapper<KnowledgeDocumentDO>()
                                     .set(KnowledgeDocumentDO::getStatus, DocumentStatus.RUNNING.getCode())
-                                    .set(KnowledgeDocumentDO::getUpdatedBy, event.getOperator())
+                                    .set(KnowledgeDocumentDO::getUpdatedBy, operator)
                                     .set(KnowledgeDocumentDO::getUpdateTime, new Date())
                                     .eq(KnowledgeDocumentDO::getId, docId)
                                     .apply(TENANT_PREDICATE, tenantId)
