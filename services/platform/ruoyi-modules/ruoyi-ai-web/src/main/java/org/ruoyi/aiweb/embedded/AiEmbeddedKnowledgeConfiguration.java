@@ -47,7 +47,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * 自己就带这个 {@code @ConditionalOnProperty}，本组沿用同一个条件，
  * 保证"内嵌态装配的那套"和"独立 AI 态装配的那套"是同一个判据——
  * 不出现内嵌下装了 Milvus 而独立态装的是 PG 这种分叉。
- * 本期只装配 PG：Milvus/ES/LightRAG 属可选技术后端（WP-053），本轮不冒充已启用。
+ * 本类只装配 PG；Milvus/ES/LightRAG 属可选技术后端，由
+ * {@link AiEmbeddedF22BackendsConfiguration} 按各自的 {@code rag.*.type} 显式选择装配，
+ * shipped 配置仍是 {@code pg} / {@code none} / 无 graph，不冒充已启用。
  *
  * <p><b>PG 向量表形状由迁移拥有，应用只用 DML。</b>
  * {@code ai_knowledge_vector} 的列、{@code (tenant_id, id)} 复合唯一键与

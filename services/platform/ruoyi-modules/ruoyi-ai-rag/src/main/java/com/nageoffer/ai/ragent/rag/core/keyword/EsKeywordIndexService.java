@@ -68,13 +68,31 @@ public class EsKeywordIndexService implements KeywordIndexService {
      * 启动即幂等确保共享索引存在，与向量共享 collection 的启动初始化对称。
      *
      * <p>P1.2a：默认关闭，不做 {@code indices().exists()/create()} 任何远端调用。
+     *
+     * <p><b>关闭态在启动期是"跳过"，不是"抛异常"。</b>启动阶段没有请求可拒绝：
+     * {@code @PostConstruct} 抛受控异常会让整个 {@code ApplicationContext} 起不来，
+     * 于是"关闭旧能力"被误做成"应用不可用"。这里只吞
+     * {@link SaasCapabilityBoundary.ClosedCapabilityException}，其余失败（ES 不可达、
+     * uris 配置错误等）照常冒泡——与 {@code StorageInitializer#initBuckets()} 同一口径。
+     * 共享索引本身仍由 {@link #indexDocumentChunks} 在首次写入前按需懒建，
+     * 因此"启动跳过"不等于"永远不建"。
      */
     @PostConstruct
     public void initSharedIndex() {
-        initSharedIndex(capabilityBoundary == null ? null : capabilityBoundary.getIfAvailable());
+        try {
+            initSharedIndex(capabilityBoundary == null ? null : capabilityBoundary.getIfAvailable());
+        } catch (SaasCapabilityBoundary.ClosedCapabilityException e) {
+            log.warn("ES 共享索引启动初始化已跳过：旧能力关闭（capability={}）。"
+                    + "本次启动未对 ES 发起任何请求，共享索引将在首次写入时按需创建。", e.capability());
+        }
     }
 
-    /** 显式边界版本：关闭时抛受控异常，且不含任何 ES 请求。 */
+    /**
+     * 显式边界版本：关闭时抛受控异常，且不含任何 ES 请求。
+     *
+     * <p>这是请求/命令路径的契约，与 {@link #initSharedIndex()} 的"启动期跳过"
+     * 是两件事：启动包装不得吞掉配置/连接失败，显式调用则必须失败得清清楚楚。
+     */
     void initSharedIndex(SaasCapabilityBoundary boundary) {
         if (boundary == null) {
             throw new SaasCapabilityBoundary.ClosedCapabilityException(

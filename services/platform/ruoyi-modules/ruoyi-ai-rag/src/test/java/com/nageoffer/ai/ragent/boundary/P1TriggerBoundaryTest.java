@@ -309,16 +309,19 @@ class P1TriggerBoundaryTest {
     }
 
     @Test
-    @DisplayName("ES 共享索引初始化：关闭态下零 ES 请求；显式打开才发起 exists/create（正向对照）")
+    @DisplayName("ES 共享索引初始化：关闭态下 @PostConstruct 跳过且零 ES 请求；显式打开才发起 exists/create（正向对照）")
     void esSharedIndexInitializerIsGatedByTheBoundary() throws Exception {
         ElasticsearchClient esClient = mock(ElasticsearchClient.class);
         KeywordProperties keywordProperties = new KeywordProperties();
         EsKeywordIndexService service = new EsKeywordIndexService(
                 esClient, keywordProperties, providerOf(CLOSED_BOUNDARY));
 
-        SaasCapabilityBoundary.ClosedCapabilityException failure = assertThrows(
-                SaasCapabilityBoundary.ClosedCapabilityException.class, service::initSharedIndex);
-        assertEquals(SaasCapabilityBoundary.LegacyCapability.ES_SHARED_INDEX_INITIALIZER, failure.capability());
+        // F22:2：@PostConstruct 在关闭态必须**跳过**而不是抛出——启动阶段没有请求可拒绝，
+        // "关闭旧能力"的语义是不发生远端调用，不是让应用起不来。
+        // 显式边界重载仍抛受控异常，该契约由同包测试
+        // （com.nageoffer.ai.ragent.rag.core.keyword.EsKeywordIndexServiceStartupTest）覆盖。
+        assertDoesNotThrow(service::initSharedIndex,
+                "关闭态下 ES 共享索引启动初始化必须跳过，不得把异常抛给 Spring");
         verifyNoInteractions(esClient);
 
         // 正向对照：显式打开后同一方法会走到 ES（mock 会因未打桩而抛异常，这正是"确实访问了"的证据）
