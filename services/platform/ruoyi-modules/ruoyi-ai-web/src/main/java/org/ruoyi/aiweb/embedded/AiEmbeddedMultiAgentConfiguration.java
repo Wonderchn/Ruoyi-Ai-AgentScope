@@ -20,6 +20,8 @@ package org.ruoyi.aiweb.embedded;
 import com.nageoffer.ai.ragent.agent.orchestration.SupervisorLedger;
 import com.nageoffer.ai.ragent.agent.orchestration.SupervisorModelCall;
 import com.nageoffer.ai.ragent.agent.orchestration.SupervisorProviderBoundary;
+import com.nageoffer.ai.ragent.agent.market.MultiAgentAppController;
+import com.nageoffer.ai.ragent.agent.market.MultiAgentAppService;
 import com.nageoffer.ai.ragent.agent.orchestration.SupervisorRunContract;
 import com.nageoffer.ai.ragent.agent.orchestration.SupervisorRunExecutor;
 import com.nageoffer.ai.ragent.agent.runtime.P3Properties;
@@ -83,13 +85,28 @@ public class AiEmbeddedMultiAgentConfiguration {
                 return new SupervisorLedger(jdbc);
             }
 
+            /** F14:2：市场只读投影 + 受理事务内的 appId 复核（V43）。 */
+            @Bean
+            @ConditionalOnMissingBean
+            public MultiAgentAppService multiAgentAppService(JdbcTemplate jdbc) {
+                return new MultiAgentAppService(jdbc);
+            }
+
+            @Bean
+            @ConditionalOnMissingBean
+            public MultiAgentAppController multiAgentAppController(MultiAgentAppService multiAgentAppService) {
+                return new MultiAgentAppController(multiAgentAppService);
+            }
+
             @Bean
             @ConditionalOnMissingBean
             public SupervisorRunContract supervisorRunContract(P3Properties properties,
                                                                SupervisorLedger supervisorLedger,
                                                                RunLedgerDao runLedgerDao,
-                                                               RunAccessService runAccessService) {
-                return new SupervisorRunContract(properties, supervisorLedger, runLedgerDao, runAccessService);
+                                                               RunAccessService runAccessService,
+                                                               MultiAgentAppService multiAgentAppService) {
+                return new SupervisorRunContract(properties, supervisorLedger, runLedgerDao, runAccessService,
+                        multiAgentAppService);
             }
 
             /**

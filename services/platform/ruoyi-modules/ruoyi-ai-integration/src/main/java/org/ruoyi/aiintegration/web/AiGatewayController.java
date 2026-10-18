@@ -241,6 +241,14 @@ public class AiGatewayController {
             new Route("POST", "/agent/v1/stop", "run.cancel"),
             new Route("GET", "/agent/v1/meta", "agent.execute"),
             new Route("GET", "/agent/v1/agents", "agent.execute"),
+            // F14:2（2026-10-19）：多 Agent 应用市场公开面 2 条（动作复用 agent.execute）。
+            // 可见性 = tenant_id=当前 AND is_public=1 AND is_enable=1 AND deleted=0；
+            // 跨租户/私有/停用/软删/不存在统一 404 同文案「应用不存在」。
+            // ⚠️ 声明序：字面量 /multi-agent/public/search 必须在
+            // GET /multi-agent/public/{uuid} 之前（matchRoute 取声明序首个命中）。
+            // 两条 GET 走字节分支：内层自铸整数 ApiEnvelope + 两个交付回执头。
+            new Route("GET", "/multi-agent/public/search", "agent.execute"),
+            new Route("GET", "/multi-agent/public/{uuid}", "agent.execute"),
             // 另两条是 text/event-stream（GET /agent/v1/chat、POST /agent/v1/chat/confirm），
             // **刻意不在此登记**：本通用转发有 2s/2MiB 上限且不做 SSE，登记了只会超时或缓冲失败。
             // 它们由 AiGatewayStreamController 逐条精确映射（专用流式受限传输，先于 catch-all 生效）。
