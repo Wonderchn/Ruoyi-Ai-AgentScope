@@ -48,9 +48,15 @@ public class SupervisorLedger {
     /** 绑定行的 tool_catalog（子工具空集）。 */
     public static final String CATALOG = SupervisorProtocol.CATALOG;
 
-    /** 预算默认（D11）：maxTokens 3000 / maxSteps 8 / maxToolCalls 1。 */
+    /**
+     * 预算默认（F14 复核 F-3 后）：maxTokens 3000 / maxSteps 9 / maxToolCalls 1。
+     *
+     * <p>maxSteps=9 是“4 次委派 + 最终父收敛”的最小可完成值：4 次委派各含 1 次父决策与
+     * 1 次子调用（8 次），第 9 次是最终父调用。旧默认 8 会让第 9 次先撞
+     * {@code BUDGET_EXCEEDED}，使 4 委派硬上限（{@code SUPERVISOR_DELEGATION_LIMIT}）不可达。
+     */
     public static final int DEFAULT_MAX_TOKENS = 3000;
-    public static final int DEFAULT_MAX_STEPS = 8;
+    public static final int DEFAULT_MAX_STEPS = 9;
     public static final int DEFAULT_MAX_TOOL_CALLS = 1;
 
     private final JdbcTemplate jdbc;

@@ -121,10 +121,17 @@ public class SupervisorRunExecutor implements RunExecutor {
                     continue;
                 }
                 String parentPrompt = SupervisorProtocol.parentUserPrompt(input.text(), transcript);
-                var parent = modelCall.call(execution, routeStep,
-                        SupervisorProtocol.parentSystemPrompt(input.roster()), parentPrompt,
-                        SupervisorProtocol.MAX_PARENT_ANSWER, SupervisorProtocol.INVALID_ROUTE,
-                        () -> syntheticParent(input, transcript));
+                SupervisorModelCall.RawReply parent;
+                try {
+                    parent = modelCall.call(execution, routeStep,
+                            SupervisorProtocol.parentSystemPrompt(input.roster()), parentPrompt,
+                            SupervisorProtocol.MAX_PARENT_ANSWER, SupervisorProtocol.INVALID_ROUTE,
+                            () -> syntheticParent(input, transcript));
+                } catch (RuntimeException failure) {
+                    // F-1：非 stop/协议违例与模型调用异常在调用点收敛为稳定码 + run.error，
+                    // 不让它逃逸成 RunWorker 的 EXECUTION_FAILED（VERSION_CONFLICT 仍上抛）。
+                    return callFailure(guard, routeStep, null, failure);
+                }
                 SupervisorProtocol.ParentDecision decision;
                 try {
                     decision = SupervisorProtocol.parseParentReply(parent.content(), input.roster());
@@ -138,11 +145,16 @@ public class SupervisorRunExecutor implements RunExecutor {
                         return Outcome.failed(SupervisorProtocol.DELEGATION_LIMIT);
                     }
                     String childStep = SupervisorProtocol.CHILD_STEP_PREFIX + decision.agent() + ":" + n;
-                    var child = modelCall.call(execution, childStep,
-                            SupervisorProtocol.childSystemPrompt(input.roster().agent(decision.agent())),
-                            decision.task(), SupervisorProtocol.MAX_CHILD_ANSWER,
-                            SupervisorProtocol.CHILD_INVALID,
-                            () -> syntheticChild(decision.agent(), decision.task()));
+                    SupervisorModelCall.RawReply child;
+                    try {
+                        child = modelCall.call(execution, childStep,
+                                SupervisorProtocol.childSystemPrompt(input.roster().agent(decision.agent())),
+                                decision.task(), SupervisorProtocol.MAX_CHILD_ANSWER,
+                                SupervisorProtocol.CHILD_INVALID,
+                                () -> syntheticChild(decision.agent(), decision.task()));
+                    } catch (RuntimeException failure) {
+                        return callFailure(guard, childStep, decision.agent(), failure);
+                    }
                     SupervisorProtocol.ChildAnswer answer;
                     try {
                         answer = SupervisorProtocol.parseChildReply(child.content());
@@ -182,10 +194,15 @@ public class SupervisorRunExecutor implements RunExecutor {
                 return new Outcome("CANCELLED", Map.of(), null);
             }
             String finalPrompt = SupervisorProtocol.parentUserPrompt(input.text(), transcript);
-            var parent = modelCall.call(execution, SupervisorProtocol.FINAL_STEP,
-                    SupervisorProtocol.parentSystemPrompt(input.roster()), finalPrompt,
-                    SupervisorProtocol.MAX_PARENT_ANSWER, SupervisorProtocol.INVALID_ROUTE,
-                    () -> syntheticFinal(input, transcript));
+            SupervisorModelCall.RawReply parent;
+            try {
+                parent = modelCall.call(execution, SupervisorProtocol.FINAL_STEP,
+                        SupervisorProtocol.parentSystemPrompt(input.roster()), finalPrompt,
+                        SupervisorProtocol.MAX_PARENT_ANSWER, SupervisorProtocol.INVALID_ROUTE,
+                        () -> syntheticFinal(input, transcript));
+            } catch (RuntimeException failure) {
+                return callFailure(guard, SupervisorProtocol.FINAL_STEP, null, failure);
+            }
             SupervisorProtocol.ParentDecision decision;
             try {
                 decision = SupervisorProtocol.parseParentReply(parent.content(), input.roster());
@@ -217,13 +234,8 @@ public class SupervisorRunExecutor implements RunExecutor {
             return null;
         });
         guard.appendEvent(RunEventAppender.EVENT_STEP_COMPLETED, Map.of("stepId", SupervisorProtocol.FINAL_STEP));
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("answer", answer);
-        result.put("delegations", delegations);
-        result.put("engineVersion", SupervisorProtocol.ENGINE);
-        result.put("supervisorVersion", SupervisorProtocol.VERSION);
-        result.put("synthetic", synthetic);
-        return Outcome.succeeded(result);
+        // F-2：fresh final 与复用 final 共用同一形状（finalRef 已含 engineVersion/supervisorVersion）。
+        return Outcome.succeeded(ref);
     }
 
     private static void error(RunExecutionGuard guard, String stepId, String agent, String errorCode) {
@@ -234,6 +246,35 @@ public class SupervisorRunExecutor implements RunExecutor {
         }
         payload.put("errorCode", errorCode);
         guard.appendEvent(RunEventAppender.EVENT_ERROR, payload);
+    }
+
+    /**
+     * 模型调用失败的统一收敛（F-1）。
+     *
+     * <p>协议 {@link SupervisorProtocol.Violation}（非 stop、非法 JSON、子工具字段等）与
+     * {@link RunApiException}（预算/外发/依赖等）都在**调用点**写
+     * {@code run.error {stepId,agent,errorCode}} 并返回稳定的 FAILED 终态；否则它们会逃逸到
+     * {@code RunWorker} 的统一 catch，被记成 {@code EXECUTION_FAILED}，丢失稳定码且没有
+     * 可归因事件。
+     *
+     * <p>两个例外：{@link RunErrorCode#VERSION_CONFLICT}（失 fence）必须原样上抛（R14，
+     * 旧 Worker 不得写终态）；{@link SupervisorProtocol.Suspension} 不是失败，交由外层映射
+     * 为 CANCELLED/NEEDS_RECONCILIATION。
+     */
+    private static Outcome callFailure(RunExecutionGuard guard, String stepId, String agent,
+                                       RuntimeException failure) {
+        if (failure instanceof SupervisorProtocol.Violation violation) {
+            error(guard, stepId, agent, violation.errorCode());
+            return Outcome.failed(violation.errorCode());
+        }
+        if (failure instanceof RunApiException api) {
+            if (api.errorCode() == RunErrorCode.VERSION_CONFLICT) {
+                throw api;
+            }
+            error(guard, stepId, agent, api.errorCode().name());
+            return Outcome.failed(api.errorCode().name());
+        }
+        throw failure;
     }
 
     // ------------------------------------------------------------ 预算

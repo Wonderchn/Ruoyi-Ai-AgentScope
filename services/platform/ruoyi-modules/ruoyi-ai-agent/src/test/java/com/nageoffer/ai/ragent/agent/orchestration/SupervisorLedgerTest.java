@@ -54,7 +54,7 @@ import static org.mockito.Mockito.when;
 /**
  * F14:0/1/3 · 统一账本（§2.2）与零新增护栏（R17/R18）。
  *
- * <p>账本断言：受理写恰一行 {@code ai_agent_run}；预算默认 3000/8/1；spendStep/addTokens
+ * <p>账本断言：受理写恰一行 {@code ai_agent_run}；预算默认 3000/9/1；spendStep/addTokens
  * 受 max_steps/max_tokens 约束；绑定兼容是纯函数。
  *
  * <p>护栏断言：canonical 仍 56 条且无 {@code agent.supervisor}；迁移最高仍 V42；
@@ -90,7 +90,7 @@ class SupervisorLedgerTest {
     // ------------------------------------------------------------ 绑定行
 
     @Test
-    @DisplayName("受理写恰一行 ai_agent_run：默认预算 3000/8/1、冻结身份 supervisor-v1")
+    @DisplayName("受理写恰一行 ai_agent_run：默认预算 3000/9/1、冻结身份 supervisor-v1")
     void admittedWritesOneBindingRowWithFrozenDefaults() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         SupervisorLedger ledger = new SupervisorLedger(jdbc);
@@ -109,10 +109,12 @@ class SupervisorLedgerTest {
         assertEquals("2.0.2", values[4]);
         assertEquals("deepseek-flash", values[5]);
         assertEquals("supervisor-tools-v1", values[6]);
-        assertEquals(8, values[7]);
+        assertEquals(9, values[7]);
         assertEquals(1, values[8]);
         assertEquals(3000, values[9]);
         assertEquals("[]", values[10]);
+        assertEquals(9, SupervisorLedger.DEFAULT_MAX_STEPS,
+                "F-3: 4 delegations + final = 9 model calls must fit the default budget");
     }
 
     @Test

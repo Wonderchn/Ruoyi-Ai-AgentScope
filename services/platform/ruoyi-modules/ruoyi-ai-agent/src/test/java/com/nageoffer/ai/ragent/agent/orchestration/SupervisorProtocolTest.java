@@ -245,6 +245,8 @@ class SupervisorProtocolTest {
                 List.of(SupervisorProtocol.delegation("analyst", "child:analyst:1", "call-2")), false);
         assertEquals("done", fin.get("answer"));
         assertEquals(false, fin.get("synthetic"));
+        assertEquals(SupervisorProtocol.ENGINE, fin.get("engineVersion"));
+        assertEquals(SupervisorProtocol.VERSION, fin.get("supervisorVersion"));
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> delegations = (List<Map<String, Object>>) fin.get("delegations");
         assertEquals("child:analyst:1", delegations.get(0).get("stepId"));

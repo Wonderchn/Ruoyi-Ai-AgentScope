@@ -382,12 +382,19 @@ public final class SupervisorProtocol {
         return ref;
     }
 
-    /** final step ref（§2.2）：{@code {answer,delegations,synthetic}}。 */
+    /**
+     * final step ref（§2.2）：{@code {answer,delegations,engineVersion,supervisorVersion,synthetic}}。
+     *
+     * <p>F-2：版本键必须**在任何路径**都出现——fresh final 与复用 {@code supervisor-final}
+     * 的终态 result 是同一个形状；只写 3 键会让复用路径静默丢掉两个版本事实。
+     */
     public static Map<String, Object> finalRef(String answer, List<Map<String, Object>> delegations,
                                                boolean synthetic) {
         Map<String, Object> ref = new LinkedHashMap<>();
         ref.put("answer", answer);
         ref.put("delegations", delegations);
+        ref.put("engineVersion", ENGINE);
+        ref.put("supervisorVersion", VERSION);
         ref.put("synthetic", synthetic);
         return ref;
     }

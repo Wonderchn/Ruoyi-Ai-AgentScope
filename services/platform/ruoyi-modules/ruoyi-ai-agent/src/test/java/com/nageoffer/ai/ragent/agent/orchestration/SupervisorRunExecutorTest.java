@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.agent.orchestration;
 
 import com.nageoffer.ai.ragent.agent.runtime.P3Properties;
+import com.nageoffer.ai.ragent.runtime.CanonicalJson;
 import com.nageoffer.ai.ragent.runtime.RunApiException;
 import com.nageoffer.ai.ragent.runtime.RunErrorCode;
 import com.nageoffer.ai.ragent.runtime.RunEventAppender;
@@ -52,6 +53,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -71,7 +73,7 @@ class SupervisorRunExecutorTest {
     private static final String INPUT = "{\"text\":\"question\",\"agents\":["
             + "{\"name\":\"analyst\",\"instruction\":\"analyze\"},"
             + "{\"name\":\"critic\",\"instruction\":\"critique\"}]}";
-    private static final String BUDGET = "{\"maxWallClockSeconds\":300,\"maxSteps\":8,\"maxTokens\":3000}";
+    private static final String BUDGET = "{\"maxWallClockSeconds\":300,\"maxSteps\":9,\"maxTokens\":3000}";
 
     private final SupervisorLedger ledger = mock(SupervisorLedger.class);
     private final SupervisorModelCall modelCall = mock(SupervisorModelCall.class);
@@ -161,6 +163,25 @@ class SupervisorRunExecutorTest {
     @SuppressWarnings("unchecked")
     private static Map<String, Object> result(RunExecutor.Outcome outcome) {
         return (Map<String, Object>) outcome.terminalResult();
+    }
+
+    private void assertErrorEvent(String type, String stepId, String agent, String errorCode) {
+        ArgumentCaptor<Object> payload = ArgumentCaptor.forClass(Object.class);
+        verify(guard, times(1)).appendEvent(eq(type), payload.capture());
+        Map<?, ?> error = (Map<?, ?>) payload.getValue();
+        assertEquals(stepId, error.get("stepId"));
+        if (agent != null) {
+            assertEquals(agent, error.get("agent"));
+        }
+        assertEquals(errorCode, error.get("errorCode"));
+    }
+
+    private static String json(Object value) {
+        try {
+            return CanonicalJson.strictMapper().writeValueAsString(value);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     // ------------------------------------------------------------ R6
@@ -274,15 +295,18 @@ class SupervisorRunExecutorTest {
     // ------------------------------------------------------------ R12
 
     @Test
-    @DisplayName("R12：supervisor-final 已完成 → 复用 ref，不重呼任何模型")
+    @DisplayName("R12：supervisor-final 已完成 → 复用 ref（含 engineVersion/supervisorVersion），不重呼任何模型")
     void completedFinalStepIsReused() {
-        String ref = "{\"answer\":\"done\",\"delegations\":[],\"synthetic\":false}";
+        String ref = json(SupervisorProtocol.finalRef("done", List.of(), false));
         when(guard.findStep("supervisor-final")).thenReturn(Optional.of(step("supervisor-final", ref)));
 
         RunExecutor.Outcome outcome = executor.execute(execution);
 
         assertEquals("SUCCEEDED", outcome.status());
         assertEquals("done", result(outcome).get("answer"));
+        // F-2：复用路径的终态 result 与 fresh final 同形，版本键不得缺失。
+        assertEquals("2.0.2", result(outcome).get("engineVersion"));
+        assertEquals("supervisor-v1", result(outcome).get("supervisorVersion"));
         verify(modelCall, never()).call(any(), anyString(), anyString(), anyString(), anyInt(), anyString(), any());
     }
 
@@ -310,6 +334,88 @@ class SupervisorRunExecutorTest {
         verify(modelCall, times(1)).call(any(), stepId.capture(), anyString(), anyString(), anyInt(), anyString(),
                 any());
         assertEquals("route:2", stepId.getValue());
+    }
+
+    // ------------------------------------------------------------ F-1：调用点收敛
+
+    @Test
+    @DisplayName("F-1：父模型调用抛协议 Violation（非 stop 等）→ 稳定 FAILED 码 + run.error，不逃逸")
+    void parentCallViolationIsReportedWithStableCode() {
+        doThrow(new SupervisorProtocol.Violation(SupervisorProtocol.INVALID_ROUTE))
+                .when(modelCall).call(any(), eq("route:1"), anyString(), anyString(), anyInt(), anyString(), any());
+
+        RunExecutor.Outcome outcome = executor.execute(execution);
+
+        assertEquals("FAILED", outcome.status());
+        assertEquals("SUPERVISOR_INVALID_ROUTE", outcome.errorCode());
+        assertErrorEvent(RunEventAppender.EVENT_ERROR, "route:1", null, "SUPERVISOR_INVALID_ROUTE");
+        verify(guard, never()).commitStep(anyString(), anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("F-1：子模型调用抛协议 Violation → 稳定 FAILED 码 + run.error(stepId,agent)")
+    void childCallViolationIsReportedWithStepAndAgent() {
+        replies.put("route:1", delegate("analyst", "do analysis", "r1"));
+        doThrow(new SupervisorProtocol.Violation(SupervisorProtocol.CHILD_TOOL_DENIED))
+                .when(modelCall).call(any(), eq("child:analyst:1"), anyString(), anyString(), anyInt(),
+                        anyString(), any());
+
+        RunExecutor.Outcome outcome = executor.execute(execution);
+
+        assertEquals("FAILED", outcome.status());
+        assertEquals("SUPERVISOR_CHILD_TOOL_DENIED", outcome.errorCode());
+        assertErrorEvent(RunEventAppender.EVENT_ERROR, "child:analyst:1", "analyst",
+                "SUPERVISOR_CHILD_TOOL_DENIED");
+        verify(guard, never()).commitStep(anyString(), anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("F-1：模型调用抛 RunApiException（预算/外发等）→ FAILED 稳定码 + run.error")
+    void modelCallApiExceptionIsReportedWithStableCode() {
+        doThrow(new RunApiException(RunErrorCode.BUDGET_EXCEEDED))
+                .when(modelCall).call(any(), eq("route:1"), anyString(), anyString(), anyInt(), anyString(), any());
+
+        RunExecutor.Outcome outcome = executor.execute(execution);
+
+        assertEquals("FAILED", outcome.status());
+        assertEquals("BUDGET_EXCEEDED", outcome.errorCode());
+        assertErrorEvent(RunEventAppender.EVENT_ERROR, "route:1", null, "BUDGET_EXCEEDED");
+    }
+
+    @Test
+    @DisplayName("F-1/R14：模型调用失 fence → VERSION_CONFLICT 仍原样上抛（不得吞成 FAILED）")
+    void modelCallFenceConflictPropagates() {
+        doThrow(new RunApiException(RunErrorCode.VERSION_CONFLICT))
+                .when(modelCall).call(any(), eq("route:1"), anyString(), anyString(), anyInt(), anyString(), any());
+
+        RunApiException conflict = assertThrows(RunApiException.class, () -> executor.execute(execution));
+
+        assertEquals(RunErrorCode.VERSION_CONFLICT, conflict.errorCode());
+        verify(guard, never()).appendEvent(eq(RunEventAppender.EVENT_ERROR), any());
+    }
+
+    // ------------------------------------------------------------ F-3：4 委派在默认预算内可完成
+
+    @Test
+    @DisplayName("F-3：默认 9 步内 4 次委派 + final 可完成（硬上限与预算同时可达）")
+    void fourDelegationsAndFinalFitDefaultBudget() {
+        replies.put("route:1", delegate("analyst", "t1", "r"));
+        replies.put("child:analyst:1", child("a1"));
+        replies.put("route:2", delegate("critic", "t2", "r"));
+        replies.put("child:critic:2", child("a2"));
+        replies.put("route:3", delegate("analyst", "t3", "r"));
+        replies.put("child:analyst:3", child("a3"));
+        replies.put("route:4", delegate("critic", "t4", "r"));
+        replies.put("child:critic:4", child("a4"));
+        replies.put("supervisor-final", finalAnswer("four done"));
+
+        RunExecutor.Outcome outcome = executor.execute(execution);
+
+        assertEquals("SUCCEEDED", outcome.status());
+        assertEquals("four done", result(outcome).get("answer"));
+        assertEquals(4, ((List<?>) result(outcome).get("delegations")).size());
+        verify(modelCall, times(9)).call(any(), anyString(), anyString(), anyString(), anyInt(), anyString(), any());
+        assertTrue(events.contains(RunEventAppender.EVENT_STEP_COMPLETED + ":supervisor-final"));
     }
 
     // ------------------------------------------------------------ R14 / 预算 / 版本
