@@ -412,6 +412,29 @@ class AgentModelFactoryCodingModelGatewayTest {
         assertThat(validThenBlank.toolCalls().get(0).toolCallId()).isEqualTo("call-valid");
     }
 
+    @Test
+    void streamedFragmentBlocksMergeIntoOneCallWithArguments() {
+        HarnessSessionState session = session();
+        HarnessRunState run = buildRun(session);
+        AgentModelFactoryCodingModelGateway gateway = new AgentModelFactoryCodingModelGateway(
+                (tenantId, modelId) -> new CapturingModel(Flux.just(
+                        ChatResponse.builder().content(List.of(
+                                ToolUseBlock.builder().id("call-1").name("read_file")
+                                        .input(Map.of()).build())).build(),
+                        ChatResponse.builder().content(List.of(
+                                ToolUseBlock.builder().id("").name("__fragment__")
+                                        .input(Map.of("path", "a.txt")).build())).build())), mapper);
+
+        ModelTurn turn = gateway.complete(new CodingModelRequest(owner, session, run,
+                transcript(), tools()));
+
+        assertThat(turn.toolCalls()).hasSize(1);
+        assertThat(turn.toolCalls().get(0).toolName()).isEqualTo("read_file");
+        assertThat(turn.toolCalls().get(0).arguments())
+                .as("argument fragments (__fragment__) must merge into the originating call")
+                .containsEntry("path", "a.txt");
+    }
+
     private ModelTurn completeWithBlocks(HarnessSessionState session, HarnessRunState run,
                                          List<ContentBlock> blocks) {
         AgentModelFactoryCodingModelGateway gateway = new AgentModelFactoryCodingModelGateway(

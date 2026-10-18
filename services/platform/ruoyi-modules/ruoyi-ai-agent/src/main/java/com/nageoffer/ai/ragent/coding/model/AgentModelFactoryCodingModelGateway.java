@@ -337,6 +337,7 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
         int generatedIds = 0;
         int skippedNoName = 0;
         String turnSeed = request.run().iteration() + ":" + request.run().toolCallCount();
+        List<StreamedCall> streamedCalls = new ArrayList<>();
         for (ChatResponse response : responses) {
             usage.add(response.getUsage());
             List<ContentBlock> blocks = response.getContent();
@@ -349,37 +350,43 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
                 } else if (block instanceof ThinkingBlock thinkingBlock) {
                     thinking.append(thinkingBlock.getThinking());
                 } else if (block instanceof ToolUseBlock toolUse) {
-                    String name = toolUse.getName();
-                    if (name == null || name.isBlank()) {
-                        // 不可执行的块：跳过，但不影响同回合其它文本/工具块。
+                    // DeepSeek/OpenAI 流式工具调用把 name/参数拆成多个块，参数分片的 name
+                    // 固定为 __fragment__；必须合并回原调用，否则分片会被当成独立工具执行
+                    // （UNKNOWN_TOOL）且参数丢失。
+                    if (mergeToolUse(streamedCalls, toolUse)) {
                         skippedNoName++;
-                        continue;
-                    }
-                    Map<String, Object> input = toolUse.getInput() == null
-                            ? Map.of() : toolUse.getInput();
-                    String fingerprint = toolFingerprint(name, input);
-                    String id = toolUse.getId();
-                    if (id == null || id.isBlank()) {
-                        // DeepSeek 流式工具调用可能只在部分块携带 id：按 name+input 生成稳定 id；
-                        // 同回合同 name+input 只保留一次；若已有非空 id 分片则直接并回，避免重复执行。
-                        if (validIdByFingerprint.containsKey(fingerprint)
-                                || generatedByFingerprint.containsKey(fingerprint)) {
-                            continue;
-                        }
-                        id = generatedToolCallId(turnSeed, name, input);
-                        generatedIds++;
-                        calls.putIfAbsent(id, new ModelToolCall(id, name, input));
-                        generatedByFingerprint.put(fingerprint, id);
-                    } else {
-                        // N1：同一逻辑调用先出现空白 id 分片、后出现非空 id 时，用非空 id 替换生成 id。
-                        String generated = generatedByFingerprint.remove(fingerprint);
-                        if (generated != null && !generated.equals(id)) {
-                            calls.remove(generated);
-                        }
-                        calls.put(id, new ModelToolCall(id, name, input));
-                        validIdByFingerprint.put(fingerprint, id);
                     }
                 }
+            }
+        }
+        for (StreamedCall streamed : streamedCalls) {
+            String name = streamed.name;
+            if (name == null || name.isBlank()) {
+                // 不可执行的块：跳过，但不影响同回合其它文本/工具块。
+                skippedNoName++;
+                continue;
+            }
+            Map<String, Object> input = streamed.input;
+            String fingerprint = toolFingerprint(name, input);
+            String id = streamed.id;
+            if (id == null || id.isBlank()) {
+                // 无 id 的合并调用：按 name+input 生成稳定 id；同回合同 name+input 只保留一次。
+                if (validIdByFingerprint.containsKey(fingerprint)
+                        || generatedByFingerprint.containsKey(fingerprint)) {
+                    continue;
+                }
+                id = generatedToolCallId(turnSeed, name, input);
+                generatedIds++;
+                calls.putIfAbsent(id, new ModelToolCall(id, name, input));
+                generatedByFingerprint.put(fingerprint, id);
+            } else {
+                // N1：同一逻辑调用先出现空白 id 分片、后出现非空 id 时，用非空 id 替换生成 id。
+                String generated = generatedByFingerprint.remove(fingerprint);
+                if (generated != null && !generated.equals(id)) {
+                    calls.remove(generated);
+                }
+                calls.put(id, new ModelToolCall(id, name, input));
+                validIdByFingerprint.put(fingerprint, id);
             }
         }
         if (generatedIds > 0 || skippedNoName > 0) {
@@ -408,6 +415,60 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
         return new ModelTurn(text.toString(),
                 thinking.isEmpty() ? null : thinking.toString(),
                 List.copyOf(calls.values()), null, usage.toHarnessUsage());
+    }
+
+    /**
+     * Merge one streamed tool-use block into the accumulated calls. Placeholder fragments
+     * ({@code __fragment__}, blank name) belong to the current call: merge their arguments by
+     * matching id, else into the most recent call. Returns true when a non-fragment blank-name
+     * block could not be attached (diagnostic only).
+     */
+    private static boolean mergeToolUse(List<StreamedCall> calls, ToolUseBlock toolUse) {
+        String rawName = toolUse.getName();
+        String id = toolUse.getId();
+        Map<String, Object> input = toolUse.getInput() == null ? Map.of() : toolUse.getInput();
+        boolean fragment = rawName == null || rawName.isBlank() || "__fragment__".equals(rawName);
+        if (fragment) {
+            StreamedCall target = id == null || id.isBlank() ? null : findByCallId(calls, id);
+            if (target == null && !calls.isEmpty()) {
+                target = calls.get(calls.size() - 1);
+            }
+            if (target != null) {
+                target.input.putAll(input);
+                return false;
+            }
+            return rawName == null || rawName.isBlank();
+        }
+        StreamedCall existing = id == null || id.isBlank() ? null : findByCallId(calls, id);
+        if (existing != null) {
+            existing.name = rawName;
+            existing.input.putAll(input);
+            return false;
+        }
+        calls.add(new StreamedCall(id, rawName, new LinkedHashMap<>(input)));
+        return false;
+    }
+
+    private static StreamedCall findByCallId(List<StreamedCall> calls, String id) {
+        for (StreamedCall call : calls) {
+            if (id.equals(call.id)) {
+                return call;
+            }
+        }
+        return null;
+    }
+
+    /** Mutable accumulator for one streamed tool call (name/args arrive in fragments). */
+    private static final class StreamedCall {
+        private final String id;
+        private String name;
+        private final Map<String, Object> input;
+
+        private StreamedCall(String id, String name, Map<String, Object> input) {
+            this.id = id;
+            this.name = name;
+            this.input = input;
+        }
     }
 
     /** Stable id for a tool block that did not carry one: call-<sha256(seed+name+input)[0..16]>. */
