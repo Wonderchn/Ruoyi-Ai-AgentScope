@@ -109,7 +109,10 @@ describe('buildFlowRunBody：白名单与字符串化', () => {
 });
 
 describe('createFlowRunClient：POST SSE', () => {
-  function harness(response: () => Response) {
+  function harness(
+    response: () => Response | Promise<Response>,
+    timeouts?: { connectMs?: number; idleMs?: number; totalMs?: number },
+  ) {
     const calls: Call[] = [];
     let expired = 0;
     const client = createFlowRunClient({
@@ -117,9 +120,10 @@ describe('createFlowRunClient：POST SSE', () => {
       clientId: 'web-1',
       identity: () => ({ token: 'tok-1', epoch: 1 }),
       onAuthExpired: () => { expired += 1; },
+      timeouts,
       streamFetcher: async (url: string | URL | Request, init?: RequestInit) => {
         calls.push({ url: String(url), init: init ?? {} });
-        return response();
+        return await response();
       },
     });
     return { client, calls, expiredCount: () => expired };
@@ -250,5 +254,120 @@ describe('createFlowRunClient：POST SSE', () => {
       (error: unknown) => error instanceof FlowRunFailure && error.status === 401,
     );
     assert.equal(expiredCount(), 1);
+  });
+});
+
+describe('10s 预算：连接 / 空闲 / 总时长', () => {
+  function harness(
+    response: () => Response | Promise<Response>,
+    timeouts: { connectMs?: number; idleMs?: number; totalMs?: number },
+  ) {
+    const client = createFlowRunClient({
+      baseUrl: 'http://gateway.test',
+      clientId: 'web-1',
+      identity: () => ({ token: 'tok-1', epoch: 1 }),
+      onAuthExpired: () => {},
+      timeouts,
+      streamFetcher: async () => await response(),
+    });
+    type FlowRun = ReturnType<typeof createFlowRunClient>['run'];
+    async function collect(run: FlowRun, input: Parameters<FlowRun>[0]) {
+      const updates = [];
+      for await (const update of run(input))
+        updates.push(update);
+      return updates;
+    }
+    return { client, collect };
+  }
+
+  const request = { flowUuid: FLOW_UUID, flowInputs: [textInput('q')], flowQuestion: '问' };
+
+  it('连接预算：fetch 迟迟不返回 → FLOW_RUN_CONNECT_TIMEOUT（不当成功）', async () => {
+    const { client, collect } = harness(
+      () => new Promise<Response>(() => {}),
+      { connectMs: 40, idleMs: 1000, totalMs: 5000 },
+    );
+
+    await assert.rejects(
+      () => collect(client.run, request),
+      (error: unknown) => error instanceof FlowRunFailure
+        && error.errorCode === 'FLOW_RUN_CONNECT_TIMEOUT'
+        && /连接超时/.test(error.message),
+    );
+  });
+
+  it('空闲预算：流不关闭但不再前进 → FLOW_RUN_IDLE_TIMEOUT', async () => {
+    const silent = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(frame(1, 'run.accepted', { runId: 'r-flow-1', status: 'QUEUED', replayed: false })));
+        // 之后永不 enqueue / close：模拟服务端受理后 TCP 未断但长期静默。
+      },
+    });
+    const { client, collect } = harness(
+      () => new Response(silent, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+      { connectMs: 1000, idleMs: 60, totalMs: 5000 },
+    );
+
+    await assert.rejects(
+      () => collect(client.run, request),
+      (error: unknown) => error instanceof FlowRunFailure
+        && error.errorCode === 'FLOW_RUN_IDLE_TIMEOUT'
+        && /空闲超时/.test(error.message),
+    );
+  });
+
+  it('总时长预算：心跳持续但超过总限 → FLOW_RUN_TOTAL_TIMEOUT', async () => {
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    const beating = new ReadableStream<Uint8Array>({
+      start(controller) {
+        heartbeat = setInterval(() => {
+          try {
+            controller.enqueue(encoder.encode(': ping\n\n'));
+          }
+          catch {
+            if (heartbeat !== undefined)
+              clearInterval(heartbeat);
+          }
+        }, 10);
+        // 红测（旧实现不消费预算）时也别让心跳阻止 node:test 退出。
+        (heartbeat as { unref?: () => void }).unref?.();
+      },
+      cancel() {
+        if (heartbeat !== undefined)
+          clearInterval(heartbeat);
+      },
+    });
+    const { client, collect } = harness(
+      () => new Response(beating, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+      { connectMs: 1000, idleMs: 500, totalMs: 80 },
+    );
+
+    try {
+      await assert.rejects(
+        () => collect(client.run, request),
+        (error: unknown) => error instanceof FlowRunFailure
+          && error.errorCode === 'FLOW_RUN_TOTAL_TIMEOUT'
+          && /总时长超时/.test(error.message),
+      );
+    }
+    finally {
+      if (heartbeat !== undefined)
+        clearInterval(heartbeat);
+    }
+  });
+
+  it('正常流不误杀：在预算内到达 run.terminal 即成功结束', async () => {
+    const { client, collect } = harness(
+      () => sseResponse([
+        frame(1, 'run.accepted', { runId: 'r-flow-1', status: 'QUEUED', replayed: false }),
+        frame(2, 'run.output_delta', { text: '好', dropped: false }),
+        frame(3, 'run.terminal', { status: 'SUCCEEDED', resultRef: '{"output":{"value":"完成"}}' }),
+      ]),
+      { connectMs: 1000, idleMs: 500, totalMs: 2000 },
+    );
+
+    const updates = await collect(client.run, request);
+    assert.equal(updates.at(-1)?.kind, 'terminal');
+    assert.equal(updates.at(-1)?.answer, '完成');
   });
 });
