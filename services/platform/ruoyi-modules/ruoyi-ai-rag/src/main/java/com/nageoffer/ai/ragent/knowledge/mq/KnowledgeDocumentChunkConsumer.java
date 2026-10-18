@@ -18,7 +18,10 @@
 package com.nageoffer.ai.ragent.knowledge.mq;
 
 import cn.hutool.core.util.StrUtil;
+import com.nageoffer.ai.ragent.framework.context.AsyncPrincipalReference;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.LoginUser;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
@@ -70,29 +73,42 @@ public class KnowledgeDocumentChunkConsumer implements RocketMQListener<MessageW
                 SaasCapabilityBoundary.LegacyCapability.KB_DOCUMENT_CHUNK_CONSUMER);
 
         KnowledgeDocumentChunkEvent event = message.getBody();
+
+        // F22:2 真机第五缺口：chunk 执行链（VectorTargetResolver.resolve）要求 AI 侧
+        // PrincipalContext；事件必须携带受理线程降格出的身份引用。缺失/租户不一致一律
+        // fail-closed，不落默认主体（05 §4.3：异步只传身份引用，引用不是授权证据）。
+        AsyncPrincipalReference principalRef = event.getPrincipalRef();
+        if (principalRef == null) {
+            throw new ClientException("文档分块事件缺少 principalRef，拒绝执行：docId=" + event.getDocId()
+                    + "（异步执行必须携带身份引用，不落默认主体）");
+        }
+        if (StrUtil.isBlank(event.getTenantId()) || !event.getTenantId().equals(principalRef.tenantId())) {
+            throw new ClientException("文档分块事件的 tenantId 与 principalRef 不一致，拒绝执行：docId="
+                    + event.getDocId() + ", tenantId=" + event.getTenantId()
+                    + ", principalTenant=" + principalRef.tenantId());
+        }
+
         log.info("[消费者] 开始消费文档分块任务，docId={}, tenantId={}, keys={}",
                 event.getDocId(), event.getTenantId(), message.getKeys());
 
         Runnable execute = () -> {
-            UserContext.set(LoginUser.builder().username(event.getOperator()).build());
+            ExecutionPrincipal previous = PrincipalContext.set(principalRef.toExecutionPrincipal());
             try {
+                UserContext.set(LoginUser.builder().username(event.getOperator()).build());
                 documentService.executeChunk(event.getDocId());
             } finally {
+                // 清理顺序：先恢复主体，再清旧用户上下文；平台租户由 binder 在
+                // runnable 返回后清理（TenantHelper.dynamic 的 finally）。
+                PrincipalContext.restore(previous);
                 UserContext.clear();
             }
         };
 
         TenantScopeBinder binder = tenantScopeBinder == null ? null : tenantScopeBinder.getIfAvailable();
         if (binder == null) {
-            // 独立应用：没有租户行拦截器，保持原形态（事件租户仍由投递侧携带）。
+            // 独立应用：没有租户行拦截器，但身份引用仍必须恢复（执行链需要 PrincipalContext）。
             execute.run();
             return;
-        }
-        // 平台形态：缺租户说明投递侧漏传（或投递的是本改动之前入队的旧事件）。
-        // 必须显式拒绝，不能以无租户身份查租户业务表，也不落默认租户。
-        if (StrUtil.isBlank(event.getTenantId())) {
-            throw new ClientException("文档分块事件缺少 tenantId，拒绝执行：docId=" + event.getDocId()
-                    + "（租户业务表查询必须限域，不落默认租户）");
         }
         binder.runWithTenant(event.getTenantId(), execute);
     }

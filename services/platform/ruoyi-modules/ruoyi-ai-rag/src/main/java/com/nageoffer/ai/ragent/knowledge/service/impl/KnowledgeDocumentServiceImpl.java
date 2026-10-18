@@ -40,6 +40,8 @@ import com.nageoffer.ai.ragent.core.ingest.IngestionSpec;
 import com.nageoffer.ai.ragent.core.ingest.VectorTarget;
 import com.nageoffer.ai.ragent.core.ingest.sink.ChunkIndexWriter;
 import com.nageoffer.ai.ragent.core.parser.registry.ParserRegistry;
+import com.nageoffer.ai.ragent.framework.context.AsyncPrincipalReference;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
@@ -232,14 +234,19 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         Assert.notNull(beforeDO, () -> new ClientException("文档不存在"));
         bizChangeLogContext.putName(beforeDO.getDocName());
         KnowledgeDocumentDO before = BeanUtil.copyProperties(beforeDO, KnowledgeDocumentDO.class);
-        // 事务回调里没有请求上下文可依赖，租户在这里取出并闭包传入。
+        // 事务回调里没有请求上下文可依赖，租户/主体在这里取出并闭包传入。
         // 同一份租户必须写进事件：消费线程没有登录主体，缺它会被平台租户行拦截器
         // 在 ai_knowledge_document 的第一次 DB 操作前拒绝（F22:2 真机第四缺口）。
-        String tenantId = requireTenantId();
+        // 同一受理线程把已验签主体降格为身份引用随事件传递（05 §4.3：异步只传引用，
+        // 不传 bearer）；消费线程恢复出的主体 scopes 为空，只用于租户/归属定位
+        // （F22:2 真机第五缺口：VectorTargetResolver 需要 PrincipalContext）。
+        ExecutionPrincipal principal = PrincipalContext.require();
+        String tenantId = principal.tenantId();
         KnowledgeDocumentChunkEvent event = KnowledgeDocumentChunkEvent.builder()
                 .docId(docId)
                 .operator(UserContext.getUsername())
                 .tenantId(tenantId)
+                .principalRef(AsyncPrincipalReference.from(principal))
                 .build();
 
         messageQueueProducer.sendInTransaction(

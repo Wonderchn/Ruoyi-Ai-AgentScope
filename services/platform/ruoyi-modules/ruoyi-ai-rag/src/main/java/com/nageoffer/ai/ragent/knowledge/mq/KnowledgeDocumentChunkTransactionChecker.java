@@ -109,6 +109,9 @@ public class KnowledgeDocumentChunkTransactionChecker implements TransactionChec
         log.info("[事务回查] 文档分块，消息体：{}", JSONUtil.toJsonStr(message));
 
         KnowledgeDocumentChunkEvent event = message.getBody();
+        // 回查路径只做一次租户限定的 ai_knowledge_document SELECT，不调用 executeChunk /
+        // VectorTargetResolver，因此不需要恢复事件里的 PrincipalContext；
+        // principalRef 只供消费路径使用（F22:2 真机第五缺口）。
         if (tenantScopeBinder == null) {
             // 独立应用：没有租户行拦截器，保持原查询形态。
             return isRunning(event.getDocId());
