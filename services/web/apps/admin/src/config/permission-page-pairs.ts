@@ -174,23 +174,19 @@ export const AI_ADMIN_PAIRS: readonly PermissionPagePair[] = [
     endpoint: 'BLOCKED-BY-G-22',
     note: 'RW-07 退役：不再有页面使用 system:provider:list',
   },
+  // ---- MCP 工具目录（F12-M1，2026-10-18）：**有行有页，端点活** ----
+  // 旧 V2 种子行 `mcp:tool:list` / `mcp:market:list`（菜单 2001/2010）随 ruoyi-chat
+  // 未打包（G-22）一并退役；V39 播 5 条动作行 7144-7148（页面/列表取 ai:mcp:list），
+  // 18 条端点经网关白名单 `/api/ai/v1/mcp/**` 逐条放行，信封整数 `ApiEnvelope`，
+  // 列表 `data` 是 `IPage`（current/size）。按钮按 read/write/delete/test 显隐。
   {
-    permission: 'mcp:tool:list',
-    rowSource: 'V2__seed_system.sql 菜单 2001',
+    permission: 'ai:mcp:list',
+    rowSource: 'V39__mcp_catalog_permissions.sql 菜单 7144-7148',
     route: '/ai/mcp',
-    page: 'MCP 工具目录（工具 Tab）',
+    page: 'MCP 工具目录（工具 + 市场双 Tab）',
     status: 'live',
-    endpoint: 'BLOCKED-BY-G-22',
-    note: '/mcp/tool/** 在 ruoyi-chat',
-  },
-  {
-    permission: 'mcp:market:list',
-    rowSource: 'V2__seed_system.sql 菜单 2010',
-    route: '/ai/mcp',
-    page: 'MCP 工具目录（市场 Tab）',
-    status: 'live',
-    endpoint: 'BLOCKED-BY-G-22',
-    note: '/mcp/market/** 同上',
+    endpoint: 'live',
+    note: 'GET /api/ai/v1/mcp/{tools,markets,markets/{id}/tools}（mcp.list，IPage current/size）；详情/导出=mcp.read，启停/刷新/加载=mcp.write，删除=mcp.delete，连接测试=mcp.test',
   },
 
   // ---- Agent 目录（F09）：**有行有页且有可达端点**（RW-03 2026-10-07 接通）----

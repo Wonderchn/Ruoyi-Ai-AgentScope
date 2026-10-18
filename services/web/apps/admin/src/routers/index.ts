@@ -212,7 +212,7 @@ export const layoutRouter: RouteRecordRaw[] = [
         path: 'ai/mcp',
         name: 'aiMcp',
         component: () => import('@/pages/ai/mcp/index.vue'),
-        meta: { title: 'MCP 工具目录', icon: 'SetUp', permission: 'mcp:tool:list' },
+        meta: { title: 'MCP 工具目录', icon: 'SetUp', permission: 'ai:mcp:list' },
       },
       {
         // S2-F06-A1（2026-10-10）：管线 CRUD 5 条已装配并进白名单

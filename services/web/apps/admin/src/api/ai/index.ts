@@ -11,8 +11,11 @@
  *
  * 1. **ruoyi-chat 没有打进 admin 应用**（`ruoyi-admin/pom.xml:88` 刻意不声明，
  *    G-22：IWorkFlowStarterService 缺保留侧实现，打进去启动失败）。
- *    ⇒ `/mcp/**`、`/coding/**`、`/system/info/**`、`/system/session/**` 本形态 **404**。
+ *    ⇒ `/coding/**`、`/system/info/**`、`/system/session/**` 本形态 **404**。
  *    此处照分母登记路径，页面把可达状态如实标为 BLOCKED-BY-G-22，不假装成功。
+ *    ⚠️ **例外（F12-M1，2026-10-18）**：MCP 目录已迁到网关活族
+ *    `/api/ai/v1/mcp/**`（18 条路由 + 整数 `ApiEnvelope`），旧 `/mcp/tool|market/**`
+ *    裸路径与 `mcp:tool|market:*` 权限串一并退役，见下方 MCP 类型区与工厂块。
  *    ⚠️ **更正（2026-10-07，RW-07）**：`/system/model/**`、`/system/provider/**` 与
  *    `/rag/settings` 的客户端方法**已移除**——它们的页面上限由 RW-06 交付的
  *    运行配置权威面（`/api/ai/v1/runtime-config/**`，见 `./runtimeConfig.ts`）承接，
@@ -74,7 +77,6 @@
  * 一律按 string 处理**，接口类型只用 `string`。
  */
 import type { PlatformClient } from '@ruoyi/platform-client/http';
-import type { PageParams } from '../../utils/list';
 import { createAgentProfilesApi } from './agentProfiles';
 import { createIngestionTaskRunsApi } from './ingestionTaskRuns';
 import { createKnowledgeChunksApi } from './knowledgeChunks';
@@ -232,30 +234,129 @@ export interface IngestionTaskRow {
 }
 
 // ---------------------------------------------------------------------------
-// MCP 目录（ruoyi-chat：本形态 404，BLOCKED-BY-G-22；V2 种子权限分母）
+// MCP 目录（F12-M1，2026-10-18）：**活族** —— 网关 `/api/ai/v1/mcp/**`
+//
+// 旧 ruoyi-chat 的 `/mcp/tool/**`、`/mcp/market/**`（G-22 未打包，恒 404）已退役。
+// 18 条端点由 `AiGatewayController.ROUTES` 逐条放行，信封 = 整数 `ApiEnvelope`
+// （code=200），列表 `data` 是 `IPage`（records/total/current/size），
+// 查询参数逐字 `current`/`size`（不是 pageNum/pageSize）。
+// 动作权限：`mcp.list/read/write/delete/test`（V39 播种 7144-7148）；
+// GET 响应头带 `X-AI-Delivery-Permit`/`X-AI-Delivery-Operation`，
+// 回执由网关自行消费，**前端不追加任何 ACK/release 请求**。
 // ---------------------------------------------------------------------------
 
-/** `McpToolController`（base `/mcp/tool`）行分母（`ai_mcp_tool` 表）。 */
+/** `IPage<T>` 的 JSON 形状（`ApiEnvelope` 解包后的 `data`）。 */
+export interface McpPage<T> {
+  records?: T[] | null;
+  total?: number | null;
+  current?: number | null;
+  size?: number | null;
+}
+
+/** `McpToolRow`（`GET /mcp/tools` 的元素；详情带 `inputSchema`）。 */
 export interface McpToolRow {
-  id?: string;
+  /** Long 雪花 id：number|string 原样保留，**不做 Number()**（G-46）。 */
+  id?: number | string;
   name?: string;
   description?: string;
   /** LOCAL | REMOTE | BUILTIN */
   type?: string;
   /** ENABLED | DISABLED */
   status?: string;
-  configJson?: string;
+  baseUrl?: string;
+  /** 工具入参 JSON Schema（详情接口返回；列表可能不带）。 */
+  inputSchema?: Record<string, unknown> | null;
+  requiresConfirm?: boolean;
+  createTime?: string;
+  updateTime?: string;
   [key: string]: unknown;
 }
 
-/** `McpMarketController`（base `/mcp/market`）行分母（`ai_mcp_market` 表）。 */
+/** `McpMarketRow`（`GET /mcp/markets` 的元素）。 */
 export interface McpMarketRow {
-  id?: string;
+  id?: number | string;
   name?: string;
   url?: string;
   description?: string;
   /** ENABLED | DISABLED */
   status?: string;
+  /** 服务端恒返回 `"***"` 或 null（auth_config 掩码，明文不下发）。 */
+  authConfig?: string | null;
+  createTime?: string;
+  updateTime?: string;
+  [key: string]: unknown;
+}
+
+/** `McpMarketToolRow`（`GET /mcp/markets/{id}/tools` 的元素）。 */
+export interface McpMarketToolRow {
+  id?: number | string;
+  marketId?: number | string;
+  toolName?: string;
+  toolDescription?: string;
+  toolVersion?: string;
+  /** 是否已加载到本地工具表（重复加载 → 409）。 */
+  isLoaded?: boolean;
+  /** 已加载时对应的本地工具 id。 */
+  localToolId?: number | string;
+  [key: string]: unknown;
+}
+
+/** 工具列表查询（控制器 `@RequestParam` 逐字 `current/size/keyword/status/type`）。 */
+export interface McpToolQuery {
+  current?: number;
+  size?: number;
+  keyword?: string;
+  status?: string;
+  type?: string;
+}
+
+/** 工具全量列表查询（`/tools/all`：无分页，支持筛选）。 */
+export interface McpToolAllQuery {
+  keyword?: string;
+  status?: string;
+  type?: string;
+}
+
+/** 市场列表查询（`current/size/keyword/status`）。 */
+export interface McpMarketQuery {
+  current?: number;
+  size?: number;
+  keyword?: string;
+  status?: string;
+}
+
+/** 市场全量列表查询（`/markets/all`：无分页，支持筛选）。 */
+export interface McpMarketAllQuery {
+  keyword?: string;
+  status?: string;
+}
+
+/** 市场工具列表查询（只接受分页）。 */
+export interface McpMarketToolQuery {
+  current?: number;
+  size?: number;
+}
+
+/** 市场刷新结果（`POST /mcp/markets/{id}/refresh`）。 */
+export interface McpMarketRefreshResult {
+  success?: boolean;
+  addedCount?: number;
+  updatedCount?: number;
+  message?: string;
+  [key: string]: unknown;
+}
+
+/** 工具连接测试结果（`POST /mcp/tools/{id}/test`）。 */
+export interface McpToolTestResult {
+  success?: boolean;
+  toolCount?: number;
+  message?: string;
+  [key: string]: unknown;
+}
+
+/** 市场工具批量加载结果（`POST /mcp/market-tools/batch-load`）。 */
+export interface McpBatchLoadResult {
+  loaded?: number;
   [key: string]: unknown;
 }
 
@@ -265,6 +366,14 @@ export interface McpMarketRow {
 
 /** 网关白名单公开前缀（`AiGatewayController` `@RequestMapping` + ROUTES 逐字拼接）。 */
 const AGENT_SKILLS_PATH = '/api/ai/v1/agent-catalog/agent-skills';
+
+/** MCP 目录网关前缀（F12-M1；18 条路由逐条放行）。 */
+const MCP_PATH = '/api/ai/v1/mcp';
+
+/** id 段编码：Long/字符串 id 都按字符串进路径（G-46）。 */
+function mcpId(id: number | string): string {
+  return encodeURIComponent(String(id));
+}
 
 export function createAiApi(client: PlatformClient) {
   return {
@@ -424,33 +533,90 @@ export function createAiApi(client: PlatformClient) {
     },
 
     /**
-     * MCP 目录（ruoyi-chat）。⚠️ BLOCKED-BY-G-22：本形态 404。V2 种子的按钮权限
-     * 分母：tool=list/query/add/edit/remove/test/export，market=list/query/add/edit/
-     * remove/refresh/load/export。
+     * MCP 目录（F12-M1，2026-10-18）—— **本形态活族**（契约见本文件 MCP 类型区注释）。
+     *
+     * 18 条 `/api/ai/v1/mcp/**` 白名单路由：读=list/read（列表、全量、选项、导出、详情、
+     * 市场工具列表），写=write（启停、市场刷新、单条/批量加载），删=delete，测试=test。
+     * 信封 = 整数 `ApiEnvelope`（code=200），列表 `data` 是 `IPage`；
+     * 查询参数逐字 `current`/`size`；导出的 `data` 是 **JSON 文本**（服务端已掩码）。
+     * 页面不得自行推断平台管理身份：403 一律如实显示服务端信封消息。
      */
     mcp: {
-      toolList: (query: PageParams & { name?: string; status?: string }) =>
-        client.getRows<McpToolRow>('/mcp/tool/list', { query: { ...query } }),
-      toolGet: (id: string) => client.get<McpToolRow>(`/mcp/tool/${encodeURIComponent(id)}`),
-      toolCreate: (body: Record<string, unknown>) => client.post<unknown>('/mcp/tool', { body }),
-      toolUpdate: (body: Record<string, unknown>) => client.put<unknown>('/mcp/tool', { body }),
-      toolRemove: (ids: readonly string[]) =>
-        client.del<unknown>(`/mcp/tool/${ids.map(encodeURIComponent).join(',')}`),
-      /** 连接测试：`POST /mcp/tool/test`（V2 权限行 2006 `mcp:tool:test`）。 */
-      toolTest: (body: Record<string, unknown>) => client.post<unknown>('/mcp/tool/test', { body }),
-      toolExportUrl: () => '/mcp/tool/export',
-      marketList: (query: PageParams & { name?: string; status?: string }) =>
-        client.getRows<McpMarketRow>('/mcp/market/list', { query: { ...query } }),
-      marketGet: (id: string) => client.get<McpMarketRow>(`/mcp/market/${encodeURIComponent(id)}`),
-      marketCreate: (body: Record<string, unknown>) => client.post<unknown>('/mcp/market', { body }),
-      marketUpdate: (body: Record<string, unknown>) => client.put<unknown>('/mcp/market', { body }),
-      marketRemove: (ids: readonly string[]) =>
-        client.del<unknown>(`/mcp/market/${ids.map(encodeURIComponent).join(',')}`),
-      /** 市场刷新：权限行 2015 `mcp:market:refresh`。 */
-      marketRefresh: () => client.post<unknown>('/mcp/market/refresh', { body: {} }),
-      /** 工具加载：权限行 2016 `mcp:market:load`。 */
-      marketLoad: (body: Record<string, unknown>) => client.post<unknown>('/mcp/market/load', { body }),
-      marketExportUrl: () => '/mcp/market/export',
+      // ---------------------------------------------------------------- 工具
+      /** `GET /mcp/tools`（mcp.list）→ `ApiEnvelope<IPage<McpToolRow>>`。 */
+      toolList: (query?: McpToolQuery) =>
+        client.get<McpPage<McpToolRow>>(`${MCP_PATH}/tools`, {
+          query: {
+            current: query?.current,
+            size: query?.size,
+            keyword: query?.keyword,
+            status: query?.status,
+            type: query?.type,
+          },
+        }),
+      /** `GET /mcp/tools/all`（mcp.list）→ `ApiEnvelope<McpToolRow[]>`（无分页）。 */
+      toolAll: (query?: McpToolAllQuery) =>
+        client.get<McpToolRow[]>(`${MCP_PATH}/tools/all`, {
+          query: { keyword: query?.keyword, status: query?.status, type: query?.type },
+        }),
+      /** `GET /mcp/tools/options`（mcp.list）→ 仅 ENABLED 的工具（绑定选择器用）。 */
+      toolOptions: () => client.get<McpToolRow[]>(`${MCP_PATH}/tools/options`),
+      /** `GET /mcp/tools/export`（mcp.read）→ `data` 是 JSON 文本（headers 已掩码）。 */
+      toolExport: () => client.get<string>(`${MCP_PATH}/tools/export`),
+      /** `GET /mcp/tools/{id}`（mcp.read；含 inputSchema/requiresConfirm，headers 掩码）。 */
+      toolGet: (id: number | string) => client.get<McpToolRow>(`${MCP_PATH}/tools/${mcpId(id)}`),
+      /** 启停是 POST + **query** `status=ENABLED|DISABLED`（不是 body/PUT）。 */
+      toolStatus: (id: number | string, status: 'ENABLED' | 'DISABLED') =>
+        client.post<null>(`${MCP_PATH}/tools/${mcpId(id)}/status`, { query: { status } }),
+      /** `POST /mcp/tools/{id}/test`（mcp.test）→ `{success,toolCount,message}`。 */
+      toolTest: (id: number | string) =>
+        client.post<McpToolTestResult>(`${MCP_PATH}/tools/${mcpId(id)}/test`),
+      /** `DELETE /mcp/tools/{ids}`（mcp.delete，逗号分隔）。 */
+      toolRemove: (ids: ReadonlyArray<number | string>) =>
+        client.del<null>(`${MCP_PATH}/tools/${ids.map(mcpId).join(',')}`),
+
+      // ---------------------------------------------------------------- 市场
+      /** `GET /mcp/markets`（mcp.list）→ `ApiEnvelope<IPage<McpMarketRow>>`。 */
+      marketList: (query?: McpMarketQuery) =>
+        client.get<McpPage<McpMarketRow>>(`${MCP_PATH}/markets`, {
+          query: {
+            current: query?.current,
+            size: query?.size,
+            keyword: query?.keyword,
+            status: query?.status,
+          },
+        }),
+      /** `GET /mcp/markets/all`（mcp.list）→ `ApiEnvelope<McpMarketRow[]>`（无分页）。 */
+      marketAll: (query?: McpMarketAllQuery) =>
+        client.get<McpMarketRow[]>(`${MCP_PATH}/markets/all`, {
+          query: { keyword: query?.keyword, status: query?.status },
+        }),
+      /** `GET /mcp/markets/export`（mcp.read）→ `data` 是 JSON 文本（auth_config 已掩码）。 */
+      marketExport: () => client.get<string>(`${MCP_PATH}/markets/export`),
+      /** `GET /mcp/markets/{id}`（mcp.read；authConfig 恒 `"***"`/null）。 */
+      marketGet: (id: number | string) => client.get<McpMarketRow>(`${MCP_PATH}/markets/${mcpId(id)}`),
+      /** `GET /mcp/markets/{id}/tools`（mcp.list）→ `ApiEnvelope<IPage<McpMarketToolRow>>`。 */
+      marketTools: (id: number | string, query?: McpMarketToolQuery) =>
+        client.get<McpPage<McpMarketToolRow>>(`${MCP_PATH}/markets/${mcpId(id)}/tools`, {
+          query: { current: query?.current, size: query?.size },
+        }),
+      /** `POST /mcp/markets/{id}/refresh`（mcp.write）→ `{success,addedCount,updatedCount,message}`。 */
+      marketRefresh: (id: number | string) =>
+        client.post<McpMarketRefreshResult>(`${MCP_PATH}/markets/${mcpId(id)}/refresh`),
+      /** `POST /mcp/markets/{id}/status`（mcp.write，query `status`）。 */
+      marketStatus: (id: number | string, status: 'ENABLED' | 'DISABLED') =>
+        client.post<null>(`${MCP_PATH}/markets/${mcpId(id)}/status`, { query: { status } }),
+      /** `DELETE /mcp/markets/{ids}`（mcp.delete，逗号分隔）。 */
+      marketRemove: (ids: ReadonlyArray<number | string>) =>
+        client.del<null>(`${MCP_PATH}/markets/${ids.map(mcpId).join(',')}`),
+
+      // ---------------------------------------------------------------- 市场工具
+      /** `POST /mcp/market-tools/{id}/load`（mcp.write；重复加载 → 409）。 */
+      marketToolLoad: (id: number | string) =>
+        client.post<null>(`${MCP_PATH}/market-tools/${mcpId(id)}/load`),
+      /** `POST /mcp/market-tools/batch-load`（mcp.write）→ `{loaded:number}`。 */
+      marketToolBatchLoad: (ids: ReadonlyArray<number | string>) =>
+        client.post<McpBatchLoadResult>(`${MCP_PATH}/market-tools/batch-load`, { body: { ids } }),
     },
   };
 }

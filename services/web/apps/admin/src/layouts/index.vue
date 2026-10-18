@@ -44,7 +44,7 @@ const staticMenus = [
   { path: '/ai/models', title: '模型与提供方', icon: 'Cpu', permission: 'ai:config:read' },
   { path: '/ai/agents', title: 'Agent 定义', icon: 'ChatDotRound', permission: 'ai:agent:list' },
   { path: '/ai/skills', title: 'Skills', icon: 'MagicStick', permission: 'ai:skill:list' },
-  { path: '/ai/mcp', title: 'MCP 工具目录', icon: 'SetUp', permission: 'mcp:tool:list' },
+  { path: '/ai/mcp', title: 'MCP 工具目录', icon: 'SetUp', permission: 'ai:mcp:list' },
   { path: '/ai/ingestion', title: '摄取流水线', icon: 'Box', permission: 'ai:config:read' },
   { path: '/ai/settings', title: '系统设置', icon: 'Tools', permission: 'ai:config:read' },
 ];
