@@ -502,6 +502,33 @@ describe('取消 / 终态读取', () => {
     assert.match(terminalNote(failed), /NO_AUTHORIZED_SCOPE/);
     assert.equal(terminalNote(ok), '');
   });
+
+  it('flow.run 终态：resultRef 没有 answer 时回退 output.value（字符串/对象/空值）', () => {
+    const text = readTerminalPayload({
+      status: 'SUCCEEDED',
+      resultRef: JSON.stringify({ output: { value: '工作流输出' } }),
+    });
+    assert.equal(text.answer, '工作流输出');
+
+    const object = readTerminalPayload({
+      status: 'SUCCEEDED',
+      resultRef: JSON.stringify({ output: { value: { k: 1 } } }),
+    });
+    assert.equal(object.answer, JSON.stringify({ k: 1 }, null, 2));
+
+    const empty = readTerminalPayload({
+      status: 'SUCCEEDED',
+      resultRef: JSON.stringify({ output: { value: null } }),
+    });
+    assert.equal(empty.answer, '');
+
+    // answer 优先于 output.value（rag.chat 语义不被改写）
+    const both = readTerminalPayload({
+      status: 'SUCCEEDED',
+      resultRef: JSON.stringify({ answer: 'RAG', output: { value: 'FLOW' } }),
+    });
+    assert.equal(both.answer, 'RAG');
+  });
 });
 
 /**

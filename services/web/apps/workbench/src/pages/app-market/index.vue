@@ -4,7 +4,7 @@ import ApplicationCard from './components/ApplicationCard.vue';
 import WorkflowInputDialog from './components/WorkflowInputDialog.vue';
 import { useApplicationMarket } from './useApplicationMarket';
 
-const { applications, agents, loading, error, query, filter, page, pageSize, total, opening, pendingWorkflow, pendingDefs, formVisible, formLoading, loadWorkflows, changePage, openWorkflow, selectAgent, submitInputs } = useApplicationMarket();
+const { applications, agents, loading, error, openError, agentError, query, filter, page, pageSize, total, opening, pendingWorkflow, pendingDefs, formVisible, formLoading, loadWorkflows, changePage, openWorkflow, selectAgent, submitInputs } = useApplicationMarket();
 const filters = [{ value: 'all', label: '全部应用' }, { value: 'workflow', label: '工作流' }, { value: 'agent', label: '智能体' }] as const;
 </script>
 
@@ -18,16 +18,19 @@ const filters = [{ value: 'all', label: '全部应用' }, { value: 'workflow', l
       </header>
       <div class="market-toolbar">
         <div class="market-filters" role="group" aria-label="应用类型">
-          <button v-for="tab in filters" :key="tab.value" :aria-pressed="filter === tab.value" :class="{ active: filter === tab.value }" @click="filter = tab.value">
+          <button v-for="tab in filters" :key="tab.value" :aria-pressed="filter === tab.value" :class="{ active: filter === tab.value }" :data-testid="`app-market-filter-${tab.value}`" @click="filter = tab.value">
             {{ tab.label }}<span v-if="tab.value !== 'all'">{{ tab.value === 'workflow' ? total : agents.length }}</span>
           </button>
         </div>
-        <el-input v-model="query" class="market-search" placeholder="搜索应用名称" aria-label="搜索应用名称" :prefix-icon="Search" clearable />
+        <el-input v-model="query" class="market-search" data-testid="app-market-search" placeholder="搜索应用名称" aria-label="搜索应用名称" :prefix-icon="Search" clearable />
       </div>
-      <div v-if="error" class="load-error" role="alert">
-        <span>{{ error }}</span><el-button text :icon="Refresh" @click="loadWorkflows">
+      <div v-if="error || openError" class="load-error" role="alert" data-testid="app-market-error">
+        <span>{{ error || openError }}</span><el-button v-if="error" text :icon="Refresh" @click="loadWorkflows">
           重新加载
         </el-button>
+      </div>
+      <div v-if="agentError" class="load-error" role="alert" data-testid="app-market-agent-error">
+        <span>{{ agentError }}</span>
       </div>
       <div v-loading="loading" class="market-grid" :aria-busy="loading">
         <ApplicationCard
@@ -35,9 +38,10 @@ const filters = [{ value: 'all', label: '全部应用' }, { value: 'workflow', l
           :type="app.type" :title="app.type === 'agent' ? (app.data.description || app.data.name || '未命名智能体') + (app.data.executable ? '' : '（当前不可执行）') : app.data.title"
           :description="app.type === 'agent' ? '围绕你的问题，持续对话与协作。' : (app.data.remark || '将多个步骤串联为可重复运行的流程。')"
           :loading="app.type === 'workflow' && opening === app.data.uuid"
+          :data-testid="app.type === 'workflow' ? `app-market-card-workflow-${app.data.uuid}` : `app-market-card-agent-${app.data.id}`"
           @select="app.type === 'agent' ? selectAgent(app.data) : openWorkflow(app.data)"
         />
-        <el-empty v-if="!loading && !applications.length && !error" class="market-empty" :description="query ? '没有找到匹配的应用，试试其他关键词' : '暂无可用应用'" />
+        <el-empty v-if="!loading && !applications.length && !error" class="market-empty" data-testid="app-market-empty" :description="query ? '没有找到匹配的应用，试试其他关键词' : '暂无可用应用'" />
       </div>
       <el-pagination v-if="filter !== 'agent' && total > pageSize" class="market-pagination" :current-page="page" :page-size="pageSize" :total="total" layout="prev, pager, next" @current-change="changePage" />
     </div>

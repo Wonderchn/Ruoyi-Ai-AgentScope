@@ -23,6 +23,7 @@ import com.nageoffer.ai.ragent.flow.controller.request.FlowNodeSaveRequest;
 import com.nageoffer.ai.ragent.flow.controller.vo.FlowComponentVO;
 import com.nageoffer.ai.ragent.flow.controller.vo.FlowEdgeVO;
 import com.nageoffer.ai.ragent.flow.controller.vo.FlowNodeVO;
+import com.nageoffer.ai.ragent.flow.controller.vo.FlowPublicInputsVO;
 
 import java.util.List;
 
@@ -66,6 +67,18 @@ public interface FlowGraphService {
 
     /** 本租户组件库列表（display_order 升序）。 */
     List<FlowComponentVO> listComponents();
+
+    /**
+     * 公开工作流 START 输入 schema（F13:4，公开只读面）。
+     *
+     * <p>可见性与公开详情同一组谓词：{@code uuid + tenant + is_public=1 + is_enable=1
+     * + is_deleted=0}，<b>没有</b> owner 谓词；不可见（私有/停用/软删/跨租户/不存在）
+     * 一律返回 {@code null}（调用方映射为同一个 404 文案）。
+     *
+     * <p>只回传 {@code uuid/title/inputs/nodes}；nodes 只有 {@code uuid/title/type}，
+     * 不含 node_config / prompt / owner / tenant。输入 schema 解析失败时 {@code inputs=[]}。
+     */
+    FlowPublicInputsVO getPublicStartInputs(String workflowUuid);
 
     /** 新增组件库条目。 */
     FlowComponentVO createComponent(FlowComponentSaveRequest request);

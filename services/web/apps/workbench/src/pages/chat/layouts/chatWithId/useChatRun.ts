@@ -28,6 +28,7 @@ import type {
   RunTerminalUpdate,
   RunUpdate,
 } from '../../../../api/chat/run-chat';
+import type { WfNodeInput } from '../../../../api/chat/types';
 import { computed, ref, shallowRef, watch } from 'vue';
 // 相对路径而不是 `@/…`：`apps/workbench/tests/ts-loader.mjs` 只解析相对路径与真实依赖，
 // 用别名会让这个"页面行为层"无法被 node:test 直接覆盖（本模块的可测性是刻意保证的）。
@@ -54,10 +55,21 @@ export interface UseChatRunOptions {
   baseUrl?: string;
   clientId?: string;
   /** 注入运行时客户端（测试用）；缺省用真实 `createRunChatClient`。 */
-  client?: RunChatClient;
+  client?: ChatRunClient;
   hooks?: ChatRunHooks;
   /** 终态失败文案注入（默认 `runFailureMessage`）。 */
   failureMessage?: (failure: RunFailure) => string;
+}
+
+/**
+ * 编排层只依赖这一组方法，不绑定具体协议：
+ * - 普通聊天客户端（`createRunChatClient`）接受其自身输入（多余字段被忽略）；
+ * - 工作流客户端（`createFlowRunClient`）读取 `flowUuid/flowInputs/flowQuestion`。
+ */
+export interface ChatRunClient {
+  run: (input: SubmitRunInput) => AsyncGenerator<RunUpdate, void, undefined>;
+  cancel: RunChatClient['cancel'];
+  getRun: RunChatClient['getRun'];
 }
 
 export interface SubmitRunInput {
@@ -65,6 +77,12 @@ export interface SubmitRunInput {
   text: string;
   conversationId?: string;
   resourceRefs?: Array<{ type: string; id: string }>;
+  /** 工作流模式：选中的工作流 uuid（普通聊天不传）。 */
+  flowUuid?: string;
+  /** 工作流模式：输入对话框/默认值产生的声明字段。 */
+  flowInputs?: WfNodeInput[];
+  /** 工作流模式：本轮聊天框问题（填第一个文本声明 + `inputs.input`）。 */
+  flowQuestion?: string;
 }
 
 export function useChatRun(options: UseChatRunOptions) {
@@ -230,6 +248,9 @@ export function useChatRun(options: UseChatRunOptions) {
         conversationId: input.conversationId,
         resourceRefs: input.resourceRefs,
         attachments: input.attachments,
+        flowUuid: input.flowUuid,
+        flowInputs: input.flowInputs,
+        flowQuestion: input.flowQuestion,
         signal: controller.signal,
       })) {
         if (options.identity().epoch !== submitEpoch)

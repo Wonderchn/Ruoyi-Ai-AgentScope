@@ -22,7 +22,9 @@ import com.nageoffer.ai.ragent.flow.controller.request.FlowWorkflowQueryRequest;
 import com.nageoffer.ai.ragent.flow.controller.request.FlowWorkflowSaveRequest;
 import com.nageoffer.ai.ragent.flow.controller.vo.FlowComponentVO;
 import com.nageoffer.ai.ragent.flow.controller.vo.FlowOperatorVO;
+import com.nageoffer.ai.ragent.flow.controller.vo.FlowPublicInputsVO;
 import com.nageoffer.ai.ragent.flow.controller.vo.FlowWorkflowVO;
+import com.nageoffer.ai.ragent.flow.service.FlowGraphService;
 import com.nageoffer.ai.ragent.flow.service.FlowWorkflowService;
 import com.nageoffer.ai.ragent.flow.support.FlowOperatorCatalog;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
@@ -92,6 +94,9 @@ import java.util.List;
 public class FlowWorkflowController {
 
     private final FlowWorkflowService flowWorkflowService;
+
+    /** 公开输入 schema 读取（F13:4；只读图面，不经过写面 owner 谓词）。 */
+    private final FlowGraphService flowGraphService;
 
     /** 交付许可铸造器（GET 走字节分支，必须带回执头；见类注释 ④）。 */
     private final DeliveryPermits deliveryPermits;
@@ -201,6 +206,36 @@ public class FlowWorkflowController {
                     .header("X-AI-Delivery-Permit", permit.permitId())
                     .header("X-AI-Delivery-Operation", permit.operationId())
                     .body(ApiEnvelope.ok(components));
+        } catch (RuntimeException e) {
+            permit.close();
+            throw e;
+        }
+    }
+
+    /**
+     * 公开工作流 START 输入 schema（动作 {@code flow.read}，F13:4）。
+     *
+     * <p>可见性与公开详情同一组谓词；不可见时返回<b>同一个</b> 404 文案
+     * 「工作流不存在」，且在铸造交付许可<b>之前</b>返回 —— 失败路径不留 ACTIVE 许可。
+     * 成功时按类注释 ④ 铸造整数 {@link ApiEnvelope} + 两个回执头。
+     */
+    @GetMapping("/flows/public/{uuid}/inputs")
+    public ResponseEntity<ApiEnvelope<?>> getPublicInputs(@PathVariable("uuid") String uuid) {
+        ExecutionPrincipal principal = PrincipalContext.require();
+        FlowPublicInputsVO vo = flowGraphService.getPublicStartInputs(uuid);
+        if (vo == null) {
+            return ResponseEntity.status(404)
+                    .header("Cache-Control", "no-store")
+                    .body(ApiEnvelope.error(404, "工作流不存在", "RESOURCE_NOT_FOUND_OR_FORBIDDEN"));
+        }
+        DeliveryPermits.Permit permit =
+                deliveryPermits.enter(principal, "flow.read", "flow:public:inputs:" + uuid);
+        try {
+            return ResponseEntity.ok()
+                    .header("Cache-Control", "no-store")
+                    .header("X-AI-Delivery-Permit", permit.permitId())
+                    .header("X-AI-Delivery-Operation", permit.operationId())
+                    .body(ApiEnvelope.ok(vo));
         } catch (RuntimeException e) {
             permit.close();
             throw e;

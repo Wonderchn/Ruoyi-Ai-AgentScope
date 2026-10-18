@@ -161,6 +161,15 @@ function mountPage(options: MountOptions = {}) {
     },
     // 页面把 props.agentChatFactory 透传给 useAgentChat；这里原样转交
     './useAgentChat': { useAgentChat: (opts: any) => opts.factory(opts) },
+    // F13:4 起页面在 setup 阶段构造工作流运行客户端（真实行为在 flow-run.test.ts）；
+    // 本文件只关心 Agent 分流，给最小桩。
+    '../../../../api/chat/flow-run': {
+      createFlowRunClient: () => ({
+        async* run() {},
+        cancel: async () => ({}),
+        getRun: async () => ({}),
+      }),
+    },
     './components/MessageDetails.vue': { default: { name: 'MessageDetails' } },
     './components/ToolCallCard.vue': { default: { name: 'ToolCallCard' } },
     './components/WorkflowRunStatus.vue': { default: { name: 'WorkflowRunStatus' } },
@@ -234,13 +243,13 @@ describe('Agent 模式：提交走引擎面（不再打运行面受理）', () =
     }
   });
 
-  it('工作流仍然如实拒绝（互斥口径不回退）', async () => {
-    const { page, scope, agentChat } = mountPage({ workflow: { uuid: 'wf-1', title: '流程A' } });
+  it('工作流模式优先于 Agent：不向 Agent 引擎发送（F13:4 改走 flow.run）', async () => {
+    const { page, scope, agentChat } = mountPage({ workflow: { uuid: 'wf-1', title: '流程A', startInputs: [], inputs: [], nodes: [] } });
     try {
       await settle();
       await page.submitMessage('你好');
-      assert.equal(agentChat.sent.length, 0);
-      assert.match(page.chatRun.error.value, /工作流/);
+      assert.equal(agentChat.sent.length, 0, '工作流模式不得打到 Agent 引擎');
+      assert.equal(page.chatRun.error.value, '', '工作流不再走 RW-17 拒绝；页面进入 flow 分支');
     }
     finally {
       scope.stop();

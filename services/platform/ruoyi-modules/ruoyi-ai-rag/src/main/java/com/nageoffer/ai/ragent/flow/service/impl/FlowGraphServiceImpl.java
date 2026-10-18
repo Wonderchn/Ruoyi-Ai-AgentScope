@@ -20,12 +20,15 @@ package com.nageoffer.ai.ragent.flow.service.impl;
 import cn.hutool.core.util.IdUtil;
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.flow.controller.request.FlowComponentSaveRequest;
 import com.nageoffer.ai.ragent.flow.controller.request.FlowEdgeSaveRequest;
 import com.nageoffer.ai.ragent.flow.controller.request.FlowNodeSaveRequest;
 import com.nageoffer.ai.ragent.flow.controller.vo.FlowComponentVO;
 import com.nageoffer.ai.ragent.flow.controller.vo.FlowEdgeVO;
 import com.nageoffer.ai.ragent.flow.controller.vo.FlowNodeVO;
+import com.nageoffer.ai.ragent.flow.controller.vo.FlowPublicInputsVO;
 import com.nageoffer.ai.ragent.flow.dao.entity.AiFlowComponentDO;
 import com.nageoffer.ai.ragent.flow.dao.entity.AiFlowEdgeDO;
 import com.nageoffer.ai.ragent.flow.dao.entity.AiFlowNodeDO;
@@ -41,7 +44,13 @@ import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * AIFlow 图定义服务实现（节点/边/组件）。
@@ -78,6 +87,11 @@ public class FlowGraphServiceImpl implements FlowGraphService {
     private static final int NOT_DELETED = 0;
     private static final int DELETED = 1;
     private static final int ENABLED = 1;
+    /** 公开可见性谓词（F13:4 公开输入 schema）。 */
+    private static final int PUBLIC = 1;
+    private static final Set<String> NODE_TYPES = Set.of("START", "LLM", "END");
+    /** 公开输入 schema 只做结构读取；解析失败一律降级为空输入，不 500。 */
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final double DEFAULT_POSITION = 0.0;
     private static final long NO_COMPONENT = 0L;
 
@@ -372,6 +386,220 @@ public class FlowGraphServiceImpl implements FlowGraphService {
         vo.setCreateTime(row.getCreateTime());
         vo.setUpdateTime(row.getUpdateTime());
         return vo;
+    }
+
+    // ------------------------------------------------------------------ 公开输入 schema（F13:4）
+
+    /**
+     * 公开工作流 START 输入 schema。
+     *
+     * <p><b>可见性</b>：{@code uuid + tenant + is_public=1 + is_enable=1 + is_deleted=0}，
+     * 刻意<b>不带</b> owner 谓词（同租户跨用户可见）；跨租户永不因公开可见。
+     * 不可见时返回 {@code null}，与公开详情共用同一个 404 文案。
+     *
+     * <p><b>输出白名单</b>：nodes 只含 {@code uuid/title/type}；input_config 的
+     * {@code user_inputs} 优先、{@code params} 兼容；解析失败降级为 {@code inputs=[]}。
+     */
+    @Override
+    public FlowPublicInputsVO getPublicStartInputs(String workflowUuid) {
+        if (StrUtil.isBlank(workflowUuid)) {
+            return null;
+        }
+        AiFlowWorkflowDO workflow = workflowMapper.selectOne(new LambdaQueryWrapper<AiFlowWorkflowDO>()
+                .eq(AiFlowWorkflowDO::getUuid, workflowUuid)
+                .apply(TENANT_PREDICATE, requireTenantId())
+                .eq(AiFlowWorkflowDO::getIsPublic, PUBLIC)
+                .eq(AiFlowWorkflowDO::getIsEnable, ENABLED)
+                .eq(AiFlowWorkflowDO::getIsDeleted, NOT_DELETED));
+        if (workflow == null) {
+            return null;
+        }
+        List<AiFlowNodeDO> nodes = nodeMapper.selectList(new LambdaQueryWrapper<AiFlowNodeDO>()
+                .eq(AiFlowNodeDO::getWorkflowId, workflow.getId())
+                .apply(TENANT_PREDICATE, requireTenantId())
+                .eq(AiFlowNodeDO::getIsDeleted, NOT_DELETED)
+                .orderByAsc(AiFlowNodeDO::getId));
+        Map<Long, String> componentNames = componentNames(nodes);
+        List<FlowPublicInputsVO.Node> nodeViews = new ArrayList<>();
+        AiFlowNodeDO start = null;
+        for (AiFlowNodeDO node : nodes) {
+            String type = resolveNodeType(node, componentNames);
+            if (type == null) {
+                continue;
+            }
+            FlowPublicInputsVO.Node view = new FlowPublicInputsVO.Node();
+            view.setUuid(node.getUuid());
+            view.setTitle(node.getTitle());
+            view.setType(type);
+            nodeViews.add(view);
+            if (start == null && "START".equals(type)) {
+                start = node;
+            }
+        }
+        FlowPublicInputsVO vo = new FlowPublicInputsVO();
+        vo.setUuid(workflow.getUuid());
+        vo.setTitle(workflow.getTitle());
+        vo.setNodes(nodeViews);
+        vo.setInputs(start == null ? List.of() : readPublicInputs(start.getInputConfig()));
+        return vo;
+    }
+
+    /** 节点引用的组件名（仅名称参与类型解析；组件本身的状态不改变“图里有什么节点”）。 */
+    private Map<Long, String> componentNames(List<AiFlowNodeDO> nodes) {
+        Set<Long> ids = new LinkedHashSet<>();
+        for (AiFlowNodeDO node : nodes) {
+            Long componentId = node.getWorkflowComponentId();
+            if (componentId != null && componentId > NO_COMPONENT) {
+                ids.add(componentId);
+            }
+        }
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return componentMapper.selectList(new LambdaQueryWrapper<AiFlowComponentDO>()
+                        .in(AiFlowComponentDO::getId, ids)
+                        .apply(TENANT_PREDICATE, requireTenantId())
+                        .eq(AiFlowComponentDO::getIsDeleted, NOT_DELETED))
+                .stream()
+                .collect(Collectors.toMap(AiFlowComponentDO::getId, AiFlowComponentDO::getName, (first, ignored) -> first));
+    }
+
+    /**
+     * 类型解析：{@code node_config.type} 优先；缺失/不可识别时按组件名
+     * （Start→START / Answer→LLM / End→END）。两者都不可用 → 不出现在公开 nodes 中。
+     */
+    private static String resolveNodeType(AiFlowNodeDO node, Map<Long, String> componentNames) {
+        JsonNode config = parseObject(node.getNodeConfig());
+        JsonNode explicit = config == null ? null : config.get("type");
+        if (explicit != null && !explicit.isNull()) {
+            String value = explicit.isTextual() ? explicit.asText() : explicit.toString();
+            if (NODE_TYPES.contains(value)) {
+                return value;
+            }
+        }
+        Long componentId = node.getWorkflowComponentId();
+        String componentName = componentId != null && componentId > NO_COMPONENT
+                ? componentNames.get(componentId) : null;
+        if (componentName == null) {
+            return null;
+        }
+        return switch (componentName) {
+            case "Start" -> "START";
+            case "Answer" -> "LLM";
+            case "End" -> "END";
+            default -> null;
+        };
+    }
+
+    /**
+     * 读取 START 节点 {@code input_config} 的输入声明。
+     *
+     * <p>优先 {@code user_inputs}，兼容 {@code params}；每一项必须是对象且 {@code name}
+     * 非空，否则跳过。任何解析失败返回空列表——公开只读面不因脏数据 500。
+     */
+    private static List<FlowPublicInputsVO.Input> readPublicInputs(String raw) {
+        JsonNode config = parseObject(raw);
+        JsonNode declared = null;
+        if (config != null) {
+            JsonNode userInputs = config.get("user_inputs");
+            if (userInputs != null && userInputs.isArray()) {
+                declared = userInputs;
+            } else {
+                JsonNode params = config.get("params");
+                if (params != null && params.isArray()) {
+                    declared = params;
+                }
+            }
+        }
+        if (declared == null) {
+            return List.of();
+        }
+        List<FlowPublicInputsVO.Input> inputs = new ArrayList<>();
+        for (JsonNode item : declared) {
+            if (!item.isObject()) {
+                continue;
+            }
+            String name = text(item, "name");
+            if (StrUtil.isBlank(name)) {
+                continue;
+            }
+            FlowPublicInputsVO.Input input = new FlowPublicInputsVO.Input();
+            input.setUuid(textOrNull(item, "uuid"));
+            input.setName(name);
+            input.setTitle(text(item, "title"));
+            input.setType(normalizeType(item.get("type")));
+            input.setRequired(item.path("required").asBoolean(false));
+            // legacy 形状用 max_length；新形状用 limit。两者都接受，统一回传 limit。
+            input.setLimit(firstInteger(item, "limit", "max_length", "maxLength"));
+            inputs.add(input);
+        }
+        return inputs;
+    }
+
+    /** type 归一：1 文本 / 2 数字 / 4 文件 / 5 布尔；未知/缺省按文本。 */
+    private static Integer normalizeType(JsonNode raw) {
+        if (raw == null || raw.isNull()) {
+            return 1;
+        }
+        if (raw.isNumber()) {
+            int value = raw.asInt();
+            return switch (value) {
+                case 2, 4, 5 -> value;
+                default -> 1;
+            };
+        }
+        if (raw.isTextual()) {
+            return switch (raw.asText().trim().toLowerCase(Locale.ROOT)) {
+                case "number" -> 2;
+                case "boolean", "bool" -> 5;
+                case "file" -> 4;
+                default -> 1;
+            };
+        }
+        return 1;
+    }
+
+    private static Integer firstInteger(JsonNode node, String... fields) {
+        for (String field : fields) {
+            JsonNode value = node.get(field);
+            if (value == null || value.isNull()) {
+                continue;
+            }
+            if (value.isNumber()) {
+                return value.asInt();
+            }
+            if (value.isTextual()) {
+                try {
+                    return Integer.valueOf(value.asText().trim());
+                } catch (NumberFormatException ignored) {
+                    // 继续尝试下一个候选字段
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String text(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        return value == null || value.isNull() ? "" : value.asText();
+    }
+
+    private static String textOrNull(JsonNode node, String field) {
+        String value = text(node, field);
+        return StrUtil.isBlank(value) ? null : value;
+    }
+
+    /** 宽松 JSON 对象解析：任何异常返回 null（调用方降级，不抛 500）。 */
+    private static JsonNode parseObject(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode parsed = JSON.readTree(raw);
+            return parsed != null && parsed.isObject() ? parsed : null;
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     // ------------------------------------------------------------------ 组件库

@@ -379,6 +379,34 @@ export function runFailureMessage(failure: RunFailure): string {
   }
 }
 
+/**
+ * 终态结果里的 flow 输出回退值（`{output:{value}}`）。
+ *
+ * `rag.chat` 的 resultRef 用 `answer`；`flow.run` 的终态是
+ * `{output:{value}}`（见 `FlowRunExecutor` 的 END 节点结果）。只有前者缺失时才回退，
+ * 两个都在时 `answer` 优先 —— 不改变普通聊天的语义。
+ */
+function flowOutputValue(resultRef: unknown): string {
+  let result: unknown = resultRef;
+  if (typeof result === 'string') {
+    try {
+      result = JSON.parse(result);
+    }
+    catch {
+      return '';
+    }
+  }
+  if (result === null || typeof result !== 'object')
+    return '';
+  const output = (result as Record<string, unknown>).output;
+  if (output === null || typeof output !== 'object')
+    return '';
+  const value = (output as { value?: unknown }).value;
+  if (value === null || value === undefined)
+    return '';
+  return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+}
+
 /** 从 `run.terminal` 信封的 payload 提取终态（`resultRef` 是终端结果的 JSON 文本）。 */
 export function readTerminalPayload(payload: unknown): RunTerminalUpdate {
   const data = (payload ?? {}) as { status?: unknown; errorCode?: unknown; resultRef?: unknown };
@@ -389,7 +417,7 @@ export function readTerminalPayload(payload: unknown): RunTerminalUpdate {
     kind: 'terminal',
     status,
     errorCode,
-    answer: summary.answer,
+    answer: summary.answer !== '' ? summary.answer : flowOutputValue(data.resultRef),
     citations: summary.citations,
     evidenceInsufficient: summary.evidenceInsufficient,
     terminalResult: data.resultRef ?? null,

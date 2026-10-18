@@ -21,6 +21,8 @@ export const useAgentStore = defineStore('agent', () => {
 
   // 智能体列表
   const agentList = ref<AgentVO[]>([]);
+  // 列表加载失败的原因（应用市场必须显式展示，不能只 console）
+  const agentListError = ref('');
   // 请求智能体列表（迟到响应按身份代次 authEpoch 丢弃；口径照 stores/modules/model.ts:52-92）
   const requestAgentList = async () => {
     const epoch = userStore.authEpoch;
@@ -33,10 +35,15 @@ export const useAgentStore = defineStore('agent', () => {
       if (epoch !== userStore.authEpoch)
         return;
       agentList.value = res.data;
+      agentListError.value = '';
     }
     catch (error) {
       if (epoch !== userStore.authEpoch)
         return;
+      // 不把失败伪装成"暂无智能体"：市场页用显式告警位展示原因。
+      agentListError.value = error instanceof Error && error.message
+        ? `智能体列表加载失败：${error.message}`
+        : '智能体列表加载失败，请重试。';
       console.error('requestAgentList错误', error);
     }
   };
@@ -47,6 +54,7 @@ export const useAgentStore = defineStore('agent', () => {
     () => userStore.authEpoch,
     () => {
       agentList.value = [];
+      agentListError.value = '';
       currentAgentInfo.value = null;
     },
   );
@@ -56,6 +64,7 @@ export const useAgentStore = defineStore('agent', () => {
     setCurrentAgentInfo,
     clearCurrentAgentInfo,
     agentList,
+    agentListError,
     requestAgentList,
   };
 });

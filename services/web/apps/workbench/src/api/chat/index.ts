@@ -17,8 +17,9 @@
  * 保留：会话历史的真实读路径（AI 网关面）与工作流公开面（另一个保留模块，不属本卡）。
  */
 import type { ConversationMessageRow } from './history';
-import type { ChatMessageVo, GetChatListParams, PageResult, WorkflowResp, workflowVo } from './types';
+import type { ChatMessageVo, GetChatListParams, PageResult, PublicFlowInputs, WorkflowResp, workflowVo } from './types';
 import { get } from '@/utils/request';
+import { buildPublicFlowSearchUrl, publicFlowInputsPath } from './flow-market';
 import { toChatHistory } from './history';
 
 export * from './run-chat';
@@ -45,22 +46,16 @@ export async function getChatList(params: GetChatListParams) {
   return { rows };
 }
 
-// 获取公开工作流列表（分页）。后端 GET /workflow/public/search 返回 R<Page<WorkflowResp>>，
-// hook-fetch 解包后为 { total, rows }。用公开接口而非 /admin/workflow/search，
-// 后者非管理员只能看到自己创建的工作流，应用市场需要展示所有公开流程。
-//
-// ⚠️ 工作流**对话**入口（旧 `send` 的 `enableWorkFlow` + `workFlowRunner`）不在本卡范围：
-// 它没有 RW-01 的替代契约（不是 `rag.chat`）。前端不再"带着工作流参数去打一个 404 端点"，
-// 而是在聊天页**如实拒绝**并指向 RW-17（见 `pages/chat/layouts/chatWithId`）。
+// 获取公开工作流列表（分页）。F13:4 起打已集成的公开面
+// `GET /api/ai/v1/flows/public/search`（参数 current/size/keyword）。
+// 应用市场需要展示同租户内所有公开流程；legacy 工作流公开路径已 0 handler，
+// 前端不得再请求。hook-fetch 解包后为 { records, total }。
 export function getWorkflowList(params: workflowVo) {
-  const queryString = new URLSearchParams(params as Record<string, string>).toString();
-  const url = `/workflow/public/search?${queryString}`;
-  return get<PageResult<WorkflowResp>>(url).json();
+  return get<PageResult<WorkflowResp>>(buildPublicFlowSearchUrl(params)).json();
 }
 
-// 获取公开工作流详情（含 nodes/edges，用于读取 start 节点输入 schema）。
-// 用 /workflow/public/{uuid} 而非 /workflow/{uuid}，后者有归属权限校验，
-// 非本人创建的工作流会抛 A_WF_NOT_FOUND，应用市场无法取到 start 节点 schema。
+// 获取公开工作流 START 输入 schema（`GET /api/ai/v1/flows/public/{uuid}/inputs`）。
+// 响应只含 uuid/title/inputs/nodes，不含 node_config / prompt / 所有者 / 租户。
 export function getWorkflowDetail(uuid: string) {
-  return get<WorkflowResp>(`/workflow/public/${uuid}`).json();
+  return get<PublicFlowInputs>(publicFlowInputsPath(uuid)).json();
 }
