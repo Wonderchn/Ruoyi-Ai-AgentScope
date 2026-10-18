@@ -1,5 +1,6 @@
 package com.nageoffer.ai.ragent.coding.model;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.agent.config.AgentModelFactory;
@@ -366,7 +367,7 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
                 skippedNoName++;
                 continue;
             }
-            Map<String, Object> input = streamed.input;
+            Map<String, Object> input = mergedInput(streamed);
             String fingerprint = toolFingerprint(name, input);
             String id = streamed.id;
             if (id == null || id.isBlank()) {
@@ -435,6 +436,7 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
             }
             if (target != null) {
                 target.input.putAll(input);
+                target.appendContent(toolUse.getContent());
                 return false;
             }
             return rawName == null || rawName.isBlank();
@@ -443,10 +445,41 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
         if (existing != null) {
             existing.name = rawName;
             existing.input.putAll(input);
+            existing.appendContent(toolUse.getContent());
             return false;
         }
-        calls.add(new StreamedCall(id, rawName, new LinkedHashMap<>(input)));
+        StreamedCall created = new StreamedCall(id, rawName, new LinkedHashMap<>(input));
+        created.appendContent(toolUse.getContent());
+        calls.add(created);
         return false;
+    }
+
+    /**
+     * Merge parsed input with the raw argument fragments. Streaming providers deliver tool
+     * arguments as content fragments (a JSON object split across chunks); the parsed input map is
+     * often empty, so the raw content must be parsed and merged before execution.
+     */
+    private Map<String, Object> mergedInput(StreamedCall call) {
+        String raw = call.rawContent();
+        if (raw.isEmpty()) {
+            return call.input;
+        }
+        Map<String, Object> merged = new LinkedHashMap<>(call.input);
+        try {
+            JsonNode node = objectMapper.readTree(raw);
+            if (node != null && node.isObject()) {
+                node.fields().forEachRemaining(entry -> {
+                    if (entry.getValue() != null && !merged.containsKey(entry.getKey())) {
+                        merged.put(entry.getKey(),
+                                objectMapper.convertValue(entry.getValue(), Object.class));
+                    }
+                });
+            }
+        } catch (JsonProcessingException | RuntimeException malformed) {
+            // Incomplete/invalid fragments stay out of the call; the tool reports the missing
+            // argument instead of executing a partially parsed request.
+        }
+        return merged;
     }
 
     private static StreamedCall findByCallId(List<StreamedCall> calls, String id) {
@@ -463,11 +496,22 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
         private final String id;
         private String name;
         private final Map<String, Object> input;
+        private final StringBuilder rawContent = new StringBuilder();
 
         private StreamedCall(String id, String name, Map<String, Object> input) {
             this.id = id;
             this.name = name;
             this.input = input;
+        }
+
+        private void appendContent(String content) {
+            if (content != null && !content.isEmpty()) {
+                rawContent.append(content);
+            }
+        }
+
+        private String rawContent() {
+            return rawContent.toString();
         }
     }
 
