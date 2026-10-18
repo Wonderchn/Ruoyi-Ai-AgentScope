@@ -103,6 +103,17 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
             throw unavailable;
         } catch (RuntimeException failure) {
             // Provider/transport failures: stable code only; never leak endpoint or credentials.
+            // DEBUG-only sanitized diagnostic: class + message (URLs/keys redacted).
+            if (org.slf4j.LoggerFactory.getLogger(AgentModelFactoryCodingModelGateway.class)
+                    .isDebugEnabled()) {
+                String detail = String.valueOf(failure.getMessage())
+                        .replaceAll("https?://\\S+", "<url>")
+                        .replaceAll("sk-[A-Za-z0-9_-]+", "<key>");
+                org.slf4j.LoggerFactory.getLogger(AgentModelFactoryCodingModelGateway.class)
+                        .debug("coding model turn failed: {}: {}",
+                                failure.getClass().getSimpleName(),
+                                detail.length() > 300 ? detail.substring(0, 300) : detail);
+            }
             throw new CodingModelUnavailableException(
                     CodingModelUnavailableException.MODEL_TURN_FAILED,
                     "coding model turn failed");
