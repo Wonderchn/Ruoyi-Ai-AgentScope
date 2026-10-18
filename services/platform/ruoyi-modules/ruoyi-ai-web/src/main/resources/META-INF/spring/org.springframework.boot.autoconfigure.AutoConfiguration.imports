@@ -29,3 +29,4 @@ org.ruoyi.aiweb.embedded.AiEmbeddedMcpAdminConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedGraphConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedFlowRunConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedCodingConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedMultiAgentConfiguration
