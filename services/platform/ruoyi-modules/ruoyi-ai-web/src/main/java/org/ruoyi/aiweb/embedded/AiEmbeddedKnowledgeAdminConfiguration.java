@@ -336,6 +336,8 @@ public class AiEmbeddedKnowledgeAdminConfiguration {
      * 创建之前以指名配置键的消息拒绝启动；不静默回退 fs，也不把空凭据交给 SDK 换一个模糊异常。
      */
     @Configuration(proxyBeanMethods = false)
+    @ConditionalOnEmbeddedLocal
+    @ConditionalOnProperty(name = "ai.embedded.knowledge-admin.full", havingValue = "true")
     @EnableConfigurationProperties(RagStorageProperties.class)
     @Import({StorageClientConfig.class, S3ObjectStorageClient.class, OssObjectStorageClient.class})
     static class StorageBackends {

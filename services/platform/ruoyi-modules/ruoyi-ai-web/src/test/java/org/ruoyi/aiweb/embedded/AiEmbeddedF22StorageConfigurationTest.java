@@ -40,7 +40,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AiEmbeddedF22StorageConfigurationTest {
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
-            .withUserConfiguration(AiEmbeddedKnowledgeAdminConfiguration.StorageBackends.class);
+            .withUserConfiguration(AiEmbeddedKnowledgeAdminConfiguration.StorageBackends.class)
+            // 与生产同一门控：embedded-local + knowledge-admin.full
+            .withPropertyValues("ai.integration.enabled=true", "ai.integration.transport=local",
+                    "ai.embedded.knowledge-admin.full=true");
 
     @Test
     @DisplayName("type=s3：注册 S3ObjectStorageClient 与 S3Client/S3Presigner")
