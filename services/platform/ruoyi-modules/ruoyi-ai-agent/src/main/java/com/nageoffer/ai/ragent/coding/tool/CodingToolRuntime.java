@@ -46,11 +46,49 @@ public class CodingToolRuntime {
 
     public List<CodingToolDescriptor> descriptors() {
         List<CodingToolDescriptor> descriptors = new ArrayList<>();
-        descriptors.add(new CodingToolDescriptor("read_file", CodingToolDescriptor.READ, false));
-        descriptors.add(new CodingToolDescriptor("list_dir", CodingToolDescriptor.READ, false));
-        descriptors.add(new CodingToolDescriptor("write_file", CodingToolDescriptor.WRITE, true));
-        descriptors.add(new CodingToolDescriptor("execute_process", CodingToolDescriptor.WRITE, true));
+        descriptors.add(new CodingToolDescriptor("read_file", CodingToolDescriptor.READ, false,
+                "Read a UTF-8 text file inside the session workspace.",
+                schema(Map.of("path", Map.of("type", "string",
+                        "description", "Workspace-relative file path")), List.of("path"))));
+        descriptors.add(new CodingToolDescriptor("list_dir", CodingToolDescriptor.READ, false,
+                "List files and directories inside the session workspace.",
+                schema(Map.of("path", Map.of("type", "string",
+                        "description", "Workspace-relative directory path (default .)")),
+                        List.of())));
+        descriptors.add(new CodingToolDescriptor("write_file", CodingToolDescriptor.WRITE, true,
+                "Write or overwrite a UTF-8 text file inside the session workspace.",
+                schema(Map.of(
+                        "path", Map.of("type", "string",
+                                "description", "Workspace-relative file path"),
+                        "content", Map.of("type", "string",
+                                "description", "Complete UTF-8 file content")),
+                        List.of("path", "content"))));
+        descriptors.add(new CodingToolDescriptor("execute_process", CodingToolDescriptor.WRITE, true,
+                "Run one allowlisted program with a literal argv inside the pinned sandbox. "
+                        + "Never a shell command string.",
+                schema(Map.of(
+                        "executable", Map.of("type", "string",
+                                "description", "Single executable name"),
+                        "argv", Map.of("type", "array",
+                                "items", Map.of("type", "string"),
+                                "description", "Argument array passed literally"),
+                        "cwd", Map.of("type", "string",
+                                "description", "Optional workspace-relative directory"),
+                        "timeoutMs", Map.of("type", "integer",
+                                "description", "Optional timeout in milliseconds")),
+                        List.of("executable", "argv"))));
         return List.copyOf(descriptors);
+    }
+
+    private static Map<String, Object> schema(Map<String, Object> properties,
+                                              List<String> required) {
+        Map<String, Object> schema = new LinkedHashMap<>();
+        schema.put("type", "object");
+        schema.put("properties", properties);
+        if (!required.isEmpty()) {
+            schema.put("required", List.copyOf(required));
+        }
+        return Map.copyOf(schema);
     }
 
     public ToolExecutionResult execute(String toolName, Map<String, Object> arguments,

@@ -97,10 +97,17 @@ public class CodingRunProcessor {
                     current -> current.status() == HarnessRunStatus.QUEUED
                             ? current.transition(HarnessRunStatus.RUNNING, null, now())
                             : current);
-            publish(owner, HarnessEvent.draftWithId(
-                    "run-started:" + runId + ":" + claimed.revision(), sessionId, runId,
-                    "run.started", null, null, null,
-                    Map.of("status", "RUNNING", "revision", claimed.revision()), now()));
+            // C1c：条件 claim 可能返回并发 cancel 后的终态；只有真正进入 RUNNING 才发布
+            // run.started，避免账本出现与终态矛盾的启动事实。
+            if (claimed.status().isTerminal()) {
+                return;
+            }
+            if (claimed.status() == HarnessRunStatus.RUNNING) {
+                publish(owner, HarnessEvent.draftWithId(
+                        "run-started:" + runId + ":" + claimed.revision(), sessionId, runId,
+                        "run.started", null, null, null,
+                        Map.of("status", "RUNNING", "revision", claimed.revision()), now()));
+            }
         } else if (run.status() == HarnessRunStatus.WAITING_FOR_APPROVAL
                 && !run.hasPendingApproval()) {
             saveWithRetry(owner, sessionId, runId,
@@ -146,8 +153,7 @@ public class CodingRunProcessor {
                 turn = modelGateway.complete(new CodingModelRequest(owner, session, current,
                         transcript, tools.descriptors()));
             } catch (CodingModelUnavailableException unavailable) {
-                fail(owner, current, "MODEL_NOT_CONFIGURED",
-                        "The coding model gateway is not configured");
+                fail(owner, current, unavailable.code(), safeModelFailureMessage(unavailable.code()));
                 return;
             } catch (RuntimeException providerFailure) {
                 fail(owner, current, "MODEL_TURN_FAILED", "The model turn failed");
@@ -532,8 +538,17 @@ public class CodingRunProcessor {
         return List.copyOf(runMessages);
     }
 
-    private void publish(HarnessOwner owner, HarnessEvent draft) {
-        try {
+    private static String safeModelFailureMessage(String code) {
+        if (CodingModelUnavailableException.PLAN_JSON_REQUIRED.equals(code)) {
+            return "The model did not return the required plan JSON";
+        }
+        if (CodingModelUnavailableException.MODEL_TURN_FAILED.equals(code)) {
+            return "The model turn failed";
+        }
+        return "The coding model gateway is not configured";
+    }
+
+    private void publish(HarnessOwner owner, HarnessEvent draft) {        try {
             eventHub.publishIdempotent(owner, draft);
         } catch (RuntimeException publishFailure) {
             // Durable state is already committed. A missing non-terminal event is repaired by the

@@ -1,17 +1,20 @@
 package com.nageoffer.ai.ragent.coding.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.nageoffer.ai.ragent.agent.config.AgentModelFactory;
 import com.nageoffer.ai.ragent.coding.app.CodingHarnessApplicationService;
 import com.nageoffer.ai.ragent.coding.app.CodingModelGateway;
 import com.nageoffer.ai.ragent.coding.app.CodingRunExecutor;
 import com.nageoffer.ai.ragent.coding.app.CodingRunProcessor;
 import com.nageoffer.ai.ragent.coding.app.UnconfiguredCodingModelGateway;
 import com.nageoffer.ai.ragent.coding.event.HarnessEventHub;
+import com.nageoffer.ai.ragent.coding.model.AgentModelFactoryCodingModelGateway;
 import com.nageoffer.ai.ragent.coding.runtime.CodingModelCatalog;
 import com.nageoffer.ai.ragent.coding.sandbox.DockerSandboxConfig;
 import com.nageoffer.ai.ragent.coding.store.FileHarnessStore;
 import com.nageoffer.ai.ragent.coding.tool.CodingToolRuntime;
 import com.nageoffer.ai.ragent.coding.workspace.CodingWorkspaceService;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -114,8 +117,12 @@ public class CodingHarnessBeans {
 
     @Bean
     @ConditionalOnMissingBean(CodingModelGateway.class)
-    public CodingModelGateway codingModelGateway() {
-        return new UnconfiguredCodingModelGateway();
+    public CodingModelGateway codingModelGateway(ObjectProvider<AgentModelFactory> modelFactory) {
+        AgentModelFactory factory = modelFactory.getIfAvailable();
+        // F20-A2：工厂在场才启用真实适配器；缺席保持 fail-closed，不回落全局硬编码模型。
+        return factory == null
+                ? new UnconfiguredCodingModelGateway()
+                : new AgentModelFactoryCodingModelGateway(factory);
     }
 
     @Bean
