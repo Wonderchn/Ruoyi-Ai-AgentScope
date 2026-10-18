@@ -102,7 +102,8 @@ public class AiResourceAuthorizationService
     public com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope toRetrievalScope(AuthorizedResourceScope scope) {
         var principal = com.nageoffer.ai.ragent.framework.context.PrincipalContext.require();
         scope.requireStillValid(principal, principal.policyVersion(), currentAclVersion(principal.tenantId()));
-        Set<String> kbs = new LinkedHashSet<>(), docs = new LinkedHashSet<>(), chunks = new LinkedHashSet<>(), collections = new LinkedHashSet<>();
+        Set<String> kbs = new LinkedHashSet<>(), docs = new LinkedHashSet<>(), chunks = new LinkedHashSet<>(),
+                publishedDocs = new LinkedHashSet<>(), collections = new LinkedHashSet<>();
         var kbRefs = scope.authorizedRefs().stream().filter(ref -> ref.startsWith("kb:")).toList();
         var kbVerdicts = checkBatch(principal, scope.action(), kbRefs);
         for (String ref : kbRefs) { if (kbVerdicts.get(ref) == Verdict.GRANT) { kbs.add(ref); } }
@@ -125,12 +126,15 @@ public class AiResourceAuthorizationService
             var parameters = Map.of("tenant",principal.tenantId(),"kbs",kbs.stream().map(ref->ref.substring(3)).toList(),
                     "docs",docs.stream().map(ref->ref.substring(4)).toList());
             projectionJdbc.query(P2PublishedChunkSql.projection(),parameters,(org.springframework.jdbc.core.RowCallbackHandler)rs->{
-                        chunks.add("chunk:"+rs.getString("id"));collections.add(rs.getString("collection_name"));
+                        chunks.add("chunk:"+rs.getString("id"));
+                        publishedDocs.add("doc:"+rs.getString("doc_id"));
+                        collections.add(rs.getString("collection_name"));
                     });
             if (chunks.size()>10000) { throw new ServiceException("retrieval projection exceeds bounded scope"); }
         }
         scope.requireStillValid(principal,principal.policyVersion(),currentAclVersion(principal.tenantId()));
-        return com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope.of(scope,kbs,docs,chunks,collections);
+        return com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope.of(
+                scope,kbs,docs,chunks,publishedDocs,collections);
     }
 
     /** Derived data with absent, stale or unverifiable provenance is never returned to a model or a caller. */

@@ -47,14 +47,25 @@ final class AuthorizedChannelSupport {
     private AuthorizedChannelSupport() {
     }
 
-    /**
-     * 作用域是否可用于发起检索：非空、有授权 collection、有已发布 chunk 引用。
-     */
-    static boolean hasUsableScope(AuthorizedRetrievalScope scope) {
+    /** 作用域是否含授权 collection（不区分 chunk/doc 级口径）。 */
+    static boolean hasAuthorizedCollections(AuthorizedRetrievalScope scope) {
         return scope != null
                 && !scope.isEmpty()
-                && !scope.authorizedCollections().isEmpty()
-                && !scope.publishedChunkRefs().isEmpty();
+                && !scope.authorizedCollections().isEmpty();
+    }
+
+    /**
+     * 关键词通道的可用性：非空、有授权 collection、有已发布 chunk 引用。
+     */
+    static boolean hasUsableScope(AuthorizedRetrievalScope scope) {
+        return hasAuthorizedCollections(scope) && !scope.publishedChunkRefs().isEmpty();
+    }
+
+    /**
+     * 图谱通道的可用性（P2 双写文档级映射）：非空、有授权 collection、有已发布文档引用。
+     */
+    static boolean hasUsableGraphScope(AuthorizedRetrievalScope scope) {
+        return hasAuthorizedCollections(scope) && !scope.publishedDocRefs().isEmpty();
     }
 
     /**
@@ -63,7 +74,7 @@ final class AuthorizedChannelSupport {
      * <p>请求列表为空表示本次没有任何目标库，结果为空（不是"全部授权库"）。
      */
     static List<String> intersect(AuthorizedRetrievalScope scope, Collection<String> requested) {
-        if (!hasUsableScope(scope) || requested == null || requested.isEmpty()) {
+        if (!hasAuthorizedCollections(scope) || requested == null || requested.isEmpty()) {
             return List.of();
         }
         Set<String> authorized = scope.authorizedCollections();
@@ -100,6 +111,41 @@ final class AuthorizedChannelSupport {
             kept.add(chunk);
         }
         return kept;
+    }
+
+    /**
+     * 图谱通道的结果侧纵深防御：collection 已授权且文档已发布（{@code doc:<docId>}）。
+     *
+     * <p>图谱证据是文档级（LightRAG 一次写入一篇文档），因此不能用 chunk 级集合过滤；
+     * 未解析出 docId 的无主证据一律丢弃。
+     */
+    static List<RetrievedChunk> retainAuthorizedGraph(AuthorizedRetrievalScope scope,
+                                                      List<RetrievedChunk> chunks) {
+        if (!hasUsableGraphScope(scope) || chunks == null || chunks.isEmpty()) {
+            return List.of();
+        }
+        Set<String> authorized = scope.authorizedCollections();
+        List<RetrievedChunk> kept = new ArrayList<>(chunks.size());
+        for (RetrievedChunk chunk : chunks) {
+            if (chunk == null) {
+                continue;
+            }
+            if (chunk.getCollectionName() == null
+                    || !authorized.contains(chunk.getCollectionName())) {
+                continue;
+            }
+            if (!isPublishedDoc(scope, chunk.getDocId())) {
+                continue;
+            }
+            kept.add(chunk);
+        }
+        return kept;
+    }
+
+    /** 文档是否至少有一个已发布 chunk（{@code doc:<docId>}）。 */
+    static boolean isPublishedDoc(AuthorizedRetrievalScope scope, String docId) {
+        return docId != null && !docId.isBlank()
+                && scope.publishedDocRefs().contains("doc:" + docId);
     }
 
     /**

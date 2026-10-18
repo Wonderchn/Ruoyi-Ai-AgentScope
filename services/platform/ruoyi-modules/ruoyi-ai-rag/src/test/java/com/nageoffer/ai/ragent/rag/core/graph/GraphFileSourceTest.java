@@ -53,6 +53,20 @@ class GraphFileSourceTest {
     }
 
     @Test
+    @DisplayName("P2 文档 ID（doc-<uuid>）与数字 ID 一样可编码/解析")
+    void p2DocumentIdsRoundTrip() {
+        // 回归：P2 UploadIntentService 生成 doc-<32hex>，旧解析只认末段纯数字，
+        // 发布后写入的图谱证据会被判成"无主"而在结果侧整体丢弃
+        String docId = "doc-0123456789abcdef0123456789abcdef";
+        GraphFileSource source = GraphFileSource.parse(GraphFileSource.encode("kb_2024", docId));
+
+        assertEquals("kb_2024", source.collectionName());
+        assertEquals(docId, source.docId());
+        assertEquals(new GraphFileSource("kb", docId),
+                GraphFileSource.parse("/data/inputs/kb_" + docId + ".txt"));
+    }
+
+    @Test
     @DisplayName("库名可含下划线与数字段，从右锚定仍唯一还原")
     void underscoreAndDigitSegmentsInCollectionName() {
         assertEquals(new GraphFileSource("kb_2024_v2", "98765"),

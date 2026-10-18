@@ -80,8 +80,8 @@ public class GraphSearchChannel implements SearchChannel {
             // F05:4-R1：空授权 / 无授权 collection / 无已发布 chunk 引用时，
             // 必须在任何 LightRAG 调用之前交空卷（与向量、关键词通道同口径）。
             AuthorizedRetrievalScope authorizedScope = context.getAuthorizedScope();
-            if (!AuthorizedChannelSupport.hasUsableScope(authorizedScope)) {
-                log.info("图谱检索授权作用域为空或缺少已发布块引用，跳过");
+            if (!AuthorizedChannelSupport.hasUsableGraphScope(authorizedScope)) {
+                log.info("图谱检索授权作用域为空或缺少已发布文档引用，跳过");
                 return emptyResult(System.currentTimeMillis() - startTime);
             }
 
@@ -106,11 +106,12 @@ public class GraphSearchChannel implements SearchChannel {
                 log.warn("图谱全局检索过滤掉 {} 条无主证据（已删库残留或解析失败），残留会挤占 top_k 名额，建议清理图谱",
                         evidence.unmatched().size());
             }
-            // 结果侧纵深防御：matched 与 unmatched（补充路）都只保留
-            // 「collection 已授权 + chunk 已发布」的证据，未授权/无主残留不得进入融合。
-            List<RetrievedChunk> matched = AuthorizedChannelSupport.retainAuthorized(
+            // 结果侧纵深防御（P2 文档级映射）：matched 与 unmatched（补充路）都只保留
+            // 「collection 已授权 + 文档已发布（doc:<docId>）」的证据；
+            // 未授权、未发布或无法解析 file_path 的无主残留不得进入融合。
+            List<RetrievedChunk> matched = AuthorizedChannelSupport.retainAuthorizedGraph(
                     authorizedScope, evidence.matched());
-            List<RetrievedChunk> unmatched = AuthorizedChannelSupport.retainAuthorized(
+            List<RetrievedChunk> unmatched = AuthorizedChannelSupport.retainAuthorizedGraph(
                     authorizedScope, evidence.unmatched());
             ScopeQuota quota = ScopeQuota.split(scope, baseTopK, properties.getScope().getSupplementRatio());
             List<RetrievedChunk> primary = ScopeQuota.cap(matched, quota.primary());

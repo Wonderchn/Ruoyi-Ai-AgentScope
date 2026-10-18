@@ -51,27 +51,45 @@ public final class AuthorizedRetrievalScope {
     private final Set<String> authorizedKbRefs;
     private final Set<String> authorizedDocRefs;
     private final Set<String> publishedChunkRefs;
+    private final Set<String> publishedDocRefs;
     private final Set<String> collections;
 
     private AuthorizedRetrievalScope(AuthorizedResourceScope resourceScope,
                                      Set<String> authorizedKbRefs,
                                      Set<String> authorizedDocRefs,
                                      Set<String> publishedChunkRefs,
+                                     Set<String> publishedDocRefs,
                                      Set<String> collections) {
         this.resourceScope = resourceScope;
         this.authorizedKbRefs = Set.copyOf(authorizedKbRefs);
         this.authorizedDocRefs = Set.copyOf(authorizedDocRefs);
         this.publishedChunkRefs = Set.copyOf(publishedChunkRefs);
+        this.publishedDocRefs = Set.copyOf(publishedDocRefs);
         this.collections = Set.copyOf(collections);
     }
 
     /**
-     * 由授权层构造；其他包/类拿不到入口——"作用域不可由客户端构造"是结构保证，不是注释约定。
+     * 兼容旧调用点：不含已发布文档引用（图谱通道需要 6 参重载）。
      */
     public static AuthorizedRetrievalScope of(AuthorizedResourceScope resourceScope,
                                               Collection<String> authorizedKbRefs,
                                               Collection<String> authorizedDocRefs,
                                               Collection<String> publishedChunkRefs,
+                                              Collection<String> collections) {
+        return of(resourceScope, authorizedKbRefs, authorizedDocRefs, publishedChunkRefs, Set.of(), collections);
+    }
+
+    /**
+     * 由授权层构造；其他包/类拿不到入口——"作用域不可由客户端构造"是结构保证，不是注释约定。
+     *
+     * <p>{@code publishedDocRefs}（{@code doc:<docId>}）是 P2 双写后图谱通道的文档级授权映射：
+     * 只含"至少有一个已发布 chunk"的文档；关键词/向量仍用 chunk 级集合。
+     */
+    public static AuthorizedRetrievalScope of(AuthorizedResourceScope resourceScope,
+                                              Collection<String> authorizedKbRefs,
+                                              Collection<String> authorizedDocRefs,
+                                              Collection<String> publishedChunkRefs,
+                                              Collection<String> publishedDocRefs,
                                               Collection<String> collections) {
         if (resourceScope == null) {
             throw new ClientException("resource scope is required to build a retrieval scope");
@@ -80,12 +98,13 @@ public final class AuthorizedRetrievalScope {
                 authorizedKbRefs == null ? Set.of() : new LinkedHashSet<>(authorizedKbRefs),
                 authorizedDocRefs == null ? Set.of() : new LinkedHashSet<>(authorizedDocRefs),
                 publishedChunkRefs == null ? Set.of() : new LinkedHashSet<>(publishedChunkRefs),
+                publishedDocRefs == null ? Set.of() : new LinkedHashSet<>(publishedDocRefs),
                 collections == null ? Set.of() : new LinkedHashSet<>(collections));
     }
 
     /** 无主体时的唯一合法取值：既不授权也不允许回落全库。 */
     public static AuthorizedRetrievalScope denied() {
-        return new AuthorizedRetrievalScope(null, Set.of(), Set.of(), Set.of(), Set.of());
+        return new AuthorizedRetrievalScope(null, Set.of(), Set.of(), Set.of(), Set.of(), Set.of());
     }
 
     public String tenantId() {
@@ -128,6 +147,11 @@ public final class AuthorizedRetrievalScope {
 
     public Set<String> publishedChunkRefs() {
         return publishedChunkRefs;
+    }
+
+    /** 至少有一个已发布 chunk 的文档引用（{@code doc:<docId>}）；图谱通道文档级过滤使用。 */
+    public Set<String> publishedDocRefs() {
+        return publishedDocRefs;
     }
 
     /** 授权 KB 对应的逻辑 collection 名（供向量/关键词后端构造 IN 条件）。 */

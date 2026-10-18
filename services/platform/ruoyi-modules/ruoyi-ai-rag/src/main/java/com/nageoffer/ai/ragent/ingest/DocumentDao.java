@@ -17,9 +17,16 @@
 
 package com.nageoffer.ai.ragent.ingest;
 
+import com.nageoffer.ai.ragent.rag.core.graph.GraphFileSource;
+import com.nageoffer.ai.ragent.rag.core.graph.LightRagClient;
+import com.nageoffer.ai.ragent.rag.core.keyword.EsKeywordIndexService;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -27,15 +34,38 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /** P2 文档/上传/版本/分块 DAO（V8 表；只读当前 published 版本）。 */
+@Slf4j
 @Repository
 public class DocumentDao implements org.ruoyi.ai.api.runtime.DocumentPort {
 
     private final JdbcTemplate jdbc;
 
+    /**
+     * P2 发布双写（F05:4-A）：{@code rag.keyword.type=es} 时该 bean 才存在；
+     * 缺席即"零 ES 外呼"，不是"尽量写"。
+     */
+    @Autowired(required = false)
+    private EsKeywordIndexService keywordIndexService;
+
+    /**
+     * P2 发布双写（F05:4-A）：{@code rag.graph.type=lightrag} 时该 bean 才存在；
+     * 缺席即零图谱外呼。
+     */
+    @Autowired(required = false)
+    private LightRagClient lightRagClient;
+
     public DocumentDao(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
+    }
+
+    /** 测试入口：显式注入可选后端，避免为可测性把生产构造改成多参。 */
+    DocumentDao(JdbcTemplate jdbc, EsKeywordIndexService keywordIndexService, LightRagClient lightRagClient) {
+        this.jdbc = jdbc;
+        this.keywordIndexService = keywordIndexService;
+        this.lightRagClient = lightRagClient;
     }
 
 
@@ -92,9 +122,17 @@ public class DocumentDao implements org.ruoyi.ai.api.runtime.DocumentPort {
     }
 
     public int tombstoneDocument(String tenantId, String docId) {
+        // 先解析 collection：tombstone 之后文档仍可读，但这里保持"清理基于删除前视图"的确定性。
+        // 两个可选后端都缺席时保持默认部署的既有行为：不额外查库、不外呼。
+        MirrorTarget mirrorTarget = mirrorEnabled() ? findMirrorTarget(tenantId, docId) : null;
         jdbc.update("UPDATE ai_resource SET status='TOMBSTONED',resource_version=resource_version+1,update_time=now() WHERE tenant_id=? AND resource_type='DOCUMENT' AND resource_id=? AND status='ACTIVE'",tenantId,docId);
-        return jdbc.update("UPDATE ai_document SET tombstoned_at=now(), updated_at=now() "
+        int rows = jdbc.update("UPDATE ai_document SET tombstoned_at=now(), updated_at=now() "
                 + "WHERE tenant_id=? AND doc_id=? AND tombstoned_at IS NULL", tenantId, docId);
+        if (rows > 0) {
+            // best-effort：ES / LightRAG 的残留由授权集合与 publishedDocRefs 双重拦截，清理失败不回滚删除
+            mirrorDocumentCleanup(tenantId, docId, mirrorTarget);
+        }
+        return rows;
     }
 
     public int tombstoneVersions(String tenantId, String docId) {
@@ -200,7 +238,12 @@ public class DocumentDao implements org.ruoyi.ai.api.runtime.DocumentPort {
         List<String> current=jdbc.query("SELECT published_version_id FROM ai_document WHERE tenant_id=? AND doc_id=? AND tombstoned_at IS NULL FOR UPDATE",
                 (rs,n)->rs.getString(1),tenantId,docId);
         if(current.isEmpty()) return false;
-        if(versionId.equals(current.get(0))) return true;
+        if(versionId.equals(current.get(0))) {
+            // 同版本重放：DB 已是发布态，重放双写保证"上次外呼失败"可由重试修复；
+            // 同 _id 覆盖与先删后写使这一步幂等。
+            mirrorAfterCommit(tenantId, docId, versionId);
+            return true;
+        }
         if(current.get(0)!=null && !Boolean.TRUE.equals(jdbc.queryForObject("SELECT newer.version_order>older.version_order FROM ai_document_version newer,ai_document_version older WHERE newer.tenant_id=? AND newer.version_id=? AND older.tenant_id=newer.tenant_id AND older.version_id=?",Boolean.class,tenantId,versionId,current.get(0)))) return false;
         int updated = jdbc.update("UPDATE ai_document_version v SET state='PUBLISHED', published_at=now(), updated_at=now() "
                         + "WHERE v.tenant_id=? AND v.version_id=? AND v.doc_id=? AND v.state='READY_TO_PUBLISH' "
@@ -221,7 +264,167 @@ public class DocumentDao implements org.ruoyi.ai.api.runtime.DocumentPort {
         jdbc.update("UPDATE ai_document_version SET state='SUPERSEDED', updated_at=now() "
                         + "WHERE tenant_id=? AND doc_id=? AND version_id<>? AND state='PUBLISHED'",
                 tenantId, docId, versionId);
+        // 发布成功之后才双写可选后端；失败只 WARN，不回滚发布。
+        mirrorAfterCommit(tenantId, docId, versionId);
         return true;
+    }
+
+    // ------------------------------------------------------------------ P2 发布双写（F05:4-A）
+
+    private record MirrorTarget(String kbId, String collectionName) {
+    }
+
+    private record MirrorChunk(String chunkKey, int chunkIndex, String content,
+                               String kbId, String collectionName) {
+    }
+
+    /**
+     * 发布完成后的可选后端双写：ES 关键词 + LightRAG 图谱，均为 best-effort。
+     *
+     * <p>后端 bean 缺席（{@code rag.keyword.type != es} / {@code rag.graph.type != lightrag}）
+     * 时该方法不发起任何外呼。写入前按 docId 清理旧版本，保证 supersede 后共享索引/图谱里
+     * 只留当前发布版本；重复发布由「同 _id 覆盖」保持幂等。
+     */
+    /**
+     * 事务内只登记提交后动作：外呼 ES/LightRAG 不得占着 {@code ai_document} 的行锁；
+     * 只有真正 COMMITTED 的发布才允许双写（回滚不得在外部后端留下幻影版本）。
+     * 无 Spring 事务（单测/直接调用）时同步执行。
+     */
+    private void mirrorAfterCommit(String tenantId, String docId, String versionId) {
+        if (!mirrorEnabled()) {
+            // 默认部署（pg/none/无 graph）：零额外查询、零外呼，与发布前逐行为等价
+            return;
+        }
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            mirrorPublishedVersion(tenantId, docId, versionId);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status == TransactionSynchronization.STATUS_COMMITTED) {
+                    mirrorPublishedVersion(tenantId, docId, versionId);
+                }
+            }
+        });
+    }
+
+    private void mirrorPublishedVersion(String tenantId, String docId, String versionId) {
+        try {
+            List<MirrorChunk> rows = jdbc.query(
+                    "SELECT c.chunk_key, c.chunk_index, c.content, c.kb_id, kb.collection_name "
+                            + "FROM ai_document_chunk c "
+                            + "JOIN ai_document d ON d.tenant_id=c.tenant_id AND d.doc_id=c.doc_id "
+                            + "JOIN platform.ai_knowledge_base kb ON kb.tenant_id=d.tenant_id AND kb.id=d.kb_id "
+                            + "WHERE c.tenant_id=? AND c.version_id=? AND c.state='PUBLISHED' "
+                            + "AND d.tombstoned_at IS NULL AND kb.deleted=0 ORDER BY c.chunk_index",
+                    (rs, rowNum) -> new MirrorChunk(rs.getString("chunk_key"), rs.getInt("chunk_index"),
+                            rs.getString("content"), rs.getString("kb_id"), rs.getString("collection_name")),
+                    tenantId, versionId);
+            if (rows.isEmpty()) {
+                log.warn("P2 发布双写跳过：没有可投影的已发布 chunk, tenant={}, docId={}, versionId={}",
+                        tenantId, docId, versionId);
+                return;
+            }
+            MirrorTarget target = new MirrorTarget(rows.get(0).kbId(), rows.get(0).collectionName());
+            mirrorKeywords(target, tenantId, docId, versionId, rows);
+            mirrorGraph(target, docId, rows);
+        } catch (Exception e) {
+            log.warn("P2 发布双写读取投影失败（best-effort，不影响发布） tenant={}, docId={}, versionId={}, reason={}",
+                    tenantId, docId, versionId, e.getMessage());
+        }
+    }
+
+    private void mirrorKeywords(MirrorTarget target, String tenantId, String docId, String versionId,
+                                List<MirrorChunk> rows) {
+        if (keywordIndexService == null) {
+            return;
+        }
+        try {
+            // 旧版本/旧文档残留先按 docId 清理，再写当前版本，避免共享索引里叠加多个版本
+            keywordIndexService.deleteDocumentIndex(tenantId, target.collectionName(), docId);
+        } catch (Exception e) {
+            log.warn("P2 发布双写 ES 旧版本清理失败（已跳过） tenant={}, docId={}, reason={}",
+                    tenantId, docId, e.getMessage());
+        }
+        try {
+            List<EsKeywordIndexService.PublishedChunk> chunks = rows.stream()
+                    .map(row -> new EsKeywordIndexService.PublishedChunk(
+                            row.chunkKey(), row.chunkIndex(), row.content()))
+                    .collect(Collectors.toList());
+            keywordIndexService.indexPublishedChunks(tenantId, target.collectionName(), target.kbId(),
+                    docId, versionId, chunks);
+        } catch (Exception e) {
+            log.warn("P2 发布双写 ES 失败（best-effort，不影响发布） tenant={}, docId={}, versionId={}, reason={}",
+                    tenantId, docId, versionId, e.getMessage());
+        }
+    }
+
+    private void mirrorGraph(MirrorTarget target, String docId, List<MirrorChunk> rows) {
+        if (lightRagClient == null) {
+            return;
+        }
+        try {
+            // 图谱是文档级：先删旧文档再插入新版本全文，与 legacy 装饰器「先删后建」同序
+            lightRagClient.deleteByDoc(docId);
+        } catch (Exception e) {
+            log.warn("P2 发布双写 LightRAG 旧文档清理失败（已跳过） docId={}, reason={}",
+                    docId, e.getMessage());
+        }
+        try {
+            String text = rows.stream()
+                    .map(MirrorChunk::content)
+                    .filter(content -> content != null && !content.isBlank())
+                    .collect(Collectors.joining("\n\n"));
+            lightRagClient.insertText(text, GraphFileSource.encode(target.collectionName(), docId));
+        } catch (Exception e) {
+            log.warn("P2 发布双写 LightRAG 失败（best-effort，不影响发布） docId={}, reason={}",
+                    docId, e.getMessage());
+        }
+    }
+
+    private void mirrorDocumentCleanup(String tenantId, String docId, MirrorTarget target) {
+        if (target == null) {
+            return;
+        }
+        if (keywordIndexService != null) {
+            try {
+                keywordIndexService.deleteDocumentIndex(tenantId, target.collectionName(), docId);
+            } catch (Exception e) {
+                log.warn("P2 tombstone 清理 ES 失败（best-effort） tenant={}, docId={}, reason={}",
+                        tenantId, docId, e.getMessage());
+            }
+        }
+        if (lightRagClient != null) {
+            try {
+                lightRagClient.deleteByDoc(docId);
+            } catch (Exception e) {
+                log.warn("P2 tombstone 清理 LightRAG 失败（best-effort） docId={}, reason={}",
+                        docId, e.getMessage());
+            }
+        }
+    }
+
+    private boolean mirrorEnabled() {
+        return keywordIndexService != null || lightRagClient != null;
+    }
+
+    private MirrorTarget findMirrorTarget(String tenantId, String docId) {
+        try {
+            return jdbc.queryForObject(
+                    "SELECT d.kb_id, kb.collection_name FROM ai_document d "
+                            + "JOIN platform.ai_knowledge_base kb ON kb.tenant_id=d.tenant_id AND kb.id=d.kb_id "
+                            + "WHERE d.tenant_id=? AND d.doc_id=? AND kb.deleted=0",
+                    (rs, rowNum) -> new MirrorTarget(rs.getString("kb_id"),
+                            rs.getString("collection_name")),
+                    tenantId, docId);
+        } catch (EmptyResultDataAccessException e) {
+            return null;
+        } catch (Exception e) {
+            log.warn("P2 tombstone 解析 collection 失败（已跳过可选后端清理） tenant={}, docId={}, reason={}",
+                    tenantId, docId, e.getMessage());
+            return null;
+        }
     }
 
     public long countChunks(String tenantId, String versionId, String state) {

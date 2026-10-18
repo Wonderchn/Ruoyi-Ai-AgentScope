@@ -137,6 +137,83 @@ public class EsKeywordIndexService implements KeywordIndexService {
         indexDocumentChunks(tenantId, collectionName, docId, List.of(chunk));
     }
 
+    /**
+     * P2 发布后双写（F05:4-A）：只写该版本已发布的块，{@code _id=<versionId>:<chunkKey>}。
+     *
+     * <p>与 legacy 链的 {@link #indexDocumentChunks} 分开：后者的主键是 chunkId，供旧知识链的向量
+     * 主键对齐；P2 的检索快照以 {@code versionId:chunkKey} 为唯一标识（{@code P2PublishedChunkSql}），
+     * 关键词通道的 {@code publishedChunkRefs} 也按这一形态归一。混用两个主键会让同一份块在
+     * 共享索引里出现两条、或让发布后的块永远匹配不上授权集合。
+     *
+     * <p>旧文档版本由调用方在写入前按 docId 清理（idempotent：同 {@code _id} 覆盖）。
+     */
+    public void indexPublishedChunks(String tenantId, String collectionName, String kbId,
+                                     String docId, String versionId, List<PublishedChunk> chunks) {
+        KeywordIndexService.requireTenant(tenantId);
+        if (CollUtil.isEmpty(chunks)) {
+            return;
+        }
+        ensureSharedIndex();
+
+        BulkRequest request = buildPublishedBulk(sharedIndex(), tenantId, collectionName, kbId,
+                docId, versionId, chunks);
+        if (request == null) {
+            return;
+        }
+
+        try {
+            BulkResponse resp = esClient.bulk(request);
+            if (resp.errors()) {
+                log.warn("ES 关键词索引部分失败(P2), tenant={}, collection={}, docId={}, versionId={}",
+                        tenantId, collectionName, docId, versionId);
+            } else {
+                log.info("ES 关键词索引写入成功(P2), tenant={}, collection={}, docId={}, versionId={}, rows={}",
+                        tenantId, collectionName, docId, versionId, request.operations().size());
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("ES 关键词索引写入失败(P2), tenant=" + tenantId
+                    + ", collection=" + collectionName + ", docId=" + docId
+                    + ", versionId=" + versionId, e);
+        }
+    }
+
+    /**
+     * 构造 P2 发布双写的 bulk 请求（与 ES I/O 分离，便于钉住 {@code _id} 契约）：
+     * {@code _id = versionId + ":" + chunkKey}，与 {@code P2PublishedChunkSql.id} 同形。
+     *
+     * @return 无可写块时返回 {@code null}
+     */
+    BulkRequest buildPublishedBulk(String index, String tenantId, String collectionName, String kbId,
+                                   String docId, String versionId, List<PublishedChunk> chunks) {
+        BulkRequest.Builder bulk = new BulkRequest.Builder();
+        int rows = 0;
+        for (PublishedChunk chunk : chunks) {
+            if (chunk == null || chunk.chunkKey() == null || chunk.chunkKey().isBlank()) {
+                continue;
+            }
+            String content = chunk.content() == null ? "" : chunk.content();
+            if (content.length() > MAX_CONTENT_LENGTH) {
+                content = content.substring(0, MAX_CONTENT_LENGTH);
+            }
+            Map<String, Object> doc = new HashMap<>();
+            doc.put("content", content);
+            doc.put("tenant_id", tenantId);
+            doc.put("collection_name", collectionName);
+            doc.put("doc_id", docId);
+            doc.put("kb_id", kbId);
+            doc.put("version_id", versionId);
+            doc.put("chunk_index", chunk.chunkIndex());
+            String id = versionId + ":" + chunk.chunkKey();
+            bulk.operations(op -> op.index(idx -> idx.index(index).id(id).document(doc)));
+            rows++;
+        }
+        return rows == 0 ? null : bulk.build();
+    }
+
+    /** P2 已发布块的写入形态：{@code _id} 由 versionId 与 chunkKey 组合，内容不经过向量化。 */
+    public record PublishedChunk(String chunkKey, int chunkIndex, String content) {
+    }
+
     @Override
     public void deleteDocumentIndex(String tenantId, String collectionName, String docId) {
         KeywordIndexService.requireTenant(tenantId);

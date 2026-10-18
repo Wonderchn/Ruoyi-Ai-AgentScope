@@ -28,16 +28,22 @@ import java.util.regex.Pattern;
 /**
  * 图谱文档来源标识 {collectionName}_{docId} 的编解码
  * <p>
- * docId 为雪花纯数字，从右锚定「末段 _数字」即可唯一还原两个分量；库名用户自填、可含下划线且可互为前缀
+ * 从右锚定「末段 _docId」即可唯一还原两个分量；库名用户自填、可含下划线且可互为前缀
  * （kb 与 kb_hr 合法共存），从左做子串匹配必然串库——读侧把别库证据划进主路，删侧连带删光别库数据且不可逆，
  * 归属判定必须走这里的解析 + 全名等值
+ * <p>
+ * 兼容两种 docId 形态：旧知识链的雪花纯数字，以及 P2 文档的 {@code doc-<hex>}
+ * （{@code UploadIntentService} 以 {@code doc-} + UUID 去连字符生成）。两种形态都不含下划线，
+ * 因此右锚定仍然唯一；数字分支保持在前，避免把库名末段误当 docId
  */
 public record GraphFileSource(String collectionName, String docId) {
 
     /**
-     * 右锚定格式：主体严格为 {collectionName}_{docId}，容忍服务端追加的扩展名修饰
+     * 右锚定格式：主体严格为 {collectionName}_{docId}，容忍服务端追加的扩展名修饰。
+     * docId = 雪花数字（旧链）或 {@code doc-<字母数字>}（P2 上传/摄取）。
      */
-    private static final Pattern FORMAT = Pattern.compile("^(.+)_(\\d+)((?:\\.[A-Za-z0-9]+)*)$");
+    private static final Pattern FORMAT =
+            Pattern.compile("^(.+)_((?:\\d+)|(?:doc-[A-Za-z0-9-]+))((?:\\.[A-Za-z0-9]+)*)$");
 
     /**
      * 写入侧编码，与 parse 互为逆运算

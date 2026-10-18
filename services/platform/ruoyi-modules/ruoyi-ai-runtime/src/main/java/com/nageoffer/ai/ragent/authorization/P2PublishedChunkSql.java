@@ -23,7 +23,8 @@ public final class P2PublishedChunkSql {
             """;
 
     public static String projection() {
-        return "SELECT id, collection_name FROM (" + CURRENT_ROWS + ") published "
+        // doc_id 供图谱通道的文档级授权映射（publishedDocRefs）与 chunk 级集合同源投影
+        return "SELECT id, doc_id, collection_name FROM (" + CURRENT_ROWS + ") published "
                 + "WHERE tenant_id=:tenant AND kb_id IN (:kbs) AND doc_id IN (:docs) LIMIT 10001";
     }
 

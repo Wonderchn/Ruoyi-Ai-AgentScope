@@ -168,14 +168,14 @@ class GraphSearchChannelTest {
     }
 
     @Test
-    @DisplayName("已授权但无已发布 chunk 引用：零 LightRAG 调用，直接空结果")
-    void emptyPublishedChunkRefsSkipsBeforeBackendCalls() {
+    @DisplayName("已授权但无已发布文档引用：零 LightRAG 调用，直接空结果")
+    void emptyPublishedDocRefsSkipsBeforeBackendCalls() {
         SearchContext context = SearchContext.builder()
                 .originalQuestion("报销发票贴哪张表？")
                 .budget(PRODUCTION_BUDGET)
                 .retrievalScope(new RetrievalScope(true, 0.9, List.of(intent("finance")),
                         List.of("kb-finance"), List.of("kb-hr")))
-                .authorizedScope(authorizedScopeWithoutPublishedChunks())
+                .authorizedScope(authorizedScopeWithoutPublishedDocs())
                 .build();
 
         assertTrue(channel.search(context).getChunks().isEmpty());
@@ -253,16 +253,26 @@ class GraphSearchChannelTest {
                 .build();
     }
 
-    /** finance 为主份、hr 为补充份，二者均已授权；桩可能产出的 id 全部已发布。 */
+    /** finance 为主份、hr 为补充份，二者均已授权；桩可能产出的文档全部已发布。 */
     private static AuthorizedRetrievalScope authorizedScope() {
         Set<String> collections = Set.of("kb-finance", "kb-hr");
         return AuthorizedRetrievalScope.of(resourceScope(), collections, Set.of(),
-                publishedIds(), collections);
+                publishedIds(), publishedDocRefs(), collections);
     }
 
-    private static AuthorizedRetrievalScope authorizedScopeWithoutPublishedChunks() {
+    private static AuthorizedRetrievalScope authorizedScopeWithoutPublishedDocs() {
         Set<String> collections = Set.of("kb-finance", "kb-hr");
-        return AuthorizedRetrievalScope.of(resourceScope(), collections, Set.of(), Set.of(), collections);
+        return AuthorizedRetrievalScope.of(resourceScope(), collections, Set.of(),
+                publishedIds(), Set.of(), collections);
+    }
+
+    private static Set<String> publishedDocRefs() {
+        Set<String> docs = new HashSet<>();
+        for (String id : publishedIds()) {
+            // 与 evidence 的 docId="doc-<id>" 对齐：publishedDocRefs 的形态是 doc:<docId>
+            docs.add("doc:doc-" + id);
+        }
+        return Set.copyOf(docs);
     }
 
     private static AuthorizedResourceScope resourceScope() {
@@ -309,6 +319,7 @@ class GraphSearchChannelTest {
                 .id(id)
                 .text(id)
                 .collectionName(collectionName)
+                .docId("doc-" + id)
                 .score(1.0F / (graphRank + 1))
                 .build();
     }
