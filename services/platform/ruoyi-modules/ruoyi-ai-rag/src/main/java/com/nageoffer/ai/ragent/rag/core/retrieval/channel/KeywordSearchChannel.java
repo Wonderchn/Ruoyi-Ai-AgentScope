@@ -21,6 +21,7 @@ import cn.hutool.core.collection.CollUtil;
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
 import com.nageoffer.ai.ragent.rag.config.SearchChannelProperties;
 import com.nageoffer.ai.ragent.rag.core.keyword.KeywordRetrieverService;
+import com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -68,21 +69,36 @@ public class KeywordSearchChannel implements SearchChannel {
     public SearchChannelResult search(SearchContext context) {
         long startTime = System.currentTimeMillis();
         try {
-            // 作用域由引擎统一解析：定向为命中库，全局为全部有效库
+            // F05:4-R1：空授权 / 无授权 collection / 无已发布 chunk 引用时，
+            // 必须在任何 ES 调用之前交空卷（与向量通道同口径，绝不回落全库）。
+            AuthorizedRetrievalScope authorizedScope = context.getAuthorizedScope();
+            if (!AuthorizedChannelSupport.hasUsableScope(authorizedScope)) {
+                log.info("关键词检索授权作用域为空或缺少已发布块引用，跳过");
+                return emptyResult(System.currentTimeMillis() - startTime);
+            }
+
+            // 作用域由引擎统一解析：定向为命中库，全局为全部有效库。
+            // 请求库集只是选择条件，必须与授权集合求交后才允许下发给 ES。
             RetrievalScope scope = context.getRetrievalScope();
-            List<String> collections = scope.targetCollections();
+            List<String> collections = AuthorizedChannelSupport.intersect(
+                    authorizedScope, scope.targetCollections());
             if (CollUtil.isEmpty(collections)) {
                 log.info("关键词检索未解析到目标知识库，跳过");
                 return emptyResult(System.currentTimeMillis() - startTime);
             }
+            List<String> supplementCollections = AuthorizedChannelSupport.intersect(
+                    authorizedScope, scope.supplementCollections());
 
             String question = context.getMainQuestion();
             ScopeQuota quota = ScopeQuota.split(scope, context.getBudget().recallBudget(), supplementRatio());
             // 补充路失败必须只损失自己：它拿到的是兜底名额，而 join() 抛出会让已经取回的命中库证据
-            // 一起被通道级 catch 丢掉。当前 ES 实现恰好自己吞了异常，但那是实现的偶然、不是通道的保证
+            // 一起被通道级 catch 丢掉。当前 ES 实现恰好自己吞了异常，但那是实现的偶然、不是通道的保证。
+            // 求交与结果过滤都在同一个 executor 任务内完成，授权集合不依赖异步完成后的再读取。
             CompletableFuture<List<RetrievedChunk>> supplementTask = quota.supplement() > 0
+                    && !supplementCollections.isEmpty()
                     ? CompletableFuture.supplyAsync(
-                    () -> keywordRetriever.search(question, scope.supplementCollections(), quota.supplement()),
+                    () -> AuthorizedChannelSupport.retainAuthorized(authorizedScope,
+                            keywordRetriever.search(question, supplementCollections, quota.supplement())),
                     innerRetrievalExecutor)
                     .exceptionally(e -> {
                         log.warn("关键词补充路检索失败，仅丢弃补充证据: {}", e.getMessage());
@@ -90,12 +106,13 @@ public class KeywordSearchChannel implements SearchChannel {
                     })
                     : CompletableFuture.completedFuture(List.of());
 
-            List<RetrievedChunk> primary = keywordRetriever.search(question, collections, quota.primary());
+            List<RetrievedChunk> primary = AuthorizedChannelSupport.retainAuthorized(
+                    authorizedScope, keywordRetriever.search(question, collections, quota.primary()));
             List<RetrievedChunk> supplement = supplementTask.join();
 
             long latency = System.currentTimeMillis() - startTime;
             log.info("关键词检索完成，命中 {} 库 {} 条，补充 {} 库 {} 条，耗时 {}ms",
-                    collections.size(), primary.size(), scope.supplementCollections().size(), supplement.size(), latency);
+                    collections.size(), primary.size(), supplementCollections.size(), supplement.size(), latency);
 
             return SearchChannelResult.builder()
                     .channelType(SearchChannelType.KEYWORD)

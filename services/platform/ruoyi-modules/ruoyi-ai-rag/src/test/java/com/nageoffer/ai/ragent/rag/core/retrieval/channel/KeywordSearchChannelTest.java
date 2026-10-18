@@ -17,18 +17,23 @@
 
 package com.nageoffer.ai.ragent.rag.core.retrieval.channel;
 
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
+import com.nageoffer.ai.ragent.framework.security.AuthorizedResourceScope;
 import com.nageoffer.ai.ragent.rag.config.SearchChannelProperties;
 import com.nageoffer.ai.ragent.rag.core.intent.IntentNode;
 import com.nageoffer.ai.ragent.rag.core.intent.NodeScore;
 import com.nageoffer.ai.ragent.rag.core.keyword.KeywordRetrieverService;
+import com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope;
 import com.nageoffer.ai.ragent.rag.core.retrieval.RetrievalBudget;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -37,6 +42,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import org.junit.jupiter.api.Tag;
 
@@ -176,15 +182,130 @@ class KeywordSearchChannelTest {
         assertTrue(search(directedScope(), PRODUCTION_BUDGET).isEmpty());
     }
 
+    @Test
+    @DisplayName("空授权作用域：零后端调用，直接空结果")
+    void emptyAuthorizationSkipsBeforeBackendCalls() {
+        SearchChannelResult result = new KeywordSearchChannel(keywordRetriever, properties, Runnable::run)
+                .search(contextWith(directedScope(), PRODUCTION_BUDGET, AuthorizedRetrievalScope.denied()));
+
+        assertTrue(result.getChunks().isEmpty());
+        verifyNoInteractions(keywordRetriever);
+    }
+
+    @Test
+    @DisplayName("已授权但无已发布 chunk 引用：零后端调用，直接空结果")
+    void emptyPublishedChunkRefsSkipsBeforeBackendCalls() {
+        SearchChannelResult result = new KeywordSearchChannel(keywordRetriever, properties, Runnable::run)
+                .search(contextWith(directedScope(), PRODUCTION_BUDGET, authorizedScopeWithoutPublishedChunks()));
+
+        assertTrue(result.getChunks().isEmpty(), "publishedChunkRefs 为空必须按拒绝语义交空卷");
+        verifyNoInteractions(keywordRetriever);
+    }
+
+    @Test
+    @DisplayName("意图库集含未授权 collection：只对授权交集发起后端查询")
+    void unauthorizedCollectionsAreNotQueried() {
+        RetrievalScope scope = new RetrievalScope(true, 0.9, List.of(intent("kb-finance")),
+                List.of("kb-finance", "kb-secret"), List.of("kb-hr", "kb-evil"));
+
+        search(scope, PRODUCTION_BUDGET);
+
+        assertTrue(queries.stream().noneMatch(query -> query.collections().contains("kb-secret")
+                        || query.collections().contains("kb-evil")),
+                "未授权 collection 不得下发到后端");
+        assertTrue(queries.stream().anyMatch(query -> query.collections().equals(List.of("kb-finance"))));
+        assertTrue(queries.stream().anyMatch(query -> query.collections().equals(List.of("kb-hr"))));
+    }
+
+    @Test
+    @DisplayName("结果过滤：未授权 collection 或未发布 chunk 一律丢弃")
+    void chunksOutsideAuthorizedCollectionsOrNotPublishedAreDropped() {
+        when(keywordRetriever.search(anyString(), anyList(), anyInt())).thenReturn(List.of(
+                RetrievedChunk.builder().id("dir-kb-finance-0").text("ok")
+                        .collectionName("kb-finance").score(1.0F).build(),
+                RetrievedChunk.builder().id("dir-kb-finance-1").text("rogue-collection")
+                        .collectionName("kb-secret").score(0.9F).build(),
+                RetrievedChunk.builder().id("unpublished-1").text("unpublished")
+                        .collectionName("kb-finance").score(0.8F).build()));
+
+        List<RetrievedChunk> chunks = search(RetrievalScope.global(0.3, List.of("kb-finance")),
+                PRODUCTION_BUDGET);
+
+        assertEquals(List.of("dir-kb-finance-0"),
+                chunks.stream().map(RetrievedChunk::getId).toList(),
+                "只保留授权 collection 且已发布的 chunk");
+    }
+
+    @Test
+    @DisplayName("补充路：交集与结果过滤在同一执行路径内生效")
+    void supplementPathFiltersUnauthorizedResults() {
+        when(keywordRetriever.search(anyString(), anyList(), anyInt())).thenAnswer(invocation -> {
+            List<String> collections = invocation.getArgument(1);
+            int topK = invocation.getArgument(2);
+            queries.add(new Query(collections, topK));
+            if (List.of("kb-hr").equals(collections)) {
+                return List.of(
+                        RetrievedChunk.builder().id("sup-kb-hr-0").text("ok")
+                                .collectionName("kb-hr").score(1.0F).build(),
+                        RetrievedChunk.builder().id("rogue-supplement").text("unauthorized")
+                                .collectionName("kb-secret").score(0.9F).build());
+            }
+            return roundRobin(collections, topK);
+        });
+
+        RetrievalScope scope = new RetrievalScope(true, 0.9, List.of(intent("kb-finance")),
+                List.of("kb-finance"), List.of("kb-hr"));
+        List<RetrievedChunk> chunks = search(scope, PRODUCTION_BUDGET);
+
+        assertTrue(chunks.stream().anyMatch(chunk -> chunk.getId().startsWith("sup-")));
+        assertTrue(chunks.stream().noneMatch(chunk -> "rogue-supplement".equals(chunk.getId())),
+                "补充路的未授权结果同样必须被过滤");
+    }
+
     private List<RetrievedChunk> search(RetrievalScope scope, RetrievalBudget budget) {
-        SearchContext context = SearchContext.builder()
+        return new KeywordSearchChannel(keywordRetriever, properties, Runnable::run)
+                .search(contextWith(scope, budget, authorizedScope()))
+                .getChunks();
+    }
+
+    private SearchContext contextWith(RetrievalScope scope, RetrievalBudget budget,
+                                      AuthorizedRetrievalScope authorizedScope) {
+        return SearchContext.builder()
                 .originalQuestion(QUESTION)
                 .budget(budget)
                 .retrievalScope(scope)
+                .authorizedScope(authorizedScope)
                 .build();
-        return new KeywordSearchChannel(keywordRetriever, properties, Runnable::run)
-                .search(context)
-                .getChunks();
+    }
+
+    /** 全部 active/supplement 库均已授权，且桩可能产出的所有 id 都已发布。 */
+    private static AuthorizedRetrievalScope authorizedScope() {
+        Set<String> collections = Set.copyOf(ACTIVE);
+        return AuthorizedRetrievalScope.of(resourceScope(), collections, Set.of(),
+                publishedIds(), collections);
+    }
+
+    private static AuthorizedRetrievalScope authorizedScopeWithoutPublishedChunks() {
+        Set<String> collections = Set.copyOf(ACTIVE);
+        return AuthorizedRetrievalScope.of(resourceScope(), collections, Set.of(), Set.of(), collections);
+    }
+
+    private static AuthorizedResourceScope resourceScope() {
+        ExecutionPrincipal principal = new ExecutionPrincipal(
+                "000000", "1", ExecutionPrincipal.canonicalMembershipId("000000", "1"),
+                1, 1, Set.of(), "jti-test", "platform:local", 1_000L, 2_000L);
+        return AuthorizedResourceScope.granted(principal, "rag.retrieve", Set.copyOf(ACTIVE), 1_000L);
+    }
+
+    private static Set<String> publishedIds() {
+        Set<String> ids = new HashSet<>();
+        for (String collection : ACTIVE) {
+            for (int index = 0; index < 20; index++) {
+                ids.add("dir-" + collection + "-" + index);
+                ids.add("sup-" + collection + "-" + index);
+            }
+        }
+        return Set.copyOf(ids);
     }
 
     /**
@@ -233,6 +354,7 @@ class KeywordSearchChannelTest {
                     return RetrievedChunk.builder()
                             .id(id)
                             .text(id)
+                            .collectionName(collection)
                             .score((supplement ? 14.0F : 12.0F) - index)
                             .build();
                 })
