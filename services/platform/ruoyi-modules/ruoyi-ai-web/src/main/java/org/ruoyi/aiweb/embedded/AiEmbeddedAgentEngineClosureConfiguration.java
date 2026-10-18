@@ -28,6 +28,7 @@ import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryControlMapper;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryExtractionMapper;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryMapper;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMessageMapper;
+import com.nageoffer.ai.ragent.agent.dao.mapper.McpToolMapper;
 import com.nageoffer.ai.ragent.agent.identity.AgentRunScopeRegistry;
 import com.nageoffer.ai.ragent.agent.memory.AgentContextCompactionMiddleware;
 import com.nageoffer.ai.ragent.agent.memory.AgentContextCompactor;
@@ -47,6 +48,8 @@ import com.nageoffer.ai.ragent.agent.skill.AgentSkillMaskingMiddleware;
 import com.nageoffer.ai.ragent.agent.state.PgAgentStateStore;
 import com.nageoffer.ai.ragent.agent.tool.AgentMcpClients;
 import com.nageoffer.ai.ragent.agent.tool.AgentMcpProperties;
+import com.nageoffer.ai.ragent.agent.tool.AgentMcpRuntimeCatalog;
+import com.nageoffer.ai.ragent.agent.tool.AgentMcpRuntimeProperties;
 import com.nageoffer.ai.ragent.agent.tool.AgentToolBatchMiddleware;
 import com.nageoffer.ai.ragent.agent.tool.AgentToolCatalog;
 import com.nageoffer.ai.ragent.agent.trace.AgentTraceEnrichmentMiddleware;
@@ -184,7 +187,8 @@ import java.util.concurrent.TimeUnit;
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
 @ConditionalOnEmbeddedLocal
 @ConditionalOnProperty(name = "ragent.engine.type", havingValue = "agent")
-@EnableConfigurationProperties({GuidanceProperties.class, SearchChannelProperties.class})
+@EnableConfigurationProperties({GuidanceProperties.class, SearchChannelProperties.class,
+        AgentMcpRuntimeProperties.class})
 @Import({
         // ---------------------------------------------------------- A2 记忆子闭包（7）
         AgentMemoryJudge.class,
@@ -384,6 +388,30 @@ public class AiEmbeddedAgentEngineClosureConfiguration {
     public AgentMcpClients agentMcpClients(AgentMcpProperties agentMcpProperties,
                                            ObjectProvider<SaasCapabilityBoundary> capabilityBoundary) {
         return new AgentMcpClients(agentMcpProperties, capabilityBoundary);
+    }
+
+    /**
+     * F12-M2 运行期受控 MCP 目录（协调者集成单写）：旧启动门保持关闭；
+     * 意图树点名的受管工具按需惰性连接（每次解析复查 allow-list、租户作用域查
+     * {@code ai_mcp_tool}、连接失败返 null 不炸对话链）。
+     *
+     * <p>{@code McpEndpointAllowList} 由 {@code AiEmbeddedMcpAdminConfiguration}
+     * （embedded local × p2）提供；缺席（如 p2 关闭）⇒ 运行期目录一律拒绝（fail-closed）。
+     */
+    @Bean
+    @ConditionalOnMissingBean(AgentMcpRuntimeCatalog.class)
+    public AgentMcpRuntimeCatalog agentMcpRuntimeCatalog(
+            ObjectProvider<McpToolMapper> toolMapper,
+            ObjectProvider<com.nageoffer.ai.ragent.mcp.admin.McpEndpointAllowList> allowList,
+            ObjectProvider<com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder> tenantScopeBinder,
+            AgentMcpRuntimeProperties properties) {
+        // 装配切片的 ApplicationContextRunner 不带 MapperScan；Mapper 缺席时不建该 bean
+        // （不要用 @ConditionalOnBean：自动配置类解析顺序不保证 MapperScan 已注册）。
+        McpToolMapper mapper = toolMapper.getIfAvailable();
+        if (mapper == null) {
+            return null;
+        }
+        return new AgentMcpRuntimeCatalog(mapper, allowList, tenantScopeBinder, properties);
     }
 
     /** 技能读端注册表（A1 #8 / V3 最小解锁）：只读 + 租户化缓存，管理面维持 BLOCKED。 */
