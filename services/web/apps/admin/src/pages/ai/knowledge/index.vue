@@ -24,10 +24,10 @@
 
   data-testid="kb-error/-empty/-rows/-loading"；脚本只认 testid，轮询非 loading（≤20s）。
 
-  ## K2 裁决落点
+  ## F08 入口（D9 改判 K2）
 
-  F08 知识图谱本期不做：图谱入口渲染"未配置"提示（data-testid="kg-unconfigured"），
-  不请求 /admin/kg/**。
+  知识图谱页 `/ai/knowledge-graph`（权限 ai:kb:read，V4-7102 复用）已交付；
+  本页提供入口 data-testid="kg-entry"，不再渲染"未配置"横幅。
 -->
 <script setup lang="ts">
 import type { KnowledgeBaseRow } from '@/api';
@@ -46,6 +46,8 @@ const { can } = usePermission();
 const PERMISSION_LIST = 'ai:kb:list';
 /** V4-7103 逐字（kb.write）。 */
 const PERMISSION_WRITE = 'ai:kb:write';
+/** V4-7102 逐字（kb.read）：F08 图谱页入口同权限。 */
+const PERMISSION_GRAPH = 'ai:kb:read';
 /** V4-7104 逐字（kb.delete）。 */
 const PERMISSION_DELETE = 'ai:kb:delete';
 
@@ -167,6 +169,10 @@ function openDocuments(row: KnowledgeBaseRow) {
   if (kbId)
     void router.push(`/ai/knowledge/${kbId}`);
 }
+
+function openKnowledgeGraph() {
+  void router.push('/ai/knowledge-graph');
+}
 </script>
 
 <template>
@@ -180,14 +186,19 @@ function openDocuments(row: KnowledgeBaseRow) {
     />
 
     <template v-else>
-      <!-- K2：F08 图谱入口只保留未配置提示 -->
+      <!-- F08（D9 改判）：K2 的"未配置"提示改为真实入口；页面权限 ai:kb:read。 -->
       <ElAlert
-        data-testid="kg-unconfigured"
+        v-if="can(PERMISSION_GRAPH)"
+        data-testid="kg-entry"
         type="info"
         :closable="false"
-        title="知识图谱（F08）本期未配置（维护者裁决 K2）：入口保留，图谱数据与端点不启用。"
         class="mb-4"
-      />
+      >
+        <span>知识图谱已启用：按知识库/文档浏览实体与关系，并查看文档-实体-关系来源。</span>
+        <ElButton link type="primary" data-testid="kg-entry-open" @click="openKnowledgeGraph">
+          打开知识图谱
+        </ElButton>
+      </ElAlert>
 
       <ElCard class="mb-4">
         <div class="toolbar">

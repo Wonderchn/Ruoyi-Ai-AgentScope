@@ -80,10 +80,12 @@ import type { PlatformClient } from '@ruoyi/platform-client/http';
 import { createAgentProfilesApi } from './agentProfiles';
 import { createIngestionTaskRunsApi } from './ingestionTaskRuns';
 import { createKnowledgeChunksApi } from './knowledgeChunks';
+import { createKnowledgeGraphApi } from './knowledgeGraph';
 import { createRuntimeConfigApi } from './runtimeConfig';
 
 export * from './agentProfiles';
 export * from './knowledgeChunks';
+export * from './knowledgeGraph';
 export * from './runtimeConfig';
 
 /** ragent 旧信封形状（`framework/convention/Result`：code 是**字符串**）。 */
@@ -513,6 +515,17 @@ export function createAiApi(client: PlatformClient) {
      * **前端不得追加任何 ACK/release 请求**）。契约见 `./ingestionTaskRuns.ts`。
      */
     ingestionTaskRuns: createIngestionTaskRunsApi(client),
+
+    /**
+     * 知识图谱（F08:0–3，2026-10-18）—— **本形态活族**。
+     *
+     * 4 条 `/api/ai/v1/admin/kg/**` 白名单路由（`AiGatewayController.ROUTES` 逐条登记）；
+     * 读=kb.read（graph/labels）/ config.read（status），写=kb.write（rebuild）。
+     * 信封 = 整数 `ApiEnvelope`（code=200），走共享 `PlatformClient`；三个 GET 走网关字节分支
+     * （交付回执由网关自行消费，前端不得追加 ACK）。读路径只读主库投影，零 LightRAG 外呼。
+     * 零新增 canonical 动作/权限/菜单行（复用 V4-7102/7103、V28-7150）。
+     */
+    knowledgeGraph: createKnowledgeGraphApi(client),
 
     /**
      * 摄取**任务面**（`IngestionTaskController`）。⚠️ 仍未装配：BLOCKED-BY-EMBEDDED-REGISTRY。

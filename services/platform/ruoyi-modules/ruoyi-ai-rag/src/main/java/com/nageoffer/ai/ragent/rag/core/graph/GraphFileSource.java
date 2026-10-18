@@ -19,6 +19,9 @@ package com.nageoffer.ai.ragent.rag.core.graph;
 
 import cn.hutool.core.util.StrUtil;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -53,5 +56,26 @@ public record GraphFileSource(String collectionName, String docId) {
         String baseName = filePath.substring(filePath.lastIndexOf('/') + 1);
         Matcher matcher = FORMAT.matcher(baseName);
         return matcher.matches() ? new GraphFileSource(matcher.group(1), matcher.group(2)) : null;
+    }
+
+    /**
+     * 解析 LightRAG 的多来源合并串（{@code <SEP>} 分隔）。
+     *
+     * <p>同一实体/关系跨多篇文档时，{@code properties.file_path} 是 {@code <SEP>} 拼接的
+     * 来源列表；逐段解析、跳过非法段、按 {@code (collectionName, docId)} 去重。
+     * 空/全非法输入返回空列表（调用方据此把该行计为 unattributed，绝不无主放行）。
+     */
+    public static List<GraphFileSource> parseAll(String filePathField) {
+        if (StrUtil.isBlank(filePathField)) {
+            return List.of();
+        }
+        LinkedHashSet<GraphFileSource> parsed = new LinkedHashSet<>();
+        for (String part : filePathField.split("<SEP>")) {
+            GraphFileSource source = parse(part);
+            if (source != null) {
+                parsed.add(source);
+            }
+        }
+        return List.copyOf(new ArrayList<>(parsed));
     }
 }

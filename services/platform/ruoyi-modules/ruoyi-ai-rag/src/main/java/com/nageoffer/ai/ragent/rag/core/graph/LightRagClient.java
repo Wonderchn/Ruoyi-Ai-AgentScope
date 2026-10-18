@@ -35,6 +35,8 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -132,6 +134,141 @@ public class LightRagClient {
             log.warn("LightRAG 图谱拉取失败 label={}: {}", label, e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * 连通性探测（F08:2）：专用短超时、不重试。
+     *
+     * <p>2xx → UP；超时（含连接/读取/调用超时）→ TIMEOUT；其他失败/非 2xx → DOWN。
+     * 该方法不抛异常：状态端点必须始终能回 200 信封，由 {@code status/reason} 表达真实结论。
+     */
+    public ProbeResult probe() {
+        long start = System.nanoTime();
+        OkHttpClient probeClient = timedClient(properties.getStatus().getTimeoutMs())
+                .newBuilder().retryOnConnectionFailure(false).build();
+        try (Response response = probeClient
+                .newCall(auth(new Request.Builder().url(url("/health")).get()).build()).execute()) {
+            long latency = latencyMs(start);
+            if (response.isSuccessful()) {
+                return new ProbeResult(true, false, latency, "图谱后端可用");
+            }
+            return new ProbeResult(false, false, latency, "图谱后端返回 HTTP " + response.code());
+        } catch (InterruptedIOException timeout) {
+            return new ProbeResult(false, true, latencyMs(start), "图谱后端探测超时");
+        } catch (Exception failure) {
+            return new ProbeResult(false, false, latencyMs(start),
+                    "图谱后端不可达: " + (failure.getMessage() == null
+                            ? failure.getClass().getSimpleName() : failure.getMessage()));
+        }
+    }
+
+    /**
+     * 严格拉取子图（重建专用）：非 2xx/空响应抛 {@link IOException}，由调用方映射 503。
+     * 与 {@link #fetchGraph} 的"失败降级 null"刻意分开，避免把后端故障误判成空图。
+     */
+    public JsonNode fetchGraphStrict(String label, int maxDepth, int maxNodes) throws IOException {
+        HttpUrl base = HttpUrl.parse(url("/graphs"));
+        if (base == null) {
+            throw new IOException("LightRAG base-url is invalid");
+        }
+        HttpUrl target = base.newBuilder()
+                .addQueryParameter("label", StrUtil.isNotBlank(label) ? label : "*")
+                .addQueryParameter("max_depth", String.valueOf(Math.max(1, maxDepth)))
+                .addQueryParameter("max_nodes", String.valueOf(Math.max(1, maxNodes)))
+                .build();
+        return executeStrict(auth(new Request.Builder().url(target).get()), "/graphs",
+                timedClient(properties.getQuery().getTimeoutMs()));
+    }
+
+    /**
+     * 按 file_path（或解析出的 docId）读取 LightRAG 文档抽取状态。
+     *
+     * <p>状态值来自 {@code /documents.statuses} 的分组键；缺失即 MISSING（调用方据此先写入再 409）。
+     */
+    public DocumentState documentState(String fileSource, String docId) throws IOException {
+        JsonNode root = executeStrict(auth(new Request.Builder().url(url("/documents")).get()),
+                "/documents", timedClient(properties.getQuery().getTimeoutMs()));
+        JsonNode statuses = root.path("statuses");
+        if (statuses.isObject()) {
+            var groups = statuses.fields();
+            while (groups.hasNext()) {
+                var group = groups.next();
+                if (!group.getValue().isArray()) {
+                    continue;
+                }
+                for (JsonNode doc : group.getValue()) {
+                    String filePath = doc.path("file_path").asText("");
+                    GraphFileSource source = GraphFileSource.parse(filePath);
+                    boolean matches = (StrUtil.isNotBlank(fileSource) && fileSource.equals(filePath))
+                            || (StrUtil.isNotBlank(docId) && source != null && docId.equals(source.docId()));
+                    if (matches) {
+                        return new DocumentState(statusOf(group.getKey()), doc.path("id").asText(""),
+                                group.getKey());
+                    }
+                }
+            }
+        }
+        return new DocumentState(DocumentStatus.MISSING, null, null);
+    }
+
+    /**
+     * 严格写入文档（重建专用）：非 2xx 抛 {@link IOException}，绝不把写入失败当成功。
+     *
+     * @param text       文档全文
+     * @param fileSource 来源标识 {@code {collectionName}_{docId}}
+     */
+    public void insertTextOrThrow(String text, String fileSource) throws IOException {
+        if (StrUtil.isBlank(text)) {
+            return;
+        }
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("text", text);
+        if (StrUtil.isNotBlank(fileSource)) {
+            body.put("file_source", fileSource);
+        }
+        executeStrict(auth(new Request.Builder().url(url("/documents/text"))
+                .post(RequestBody.create(objectMapper.writeValueAsString(body), JSON))), "/documents/text",
+                timedClient(properties.getQuery().getTimeoutMs()));
+    }
+
+    /** 探测结果；{@code reason} 供状态卡直接展示。 */
+    public record ProbeResult(boolean reachable, boolean timedOut, long latencyMs, String reason) {
+    }
+
+    /** LightRAG 文档抽取状态。 */
+    public enum DocumentStatus {
+        MISSING, PENDING, PROCESSED, FAILED, UNKNOWN
+    }
+
+    /** 单个文档的抽取状态与 LightRAG 内部 id。 */
+    public record DocumentState(DocumentStatus status, String id, String group) {
+    }
+
+    private static DocumentStatus statusOf(String group) {
+        if (group == null) {
+            return DocumentStatus.UNKNOWN;
+        }
+        return switch (group.toLowerCase()) {
+            case "processed" -> DocumentStatus.PROCESSED;
+            case "failed" -> DocumentStatus.FAILED;
+            case "pending", "processing" -> DocumentStatus.PENDING;
+            default -> DocumentStatus.UNKNOWN;
+        };
+    }
+
+    private OkHttpClient timedClient(long timeoutMs) {
+        if (timeoutMs <= 0) {
+            return httpClient;
+        }
+        return httpClient.newBuilder()
+                .callTimeout(Duration.ofMillis(timeoutMs))
+                .connectTimeout(Duration.ofMillis(timeoutMs))
+                .readTimeout(Duration.ofMillis(timeoutMs))
+                .build();
+    }
+
+    private static long latencyMs(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000L;
     }
 
     /**
@@ -333,6 +470,22 @@ public class LightRagClient {
             }
             String bodyStr = response.body() != null ? response.body().string() : "";
             return StrUtil.isNotBlank(bodyStr) ? objectMapper.readTree(bodyStr) : null;
+        }
+    }
+
+    /**
+     * 严格执行：非 2xx / 空响应都是失败（抛 IOException），不做降级。
+     */
+    private JsonNode executeStrict(Request.Builder builder, String path, OkHttpClient client) throws IOException {
+        try (Response response = client.newCall(builder.build()).execute()) {
+            if (!response.isSuccessful()) {
+                throw new IOException("LightRAG " + path + " returned HTTP " + response.code());
+            }
+            String bodyStr = response.body() != null ? response.body().string() : "";
+            if (StrUtil.isBlank(bodyStr)) {
+                throw new IOException("LightRAG " + path + " returned an empty body");
+            }
+            return objectMapper.readTree(bodyStr);
         }
     }
 

@@ -20,12 +20,11 @@
  *    但前端没有入口 ⇒ 用户"有权限却看不见任何东西"。
  * 2. **有页面无权限**（G-10 反向）：路由挂出来、后端却会拒绝 ⇒ "菜单可见进去就 403"。
  *
- * ## 本期不做（K2/F08 与 F19/F21 裁决，裁决优先于分母）
+ * ## 本期不做（F19/F21 裁决，裁决优先于分母）
  *
- * - F08 知识图谱页面：不做（K2）。入口只保留"未配置"提示（/ai/knowledge 页内
- *   data-testid="kg-unconfigured"）。`/admin/kg/graph`、`/admin/kg/labels` 两个
- *   API 分母不建页、不造页。该行以 `status: 'deferred'` 记录，双向断言跳过。
  * - F19 媒体 / F21 短剧页面：不做（本期范围外），同 deferred。
+ * - K2 的 F08 裁决已由协调者 D9（2026-10-18）改判：知识图谱页 `live`，
+ *   权限复用既有 `ai:kb:read`（V4-7102），零新增权限/菜单行。
  */
 
 /** 成对表的一行。 */
@@ -302,16 +301,21 @@ export const AI_ADMIN_PAIRS: readonly PermissionPagePair[] = [
     note: 'DELETE /agent-catalog/agent-skills/{id}（skill.delete）',
   },
 
-  // ---- 裁决行（双向断言跳过）----
+  // ---- 知识图谱（F08:0–3，2026-10-18，D9 改判 K2）----
+  // 页面与知识库共用 ai:kb:read（V4-7102）；status 用 config.read，重建用 kb.write。
+  // 4 条 /api/ai/v1/admin/kg/** 逐条放行，内层 GraphController 由
+  // AiEmbeddedGraphConfiguration 装配；读路径只读主库投影（零 LightRAG 外呼）。
   {
-    permission: '（K2 裁决：F08 本期不做）',
-    rowSource: '（无——图谱端点 /admin/kg/** 属 ai_reference_only 且不建页）',
-    route: '',
-    page: '知识图谱（F08）',
-    status: 'deferred',
-    endpoint: 'BLOCKED-BY-EMBEDDED-REGISTRY',
-    note: 'K2：图谱入口保留"未配置"提示（/ai/knowledge 页 kg-unconfigured），不建页不造页',
+    permission: 'ai:kb:read',
+    rowSource: 'V4__ai_policy_revision.sql 菜单 7102（复用既有行）',
+    route: '/ai/knowledge-graph',
+    page: '知识图谱（状态卡 / 筛选 / SVG 图 / 溯源面板）',
+    status: 'live',
+    endpoint: 'live',
+    note: 'GET /api/ai/v1/admin/kg/{graph,labels}（kb.read）；status=config.read（V28-7150），rebuild=kb.write（V4-7103）；GET 走网关字节分支，回执由网关消费',
   },
+
+  // ---- 裁决行（双向断言跳过）----
   {
     permission: '（本期范围外：F19/F21）',
     rowSource: '（无）',

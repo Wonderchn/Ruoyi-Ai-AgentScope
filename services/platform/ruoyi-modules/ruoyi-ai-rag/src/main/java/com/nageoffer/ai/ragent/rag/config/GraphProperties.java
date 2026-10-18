@@ -47,6 +47,21 @@ public class GraphProperties {
     private LightRag lightrag = new LightRag();
 
     /**
+     * 连通性探测配置（F08:2）
+     */
+    private Status status = new Status();
+
+    /**
+     * 图查询/文档状态调用配置（严格变体）
+     */
+    private Query query = new Query();
+
+    /**
+     * 投影重建上限（F08:3）
+     */
+    private Projection projection = new Projection();
+
+    /**
      * 图谱侧 embedding 模型标识
      * 独立于各知识库的向量 embedding，首次索引后不可更换
      */
@@ -79,5 +94,52 @@ public class GraphProperties {
          * hybrid 只回图结构关联的证据，与向量 / 关键词通道正交；naive 完全不走图，本架构下不建议
          */
         private String queryMode = "hybrid";
+    }
+
+    @Data
+    public static class Status {
+
+        /**
+         * /health 探测专用短超时（毫秒），不重试
+         */
+        private long timeoutMs = 1500;
+
+        /**
+         * 探测结果 TTL 缓存（毫秒）；单锁防击穿
+         */
+        private long cacheTtlMs = 10_000;
+    }
+
+    @Data
+    public static class Query {
+
+        /**
+         * /graphs、/documents、/documents/text 的超时（毫秒）
+         */
+        private long timeoutMs = 8000;
+    }
+
+    @Data
+    public static class Projection {
+
+        /**
+         * KB 模式单次重建的文档上限
+         */
+        private int maxDocs = 20;
+
+        /**
+         * 单次重建拼接正文的字符上限
+         */
+        private int maxChars = 1_000_000;
+
+        /**
+         * /graphs max_depth（固定 2，与 Spec 一致）
+         */
+        private int maxDepth = 2;
+
+        /**
+         * /graphs max_nodes（服务端上限 1000；截断即拒写）
+         */
+        private int maxNodes = 1000;
     }
 }

@@ -20,8 +20,11 @@ package com.nageoffer.ai.ragent.rag.core.graph;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Tag;
 
 @Tag("dev")
@@ -66,6 +69,21 @@ class GraphFileSourceTest {
                 GraphFileSource.parse("/data/inputs/kb_123.txt"));
         assertEquals(new GraphFileSource("kb", "123"),
                 GraphFileSource.parse("kb_123.tar.gz"));
+    }
+
+    @Test
+    @DisplayName("R9 多来源 <SEP>：逐段解析、跳过非法段、按 docId 去重")
+    void parseAllSplitsMergedPaths() {
+        assertEquals(List.of(new GraphFileSource("kb", "100"), new GraphFileSource("kb_hr", "101")),
+                GraphFileSource.parseAll("kb_100<SEP>kb_hr_101"));
+        // 同一来源重复出现只保留一次
+        assertEquals(List.of(new GraphFileSource("kb", "100")),
+                GraphFileSource.parseAll("kb_100<SEP>kb_100"));
+        // 非法段不归属，但也不拖垮合法段
+        assertEquals(List.of(new GraphFileSource("kb", "100")),
+                GraphFileSource.parseAll("readme.txt<SEP>kb_100<SEP> "));
+        assertTrue(GraphFileSource.parseAll("").isEmpty());
+        assertTrue(GraphFileSource.parseAll(null).isEmpty());
     }
 
     @Test
