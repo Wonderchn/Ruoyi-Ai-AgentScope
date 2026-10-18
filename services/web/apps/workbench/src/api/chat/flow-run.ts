@@ -6,15 +6,16 @@
  * | 步骤 | 契约 |
  * | --- | --- |
  * | 起跑 | `POST /api/ai/v1/flows/{uuid}/run`（专用 SSE 通道） |
- * | 受理体 | `{inputs: {name: string}, budget: {maxTokens, maxWallClockSeconds}}`（白名单） |
+ * | 受理体 | `{inputs: {name: string}, budget: {maxTokens, maxWallClockSeconds}, conversationId?}`（白名单） |
  * | 幂等 | 头 `Idempotency-Key: web-flow-<id>`（1..128 可见 ASCII） |
  * | 成功 | `content-type: text/event-stream`；帧信封 `type` ∈ `run.accepted` / `run.status` / `run.step_*` / `run.output_delta` / `run.terminal` |
  * | 失败 | 非 SSE 响应 = JSON 失败体 `{code,msg,data:{errorCode,retryable}}` |
  *
  * ## 纪律
  *
- * 1. **body 白名单**：只发 `inputs` 与 `budget`；`flowUuid` 走路径，`action`/`schemaVersion`
- *    由内层控制器补齐，不在客户端拼。
+ * 1. **body 白名单**：只发 `inputs`、`budget` 与可选的顶层 `conversationId`；`flowUuid` 走路径，
+ *    `action`/`schemaVersion` 由内层控制器补齐，不在客户端拼。`conversationId` 不得塞进 `inputs`
+ *    （服务端 inputs 是模板变量 map，放进去只会变成普通输入）。
  * 2. **inputs 全字符串**：`flow.run` 受理只接受字符串值；数字 `String(number)`、
  *    布尔 `"true"/"false"`、文件（Web 不支持）空串；另显式 `inputs.input = question`
  *    供模板变量 `{input}` 使用。
@@ -105,6 +106,8 @@ export interface FlowRunBudget {
 export interface FlowRunBody {
   inputs: Record<string, string>;
   budget: { maxTokens: number; maxWallClockSeconds: number };
+  /** F03:0：把本轮回话绑定到既有会话（顶层字段；缺省不写，保持既有行为）。 */
+  conversationId?: string;
 }
 
 /** 输入声明 → 字符串 map（见类注释纪律 2）。 */
@@ -143,6 +146,7 @@ export function buildFlowRunBody(
   inputs: WfNodeInput[] = [],
   question = '',
   budget?: FlowRunBudget,
+  conversationId?: string,
 ): FlowRunBody {
   if (!FLOW_UUID_PATTERN.test(flowUuid))
     throw new FlowRunInputError('flowUuid 必须是 32 位小写十六进制');
@@ -168,13 +172,17 @@ export function buildFlowRunBody(
   // 模板变量 `{input}` 的显式来源；与声明字段同名时以本轮问题为准。
   map.input = text;
 
-  return {
+  const body: FlowRunBody = {
     inputs: map,
     budget: {
       maxTokens: budget?.maxTokens ?? FLOW_RUN_MAX_TOKENS,
       maxWallClockSeconds: budget?.maxWallClockSeconds ?? FLOW_RUN_MAX_WALL_CLOCK_SECONDS,
     },
   };
+  const conversation = typeof conversationId === 'string' ? conversationId.trim() : '';
+  if (conversation !== '')
+    body.conversationId = conversation;
+  return body;
 }
 
 /** 运行客户端入参（`useChatRun` 会把 `SubmitRunInput` 原样转过来）。 */
@@ -184,6 +192,8 @@ export interface FlowRunRequestInput {
   flowInputs?: WfNodeInput[];
   flowQuestion?: string;
   budget?: FlowRunBudget;
+  /** F03:0：既有会话 id（workflow 绑定会话）；缺省表示本轮不写会话历史。 */
+  conversationId?: string;
   idempotencyKey?: string;
   signal?: AbortSignal;
 }
@@ -261,7 +271,8 @@ export function createFlowRunClient(deps: FlowRunClientDeps): FlowRunClient {
   async function* run(input: FlowRunRequestInput): AsyncGenerator<FlowRunUpdate, void, undefined> {
     const flowUuid = typeof input.flowUuid === 'string' ? input.flowUuid : '';
     const question = input.flowQuestion ?? input.text ?? '';
-    const body = buildFlowRunBody(flowUuid, input.flowInputs ?? [], question, input.budget);
+    const body = buildFlowRunBody(flowUuid, input.flowInputs ?? [], question, input.budget,
+      input.conversationId);
     const key = isValidIdempotencyKey(input.idempotencyKey)
       ? input.idempotencyKey
       : `${FLOW_RUN_IDEMPOTENCY_PREFIX}${newRequestId()}`;

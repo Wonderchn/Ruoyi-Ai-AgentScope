@@ -19,6 +19,7 @@ package com.nageoffer.ai.ragent.flow.runtime;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
+import com.nageoffer.ai.ragent.framework.convention.ChatMessage;
 import com.nageoffer.ai.ragent.framework.security.RevocationGuard;
 import com.nageoffer.ai.ragent.runtime.RunAccessService;
 import com.nageoffer.ai.ragent.runtime.RunApiException;
@@ -33,6 +34,9 @@ import com.nageoffer.ai.ragent.runtime.exec.RunExecution;
 import com.nageoffer.ai.ragent.runtime.exec.RunExecutionGuard;
 import com.nageoffer.ai.ragent.runtime.exec.RunExecutor;
 import com.nageoffer.ai.ragent.runtime.model.RunRecord;
+import com.nageoffer.ai.ragent.runtime.port.ConversationContextPort;
+import com.nageoffer.ai.ragent.runtime.port.ConversationHistoryPort;
+import com.nageoffer.ai.ragent.runtime.port.ConversationTurnMeta;
 import com.nageoffer.ai.ragent.runtime.usage.UsageLedgerService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -40,6 +44,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.ruoyi.ai.api.runtime.ChatPort;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -95,9 +100,12 @@ class FlowRunExecutorTest {
     private final ProviderCallBoundary providerBoundary = mock(ProviderCallBoundary.class);
     private final RevocationGuard revocationGuard = mock(RevocationGuard.class);
     private final RunExecutionGuard guard = mock(RunExecutionGuard.class);
+    private final ObjectProvider<ConversationContextPort> conversationContext = mock(ObjectProvider.class);
+    private final ObjectProvider<ConversationHistoryPort> conversationHistory = mock(ObjectProvider.class);
+    private final JdbcTemplate jdbc = mock(JdbcTemplate.class);
 
     private final FlowRunExecutor executor = new FlowRunExecutor(repository, access, bindingProvider, chat, usage,
-            providerBoundary, MAPPER);
+            providerBoundary, conversationContext, conversationHistory, jdbc, MAPPER);
 
     FlowRunExecutorTest() {
         when(bindingProvider.getIfAvailable()).thenReturn(bindingPort);
@@ -262,12 +270,108 @@ class FlowRunExecutorTest {
         verify(chat, never()).stream(any(), anyList(), anyInt(), any());
     }
 
+    // ------------------------------------------------------------------ F03:0 会话
+
+    @Test
+    @DisplayName("带 conversationId：历史拼在本轮 user 之前，成功收口写 ai_chat_message + conversation-history")
+    void conversationIdLoadsHistoryAndWritesBack() {
+        stubRuntime(graphSource("hello {name}", "{}"));
+        stubChat(outcome -> {
+            outcome.accept("answer");
+            return new ChatPort.ChatResult("answer", "prov-1", Map.of("total_tokens", 3), "stop");
+        });
+        ConversationContextPort context = mock(ConversationContextPort.class);
+        when(context.load(any(), any())).thenReturn(List.of(
+                ChatMessage.user("prior question"), ChatMessage.assistant("prior answer")));
+        when(conversationContext.getIfAvailable()).thenReturn(context);
+        ConversationHistoryPort history = mock(ConversationHistoryPort.class);
+        when(conversationHistory.getIfAvailable()).thenReturn(history);
+
+        RunExecutor.Outcome outcome = executor.execute(execution("conv-1"));
+
+        assertThat(outcome.status()).isEqualTo("SUCCEEDED");
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ChatMessage>> messages = ArgumentCaptor.forClass(List.class);
+        verify(chat).stream(any(), messages.capture(), anyInt(), any());
+        assertThat(messages.getValue()).extracting(ChatMessage::getRole)
+                .containsExactly(ChatMessage.Role.USER, ChatMessage.Role.ASSISTANT, ChatMessage.Role.USER);
+        assertThat(messages.getValue()).extracting(ChatMessage::getContent)
+                .containsExactly("prior question", "prior answer", "hello Ada");
+
+        verify(history).appendAttachedTurn(TENANT, MEMBER, USER, "conv-1", "Ada", "answer",
+                ConversationTurnMeta.EMPTY, null);
+        verify(guard).commitStep(eq("conversation-history"), eq("conversation-history"),
+                anyString(), any(), anyString());
+        verify(jdbc).update(org.mockito.ArgumentMatchers.contains("INSERT INTO ai_chat_message"),
+                any(Object[].class));
+    }
+
+    @Test
+    @DisplayName("带 conversationId 但读端口缺席：fail-closed，零 provider 调用")
+    void missingConversationContextPortFailsClosed() {
+        stubRuntime(graphSource("hello {name}", "{}"));
+
+        RunExecutor.Outcome outcome = executor.execute(execution("conv-1"));
+
+        assertThat(outcome.status()).isEqualTo("FAILED");
+        assertThat(outcome.errorCode()).isEqualTo("AUTHORIZATION_UNAVAILABLE");
+        verify(chat, never()).stream(any(), anyList(), anyInt(), any());
+        verify(repository).markRuntimeFailed(eq(TENANT), eq(RUNTIME_UUID), eq("AUTHORIZATION_UNAVAILABLE"));
+    }
+
+    @Test
+    @DisplayName("读端口拒绝（404 语义）：不降级为空历史，零 provider 调用")
+    void conversationContextDenialFailsClosed() {
+        stubRuntime(graphSource("hello {name}", "{}"));
+        ConversationContextPort context = mock(ConversationContextPort.class);
+        when(context.load(any(), any())).thenThrow(
+                new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN));
+        when(conversationContext.getIfAvailable()).thenReturn(context);
+
+        RunExecutor.Outcome outcome = executor.execute(execution("conv-1"));
+
+        assertThat(outcome.status()).isEqualTo("FAILED");
+        assertThat(outcome.errorCode()).isEqualTo("RESOURCE_NOT_FOUND_OR_FORBIDDEN");
+        verify(chat, never()).stream(any(), anyList(), anyInt(), any());
+    }
+
+    @Test
+    @DisplayName("conversation-history 步骤已完成：重放不重复写历史")
+    void completedConversationHistoryStepSkipsRewrite() {
+        stubRuntime(graphSource("hello {name}", "{}"));
+        stubChat(outcome -> {
+            outcome.accept("answer");
+            return new ChatPort.ChatResult("answer", "prov-1", Map.of("total_tokens", 3), "stop");
+        });
+        ConversationContextPort context = mock(ConversationContextPort.class);
+        when(context.load(any(), any())).thenReturn(List.of());
+        when(conversationContext.getIfAvailable()).thenReturn(context);
+        ConversationHistoryPort history = mock(ConversationHistoryPort.class);
+        when(conversationHistory.getIfAvailable()).thenReturn(history);
+        when(guard.findStep("conversation-history")).thenReturn(Optional.of(new RunLedgerDao.StepRow(
+                "conversation-history", 1, 1, "conversation-history", "COMPLETED", "{}", null, "{}",
+                1L, Instant.now(), Instant.now())));
+
+        RunExecutor.Outcome outcome = executor.execute(execution("conv-1"));
+
+        assertThat(outcome.status()).isEqualTo("SUCCEEDED");
+        verify(history, never()).appendAttachedTurn(anyString(), anyString(), anyString(), anyString(),
+                anyString(), anyString(), any(), any());
+        verify(guard, never()).commitStep(eq("conversation-history"), eq("conversation-history"),
+                anyString(), any(), anyString());
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private RunExecution execution() {
+        return execution(null);
+    }
+
+    private RunExecution execution(String conversationId) {
+        String input = "{\"flowUuid\":\"" + WORKFLOW + "\",\"inputs\":{\"name\":\"Ada\",\"input\":\"Ada\"}"
+                + (conversationId == null ? "" : ",\"conversationId\":\"" + conversationId + "\"") + "}";
         RunRecord run = new RunRecord(TENANT, RUN_ID, MEMBER, USER, "flow.run", "RUNNING", "hash", "idem",
-                "{\"flowUuid\":\"" + WORKFLOW + "\",\"inputs\":{\"name\":\"Ada\"}}",
-                "{\"maxTokens\":512}", FlowRunContract.EXECUTION_VERSION, 3, 5, "[]", 2L, 2L, 1, 1L,
+                input, "{\"maxTokens\":512}", FlowRunContract.EXECUTION_VERSION, 3, 5, "[]", 2L, 2L, 1, 1L,
                 "worker-1", Instant.now().plusSeconds(30), null, null, null, null, Instant.now(),
                 Instant.now(), null);
         return new RunExecution(run, guard);

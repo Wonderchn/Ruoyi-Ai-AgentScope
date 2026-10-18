@@ -106,6 +106,15 @@ describe('buildFlowRunBody：白名单与字符串化', () => {
     assert.deepEqual(custom.budget, { maxTokens: 100, maxWallClockSeconds: 30 });
   });
 
+  it('F03:0：conversationId 是顶层可选字段；缺省时 body 形状不变', () => {
+    const bound = buildFlowRunBody(FLOW_UUID, [], 'x', undefined, 'conv-1');
+    assert.equal(bound.conversationId, 'conv-1');
+    assert.equal(bound.inputs.conversationId, undefined);
+
+    const unbound = buildFlowRunBody(FLOW_UUID, [], 'x');
+    assert.equal('conversationId' in unbound, false);
+  });
+
   it('非法 flowUuid 在发出请求前拒绝', () => {
     assert.throws(() => buildFlowRunBody('not-a-flow', [], 'x'), /flowUuid/);
   });
@@ -168,6 +177,24 @@ describe('createFlowRunClient：POST SSE', () => {
     assert.equal(body.inputs.count, '3');
     assert.equal(body.inputs.input, '请回答');
     assert.deepEqual(Object.keys(body).sort(), ['budget', 'inputs']);
+  });
+
+  it('F03:0：conversationId 透传到受理体顶层，不进入 inputs', async () => {
+    const { client, calls } = harness(() => sseResponse([
+      frame(1, 'run.terminal', { status: 'SUCCEEDED', resultRef: '{"output":{"value":"ok"}}' }),
+    ]));
+    await collect(client.run, {
+      flowUuid: FLOW_UUID,
+      flowInputs: [textInput('q')],
+      flowQuestion: '请回答',
+      conversationId: 'conv-f03',
+      idempotencyKey: 'web-flow-test-conv',
+    });
+
+    const body = JSON.parse(String(calls[0].init.body));
+    assert.equal(body.conversationId, 'conv-f03');
+    assert.equal(body.inputs.conversationId, undefined);
+    assert.deepEqual(Object.keys(body).sort(), ['budget', 'conversationId', 'inputs']);
   });
 
   it('缺省幂等键带 web-flow- 前缀（可观测、非随机空串）', async () => {

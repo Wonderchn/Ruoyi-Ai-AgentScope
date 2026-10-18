@@ -124,9 +124,17 @@ public class AiEmbeddedFlowRunConfiguration {
                                                RuntimeModelGatewayPort runtimeModelGatewayPort,
                                                UsageLedgerService usageLedgerService,
                                                ProviderCallBoundary providerCallBoundary,
+                                               ObjectProvider<
+                                                       com.nageoffer.ai.ragent.runtime.port.ConversationContextPort>
+                                                       conversationContext,
+                                               ObjectProvider<
+                                                       com.nageoffer.ai.ragent.runtime.port.ConversationHistoryPort>
+                                                       conversationHistory,
+                                               JdbcTemplate jdbc,
                                                ObjectMapper objectMapper) {
             return new FlowRunExecutor(flowRuntimeRepository, runAccessService, runConfigBindingPort,
-                    runtimeModelGatewayPort, usageLedgerService, providerCallBoundary, objectMapper);
+                    runtimeModelGatewayPort, usageLedgerService, providerCallBoundary,
+                    conversationContext, conversationHistory, jdbc, objectMapper);
         }
     }
 }

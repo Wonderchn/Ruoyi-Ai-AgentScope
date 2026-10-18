@@ -166,6 +166,71 @@ class FlowRunContractTest {
         order.verify(transactionManager).commit(any());
     }
 
+    // ------------------------------------------------------------------ F03:0 会话绑定
+
+    @Test
+    @DisplayName("onAdmitted 带 conversationId：事务内锁会话并允许首次绑定")
+    void onAdmittedLocksConversationForFirstBinding() {
+        String runId = "r-" + UUID.randomUUID().toString().replace("-", "");
+        when(runs.lockOwnedConversation(TENANT, MEMBER, "conv-1")).thenReturn(true);
+        when(runs.latestFlowUuidForConversation(TENANT, MEMBER, USER, "conv-1", runId))
+                .thenReturn(Optional.empty());
+        when(repository.findExecutableGraph(TENANT, WORKFLOW, 2101L))
+                .thenReturn(Optional.of(graphSource()));
+        when(repository.insertRuntime(eq(TENANT), anyString(), eq(2101L), eq(41L), anyString())).thenReturn(7L);
+
+        contract.onAdmitted(principal(), runId, request(null, "{\"name\":\"Ada\"}", "conv-1"));
+
+        verify(runs).lockOwnedConversation(TENANT, MEMBER, "conv-1");
+        verify(runs).latestFlowUuidForConversation(TENANT, MEMBER, USER, "conv-1", runId);
+        verify(repository).insertRuntime(eq(TENANT), eq(runId.substring(2)), eq(2101L), eq(41L), anyString());
+    }
+
+    @Test
+    @DisplayName("onAdmitted 同会话换 flowUuid：RUN_STATE_CONFLICT，且不写 runtime")
+    void onAdmittedRejectsConversationBoundToAnotherFlow() {
+        String runId = "r-" + UUID.randomUUID().toString().replace("-", "");
+        when(runs.lockOwnedConversation(TENANT, MEMBER, "conv-1")).thenReturn(true);
+        when(runs.latestFlowUuidForConversation(TENANT, MEMBER, USER, "conv-1", runId))
+                .thenReturn(Optional.of("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+
+        assertThatThrownBy(() -> contract.onAdmitted(principal(), runId,
+                request(null, "{\"name\":\"Ada\"}", "conv-1")))
+                .isInstanceOf(RunApiException.class)
+                .extracting(e -> ((RunApiException) e).errorCode())
+                .isEqualTo(RunErrorCode.RUN_STATE_CONFLICT);
+        verify(repository, never()).insertRuntime(anyString(), anyString(), anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    @DisplayName("onAdmitted 会话不存在/非本人：404，且不写 runtime")
+    void onAdmittedRejectsUnownedConversation() {
+        String runId = "r-" + UUID.randomUUID().toString().replace("-", "");
+        when(runs.lockOwnedConversation(TENANT, MEMBER, "conv-x")).thenReturn(false);
+
+        assertThatThrownBy(() -> contract.onAdmitted(principal(), runId,
+                request(null, "{\"name\":\"Ada\"}", "conv-x")))
+                .isInstanceOf(RunApiException.class)
+                .extracting(e -> ((RunApiException) e).errorCode())
+                .isEqualTo(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
+        verify(repository, never()).insertRuntime(anyString(), anyString(), anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    @DisplayName("onAdmitted 无 conversationId：不触碰会话绑定（既有行为不变）")
+    void onAdmittedWithoutConversationKeepsExistingBehavior() {
+        String runId = "r-" + UUID.randomUUID().toString().replace("-", "");
+        when(repository.findExecutableGraph(TENANT, WORKFLOW, 2101L))
+                .thenReturn(Optional.of(graphSource()));
+        when(repository.insertRuntime(eq(TENANT), anyString(), eq(2101L), eq(41L), anyString())).thenReturn(7L);
+
+        contract.onAdmitted(principal(), runId, request(null, "{\"name\":\"Ada\"}"));
+
+        verify(runs, never()).lockOwnedConversation(anyString(), anyString(), anyString());
+        verify(runs, never()).latestFlowUuidForConversation(anyString(), anyString(), anyString(),
+                anyString(), anyString());
+    }
+
     // ------------------------------------------------------------------ validate
 
     @Test
@@ -298,7 +363,12 @@ class FlowRunContractTest {
     }
 
     private AdmissionRequest request(String retryOf, String inputsJson) {
-        return new AdmissionRequest(1, "flow.run", null, null, input(inputsJson), List.of(), null, null, retryOf);
+        return request(retryOf, inputsJson, null);
+    }
+
+    private AdmissionRequest request(String retryOf, String inputsJson, String conversationId) {
+        return new AdmissionRequest(1, "flow.run", conversationId, null, input(inputsJson), List.of(),
+                null, null, retryOf);
     }
 
     private JsonNode input(String inputsJson) {

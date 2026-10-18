@@ -61,7 +61,8 @@ import java.util.UUID;
 public class FlowRunController {
 
     private static final int MAX_BODY = 256 * 1024;
-    private static final Set<String> BODY_FIELDS = Set.of("inputs", "budget", "retryOf");
+    private static final Set<String> BODY_FIELDS =
+            Set.of("inputs", "budget", "retryOf", "conversationId");
     private static final ObjectMapper JSON = new ObjectMapper()
             .enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
             .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
@@ -140,10 +141,19 @@ public class FlowRunController {
             }
             retryOf = retryNode.asText();
         }
+        // F03:0：conversationId 只允许在受理体顶层（不得放进 inputs）。
+        String conversationId = null;
+        JsonNode conversationNode = node.get("conversationId");
+        if (conversationNode != null && !conversationNode.isNull()) {
+            if (!conversationNode.isTextual() || conversationNode.asText().isBlank()) {
+                throw new RunApiException(RunErrorCode.BAD_REQUEST, "conversationId must be a non-empty string");
+            }
+            conversationId = conversationNode.asText();
+        }
         ObjectNode input = JSON.createObjectNode();
         input.put("flowUuid", uuid);
         input.set("inputs", inputs);
-        return new AdmissionRequest(1, FlowRunContract.ACTION, null, null, input, List.of(), null,
+        return new AdmissionRequest(1, FlowRunContract.ACTION, conversationId, null, input, List.of(), null,
                 budget == null || budget.isNull() ? null : budget, retryOf);
     }
 

@@ -456,20 +456,65 @@ public class RunLedgerDao {
      * {@code limit} 由调用方给定（配置层收敛）。
      */
     public List<RunRecord> listCompletedConversationRuns(String tenantId, String memberId, String subject,
-                                                         String conversationId, String excludingRunId, int limit) {
+                                                         String action, String conversationId,
+                                                         String excludingRunId, int limit) {
         return jdbc.query(
                 "SELECT " + RUN_COLUMNS_PREFIXED + " FROM ai_run r "
-                        + "WHERE r.tenant_id=? AND r.member_id=? AND r.subject=? AND r.action='rag.chat' "
+                        + "WHERE r.tenant_id=? AND r.member_id=? AND r.subject=? AND r.action=? "
                         + "AND r.status='SUCCEEDED' AND r.run_id<>? "
                         + "AND r.input->>'conversationId'=? "
-                        + "AND EXISTS (SELECT 1 FROM ai_run_step s WHERE s.tenant_id=r.tenant_id "
-                        + "AND s.run_id=r.run_id AND s.step_id='retrieve' AND s.state='COMPLETED') "
-                        + "AND EXISTS (SELECT 1 FROM ai_run_step s WHERE s.tenant_id=r.tenant_id "
-                        + "AND s.run_id=r.run_id AND s.step_id='model' AND s.state='COMPLETED') "
-                        + "AND EXISTS (SELECT 1 FROM ai_run_step s WHERE s.tenant_id=r.tenant_id "
-                        + "AND s.run_id=r.run_id AND s.step_id='conversation-history' AND s.state='COMPLETED') "
+                        + conversationStepPredicate(action)
                         + "ORDER BY r.created_at DESC, r.run_id DESC LIMIT ?",
-                RunLedgerDao::map, tenantId, memberId, subject, excludingRunId, conversationId, limit);
+                RunLedgerDao::map, tenantId, memberId, subject, action, excludingRunId, conversationId, limit);
+    }
+
+    /**
+     * 会话历史"完整轮"的步骤谓词，按 action 分派（F03:0）。
+     *
+     * <p>{@code rag.chat} 必须齐全 retrieve/model/conversation-history；
+     * {@code flow.run} 的步骤是 {@code node:<uuid>}，成功收口只以
+     * {@code conversation-history} 为完整轮标志（问题/答案来自受理载荷与 ai_chat_message）。
+     * 未知 action 走与 rag.chat 相同的保守谓词。
+     */
+    private static String conversationStepPredicate(String action) {
+        String history = "AND EXISTS (SELECT 1 FROM ai_run_step s WHERE s.tenant_id=r.tenant_id "
+                + "AND s.run_id=r.run_id AND s.step_id='conversation-history' AND s.state='COMPLETED') ";
+        if ("flow.run".equals(action)) {
+            return history;
+        }
+        return "AND EXISTS (SELECT 1 FROM ai_run_step s WHERE s.tenant_id=r.tenant_id "
+                + "AND s.run_id=r.run_id AND s.step_id='retrieve' AND s.state='COMPLETED') "
+                + "AND EXISTS (SELECT 1 FROM ai_run_step s WHERE s.tenant_id=r.tenant_id "
+                + "AND s.run_id=r.run_id AND s.step_id='model' AND s.state='COMPLETED') "
+                + history;
+    }
+
+    /**
+     * F03:0 无迁移绑定：锁住会话行（tenant+member+conversation+未删），返回是否命中。
+     * 必须在受理事务内调用；跨租户/他人会话与"不存在"同形（false）。
+     */
+    public boolean lockOwnedConversation(String tenantId, String memberId, String conversationId) {
+        List<String> rows = jdbc.query(
+                "SELECT conversation_id FROM platform.ai_conversation "
+                        + "WHERE tenant_id=? AND member_id=? AND conversation_id=? AND deleted=0 FOR UPDATE",
+                (rs, rowNum) -> rs.getString(1), tenantId, memberId, conversationId);
+        return !rows.isEmpty();
+    }
+
+    /**
+     * F03:0 无迁移绑定：该会话最近一条 {@code flow.run}（排除当前 run）的 flowUuid。
+     * 无历史 flow.run 时返回 empty（首次绑定合法）。
+     */
+    public Optional<String> latestFlowUuidForConversation(String tenantId, String memberId, String subject,
+                                                          String conversationId, String excludingRunId) {
+        List<String> rows = jdbc.query(
+                "SELECT r.input->>'flowUuid' FROM ai_run r "
+                        + "WHERE r.tenant_id=? AND r.member_id=? AND r.subject=? AND r.action='flow.run' "
+                        + "AND r.run_id<>? AND r.input->>'conversationId'=? "
+                        + "AND r.input->>'flowUuid' IS NOT NULL "
+                        + "ORDER BY r.created_at DESC, r.run_id DESC LIMIT 1",
+                (rs, rowNum) -> rs.getString(1), tenantId, memberId, subject, excludingRunId, conversationId);
+        return rows.stream().filter(value -> value != null && !value.isBlank()).findFirst();
     }
 
     /**

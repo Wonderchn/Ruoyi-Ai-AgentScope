@@ -144,7 +144,8 @@ class RunLedgerDaoConversationContextTest {
     }
 
     private static List<String> listRunIds(String excludingRunId, int limit) {
-        return dao.listCompletedConversationRuns(TENANT, MEMBER, SUBJECT, CONV, excludingRunId, limit)
+        return dao.listCompletedConversationRuns(TENANT, MEMBER, SUBJECT, "rag.chat", CONV,
+                        excludingRunId, limit)
                 .stream().map(RunRecord::runId).toList();
     }
 
@@ -216,6 +217,33 @@ class RunLedgerDaoConversationContextTest {
         seedCompleteSteps("run-no-conv");
 
         assertThat(listRunIds(CURRENT_RUN, 8)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("flow.run：完整轮只要求 conversation-history，不与 rag.chat 的 retrieve/model 谓词混用")
+    void flowRunRequiresOnlyConversationHistoryStep() {
+        Instant base = Instant.parse("2026-10-15T04:30:00Z");
+        jdbc.update("INSERT INTO platform.ai_run (tenant_id, run_id, member_id, subject, action, status, "
+                        + "input, policy_version, acl_version, created_at) VALUES (?,?,?,?,'flow.run','SUCCEEDED',"
+                        + " ?::jsonb,1,1,?)",
+                TENANT, "run-flow-ok", MEMBER, SUBJECT,
+                "{\"flowUuid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"inputs\":{\"input\":\"流程问题\"},"
+                        + "\"conversationId\":\"" + CONV + "\"}", Timestamp.from(base));
+        seedStep("run-flow-ok", "conversation-history", "COMPLETED");
+        jdbc.update("INSERT INTO platform.ai_run (tenant_id, run_id, member_id, subject, action, status, "
+                        + "input, policy_version, acl_version, created_at) VALUES (?,?,?,?,'flow.run','SUCCEEDED',"
+                        + " ?::jsonb,1,1,?)",
+                TENANT, "run-flow-no-history", MEMBER, SUBJECT,
+                "{\"flowUuid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"inputs\":{\"input\":\"流程问题\"},"
+                        + "\"conversationId\":\"" + CONV + "\"}", Timestamp.from(base.plusSeconds(60)));
+        // rag.chat 只完成 conversation-history：不是完整轮（仍要求 retrieve/model）
+        seedRun("run-rag-history-only", "SUCCEEDED", CONV, base.plusSeconds(120));
+        seedStep("run-rag-history-only", "conversation-history", "COMPLETED");
+
+        assertThat(dao.listCompletedConversationRuns(TENANT, MEMBER, SUBJECT, "flow.run", CONV,
+                CURRENT_RUN, 8)).extracting(RunRecord::runId).containsExactly("run-flow-ok");
+        assertThat(dao.listCompletedConversationRuns(TENANT, MEMBER, SUBJECT, "rag.chat", CONV,
+                CURRENT_RUN, 8)).isEmpty();
     }
 
     // ---------------------------------------------------------------- the answer

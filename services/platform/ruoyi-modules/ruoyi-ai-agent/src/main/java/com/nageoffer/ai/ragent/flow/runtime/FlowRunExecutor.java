@@ -37,18 +37,24 @@ import com.nageoffer.ai.ragent.runtime.exec.RunExecution;
 import com.nageoffer.ai.ragent.runtime.exec.RunExecutionGuard;
 import com.nageoffer.ai.ragent.runtime.exec.RunExecutor;
 import com.nageoffer.ai.ragent.runtime.model.RunRecord;
+import com.nageoffer.ai.ragent.runtime.port.ConversationContextPort;
+import com.nageoffer.ai.ragent.runtime.port.ConversationHistoryPort;
+import com.nageoffer.ai.ragent.runtime.port.ConversationTurnMeta;
 import com.nageoffer.ai.ragent.runtime.usage.UsageLedgerService;
 import org.ruoyi.ai.api.runtime.ChatPort;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * F13:2 {@code flow.run} 执行器（最小切片：START → LLM → END）。
@@ -81,18 +87,26 @@ public class FlowRunExecutor implements RunExecutor {
     private final RuntimeModelGatewayPort chat;
     private final UsageLedgerService usage;
     private final ProviderCallBoundary providerBoundary;
+    private final ObjectProvider<ConversationContextPort> conversationContext;
+    private final ObjectProvider<ConversationHistoryPort> conversationHistory;
+    private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
 
     public FlowRunExecutor(FlowRuntimeRepository repository, RunAccessService access,
                            ObjectProvider<RunConfigBindingPort> bindingPort, RuntimeModelGatewayPort chat,
                            UsageLedgerService usage, ProviderCallBoundary providerBoundary,
-                           ObjectMapper objectMapper) {
+                           ObjectProvider<ConversationContextPort> conversationContext,
+                           ObjectProvider<ConversationHistoryPort> conversationHistory,
+                           JdbcTemplate jdbc, ObjectMapper objectMapper) {
         this.repository = repository;
         this.access = access;
         this.bindingPort = bindingPort;
         this.chat = chat;
         this.usage = usage;
         this.providerBoundary = providerBoundary;
+        this.conversationContext = conversationContext;
+        this.conversationHistory = conversationHistory;
+        this.jdbc = jdbc;
         this.objectMapper = objectMapper;
     }
 
@@ -145,9 +159,26 @@ public class FlowRunExecutor implements RunExecutor {
         }
         Map<String, String> inputs = FlowRunContract.readInputs(wrapper.get("payload"));
 
+        ExecutionPrincipal principal;
         try {
-            access.current(run, Set.of(FlowRunContract.ACTION));
+            principal = access.current(run, Set.of(FlowRunContract.ACTION));
         } catch (RuntimeException unauthorized) {
+            markRuntimeFailed(guard, tenantId, runtimeUuid, "AUTHORIZATION_UNAVAILABLE");
+            return Outcome.failed("AUTHORIZATION_UNAVAILABLE");
+        }
+        // F03:0：conversationId 是受理载荷顶层字段（由受理侧折入 run 行 input，D7a）。
+        // 读历史在 markRuntimeRunning/任何 provider 调用之前完成：归属/授权/依赖失败一律
+        // fail-closed，0 提供方调用、0 用量。
+        JsonNode storedInput = storedInput(execution);
+        String conversationId = storedInput.path("conversationId").asText("");
+        String question = storedInput.path("inputs").path("input").asText("");
+        List<ChatMessage> history;
+        try {
+            history = loadConversationHistory(execution, principal, conversationId);
+        } catch (RunApiException denied) {
+            markRuntimeFailed(guard, tenantId, runtimeUuid, denied.errorCode().name());
+            return Outcome.failed(denied.errorCode().name());
+        } catch (RuntimeException unavailable) {
             markRuntimeFailed(guard, tenantId, runtimeUuid, "AUTHORIZATION_UNAVAILABLE");
             return Outcome.failed("AUTHORIZATION_UNAVAILABLE");
         }
@@ -186,7 +217,7 @@ public class FlowRunExecutor implements RunExecutor {
 
                 StepResult result = switch (node.type()) {
                     case "START" -> new StepResult(Map.of("output", inputs), 0);
-                    case "LLM" -> llmStep(execution, guard, snapshot, inputs, stepId);
+                    case "LLM" -> llmStep(execution, guard, snapshot, inputs, stepId, history);
                     case "END" -> endStep(snapshot, node, inputs, stepOutputs);
                     default -> throw new RunApiException(RunErrorCode.BAD_REQUEST,
                             "unsupported flow node type: " + node.type());
@@ -205,8 +236,16 @@ public class FlowRunExecutor implements RunExecutor {
 
             String finalValue = stepOutputs.getOrDefault(snapshot.endNode().uuid(), "");
             String outputJson = toJson(Map.of("output", Map.of("value", finalValue)));
+            ExecutionPrincipal historyPrincipal = principal;
             guard.commitAtomic(() -> {
                 repository.markRuntimeSucceeded(tenantId, runtimeUuid, outputJson);
+                if (!conversationId.isBlank()) {
+                    // F03:0：先写 run 作用域答案（恢复同源），再写会话历史；两者与终态同一事务。
+                    // 任一失败都会回滚终态并向上抛出（fail-closed，不静默丢历史）。
+                    persistMessage(execution, finalValue, 1);
+                    persistConversationHistory(execution, guard, historyPrincipal, conversationId,
+                            question, finalValue);
+                }
                 return null;
             });
             Map<String, Object> outcome = new LinkedHashMap<>();
@@ -240,7 +279,8 @@ public class FlowRunExecutor implements RunExecutor {
     // ------------------------------------------------------------------ steps
 
     private StepResult llmStep(RunExecution execution, RunExecutionGuard guard,
-                               FlowGraphSnapshot snapshot, Map<String, String> inputs, String stepId) {
+                               FlowGraphSnapshot snapshot, Map<String, String> inputs, String stepId,
+                               List<ChatMessage> history) {
         String tenantId = execution.tenantId();
         String runId = execution.runId();
         RunConfigBinding binding;
@@ -270,9 +310,12 @@ public class FlowRunExecutor implements RunExecutor {
         StringBuilder answer = new StringBuilder();
         StringBuilder pending = new StringBuilder();
         boolean[] cancelled = {false};
+        // F03:0：会话历史（旧 → 新）放在本轮 user 之前；本轮回答仍以本轮流程输入为准。
+        List<ChatMessage> messages = new ArrayList<>(history);
+        messages.add(ChatMessage.user(snapshot.renderLlmPrompt(inputs)));
         ChatPort.ChatResult result;
         try {
-            result = chat.stream(binding, List.of(ChatMessage.user(snapshot.renderLlmPrompt(inputs))),
+            result = chat.stream(binding, messages,
                     maxTokens(execution), delta -> {
                         answer.append(delta);
                         pending.append(delta);
@@ -381,6 +424,75 @@ public class FlowRunExecutor implements RunExecutor {
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /** run 行受理 input（含 D7a 折入的顶层 conversationId）；畸形按空对象处理，不冒充历史。 */
+    private JsonNode storedInput(RunExecution execution) {
+        String inputJson = execution.run().inputJson();
+        if (inputJson == null || inputJson.isBlank()) {
+            return JSON.createObjectNode();
+        }
+        try {
+            JsonNode input = JSON.readTree(inputJson);
+            return input != null && input.isObject() ? input : JSON.createObjectNode();
+        } catch (Exception e) {
+            return JSON.createObjectNode();
+        }
+    }
+
+    /**
+     * 载入已授权会话历史；无 conversationId 是唯一合法空历史。
+     * 端口缺席/归属/授权/依赖失败一律抛出，由调用方 fail-closed。
+     */
+    private List<ChatMessage> loadConversationHistory(RunExecution execution,
+                                                      ExecutionPrincipal principal,
+                                                      String conversationId) {
+        if (conversationId.isBlank()) {
+            return List.of();
+        }
+        ConversationContextPort context = conversationContext == null
+                ? null : conversationContext.getIfAvailable();
+        if (context == null) {
+            throw new IllegalStateException(
+                    "conversationId requires a wired authorized context consumer but the conversation context port is absent"
+                            + " (runId=" + execution.runId() + ", conversationId=" + conversationId + ")");
+        }
+        return context.load(execution.run(), principal);
+    }
+
+    /** run 作用域的 assistant 答案（恢复路径同源）；与历史写同事务。 */
+    private void persistMessage(RunExecution execution, String answer, int sequence) {
+        jdbc.update("INSERT INTO ai_chat_message (tenant_id, message_id, run_id, sequence, role, content, citations) "
+                        + "VALUES (?,?,?,?,'assistant',?,?::jsonb) ON CONFLICT (tenant_id, run_id, sequence) DO NOTHING",
+                execution.tenantId(), "msg-" + UUID.randomUUID().toString().replace("-", ""),
+                execution.runId(), sequence, answer, toJson(List.of()));
+    }
+
+    /**
+     * 成功收口追加会话历史（幂等：conversation-history 步骤已 COMPLETED 即跳过）。
+     * 载荷带 conversationId 但端口未接线时抛错（run 失败可见），不静默少写一轮。
+     */
+    private void persistConversationHistory(RunExecution execution, RunExecutionGuard guard,
+                                            ExecutionPrincipal principal, String conversationId,
+                                            String question, String answer) {
+        if (conversationId.isBlank()) {
+            return;
+        }
+        Optional<RunLedgerDao.StepRow> completed = guard.findStep("conversation-history");
+        if (completed.isPresent() && "COMPLETED".equals(completed.get().state())) {
+            return;
+        }
+        ConversationHistoryPort history = conversationHistory == null
+                ? null : conversationHistory.getIfAvailable();
+        if (history == null) {
+            throw new IllegalStateException(
+                    "conversation history port is not wired but the accepted payload carries conversationId="
+                            + conversationId + " (runId=" + execution.runId() + ")");
+        }
+        history.appendAttachedTurn(execution.tenantId(), principal.membershipId(), principal.userId(),
+                conversationId, question, answer, ConversationTurnMeta.EMPTY, null);
+        guard.commitStep("conversation-history", "conversation-history",
+                toJson(Map.of("conversationId", conversationId)), null, toJson(Map.of("calls", 0)));
+    }
 
     private JsonNode readWrapper(String inputJson) {
         if (inputJson == null || inputJson.isBlank()) {

@@ -169,6 +169,22 @@ public class FlowRunContract implements RuntimeActionContract {
         if (payload == null || !payload.isObject()) {
             throw bad("flow input must be an object");
         }
+        // F03:0 无迁移绑定：同一会话只允许绑定同一条 flow.run。
+        // 事务内先锁会话行，再比较该会话最近 flow.run 的 flowUuid（不同即冲突）；
+        // 会话不存在/非本人一律 404（与读路径同形，不泄露存在性）。
+        String conversationId = request.conversationId();
+        if (conversationId != null && !conversationId.isBlank()) {
+            if (!runs.lockOwnedConversation(tenantId, principal.membershipId(), conversationId)) {
+                throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
+            }
+            String requestedFlowUuid = payload.path("flowUuid").asText("");
+            Optional<String> boundFlowUuid = runs.latestFlowUuidForConversation(tenantId,
+                    principal.membershipId(), principal.userId(), conversationId, runId);
+            if (boundFlowUuid.isPresent() && !boundFlowUuid.get().equals(requestedFlowUuid)) {
+                throw new RunApiException(RunErrorCode.RUN_STATE_CONFLICT,
+                        "conversation is bound to another flow");
+            }
+        }
         ObjectNode wrapper = JSON.createObjectNode();
         wrapper.set("payload", payload);
 

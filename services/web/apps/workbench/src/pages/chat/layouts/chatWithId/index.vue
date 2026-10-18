@@ -14,6 +14,7 @@ import { nextTick } from 'vue';
 import { useRoute } from 'vue-router';
 import { listKnowledgeBases } from '@/api/rag';
 import ChatSender from '@/components/ChatSender/index.vue';
+import { createConversationApi } from '@/api/session/conversations';
 import { useAgentStore } from '@/stores/modules/agent';
 import { useChatStore } from '@/stores/modules/chat';
 import { useSessionStore } from '@/stores/modules/session';
@@ -55,6 +56,16 @@ const chatStore = useChatStore();
 const agentStore = useAgentStore();
 const sessionStore = useSessionStore();
 const userStore = useUserStore();
+
+// F03:0：工作流绑定会话。路由带 id 时沿用；从市场首句进入（无 id）时先创建会话，
+// 否则服务端 ai_message 归属校验会拒绝写历史。创建只走写入口，不在这里切路由。
+const conversationClient = createConversationApi({
+  baseUrl: import.meta.env.VITE_API_URL,
+  clientId: import.meta.env.VITE_CLIENT_ID,
+  identity: () => ({ token: userStore.token, epoch: userStore.authEpoch }),
+  onAuthExpired: () => userStore.handleAuthExpired(),
+});
+let flowConversationId = '';
 
 interface PendingAttachment { file: File; progress: number; status: 'uploading' | 'failed' | 'ready'; attachment?: ChatAttachment; error?: string }
 const pendingAttachments = ref<PendingAttachment[]>([]);
@@ -550,8 +561,25 @@ async function submitMessage(content: string) {
     addMessage(text, true);
     addMessage('', false);
     bubbleListRef.value?.scrollToBottom();
+    const routeConversationId = route.params?.id && route.params.id !== 'not_login'
+      ? String(route.params.id)
+      : '';
+    if (routeConversationId !== '')
+      flowConversationId = routeConversationId;
+    if (flowConversationId === '') {
+      try {
+        const created = await conversationClient.createConversation(text.slice(0, 30));
+        flowConversationId = created.conversationId;
+        sessionStore.setCurrentSession({ id: flowConversationId, sessionTitle: text.slice(0, 30), createTime: new Date() });
+      }
+      catch (error) {
+        runError.value = error instanceof Error ? error.message : '创建会话失败，未发起工作流运行';
+        return;
+      }
+    }
     await flowChatRun.submit({
       text,
+      conversationId: flowConversationId,
       flowUuid: binding.uuid,
       flowInputs: binding.inputs,
       flowQuestion: text,
