@@ -495,6 +495,9 @@ public class AiGatewayController {
             new Route("GET", "/flows/public/search", "flow.list"),
             new Route("GET", "/flows/public/operators", "flow.list"),
             new Route("GET", "/flows/public/component/list", "flow.read"),
+            // F13:4（2026-10-18）：公开 START 输入 schema（动作 flow.read，GET 字节分支）。
+            // 段数 5 与公开详情 4 段不同形，仍紧随公开块登记，避免将来变量形扩张时被遮蔽。
+            new Route("GET", "/flows/public/{uuid}/inputs", "flow.read"),
             new Route("GET", "/flows/public/{uuid}", "flow.read"),
             new Route("POST", "/flows/{uuid}/enabled", "flow.publish"),
             new Route("POST", "/flows/{uuid}/public", "flow.publish"),
