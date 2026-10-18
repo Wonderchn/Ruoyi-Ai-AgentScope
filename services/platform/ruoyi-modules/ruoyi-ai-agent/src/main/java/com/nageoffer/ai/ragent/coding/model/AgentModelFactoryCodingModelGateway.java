@@ -155,7 +155,7 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
                     "coding model returned an empty response");
         }
         try {
-            return planTurn ? parsePlanTurn(responses) : parseCodingTurn(responses);
+            return planTurn ? parsePlanTurn(responses) : parseCodingTurn(request, responses);
         } catch (CodingModelUnavailableException unavailable) {
             throw unavailable;
         } catch (RuntimeException failure) {
@@ -327,13 +327,16 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
         return schemas;
     }
 
-    private ModelTurn parseCodingTurn(List<ChatResponse> responses) {
+    private ModelTurn parseCodingTurn(CodingModelRequest request, List<ChatResponse> responses) {
         StringBuilder text = new StringBuilder();
         StringBuilder thinking = new StringBuilder();
         Map<String, ModelToolCall> calls = new LinkedHashMap<>();
+        Map<String, String> generatedByFingerprint = new LinkedHashMap<>();
+        Map<String, String> validIdByFingerprint = new LinkedHashMap<>();
         UsageTotal usage = new UsageTotal();
         int generatedIds = 0;
         int skippedNoName = 0;
+        String turnSeed = request.run().iteration() + ":" + request.run().toolCallCount();
         for (ChatResponse response : responses) {
             usage.add(response.getUsage());
             List<ContentBlock> blocks = response.getContent();
@@ -354,15 +357,27 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
                     }
                     Map<String, Object> input = toolUse.getInput() == null
                             ? Map.of() : toolUse.getInput();
+                    String fingerprint = toolFingerprint(name, input);
                     String id = toolUse.getId();
                     if (id == null || id.isBlank()) {
-                        // DeepSeek 流式工具调用可能只在部分块携带 id：按 name+input 生成稳定 id，
-                        // 同回合同 name+input 只保留一次，避免流式重复块变多条调用。
-                        id = generatedToolCallId(name, input);
+                        // DeepSeek 流式工具调用可能只在部分块携带 id：按 name+input 生成稳定 id；
+                        // 同回合同 name+input 只保留一次；若已有非空 id 分片则直接并回，避免重复执行。
+                        if (validIdByFingerprint.containsKey(fingerprint)
+                                || generatedByFingerprint.containsKey(fingerprint)) {
+                            continue;
+                        }
+                        id = generatedToolCallId(turnSeed, name, input);
                         generatedIds++;
                         calls.putIfAbsent(id, new ModelToolCall(id, name, input));
+                        generatedByFingerprint.put(fingerprint, id);
                     } else {
+                        // N1：同一逻辑调用先出现空白 id 分片、后出现非空 id 时，用非空 id 替换生成 id。
+                        String generated = generatedByFingerprint.remove(fingerprint);
+                        if (generated != null && !generated.equals(id)) {
+                            calls.remove(generated);
+                        }
                         calls.put(id, new ModelToolCall(id, name, input));
+                        validIdByFingerprint.put(fingerprint, id);
                     }
                 }
             }
@@ -395,13 +410,23 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
                 List.copyOf(calls.values()), null, usage.toHarnessUsage());
     }
 
-    /** Stable id for a tool block that did not carry one: call-<sha256(name+input)[0..16]>. */
-    static String generatedToolCallId(String name, Map<String, Object> input) {
-        String canonical = name + "\u0000" + new TreeMap<>(input == null ? Map.of() : input);
+    /** Stable id for a tool block that did not carry one: call-<sha256(seed+name+input)[0..16]>. */
+    static String generatedToolCallId(String turnSeed, String name, Map<String, Object> input) {
+        String canonical = turnSeed + "\u0000" + name + "\u0000"
+                + new TreeMap<>(input == null ? Map.of() : input);
+        return "call-" + shortSha256(canonical);
+    }
+
+    private static String toolFingerprint(String name, Map<String, Object> input) {
+        return name + "\u0000" + shortSha256(
+                name + "\u0000" + new TreeMap<>(input == null ? Map.of() : input));
+    }
+
+    private static String shortSha256(String value) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest(canonical.getBytes(StandardCharsets.UTF_8));
-            return "call-" + java.util.HexFormat.of().formatHex(digest).substring(0, 16);
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest).substring(0, 16);
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException("SHA-256 is unavailable", impossible);
         }

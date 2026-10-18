@@ -368,6 +368,58 @@ class AgentModelFactoryCodingModelGatewayTest {
                         .isEqualTo("MODEL_TURN_FAILED"));
     }
 
+    @Test
+    void generatedIdsAreScopedToTheTurnSoTheSameCallRunsAgainLater() {
+        HarnessSessionState session = session();
+        HarnessRunState firstRun = buildRun(session);
+        HarnessRunState secondRun = firstRun.withCounters(2, 1, NOW);
+        ToolUseBlock blank = ToolUseBlock.builder().id("").name("read_file")
+                .input(Map.of("path", "a.txt")).build();
+        AgentModelFactoryCodingModelGateway firstGateway = new AgentModelFactoryCodingModelGateway(
+                (tenantId, modelId) -> new CapturingModel(Flux.just(
+                        ChatResponse.builder().content(List.of(blank)).build())), mapper);
+        AgentModelFactoryCodingModelGateway secondGateway = new AgentModelFactoryCodingModelGateway(
+                (tenantId, modelId) -> new CapturingModel(Flux.just(
+                        ChatResponse.builder().content(List.of(blank)).build())), mapper);
+
+        ModelTurn first = firstGateway.complete(new CodingModelRequest(owner, session, firstRun,
+                transcript(), tools()));
+        ModelTurn second = secondGateway.complete(new CodingModelRequest(owner, session, secondRun,
+                transcript(), tools()));
+
+        assertThat(first.toolCalls()).hasSize(1);
+        assertThat(second.toolCalls()).hasSize(1);
+        assertThat(second.toolCalls().get(0).toolCallId())
+                .as("C3: ids must include the turn seed so a later identical call executes again")
+                .isNotEqualTo(first.toolCalls().get(0).toolCallId());
+    }
+
+    @Test
+    void mixedValidAndBlankIdFragmentsOfTheSameCallAreMerged() {
+        HarnessSessionState session = session();
+        HarnessRunState run = buildRun(session);
+        ToolUseBlock blank = ToolUseBlock.builder().id("").name("read_file")
+                .input(Map.of("path", "a.txt")).build();
+        ToolUseBlock valid = ToolUseBlock.builder().id("call-valid").name("read_file")
+                .input(Map.of("path", "a.txt")).build();
+
+        ModelTurn blankThenValid = completeWithBlocks(session, run, List.of(blank, valid));
+        ModelTurn validThenBlank = completeWithBlocks(session, run, List.of(valid, blank));
+
+        assertThat(blankThenValid.toolCalls()).hasSize(1);
+        assertThat(blankThenValid.toolCalls().get(0).toolCallId()).isEqualTo("call-valid");
+        assertThat(validThenBlank.toolCalls()).hasSize(1);
+        assertThat(validThenBlank.toolCalls().get(0).toolCallId()).isEqualTo("call-valid");
+    }
+
+    private ModelTurn completeWithBlocks(HarnessSessionState session, HarnessRunState run,
+                                         List<ContentBlock> blocks) {
+        AgentModelFactoryCodingModelGateway gateway = new AgentModelFactoryCodingModelGateway(
+                (tenantId, modelId) -> new CapturingModel(Flux.just(
+                        ChatResponse.builder().content(blocks).build())), mapper);
+        return gateway.complete(new CodingModelRequest(owner, session, run, transcript(), tools()));
+    }
+
     private static final class CapturingModel implements Model {
         private final Flux<ChatResponse> response;
         private List<Msg> capturedMessages = List.of();

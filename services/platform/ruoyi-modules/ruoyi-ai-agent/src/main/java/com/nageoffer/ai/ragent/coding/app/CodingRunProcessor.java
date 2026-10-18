@@ -11,6 +11,7 @@ import com.nageoffer.ai.ragent.coding.model.HarnessOwner;
 import com.nageoffer.ai.ragent.coding.model.HarnessRunState;
 import com.nageoffer.ai.ragent.coding.model.HarnessRunStatus;
 import com.nageoffer.ai.ragent.coding.model.HarnessSessionState;
+import com.nageoffer.ai.ragent.coding.model.HarnessToolCall;
 import com.nageoffer.ai.ragent.coding.plan.CodingPlanState;
 import com.nageoffer.ai.ragent.coding.plan.PlanMode;
 import com.nageoffer.ai.ragent.coding.store.HarnessOptimisticLockException;
@@ -46,6 +47,8 @@ public class CodingRunProcessor {
     private static final int MAX_PROCESS_ATTEMPTS = 3;
     private static final int MAX_SAVE_ATTEMPTS = 5;
     private static final int TRANSCRIPT_LIMIT = 400;
+    /** C2：工具输出回传模型时有界（8 KiB），避免 stdout/文件内容撑爆上下文。 */
+    private static final int MAX_TOOL_OUTPUT_CHARS = 8 * 1024;
 
     private final HarnessStore store;
     private final HarnessEventHub eventHub;
@@ -282,12 +285,70 @@ public class CodingRunProcessor {
                                                     String runId, int iteration) {
         for (HarnessMessage message : readRunMessages(owner, sessionId, runId)) {
             if (message.role() == HarnessMessageRole.ASSISTANT
+                    && message.toolCalls().isEmpty()
                     && String.valueOf(iteration).equals(
                     String.valueOf(message.metadata().get("iteration")))) {
                 return message;
             }
         }
         return null;
+    }
+
+    /** C1：本回合带 toolCalls 的 ASSISTANT 消息；同回合重试复用，不重复追加。 */
+    private HarnessMessage appendAssistantToolCallMessageIfMissing(HarnessOwner owner,
+                                                                   HarnessRunState run,
+                                                                   List<ModelToolCall> calls) {
+        HarnessMessage existing = findAssistantToolCallMessage(owner, run.sessionId(),
+                run.runId(), run.iteration());
+        if (existing != null) {
+            return existing;
+        }
+        List<HarnessToolCall> toolCalls = calls.stream()
+                .map(call -> new HarnessToolCall(call.toolCallId(), call.toolName(),
+                        call.arguments()))
+                .toList();
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("iteration", run.iteration());
+        metadata.put("toolCalls", true);
+        return store.appendMessage(owner, HarnessMessage.draft(run.sessionId(), run.runId(),
+                HarnessMessageRole.ASSISTANT, "", null, toolCalls, null, null, false, null,
+                metadata, now()));
+    }
+
+    private HarnessMessage findAssistantToolCallMessage(HarnessOwner owner, String sessionId,
+                                                        String runId, int iteration) {
+        for (HarnessMessage message : readRunMessages(owner, sessionId, runId)) {
+            if (message.role() == HarnessMessageRole.ASSISTANT
+                    && !message.toolCalls().isEmpty()
+                    && String.valueOf(iteration).equals(
+                    String.valueOf(message.metadata().get("iteration")))) {
+                return message;
+            }
+        }
+        return null;
+    }
+
+    /** C2：把工具 data 渲染为有界 JSON（失败保留 code/message）；不添加端点/凭据/租户。 */
+    private String renderToolOutput(ToolExecutionResult result) {
+        String payload;
+        if (result.error()) {
+            Object message = result.data().get("message");
+            payload = result.code() + (message == null ? "" : ": " + message);
+        } else {
+            try {
+                payload = objectMapper.writeValueAsString(result.data());
+            } catch (Exception serializationFailure) {
+                payload = String.valueOf(result.data());
+            }
+            if (payload == null || payload.isBlank()) {
+                payload = result.code();
+            }
+        }
+        if (payload.length() <= MAX_TOOL_OUTPUT_CHARS) {
+            return payload;
+        }
+        String marker = "\n…[truncated]";
+        return payload.substring(0, MAX_TOOL_OUTPUT_CHARS - marker.length()) + marker;
     }
 
     private void appendToolReceipt(HarnessOwner owner, HarnessRunState run, ToolApproval approval,
@@ -297,8 +358,9 @@ public class CodingRunProcessor {
         metadata.put("code", result.code());
         metadata.put("toolName", approval.toolName());
         store.appendMessage(owner, HarnessMessage.draft(run.sessionId(), run.runId(),
-                HarnessMessageRole.TOOL, result.code(), null, List.of(), approval.toolCallId(),
-                approval.toolName(), result.error(), null, metadata, now()));
+                HarnessMessageRole.TOOL, renderToolOutput(result), null, List.of(),
+                approval.toolCallId(), approval.toolName(), result.error(), null, metadata,
+                now()));
         // N4：已批准执行也计入 toolCallCount，避免 ON_REQUEST 下无限绕过工具预算。
         markApprovalConsumed(owner, run.runId(), approval);
     }
@@ -306,6 +368,14 @@ public class CodingRunProcessor {
     private boolean handleToolCalls(HarnessOwner owner, String sessionId, String runId,
                                     HarnessSessionState session, List<ModelToolCall> calls) {
         Path workspace = Path.of(session.workspace());
+        HarnessRunState initial = store.findRun(owner, sessionId, runId)
+                .orElseThrow(() -> new HarnessStoreException("Unknown run: " + runId));
+        if (initial.status().isTerminal()) {
+            return true;
+        }
+        // C1：先落盘本回合的 assistant(tool_calls)，保证下一回合 transcript 与 TOOL 结果配对。
+        appendAssistantToolCallMessageIfMissing(owner, initial, calls);
+        List<ToolApproval> pendingApprovals = new ArrayList<>();
         for (ModelToolCall call : calls) {
             HarnessRunState current = store.findRun(owner, sessionId, runId)
                     .orElseThrow(() -> new HarnessStoreException("Unknown run: " + runId));
@@ -347,27 +417,11 @@ public class CodingRunProcessor {
             }
             if (descriptor.mutating() && session.approvalPolicy()
                     != com.nageoffer.ai.ragent.coding.model.HarnessApprovalPolicy.NEVER) {
-                ToolApproval approval = ToolApproval.pending(UUID.randomUUID().toString(), owner,
+                pendingApprovals.add(ToolApproval.pending(UUID.randomUUID().toString(), owner,
                         sessionId, runId, call.toolCallId(), call.toolName(),
                         descriptor.capability(), summarize(call),
-                        call.arguments(), argumentsSha256(call.arguments()), now());
-                HarnessRunState next = current.withToolApproval(approval, now())
-                        .transition(HarnessRunStatus.WAITING_FOR_APPROVAL, null, now());
-                saveWithRetry(owner, sessionId, runId, state ->
-                        state.status() == HarnessRunStatus.RUNNING
-                                && !state.toolApprovals().containsKey(approval.approvalId())
-                                ? state.withToolApproval(approval, now())
-                                .transition(HarnessRunStatus.WAITING_FOR_APPROVAL, null, now())
-                                : state);
-                publish(owner, HarnessEvent.draftWithId(
-                        "approval-required:" + approval.approvalId(), sessionId, runId,
-                        "approval.required", null, call.toolCallId(), approval.approvalId(),
-                        Map.of("approvalId", approval.approvalId(),
-                                "toolCallId", call.toolCallId(),
-                                "toolName", call.toolName(),
-                                "capability", descriptor.capability(),
-                                "argumentsSha256", approval.argumentsSha256()), approval.createdAt()));
-                return true;
+                        call.arguments(), argumentsSha256(call.arguments()), now()));
+                continue;
             }
             ToolExecutionResult result = tools.execute(call.toolName(), call.arguments(), workspace,
                     runId, current.authorizedActions());
@@ -376,6 +430,33 @@ public class CodingRunProcessor {
                     sessionId, runId, "tool.completed", null, call.toolCallId(), null,
                     Map.of("toolName", call.toolName(), "error", result.error(),
                             "code", result.code()), receiptTimestamp));
+        }
+        if (!pendingApprovals.isEmpty()) {
+            // 同一模型回合可能需要多个审批：一次性登记全部审批，避免只处理第一个而留下未配对调用。
+            saveWithRetry(owner, sessionId, runId, state -> {
+                if (state.status() != HarnessRunStatus.RUNNING) {
+                    return state;
+                }
+                HarnessRunState mutated = state;
+                for (ToolApproval approval : pendingApprovals) {
+                    if (!mutated.toolApprovals().containsKey(approval.approvalId())) {
+                        mutated = mutated.withToolApproval(approval, now());
+                    }
+                }
+                return mutated.transition(HarnessRunStatus.WAITING_FOR_APPROVAL, null, now());
+            });
+            for (ToolApproval approval : pendingApprovals) {
+                publish(owner, HarnessEvent.draftWithId(
+                        "approval-required:" + approval.approvalId(), sessionId, runId,
+                        "approval.required", null, approval.toolCallId(), approval.approvalId(),
+                        Map.of("approvalId", approval.approvalId(),
+                                "toolCallId", approval.toolCallId(),
+                                "toolName", approval.toolName(),
+                                "capability", approval.capability(),
+                                "argumentsSha256", approval.argumentsSha256()),
+                        approval.createdAt()));
+            }
+            return true;
         }
         // 每个模型工具回合都推进 iteration，保证无限工具循环受 budget.maxIterations 约束。
         saveWithRetry(owner, sessionId, runId, current -> current.status().isTerminal()
@@ -391,8 +472,8 @@ public class CodingRunProcessor {
         metadata.put("toolName", call.toolName());
         long timestamp = now();
         store.appendMessage(owner, HarnessMessage.draft(run.sessionId(), run.runId(),
-                HarnessMessageRole.TOOL, result.code(), null, List.of(), call.toolCallId(),
-                call.toolName(), result.error(), null, metadata, timestamp));
+                HarnessMessageRole.TOOL, renderToolOutput(result), null, List.of(),
+                call.toolCallId(), call.toolName(), result.error(), null, metadata, timestamp));
         saveWithRetry(owner, run.sessionId(), run.runId(), current -> current.status().isTerminal()
                 ? current : current.withCounters(current.iteration(),
                 current.toolCallCount() + 1, now()));
