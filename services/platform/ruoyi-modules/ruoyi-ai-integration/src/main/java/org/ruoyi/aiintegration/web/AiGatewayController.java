@@ -107,6 +107,14 @@ public class AiGatewayController {
             new Route("POST", "/runtime-config/revisions", "config.publish"),
             new Route("POST", "/runtime-config/revisions/{revisionId}/revoke", "config.revoke"),
             new Route("POST", "/runtime-config/revisions/{revisionId}/rollback", "config.publish"),
+            // F08:0–3（2026-10-18）：知识图谱管理面 4 条。内层 handler = GraphController
+            // （类级 /internal/ai/v1/admin/kg）。三个 GET 走网关字节分支，必须整数 ApiEnvelope
+            // + 交付回执（AiEmbeddedAdminDeliveryConfiguration 已登记该控制器）；POST 重建走 JSON 分支。
+            // 动作复用既有 kb.read / config.read / kb.write，零新增 canonical 动作/权限/菜单行。
+            new Route("GET", "/admin/kg/status", "config.read"),
+            new Route("GET", "/admin/kg/graph", "kb.read"),
+            new Route("GET", "/admin/kg/labels", "kb.read"),
+            new Route("POST", "/admin/kg/projection/rebuild", "kb.write"),
             new Route("GET", "/knowledge-bases", "kb.list"),
             new Route("POST", "/knowledge-bases", "kb.write"),
             new Route("GET", "/knowledge-bases/{id}", "kb.read"),
