@@ -255,6 +255,67 @@ class P1AiPermissionContractTest {
                 .contains("mcp.list", "mcp.read", "mcp.write", "mcp.delete", "mcp.test");
     }
 
+    /**
+     * F20-A（2026-10-18，维护者「F20快做」＋ D1 批）：编程助手 Harness 面。
+     *
+     * <p>四条动作 ↔ V41 四行权限（7204-7207，默认不分配），且 22 条 JSON 路由逐条登记；
+     * 不许出现 {@code /coding/**} 通配。两条 SSE 由专用流控制器精确映射，不在此表
+     *（登记了却没有 handler 会变成不可达死路由）。
+     */
+    @Test
+    @DisplayName("F20-A：coding.* 4 动作 ↔ V41 权限行，22 条路由逐条登记且禁止通配")
+    void codingHarnessSurfaceIsRegisteredIndividually() throws Exception {
+        Map<String, String> actions = new java.util.LinkedHashMap<>();
+        actions.put("coding.use", "ai:coding:use");
+        actions.put("coding.write", "ai:coding:write");
+        actions.put("coding.approve", "ai:coding:approve");
+        actions.put("coding.command", "ai:coding:command");
+        actions.forEach((action, permission) -> assertThat(AiCanonicalAction.permissionOf(action))
+                .as("规范动作 %s 必须映射到 %s", action, permission)
+                .contains(permission));
+        assertThat(AiCanonicalAction.requiresPlatformAdmin("coding.use"))
+                .as("coding.* 是租户级工作区面，不进 PLATFORM_ADMIN_ACTIONS")
+                .isFalse();
+        assertThat(declaredPermissions())
+                .as("V41 必须注册四行 ai:coding:* 权限（默认不分配）")
+                .containsAll(actions.values());
+
+        List<String> patterns = whitelistedPatterns();
+        assertThat(patterns)
+                .as("F20-A 的 22 条 JSON 路由逐条登记")
+                .contains(
+                        "POST /coding/sessions",
+                        "GET /coding/sessions",
+                        "GET /coding/sessions/{sessionId}",
+                        "PUT /coding/sessions/{sessionId}/pin",
+                        "DELETE /coding/sessions/{sessionId}",
+                        "POST /coding/sessions/{sessionId}/restore",
+                        "GET /coding/sessions/{sessionId}/messages",
+                        "POST /coding/sessions/{sessionId}/runs",
+                        "GET /coding/sessions/{sessionId}/runs",
+                        "GET /coding/sessions/{sessionId}/runs/{runId}",
+                        "GET /coding/sessions/{sessionId}/runs/{runId}/events",
+                        "POST /coding/sessions/{sessionId}/runs/{runId}/inputs",
+                        "POST /coding/sessions/{sessionId}/runs/{runId}/cancel",
+                        "POST /coding/sessions/{sessionId}/runs/{runId}/resume",
+                        "POST /coding/sessions/{sessionId}/runs/{runId}/approvals/{approvalId}/resolve",
+                        "POST /coding/sessions/{sessionId}/runs/{runId}/plan/approve",
+                        "POST /coding/sessions/{sessionId}/runs/{runId}/plan/revision",
+                        "GET /coding/models",
+                        "GET /coding/workspace",
+                        "GET /coding/file",
+                        "PUT /coding/file",
+                        "POST /coding/command");
+        assertThat(patterns)
+                .as("禁止 /coding/** 通配；SSE 走专用流精确映射")
+                .noneMatch(pattern -> pattern.contains("/coding/**"))
+                .doesNotContain("POST /coding/chat")
+                .noneMatch(pattern -> pattern.endsWith("/events/stream"));
+        assertThat(whitelistedActions())
+                .as("22 条路由只使用四个新动作")
+                .contains("coding.use", "coding.write", "coding.approve", "coding.command");
+    }
+
     // ------------------------------------------------------------------ helpers (reflection / SQL)
 
     /** 反射读网关的私有路由表：白名单是运行期固定表，测试要枚举它而不是抄一份。 */

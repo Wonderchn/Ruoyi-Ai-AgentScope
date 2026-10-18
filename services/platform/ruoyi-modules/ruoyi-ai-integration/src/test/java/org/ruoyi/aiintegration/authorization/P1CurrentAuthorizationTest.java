@@ -266,9 +266,15 @@ class P1CurrentAuthorizationTest {
         // F13:2（2026-10-18，维护者「继续 / 预算提高 / F20 快做」既有批准范围内连续施工）：
         // AIFlow 运行面再增**恰好 2 条**：flow.run / flow.run.read → ai:flow:run / ai:flow:run:read。
         // 权限行由 V40__aiflow_run_permissions.sql 注册（7208/7209，order 72/73，默认不分配）。
-        // 合并口径：34 + 4 + 1 + 4 + 1 + 5 + 1 + 2 = 52。
         Set<String> approvedF13RunIncrement = Set.of(
                 "flow.run", "flow.run.read");
+        // F20-A（2026-10-18，维护者「F20快做」＋ D1 批）：编程助手 Harness 面再增**恰好 4 条**：
+        // coding.use / coding.write / coding.approve / coding.command → ai:coding:*。
+        // 权限行由 V41__coding_harness_permissions.sql 注册（7204-7207，默认不分配）。
+        // 资源是租户级工作区/会话（带 tenant+user 属主），**不进** PLATFORM_ADMIN_ACTIONS。
+        // 合并口径：50 + 2 + 4 = 56。
+        Set<String> approvedF20Increment = Set.of(
+                "coding.use", "coding.write", "coding.approve", "coding.command");
         Set<String> approvedAllIncrements = new LinkedHashSet<>(approvedIncrement);
         approvedAllIncrements.addAll(approvedA1Increment);
         approvedAllIncrements.addAll(approvedF11Increment);
@@ -276,6 +282,7 @@ class P1CurrentAuthorizationTest {
         approvedAllIncrements.addAll(approvedF12Increment);
         approvedAllIncrements.addAll(approvedF13M1Increment);
         approvedAllIncrements.addAll(approvedF13RunIncrement);
+        approvedAllIncrements.addAll(approvedF20Increment);
         Set<String> fullList = new LinkedHashSet<>(oldFrozen);
         fullList.addAll(approvedAllIncrements);
 
@@ -288,7 +295,7 @@ class P1CurrentAuthorizationTest {
         // ② 批准增量逐项集合相等：多的、少的、改名的都要红
         assertEquals(approvedAllIncrements, diff(new LinkedHashSet<>(actual), oldFrozen),
                 "approved increments must equal the union of F13-SLICE-1 + F13-A1 + F11-A1 + "
-                        + "F06:1/2-A + F12-M1 + F13-M1 sets exactly");
+                        + "F06:1/2-A + F12-M1 + F13-M1 + F20-A sets exactly");
         // ③ 总数等于完整清单（作为 ①② 的推论，仍显式断言）
         assertEquals(fullList.size(), actual.size(),
                 "total must equal the complete list, not merely be >= 34");
@@ -297,9 +304,9 @@ class P1CurrentAuthorizationTest {
         // ④ (动作 -> 权限) 逐项相等。Spec §5.1 第 1 条要求的是"映射"逐项相等，不只是动作名集合相等。
         // 只比名字会漏掉"值替换"这一类变异：例如把 kb.read 的权限改成 ai:kb:list，
         // 动作名集合不变、总数不变，①②③ 全绿，P1AiPermissionContractTest 也拦不住
-        // （新值同样在 sys_menu 里有行）。所以这里把全部 50 条映射钉死
+        // （新值同样在 sys_menu 里有行）。所以这里把全部 56 条映射钉死
         //（合并口径 = 34 + flow.*4 + flow.node.write 1 + F11-A1 skill.*4 + F06:1/2-A 1
-        //  + F12-M1 mcp.*5 + F13-M1 flow.publish 1）：
+        //  + F12-M1 mcp.*5 + F13-M1 flow.publish 1 + F13:2 flow.run/read 2 + F20-A coding.*4）：
         // 任何一条的值被改动，都必须显式修改本清单，否则本判据红。
         Map<String, String> expectedPairs = new LinkedHashMap<>();
         expectedPairs.put("agent.activate", "ai:agent:activate");
@@ -311,6 +318,11 @@ class P1CurrentAuthorizationTest {
         expectedPairs.put("config.publish", "ai:config:publish");
         expectedPairs.put("config.read", "ai:config:read");
         expectedPairs.put("config.revoke", "ai:config:revoke");
+        // F20-A（编程助手 Harness 面）：4 条新动作 → ai:coding:*（权限行由 V41 注册，7204-7207）。
+        expectedPairs.put("coding.approve", "ai:coding:approve");
+        expectedPairs.put("coding.command", "ai:coding:command");
+        expectedPairs.put("coding.use", "ai:coding:use");
+        expectedPairs.put("coding.write", "ai:coding:write");
         expectedPairs.put("conversation.delete", "ai:conversation:delete");
         expectedPairs.put("conversation.export", "ai:conversation:export");
         expectedPairs.put("conversation.read", "ai:conversation:read");
