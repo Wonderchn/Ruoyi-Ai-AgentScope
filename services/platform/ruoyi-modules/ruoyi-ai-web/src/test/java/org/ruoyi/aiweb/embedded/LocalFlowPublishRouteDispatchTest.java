@@ -228,6 +228,34 @@ class LocalFlowPublishRouteDispatchTest {
     }
 
     @Test
+    @DisplayName("操作符目录逐字等于 legacy OperatorEnum 的 12 项（name/desc/顺序）")
+    void operatorCatalogMatchesLegacyTwelvePairs() throws Exception {
+        HttpResponse<String> response = get("/api/ai/v1/flows/public/operators");
+        assertThat(response.statusCode()).isEqualTo(200);
+
+        com.fasterxml.jackson.databind.JsonNode data =
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(response.body()).get("data");
+        assertThat(data).as("操作符目录必须是数组").isNotNull();
+        assertThat(data.isArray()).isTrue();
+        List<String> pairs = new ArrayList<>();
+        data.forEach(node -> pairs.add(node.get("name").asText() + "|" + node.get("desc").asText()));
+
+        assertThat(pairs).containsExactly(
+                "contains|包含",
+                "not contains|不包含",
+                "start with|开始内容是",
+                "end with|结束内容是",
+                "empty|为空",
+                "not empty|不为空",
+                "=|等于",
+                "!=|不等于",
+                ">|大于",
+                ">=|大于或等于",
+                "<|小于",
+                "<=|小于或等于");
+    }
+
+    @Test
     @DisplayName("公开搜索不被 /flows/{uuid} 或 /flows/{uuid}/nodes 吃掉")
     void publicLiteralRoutesAreNotSwallowedByVariableFlowRoutes() throws Exception {
         // 搜索页返回分页记录标记（标题 PUBLIC_TITLE）；若命中 GET /flows/{uuid}
