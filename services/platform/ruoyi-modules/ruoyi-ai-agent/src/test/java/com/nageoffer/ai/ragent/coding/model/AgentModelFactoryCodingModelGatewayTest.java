@@ -123,19 +123,23 @@ class AgentModelFactoryCodingModelGatewayTest {
         ModelTurn turn = gateway.complete(new CodingModelRequest(owner, session, run,
                 transcript(), tools()));
 
-        assertThat(model.capturedMessages).hasSize(4);
+        assertThat(model.capturedMessages).hasSize(5);
         assertThat(model.capturedMessages.get(0).getRole()).isEqualTo(MsgRole.SYSTEM);
-        assertThat(model.capturedMessages.get(1).getRole()).isEqualTo(MsgRole.USER);
-        assertThat(model.capturedMessages.get(1).getTextContent()).isEqualTo("hello");
-        assertThat(model.capturedMessages.get(2).getRole()).isEqualTo(MsgRole.ASSISTANT);
-        assertThat(model.capturedMessages.get(2).getContentBlocks(ToolUseBlock.class))
+        assertThat(model.capturedMessages.get(1).getRole()).isEqualTo(MsgRole.SYSTEM);
+        assertThat(model.capturedMessages.get(1).getTextContent())
+                .contains("Approved execution plan", "1. one", "s1: one")
+                .doesNotContain("T1", "42", "/tmp/ws");
+        assertThat(model.capturedMessages.get(2).getRole()).isEqualTo(MsgRole.USER);
+        assertThat(model.capturedMessages.get(2).getTextContent()).isEqualTo("hello");
+        assertThat(model.capturedMessages.get(3).getRole()).isEqualTo(MsgRole.ASSISTANT);
+        assertThat(model.capturedMessages.get(3).getContentBlocks(ToolUseBlock.class))
                 .anySatisfy(block -> {
                     assertThat(block.getId()).isEqualTo("call-1");
                     assertThat(block.getName()).isEqualTo("read_file");
                     assertThat(block.getInput()).containsEntry("path", "a.txt");
                 });
-        assertThat(model.capturedMessages.get(3).getRole()).isEqualTo(MsgRole.TOOL);
-        assertThat(model.capturedMessages.get(3).getContentBlocks(ToolResultBlock.class))
+        assertThat(model.capturedMessages.get(4).getRole()).isEqualTo(MsgRole.TOOL);
+        assertThat(model.capturedMessages.get(4).getContentBlocks(ToolResultBlock.class))
                 .anySatisfy(block -> {
                     assertThat(block.getId()).isEqualTo("call-1");
                     assertThat(block.getName()).isEqualTo("read_file");
@@ -241,6 +245,52 @@ class AgentModelFactoryCodingModelGatewayTest {
                     assertThat(unavailable.getMessage())
                             .doesNotContain("https", "secret", "sk-", "endpoint");
                 });
+    }
+
+    @Test
+    void revisionTurnInjectsPreviousPlanAndFeedbackAsSystemContext() {
+        HarnessSessionState session = session();
+        CodingPlanState draft = CodingPlanState.create("do it", NOW)
+                .replacePlan("OLD PLAN BODY", List.of(new PlanStepState("s1", "old step",
+                        List.of())), NOW);
+        CodingPlanState revised = draft.requestRevision("f1", "add regression tests", NOW + 1);
+        HarnessRunState run = HarnessRunState.createWithId("r1", session, "do it", null,
+                new HarnessModelRoute(1, session.model(), session.model()), ALL_ACTIONS, NOW)
+                .withCounters(1, 0, NOW)
+                .withPlan(revised, NOW);
+        CapturingModel model = new CapturingModel(Flux.just(ChatResponse.builder()
+                .content(List.of(TextBlock.builder().text("{\"steps\":[{\"id\":\"s1\","
+                        + "\"title\":\"old step\"}]}").build()))
+                .build()));
+        AgentModelFactoryCodingModelGateway gateway = new AgentModelFactoryCodingModelGateway(
+                (tenantId, modelId) -> model, mapper);
+
+        gateway.complete(new CodingModelRequest(owner, session, run, transcript(), tools()));
+
+        assertThat(model.capturedMessages.get(1).getRole()).isEqualTo(MsgRole.SYSTEM);
+        assertThat(model.capturedMessages.get(1).getTextContent())
+                .contains("Plan revision requested", "OLD PLAN BODY", "s1: old step",
+                        "add regression tests", "f1")
+                .doesNotContain("T1", "/tmp/ws");
+        assertThat(model.capturedTools).isEmpty();
+    }
+
+    @Test
+    void noPlanTurnDoesNotInjectPlanContext() {
+        HarnessSessionState session = session();
+        HarnessRunState run = run(session, 1);
+        CapturingModel model = new CapturingModel(Flux.just(ChatResponse.builder()
+                .content(List.of(TextBlock.builder().text("done").build())).build()));
+        AgentModelFactoryCodingModelGateway gateway = new AgentModelFactoryCodingModelGateway(
+                (tenantId, modelId) -> model, mapper);
+
+        gateway.complete(new CodingModelRequest(owner, session, run, transcript(), tools()));
+
+        assertThat(model.capturedMessages).hasSize(4);
+        assertThat(model.capturedMessages.get(0).getRole()).isEqualTo(MsgRole.SYSTEM);
+        assertThat(model.capturedMessages.get(1).getRole()).isNotEqualTo(MsgRole.SYSTEM);
+        assertThat(model.capturedMessages.get(1).getTextContent())
+                .doesNotContain("Approved execution plan", "Plan revision requested");
     }
 
     private static final class CapturingModel implements Model {

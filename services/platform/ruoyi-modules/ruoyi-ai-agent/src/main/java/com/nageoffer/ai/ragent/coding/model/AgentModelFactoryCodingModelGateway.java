@@ -12,6 +12,7 @@ import com.nageoffer.ai.ragent.coding.app.PlanDraft;
 import com.nageoffer.ai.ragent.coding.model.HarnessMessage;
 import com.nageoffer.ai.ragent.coding.model.HarnessUsage;
 import com.nageoffer.ai.ragent.coding.plan.CodingPlanState;
+import com.nageoffer.ai.ragent.coding.plan.PlanFeedbackState;
 import com.nageoffer.ai.ragent.coding.plan.PlanMode;
 import com.nageoffer.ai.ragent.coding.plan.PlanReviewState;
 import com.nageoffer.ai.ragent.coding.plan.PlanStepState;
@@ -50,6 +51,9 @@ import java.util.Map;
 public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
 
     private static final Duration MODEL_TIMEOUT = Duration.ofSeconds(90);
+
+    /** P1：计划/反馈上下文必须有界，避免把长计划塞满上下文窗口。 */
+    private static final int PLAN_CONTEXT_MAX_CHARS = 12_000;
 
     private static final String PLAN_SYSTEM_PROMPT = """
             You are a coding assistant. This turn is a planning turn.
@@ -142,9 +146,15 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
     }
 
     private List<Msg> toMessages(CodingModelRequest request, boolean planTurn) {
-        List<Msg> messages = new ArrayList<>(request.transcript().size() + 1);
+        List<Msg> messages = new ArrayList<>(request.transcript().size() + 2);
         messages.add(Msg.builder().role(MsgRole.SYSTEM)
                 .textContent(planTurn ? PLAN_SYSTEM_PROMPT : CODING_SYSTEM_PROMPT).build());
+        // P1：BUILD 回合注入已批准计划；REVISION_REQUESTED 回合注入上一版计划 + 反馈。
+        // 上下文只作为 SYSTEM 消息，不伪装 USER；无计划/无反馈时不注入。
+        String planContext = planContext(request.run().plan());
+        if (!planContext.isBlank()) {
+            messages.add(Msg.builder().role(MsgRole.SYSTEM).textContent(planContext).build());
+        }
         for (HarnessMessage message : request.transcript()) {
             switch (message.role()) {
                 case USER, CONTROL -> messages.add(Msg.builder().role(MsgRole.USER)
@@ -159,6 +169,62 @@ public class AgentModelFactoryCodingModelGateway implements CodingModelGateway {
             }
         }
         return messages;
+    }
+
+    /**
+     * Plan context for approved BUILD turns and revision turns. Never contains tenant, credentials
+     * or infrastructure paths; only the durable plan/feedback text the model itself produced.
+     */
+    static String planContext(CodingPlanState plan) {
+        if (plan == null) {
+            return "";
+        }
+        if (plan.mode() == PlanMode.BUILD) {
+            return bounded("Approved execution plan (authoritative; do not re-plan):\n"
+                    + planBody(plan, true));
+        }
+        if (plan.mode() == PlanMode.PLAN
+                && plan.reviewState() == PlanReviewState.REVISION_REQUESTED) {
+            StringBuilder context = new StringBuilder();
+            context.append("Plan revision requested. Previous plan (revision ")
+                    .append(plan.revision()).append("):\n")
+                    .append(planBody(plan, true));
+            if (!plan.feedbackHistory().isEmpty()) {
+                context.append("\nOperator feedback (chronological):\n");
+                for (PlanFeedbackState feedback : plan.feedbackHistory()) {
+                    context.append("- [").append(feedback.feedbackId()).append("] ")
+                            .append(feedback.content()).append('\n');
+                }
+            }
+            return bounded(context.toString());
+        }
+        return "";
+    }
+
+    private static String planBody(CodingPlanState plan, boolean includeMarkdown) {
+        StringBuilder body = new StringBuilder();
+        body.append("Task: ").append(plan.originalRequest()).append('\n');
+        if (includeMarkdown && plan.planMarkdown() != null && !plan.planMarkdown().isBlank()) {
+            body.append("Markdown:\n").append(plan.planMarkdown()).append('\n');
+        }
+        body.append("Steps:\n");
+        for (PlanStepState step : plan.steps()) {
+            body.append("- ").append(step.stepId()).append(": ").append(step.title());
+            if (!step.dependencyIds().isEmpty()) {
+                body.append(" (after: ").append(String.join(", ", step.dependencyIds()))
+                        .append(')');
+            }
+            body.append('\n');
+        }
+        return body.toString();
+    }
+
+    private static String bounded(String context) {
+        if (context.length() <= PLAN_CONTEXT_MAX_CHARS) {
+            return context;
+        }
+        String marker = "\n…[truncated]";
+        return context.substring(0, PLAN_CONTEXT_MAX_CHARS - marker.length()) + marker;
     }
 
     private Msg assistantMessage(HarnessMessage message) {

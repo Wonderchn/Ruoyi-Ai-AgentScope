@@ -115,6 +115,14 @@ public class CodingHarnessBeans {
         return new HarnessEventHub(store, executor);
     }
 
+    /**
+     * F20-A2：工厂在场才启用真实适配器；缺席保持 fail-closed，不回落全局硬编码模型。
+     *
+     * <p>P2 装配事实：内嵌形态的 {@code AgentModelFactory} bean 来自 agent 引擎闭包
+     * （{@code ragent.engine.type=agent}）；真机窗口显式设置 {@code RAGENT_ENGINE_TYPE=agent}。
+     * 该开关缺席时本 bean 仍装配为 {@link UnconfiguredCodingModelGateway}，运行以
+     * {@code MODEL_NOT_CONFIGURED} 终态结束，不会静默换用其他模型。
+     */
     @Bean
     @ConditionalOnMissingBean(CodingModelGateway.class)
     public CodingModelGateway codingModelGateway(ObjectProvider<AgentModelFactory> modelFactory) {
