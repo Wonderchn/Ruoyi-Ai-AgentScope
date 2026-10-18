@@ -92,12 +92,14 @@ public class AiEmbeddedGraphConfiguration {
     /**
      * 重建事务：与 platform 主数据源同一事务管理器。
      *
-     * <p>Boot 通常已注册 {@code TransactionTemplate}（实现本接口），此时不重复注册；
-     * 切片上下文没有 Boot 自动配置时由本 bean 补齐。
+     * <p>必须按 {@link TransactionTemplate} 具体类型声明并注册：若按
+     * {@link TransactionOperations} 声明，会先于 Boot 的 TransactionTemplate 自动配置注册，
+     * 使其因 {@code @ConditionalOnMissingBean(TransactionOperations.class)} 退让，
+     * 而按具体类型注入 {@code TransactionTemplate} 的组件（如 RevocationBarrierCoordinator）将缺 bean。
      */
     @Bean
-    @ConditionalOnMissingBean(TransactionOperations.class)
-    public TransactionOperations graphTransactionOperations(PlatformTransactionManager transactionManager) {
+    @ConditionalOnMissingBean(TransactionTemplate.class)
+    public TransactionTemplate graphTransactionTemplate(PlatformTransactionManager transactionManager) {
         return new TransactionTemplate(transactionManager);
     }
 
