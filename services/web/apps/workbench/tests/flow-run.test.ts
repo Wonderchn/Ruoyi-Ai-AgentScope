@@ -260,7 +260,7 @@ describe('createFlowRunClient：POST SSE', () => {
   });
 });
 
-describe('10s 预算：连接 / 空闲 / 总时长', () => {
+describe('预算：连接 / 空闲 / 总时长', () => {
   function harness(
     response: () => Response | Promise<Response>,
     timeouts: { connectMs?: number; idleMs?: number; totalMs?: number },
@@ -285,9 +285,9 @@ describe('10s 预算：连接 / 空闲 / 总时长', () => {
 
   const request = { flowUuid: FLOW_UUID, flowInputs: [textInput('q')], flowQuestion: '问' };
 
-  it('默认预算：连接/空闲 10s、总时长 120s（真机 flow.run 约 30s，总限不得 10s）', () => {
+  it('默认预算：连接 10s、空闲 20s（>服务端心跳 15s）、总时长 120s', () => {
     assert.equal(FLOW_RUN_CONNECT_TIMEOUT_MS, 10_000);
-    assert.equal(FLOW_RUN_IDLE_TIMEOUT_MS, 10_000);
+    assert.equal(FLOW_RUN_IDLE_TIMEOUT_MS, 20_000);
     assert.equal(FLOW_RUN_TOTAL_TIMEOUT_MS, 120_000);
   });
 
