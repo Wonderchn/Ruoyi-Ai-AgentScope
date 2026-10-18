@@ -234,6 +234,12 @@ agent:
   mcp:
     allow-list:
       endpoints: []
+    # F12-M2：运行期按需连接受管 MCP 工具（惰性、受 allow-list 约束）。
+    # 未批准目标零网络；缓存键=(tenant, tool, baseUrl, headers)，TTL 到期重连、超限 LRU 关闭。
+    runtime:
+      cache-ttl: 5m
+      connect-timeout: 10s
+      max-cached-clients: 32
 
 # P3 受控动作面（动作账本/审批/对账）——与独立 AI 应用同一开关。
 # 沙箱票据客户端指向独立沙箱进程（有界回环端点）；未启用时以 SANDBOX_CLOSED fail-closed。
