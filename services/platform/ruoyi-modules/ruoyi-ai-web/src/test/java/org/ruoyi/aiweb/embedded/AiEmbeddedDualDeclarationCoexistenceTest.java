@@ -200,6 +200,15 @@ class AiEmbeddedDualDeclarationCoexistenceTest {
                         () -> mock(com.nageoffer.ai.ragent.infra.rerank.RerankService.class))
                 .withBean(com.nageoffer.ai.ragent.rag.core.vector.VectorRetrieverService.class,
                         () -> mock(com.nageoffer.ai.ragent.rag.core.vector.VectorRetrieverService.class))
+                // ---- F09:3-C：绑定模型工厂的构造依赖（只满足构造，不做行为断言）
+                .withBean(com.nageoffer.ai.ragent.rag.service.RuntimeCatalogService.class,
+                        () -> mock(com.nageoffer.ai.ragent.rag.service.RuntimeCatalogService.class))
+                .withBean(com.nageoffer.ai.ragent.infra.config.AIModelProperties.class,
+                        () -> mock(com.nageoffer.ai.ragent.infra.config.AIModelProperties.class))
+                .withBean(com.nageoffer.ai.ragent.runtime.usage.EgressPolicy.class,
+                        () -> mock(com.nageoffer.ai.ragent.runtime.usage.EgressPolicy.class))
+                .withBean(com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope.class,
+                        () -> mock(com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope.class))
                 // ---- EngineChainReadiness 的类型点名：只登记"类型在场"的定义，不实例化、不断言行为。
                 // 注意 S1 后 IntentNodeRegistry（DefaultIntentClassifier 同体两型）改为按名 mock：
                 // 真实的 IntentResolver/IntentGuidanceService 会注入它，null 定义不再可注入。
