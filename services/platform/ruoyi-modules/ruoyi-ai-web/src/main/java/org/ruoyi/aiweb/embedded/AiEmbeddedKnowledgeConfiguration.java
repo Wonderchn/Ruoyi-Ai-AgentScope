@@ -18,13 +18,27 @@
 package org.ruoyi.aiweb.embedded;
 
 import com.nageoffer.ai.ragent.core.ingest.embed.ChunkEmbeddingService;
+import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
+import com.nageoffer.ai.ragent.framework.mq.producer.DelegatingTransactionListener;
 import com.nageoffer.ai.ragent.infra.token.HeuristicTokenCounterService;
 import com.nageoffer.ai.ragent.infra.token.TokenCounterService;
+import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeBaseMapper;
+import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeDocumentMapper;
+import com.nageoffer.ai.ragent.knowledge.mq.KnowledgeBaseCleanupConsumer;
+import com.nageoffer.ai.ragent.knowledge.mq.KnowledgeBaseCleanupTransactionChecker;
+import com.nageoffer.ai.ragent.knowledge.mq.KnowledgeDocumentChunkConsumer;
+import com.nageoffer.ai.ragent.knowledge.mq.KnowledgeDocumentChunkTransactionChecker;
+import com.nageoffer.ai.ragent.knowledge.service.KnowledgeDocumentService;
 import com.nageoffer.ai.ragent.knowledge.sink.RelationalChunkSink;
 import com.nageoffer.ai.ragent.rag.config.RAGDefaultProperties;
+import com.nageoffer.ai.ragent.rag.core.graph.LightRagClient;
+import com.nageoffer.ai.ragent.rag.core.keyword.KeywordIndexService;
 import com.nageoffer.ai.ragent.rag.core.vector.PgVectorRetrieverService;
 import com.nageoffer.ai.ragent.rag.core.vector.PgVectorStoreAdmin;
 import com.nageoffer.ai.ragent.rag.core.vector.PgVectorStoreService;
+import com.nageoffer.ai.ragent.rag.core.vector.VectorStoreAdmin;
+import com.nageoffer.ai.ragent.rag.service.FileStorageService;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -152,6 +166,74 @@ public class AiEmbeddedKnowledgeConfiguration {
                     TokenCounterService tokenCounterService) {
                 return new RelationalChunkSink(chunkMapper, tokenCounterService);
             }
+        }
+    }
+
+    /**
+     * 旧知识链 MQ 消费者与事务回查器（F22:2 真机第三缺口）。
+     *
+     * <p><b>为什么需要这一组。</b>{@link KnowledgeDocumentChunkConsumer}、
+     * {@link KnowledgeBaseCleanupConsumer} 及两个 {@code TransactionChecker} 都是
+     * {@code com.nageoffer.ai.ragent.**} 下的 {@code @Component}——platform 的扫描根是
+     * {@code org.ruoyi}，所以即使 {@code ai.integration.legacy-listeners-enabled=true}，
+     * 内嵌形态也只注册了反馈消费者：文档分块事务消息能发出（SEND_OK/COMMIT_MESSAGE），
+     * 但消费端没有 bean，chunk 永不执行。
+     *
+     * <p><b>门控与 {@code AiEmbeddedFeedbackConfiguration} 的 legacy 装配同口径：</b>
+     * {@code ai.integration.enabled=true} × {@code ai.integration.legacy-listeners-enabled=true}。
+     * 开关关闭时本组零 bean；打开时同组的边界与事务监听器由
+     * {@code LegacyCapabilityBoundaryAssembly} / {@code LegacyFeedbackProducerAssembly} 提供，
+     * 回查器在 {@code @PostConstruct} 里按 topic 注册进 {@code DelegatingTransactionListener}
+     * （与 broker 回查的查找方式一致），因此无需真 broker 即可完成装配。
+     *
+     * <p>若 legacy 打开但 {@code KnowledgeDocumentService}（FullAdmin）或
+     * {@code VectorStoreAdmin}/{@code FileStorageService} 等协作件缺席，启动会以
+     * "no qualifying bean" 响亮失败——与 {@code AiEmbeddedFeedbackConfiguration} 的
+     * fail-closed 口径一致，不静默注册一个永远消费不了的监听器。
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
+    @ConditionalOnProperty(name = "ai.integration.legacy-listeners-enabled", havingValue = "true")
+    public static class LegacyKnowledgeMqAssembly {
+
+        /** 文档分块任务消费者（chunk 真正执行的入口）。 */
+        @Bean
+        @ConditionalOnMissingBean
+        public KnowledgeDocumentChunkConsumer knowledgeDocumentChunkConsumer(
+                KnowledgeDocumentService documentService,
+                ObjectProvider<SaasCapabilityBoundary> capabilityBoundary) {
+            return new KnowledgeDocumentChunkConsumer(documentService, capabilityBoundary);
+        }
+
+        /** 知识库删除后的物理资源清理消费者。 */
+        @Bean
+        @ConditionalOnMissingBean
+        public KnowledgeBaseCleanupConsumer knowledgeBaseCleanupConsumer(
+                VectorStoreAdmin vectorStoreAdmin,
+                FileStorageService fileStorageService,
+                ObjectProvider<KeywordIndexService> keywordIndexServiceProvider,
+                ObjectProvider<LightRagClient> lightRagClientProvider,
+                ObjectProvider<SaasCapabilityBoundary> capabilityBoundary) {
+            return new KnowledgeBaseCleanupConsumer(vectorStoreAdmin, fileStorageService,
+                    keywordIndexServiceProvider, lightRagClientProvider, capabilityBoundary);
+        }
+
+        /** 文档分块事务消息回查器（按 topic 注册进 DelegatingTransactionListener）。 */
+        @Bean
+        @ConditionalOnMissingBean
+        public KnowledgeDocumentChunkTransactionChecker knowledgeDocumentChunkTransactionChecker(
+                KnowledgeDocumentMapper documentMapper,
+                DelegatingTransactionListener transactionListener) {
+            return new KnowledgeDocumentChunkTransactionChecker(documentMapper, transactionListener);
+        }
+
+        /** 知识库清理事务消息回查器。 */
+        @Bean
+        @ConditionalOnMissingBean
+        public KnowledgeBaseCleanupTransactionChecker knowledgeBaseCleanupTransactionChecker(
+                KnowledgeBaseMapper knowledgeBaseMapper,
+                DelegatingTransactionListener transactionListener) {
+            return new KnowledgeBaseCleanupTransactionChecker(knowledgeBaseMapper, transactionListener);
         }
     }
 }
