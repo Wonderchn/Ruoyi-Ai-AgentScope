@@ -2,8 +2,8 @@
  * AI 管理域 API 层的**请求形状**测试（与 api-routes.test.ts 同一纪律）。
  *
  * 证明：调用工厂方法会发出 method/URL/body **逐字**等于分母的请求：
- * - MCP：02-api-map.json 的 platform_api_kept 路径（BLOCKED-BY-G-22，
- *   路径本身仍是分母——G-22 关闭后这些形状必须原样生效）；
+ * - MCP：F12-M1 起迁到网关活族 `/api/ai/v1/mcp/**`（整数 `ApiEnvelope`，
+ *   列表 `data` 是 `IPage`，查询参数 `current/size`）；
  * - 知识库族：AiGatewayController 白名单 8 条逐字（本形态活）；
  * - ragent 管理面：02-api-map.json 的 ai_reference_only 路径（BLOCKED-BY-EMBEDDED-REGISTRY）；
  * - **已迁移族不在此文件**：Agent 目录（RW-03）见 `agents-admin.test.ts`，
@@ -112,26 +112,90 @@ describe('知识库族：8 条白名单路由逐字（本形态活端点）', ()
 // 已从工厂**移除**——模型/提供方的页面上限由 RW-06 的运行配置权威面承接
 // （`/api/ai/v1/runtime-config/**`，路径与信封断言见 `runtime-config-admin.test.ts`）。
 
-describe('MCP 目录：分母路径（BLOCKED-BY-G-22，形状先行）', () => {
-  it('工具/市场列表与连接测试/市场刷新的动词与路径', async () => {
+describe('MCP 目录：/api/ai/v1/mcp/** 网关活族（F12-M1，整数信封 + IPage）', () => {
+  it('工具：列表/详情/连接测试/启停/删除/导出/选项/全量', async () => {
     const { calls, client } = harness();
     const api = createAiApi(client);
 
-    await api.mcp.toolList({ pageNum: 1, pageSize: 10, name: 'x' });
+    await api.mcp.toolList({ current: 1, size: 10, keyword: 'x' });
     assert.equal(last(calls).method, 'GET');
-    assert.equal(last(calls).url, '/mcp/tool/list?pageNum=1&pageSize=10&name=x');
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/tools?current=1&size=10&keyword=x');
 
-    await api.mcp.toolTest({ id: 't1' });
-    assert.equal(last(calls).method, 'POST');
-    assert.equal(last(calls).url, '/mcp/tool/test');
-
-    await api.mcp.marketList({ pageNum: 1, pageSize: 10 });
+    await api.mcp.toolGet('t1');
     assert.equal(last(calls).method, 'GET');
-    assert.equal(last(calls).url, '/mcp/market/list?pageNum=1&pageSize=10');
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/tools/t1');
 
-    await api.mcp.marketRefresh();
+    await api.mcp.toolTest('t1');
     assert.equal(last(calls).method, 'POST');
-    assert.equal(last(calls).url, '/mcp/market/refresh');
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/tools/t1/test');
+
+    await api.mcp.toolStatus('t1', 'DISABLED');
+    assert.equal(last(calls).method, 'POST');
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/tools/t1/status?status=DISABLED');
+
+    await api.mcp.toolRemove(['t1', 't2']);
+    assert.equal(last(calls).method, 'DELETE');
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/tools/t1,t2');
+
+    await api.mcp.toolExport();
+    assert.equal(last(calls).method, 'GET');
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/tools/export');
+
+    await api.mcp.toolAll({ status: 'ENABLED' });
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/tools/all?status=ENABLED');
+
+    await api.mcp.toolOptions();
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/tools/options');
+  });
+
+  it('市场：列表/详情/工具列表/刷新/启停/删除/导出/全量', async () => {
+    const { calls, client } = harness();
+    const api = createAiApi(client);
+
+    await api.mcp.marketList({ current: 1, size: 10 });
+    assert.equal(last(calls).method, 'GET');
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/markets?current=1&size=10');
+
+    await api.mcp.marketGet('m1');
+    assert.equal(last(calls).method, 'GET');
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/markets/m1');
+
+    await api.mcp.marketTools('m1', { current: 1, size: 10 });
+    assert.equal(last(calls).method, 'GET');
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/markets/m1/tools?current=1&size=10');
+
+    await api.mcp.marketRefresh('m1');
+    assert.equal(last(calls).method, 'POST');
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/markets/m1/refresh');
+
+    await api.mcp.marketStatus('m1', 'ENABLED');
+    assert.equal(last(calls).method, 'POST');
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/markets/m1/status?status=ENABLED');
+
+    await api.mcp.marketRemove(['m1', 'm2']);
+    assert.equal(last(calls).method, 'DELETE');
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/markets/m1,m2');
+
+    await api.mcp.marketExport();
+    assert.equal(last(calls).method, 'GET');
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/markets/export');
+
+    await api.mcp.marketAll({ keyword: 'k' });
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/markets/all?keyword=k');
+  });
+
+  it('市场工具：单条加载与批量加载（批量体是 {ids:[...]}）', async () => {
+    const { calls, client } = harness();
+    const api = createAiApi(client);
+
+    await api.mcp.marketToolLoad('mt1');
+    assert.equal(last(calls).method, 'POST');
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/market-tools/mt1/load');
+
+    await api.mcp.marketToolBatchLoad([11, 12]);
+    assert.equal(last(calls).method, 'POST');
+    assert.equal(last(calls).url, '/api/ai/v1/mcp/market-tools/batch-load');
+    assert.deepEqual(JSON.parse(last(calls).body ?? '{}'), { ids: [11, 12] });
   });
 });
 
