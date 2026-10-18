@@ -38,6 +38,7 @@ import com.nageoffer.ai.ragent.rag.config.EsClientConfig;
 import com.nageoffer.ai.ragent.rag.config.GraphProperties;
 import com.nageoffer.ai.ragent.rag.config.GraphSyncVectorStorePostProcessor;
 import com.nageoffer.ai.ragent.rag.config.KeywordProperties;
+import com.nageoffer.ai.ragent.rag.config.KeywordSyncVectorStorePostProcessor;
 import com.nageoffer.ai.ragent.rag.config.MilvusConfig;
 import com.nageoffer.ai.ragent.rag.config.RAGDefaultProperties;
 import com.nageoffer.ai.ragent.rag.config.SearchChannelProperties;
@@ -45,6 +46,7 @@ import com.nageoffer.ai.ragent.rag.config.VectorSpaceInitializer;
 import com.nageoffer.ai.ragent.rag.core.graph.LightRagClient;
 import com.nageoffer.ai.ragent.rag.core.keyword.EsKeywordIndexService;
 import com.nageoffer.ai.ragent.rag.core.keyword.EsKeywordRetrieverService;
+import com.nageoffer.ai.ragent.rag.core.keyword.KeywordIndexService;
 import com.nageoffer.ai.ragent.rag.core.keyword.KeywordRetrieverService;
 import com.nageoffer.ai.ragent.rag.core.retrieval.channel.GraphSearchChannel;
 import com.nageoffer.ai.ragent.rag.core.retrieval.channel.KeywordSearchChannel;
@@ -348,6 +350,24 @@ public class AiEmbeddedF22BackendsConfiguration {
                 SearchChannelProperties properties,
                 @Qualifier("innerRetrievalExecutor") Executor innerRetrievalExecutor) {
             return new KeywordSearchChannel(keywordRetriever, properties, innerRetrievalExecutor);
+        }
+
+        /**
+         * 关键词同步织入器（F22:2 真机第八缺口）。
+         *
+         * <p>ES 关键词实现在场时把 {@code VectorStoreService} 包成
+         * {@code KeywordSyncingVectorStoreService}，向量写入/删除自动同步 ES。
+         * 与 LightRAG 组的图谱同步织入器是对偶；它此前只在内嵌扫描根外，故真机出现
+         * "块索引写入完成 落点数=2 但 ES _count 前后为 0"。
+         *
+         * <p>{@code static @Bean}：BeanPostProcessor 实例化早于普通单例，用静态工厂
+         * 避免提前实例化本配置类；关键词实现通过 {@link ObjectProvider} 惰性解析，
+         * 关闭态（type=none）不会进入本组。
+         */
+        @Bean
+        public static KeywordSyncVectorStorePostProcessor keywordSyncVectorStorePostProcessor(
+                ObjectProvider<KeywordIndexService> keywordIndexServiceProvider) {
+            return new KeywordSyncVectorStorePostProcessor(keywordIndexServiceProvider);
         }
     }
 

@@ -22,6 +22,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.audit.support.BizChangeLogContext;
 import com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService;
 import com.nageoffer.ai.ragent.core.chunk.ChunkingService;
+import com.nageoffer.ai.ragent.core.chunk.model.EmbeddedChunk;
 import com.nageoffer.ai.ragent.core.ingest.DefaultIngestionKernel;
 import com.nageoffer.ai.ragent.core.ingest.embed.ChunkEmbeddingService;
 import com.nageoffer.ai.ragent.core.ingest.sink.ChunkIndexWriter;
@@ -39,6 +40,7 @@ import com.nageoffer.ai.ragent.knowledge.support.VectorTargetResolver;
 import com.nageoffer.ai.ragent.rag.config.GraphProperties;
 import com.nageoffer.ai.ragent.rag.config.GraphSyncVectorStorePostProcessor;
 import com.nageoffer.ai.ragent.rag.config.KeywordProperties;
+import com.nageoffer.ai.ragent.rag.config.KeywordSyncVectorStorePostProcessor;
 import com.nageoffer.ai.ragent.rag.config.RAGDefaultProperties;
 import com.nageoffer.ai.ragent.rag.config.SearchChannelProperties;
 import com.nageoffer.ai.ragent.rag.config.VectorSpaceInitializer;
@@ -59,6 +61,7 @@ import com.nageoffer.ai.ragent.rag.core.vector.VectorSpaceId;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorSpaceSpec;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorStoreAdmin;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorStoreService;
+import com.nageoffer.ai.ragent.rag.core.vector.decorator.KeywordSyncingVectorStoreService;
 import com.nageoffer.ai.ragent.rag.core.vector.sink.VectorChunkSink;
 import io.milvus.v2.client.MilvusClientV2;
 import okhttp3.OkHttpClient;
@@ -77,6 +80,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionOperations;
 
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -338,6 +342,36 @@ class AiEmbeddedF22BackendsConfigurationTest {
                 });
     }
 
+    /**
+     * 真机 ES 窗缺口：向量写入落点数=2 但 ES _count 前后为 0——关键词同步织入器不在内嵌上下文，
+     * 向量写没有同步维护 ES 索引。ES 组开态必须注册 post-processor 并把 VectorStoreService 装饰。
+     */
+    @Test
+    @DisplayName("ES 组：KeywordSyncVectorStorePostProcessor 在场且 VectorStoreService 被装饰；关闭态不装饰")
+    void esGroupDecoratesVectorStoreWithKeywordSync() {
+        runner.withPropertyValues(EMBEDDED_LOCAL)
+                .withPropertyValues("rag.keyword.type=es",
+                        "rag.keyword.es.uris=http://127.0.0.1:9200")
+                .withBean("f22VectorStoreService", VectorStoreService.class, FakeVectorStoreService::new)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(KeywordSyncVectorStorePostProcessor.class);
+                    assertThat(context.getBean("f22VectorStoreService"))
+                            .as("ES 关键词实现在场时，向量写必须被关键词同步装饰器包裹")
+                            .isInstanceOf(KeywordSyncingVectorStoreService.class);
+                });
+
+        runner.withPropertyValues(EMBEDDED_LOCAL)
+                .withBean("f22VectorStoreService", VectorStoreService.class, FakeVectorStoreService::new)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(KeywordSyncVectorStorePostProcessor.class);
+                    assertThat(context.getBean("f22VectorStoreService"))
+                            .as("关键词关闭时不得装饰向量写")
+                            .isInstanceOf(FakeVectorStoreService.class);
+                });
+    }
+
     // ------------------------------------------------------------ LightRAG 图谱
 
     @Test
@@ -513,6 +547,31 @@ class AiEmbeddedF22BackendsConfigurationTest {
             }
             when(lock.isHeldByCurrentThread()).thenReturn(true);
             return client;
+        }
+    }
+
+    /** 向量写替身：只用于验证装饰器是否生效，不承载行为。 */
+    static final class FakeVectorStoreService implements VectorStoreService {
+
+        @Override
+        public void indexDocumentChunks(String tenantId, String collectionName, String docId,
+                                        List<EmbeddedChunk> chunks) {
+        }
+
+        @Override
+        public void updateChunk(String tenantId, String collectionName, String docId, EmbeddedChunk chunk) {
+        }
+
+        @Override
+        public void deleteDocumentVectors(String tenantId, String collectionName, String docId) {
+        }
+
+        @Override
+        public void deleteChunkById(String tenantId, String collectionName, String chunkId) {
+        }
+
+        @Override
+        public void deleteChunksByIds(String tenantId, String collectionName, List<String> chunkIds) {
         }
     }
 
