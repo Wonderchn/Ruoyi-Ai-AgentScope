@@ -21,7 +21,7 @@
  * 3. **终态只认 `run.terminal`**：流关闭/重连耗尽都不是完成；未见终态一律抛错。
  * 4. **非 SSE = 失败体**：网关在授权/门禁失败时返回 JSON（状态码 == body.code），
  *    必须按失败透出文案与符号码，不能当空流。
- * 5. **10s 预算**：连接 / 空闲 / 总时长三条独立看门狗；到点中止并抛
+ * 5. **预算**：连接 / 空闲各 10s、总时长 120s 三条独立看门狗；到点中止并抛
  *    `FlowRunFailure`（`FLOW_RUN_*_TIMEOUT`），不能静默收场或当成功。
  *
  * 本模块只依赖 `@ruoyi/events/*` 与相对路径，`node:test` 可直接跑真实解析路径。
@@ -44,21 +44,23 @@ export const FLOW_RUN_IDEMPOTENCY_PREFIX = 'web-flow-';
 export const FLOW_RUN_MAX_INPUTS = 16;
 
 /**
- * 客户端预算（F13:4 Spec §3）：连接 / 空闲 / 总时长各 10s。
+ * 客户端预算（F13:4 Spec §3）：连接 10s / 空闲 10s / 总时长 120s。
  *
+ * 连接失败与“受理后长期静默”仍快速失败；总时长按真机 flow.run 实测
+ * （约 30s）放宽到 2 分钟，避免 10s 总限让任何真实 LLM 流程必然中止。
  * 三条都必须能独立触发；到点一律<b>中止</b>并以 `FlowRunFailure` 交回调用方
  * （错误码 `FLOW_RUN_*_TIMEOUT`），绝不能把中止静默当成“流结束/运行完成”。
  */
 export const FLOW_RUN_CONNECT_TIMEOUT_MS = 10_000;
 export const FLOW_RUN_IDLE_TIMEOUT_MS = 10_000;
-export const FLOW_RUN_TOTAL_TIMEOUT_MS = 10_000;
+export const FLOW_RUN_TOTAL_TIMEOUT_MS = 120_000;
 
 /** 预算错误码（与页面文案/诊断位共用，不依赖 HTTP 状态）。 */
 export const FLOW_RUN_CONNECT_TIMEOUT_CODE = 'FLOW_RUN_CONNECT_TIMEOUT';
 export const FLOW_RUN_IDLE_TIMEOUT_CODE = 'FLOW_RUN_IDLE_TIMEOUT';
 export const FLOW_RUN_TOTAL_TIMEOUT_CODE = 'FLOW_RUN_TOTAL_TIMEOUT';
 
-/** 测试可注入的预算覆盖（生产恒用上方的 10s 常量）。 */
+/** 测试可注入的预算覆盖（生产恒用上方的默认常量）。 */
 export interface FlowRunTimeouts {
   connectMs?: number;
   idleMs?: number;

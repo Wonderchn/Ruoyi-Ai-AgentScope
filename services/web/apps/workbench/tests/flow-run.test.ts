@@ -11,6 +11,9 @@ import { describe, it } from 'node:test';
 import {
   buildFlowRunBody,
   createFlowRunClient,
+  FLOW_RUN_CONNECT_TIMEOUT_MS,
+  FLOW_RUN_IDLE_TIMEOUT_MS,
+  FLOW_RUN_TOTAL_TIMEOUT_MS,
   FlowRunFailure,
 } from '../src/api/chat/flow-run.ts';
 
@@ -282,6 +285,12 @@ describe('10s 预算：连接 / 空闲 / 总时长', () => {
 
   const request = { flowUuid: FLOW_UUID, flowInputs: [textInput('q')], flowQuestion: '问' };
 
+  it('默认预算：连接/空闲 10s、总时长 120s（真机 flow.run 约 30s，总限不得 10s）', () => {
+    assert.equal(FLOW_RUN_CONNECT_TIMEOUT_MS, 10_000);
+    assert.equal(FLOW_RUN_IDLE_TIMEOUT_MS, 10_000);
+    assert.equal(FLOW_RUN_TOTAL_TIMEOUT_MS, 120_000);
+  });
+
   it('连接预算：fetch 迟迟不返回 → FLOW_RUN_CONNECT_TIMEOUT（不当成功）', async () => {
     const { client, collect } = harness(
       () => new Promise<Response>(() => {}),
@@ -356,14 +365,14 @@ describe('10s 预算：连接 / 空闲 / 总时长', () => {
     }
   });
 
-  it('正常流不误杀：在预算内到达 run.terminal 即成功结束', async () => {
+  it('正常流不误杀：注入大总时长（120s）时到达 run.terminal 仍成功结束', async () => {
     const { client, collect } = harness(
       () => sseResponse([
         frame(1, 'run.accepted', { runId: 'r-flow-1', status: 'QUEUED', replayed: false }),
         frame(2, 'run.output_delta', { text: '好', dropped: false }),
         frame(3, 'run.terminal', { status: 'SUCCEEDED', resultRef: '{"output":{"value":"完成"}}' }),
       ]),
-      { connectMs: 1000, idleMs: 500, totalMs: 2000 },
+      { connectMs: 1000, idleMs: 500, totalMs: 120_000 },
     );
 
     const updates = await collect(client.run, request);
