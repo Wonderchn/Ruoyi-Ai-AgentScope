@@ -89,10 +89,26 @@ public class CodingHarnessBeans {
         return Executors.newFixedThreadPool(2, factory);
     }
 
+    /**
+     * SSE replay/drain runs on its own pool: a model turn occupying every run thread must never
+     * starve durable event delivery for other runs (or for the same run's subscribers).
+     */
+    @Bean(destroyMethod = "shutdown")
+    public ExecutorService codingHarnessDeliveryExecutor() {
+        AtomicInteger threadIds = new AtomicInteger();
+        ThreadFactory factory = runnable -> {
+            Thread thread = new Thread(runnable,
+                    "coding-harness-delivery-" + threadIds.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+        return Executors.newCachedThreadPool(factory);
+    }
+
     @Bean
     public HarnessEventHub codingHarnessEventHub(
             FileHarnessStore store,
-            @Qualifier("codingHarnessExecutor") ExecutorService executor) {
+            @Qualifier("codingHarnessDeliveryExecutor") ExecutorService executor) {
         return new HarnessEventHub(store, executor);
     }
 
