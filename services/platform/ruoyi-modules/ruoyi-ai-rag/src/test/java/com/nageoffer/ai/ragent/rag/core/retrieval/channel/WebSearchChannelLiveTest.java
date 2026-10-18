@@ -24,6 +24,7 @@ import okhttp3.OkHttpClient;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -50,6 +51,9 @@ class WebSearchChannelLiveTest {
 
         WebSearchChannel channel = new WebSearchChannel(
                 new OkHttpClient(), new ObjectMapper(), properties);
+        // F22:6：真实检索也必须显式允许 youcom，缺策略即零外呼
+        ReflectionTestUtils.setField(channel, "egressPolicy",
+                WebSearchChannelTest.providerOf(WebSearchChannelTest.policy("youcom")));
 
         assertTrue(channel.isEnabled(SearchContext.builder().budget(RetrievalBudget.uniform(3)).build()));
 

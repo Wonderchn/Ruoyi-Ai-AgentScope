@@ -24,15 +24,18 @@ import com.nageoffer.ai.ragent.rag.core.retrieval.channel.DeepSeekWebSearchChann
 import com.nageoffer.ai.ragent.rag.core.retrieval.channel.SearchChannelType;
 import com.nageoffer.ai.ragent.rag.core.retrieval.channel.SearchContext;
 import com.nageoffer.ai.ragent.rag.core.retrieval.channel.WebSearchChannel;
+import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
 import okhttp3.OkHttpClient;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -98,6 +101,29 @@ class AiEmbeddedF22SearchConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     assertThat(context).hasSingleBean(DeepSeekWebSearchChannel.class);
+                });
+    }
+
+    @Test
+    @DisplayName("F22:6：embedded 上下文把 EgressPolicy 注入到搜索适配器")
+    @SuppressWarnings("unchecked")
+    void egressPolicyIsInjectedIntoEmbeddedSearchChannel() {
+        EgressPolicy policy = new EgressPolicy();
+        policy.setEnabled(true);
+        policy.setAllowedProviders("deepseek");
+
+        runner.withBean(EgressPolicy.class, () -> policy)
+                .withPropertyValues(EMBEDDED_LOCAL)
+                .withPropertyValues("rag.search.channels.web-search.enabled=true",
+                        "rag.search.channels.web-search.provider=deepseek",
+                        "rag.search.channels.web-search.deepseek.api-key=test-key")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    DeepSeekWebSearchChannel channel = context.getBean(DeepSeekWebSearchChannel.class);
+                    ObjectProvider<EgressPolicy> injected =
+                            (ObjectProvider<EgressPolicy>) ReflectionTestUtils.getField(channel, "egressPolicy");
+                    assertThat(injected).isNotNull();
+                    assertThat(injected.getIfAvailable()).isSameAs(policy);
                 });
     }
 

@@ -21,12 +21,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
 import com.nageoffer.ai.ragent.rag.config.SearchChannelProperties;
 import com.nageoffer.ai.ragent.rag.core.retrieval.RetrievalBudget;
+import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
 import com.sun.net.httpserver.HttpServer;
 import okhttp3.OkHttpClient;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -277,6 +280,34 @@ class WebSearchChannelTest {
         assertEquals("YouComWebSearch", channel.getName());
     }
 
+    // ============== F22:6 出口 allow-list ==============
+
+    @Test
+    @DisplayName("出口策略拒绝：零请求、空结果，不抛出")
+    void deniedEgressMakesNoRequestAndReturnsEmpty() {
+        SearchChannelProperties properties = defaultProperties("test-key");
+        WebSearchChannel channel = newChannelWithEnv(properties, null);
+        ReflectionTestUtils.setField(channel, "egressPolicy", providerOf(policy("deepseek")));
+
+        SearchChannelResult result = channel.search(context("联邦检索"));
+
+        assertTrue(result.getChunks().isEmpty());
+        assertNull(lastPath.get(), "出口拒绝时不得发起任何请求");
+    }
+
+    @Test
+    @DisplayName("出口策略 bean 缺席：fail-closed，零请求、空结果")
+    void absentEgressPolicyMakesNoRequestAndReturnsEmpty() {
+        SearchChannelProperties properties = defaultProperties("test-key");
+        WebSearchChannel channel = newChannelWithEnv(properties, null);
+        ReflectionTestUtils.setField(channel, "egressPolicy", null);
+
+        SearchChannelResult result = channel.search(context("联邦检索"));
+
+        assertTrue(result.getChunks().isEmpty());
+        assertNull(lastPath.get(), "策略缺席必须按拒绝处理，不得外呼");
+    }
+
     // ============== helpers ==============
 
     private SearchChannelProperties defaultProperties(String apiKey) {
@@ -297,10 +328,44 @@ class WebSearchChannelTest {
      * 构造通道并固定环境变量读取结果，屏蔽真实运行环境，保证测试确定性
      */
     private WebSearchChannel newChannelWithEnv(SearchChannelProperties properties, String envValue) {
-        return new WebSearchChannel(new OkHttpClient(), new ObjectMapper(), properties) {
+        WebSearchChannel channel = new WebSearchChannel(new OkHttpClient(), new ObjectMapper(), properties) {
             @Override
             protected String readEnv(String name) {
                 return envValue;
+            }
+        };
+        // F22:6：显式注入允许策略，既有正例断言不弱化
+        ReflectionTestUtils.setField(channel, "egressPolicy", providerOf(policy("youcom")));
+        return channel;
+    }
+
+    static EgressPolicy policy(String... providers) {
+        EgressPolicy policy = new EgressPolicy();
+        policy.setEnabled(true);
+        policy.setAllowedProviders(String.join(",", providers));
+        return policy;
+    }
+
+    static <T> ObjectProvider<T> providerOf(T value) {
+        return new ObjectProvider<>() {
+            @Override
+            public T getObject(Object... args) {
+                return value;
+            }
+
+            @Override
+            public T getIfAvailable() {
+                return value;
+            }
+
+            @Override
+            public T getIfUnique() {
+                return value;
+            }
+
+            @Override
+            public T getObject() {
+                return value;
             }
         };
     }

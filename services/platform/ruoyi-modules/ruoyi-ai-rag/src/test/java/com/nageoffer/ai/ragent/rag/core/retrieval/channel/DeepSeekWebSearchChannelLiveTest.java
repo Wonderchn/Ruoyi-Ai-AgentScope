@@ -25,6 +25,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.regex.Pattern;
 
@@ -59,6 +60,9 @@ class DeepSeekWebSearchChannelLiveTest {
 
         DeepSeekWebSearchChannel channel = new DeepSeekWebSearchChannel(
                 new OkHttpClient(), new ObjectMapper(), properties);
+        // F22:6：真实检索也必须显式允许 deepseek，缺策略即零外呼
+        ReflectionTestUtils.setField(channel, "egressPolicy",
+                DeepSeekWebSearchChannelTest.providerOf(DeepSeekWebSearchChannelTest.policy("deepseek")));
 
         SearchContext context = SearchContext.builder()
                 .originalQuestion("DeepSeek search API release notes October 2026")

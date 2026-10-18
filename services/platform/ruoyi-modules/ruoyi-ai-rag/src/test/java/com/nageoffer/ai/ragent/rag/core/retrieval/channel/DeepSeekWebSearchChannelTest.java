@@ -25,6 +25,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
 import com.nageoffer.ai.ragent.rag.config.SearchChannelProperties;
 import com.nageoffer.ai.ragent.rag.core.retrieval.RetrievalBudget;
+import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
 import com.sun.net.httpserver.HttpServer;
 import okhttp3.OkHttpClient;
 import org.junit.jupiter.api.AfterEach;
@@ -33,6 +34,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -295,6 +298,32 @@ class DeepSeekWebSearchChannelTest {
         assertEquals(SearchChannelType.WEB_SEARCH, channel.getType());
     }
 
+    // ============== F22:6 出口 allow-list ==============
+
+    @Test
+    @DisplayName("出口策略拒绝：零请求、空结果，不抛出")
+    void deniedEgressMakesNoRequestAndReturnsEmpty() {
+        DeepSeekWebSearchChannel channel = newChannel(defaultProperties(SECRET_KEY));
+        ReflectionTestUtils.setField(channel, "egressPolicy", providerOf(policy("youcom")));
+
+        SearchChannelResult result = channel.search(context("联邦检索"));
+
+        assertTrue(result.getChunks().isEmpty());
+        assertNull(lastPath.get(), "出口拒绝时不得发起任何请求");
+    }
+
+    @Test
+    @DisplayName("出口策略 bean 缺席：fail-closed，零请求、空结果")
+    void absentEgressPolicyMakesNoRequestAndReturnsEmpty() {
+        DeepSeekWebSearchChannel channel = newChannel(defaultProperties(SECRET_KEY));
+        ReflectionTestUtils.setField(channel, "egressPolicy", null);
+
+        SearchChannelResult result = channel.search(context("联邦检索"));
+
+        assertTrue(result.getChunks().isEmpty());
+        assertNull(lastPath.get(), "策略缺席必须按拒绝处理，不得外呼");
+    }
+
     // ============== helpers ==============
 
     private SearchChannelProperties defaultProperties(String apiKey) {
@@ -314,10 +343,45 @@ class DeepSeekWebSearchChannelTest {
     }
 
     private DeepSeekWebSearchChannel newChannelWithEnv(SearchChannelProperties properties, String envValue) {
-        return new DeepSeekWebSearchChannel(new OkHttpClient(), new ObjectMapper(), properties) {
+        DeepSeekWebSearchChannel channel = new DeepSeekWebSearchChannel(
+                new OkHttpClient(), new ObjectMapper(), properties) {
             @Override
             protected String readEnv(String name) {
                 return "DEEPSEEK_API_KEY".equals(name) ? envValue : null;
+            }
+        };
+        // F22:6：显式注入允许策略，既有正例断言不弱化
+        ReflectionTestUtils.setField(channel, "egressPolicy", providerOf(policy("deepseek")));
+        return channel;
+    }
+
+    static EgressPolicy policy(String... providers) {
+        EgressPolicy policy = new EgressPolicy();
+        policy.setEnabled(true);
+        policy.setAllowedProviders(String.join(",", providers));
+        return policy;
+    }
+
+    static <T> ObjectProvider<T> providerOf(T value) {
+        return new ObjectProvider<>() {
+            @Override
+            public T getObject(Object... args) {
+                return value;
+            }
+
+            @Override
+            public T getIfAvailable() {
+                return value;
+            }
+
+            @Override
+            public T getIfUnique() {
+                return value;
+            }
+
+            @Override
+            public T getObject() {
+                return value;
             }
         };
     }
