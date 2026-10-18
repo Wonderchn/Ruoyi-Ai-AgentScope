@@ -232,12 +232,15 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         Assert.notNull(beforeDO, () -> new ClientException("文档不存在"));
         bizChangeLogContext.putName(beforeDO.getDocName());
         KnowledgeDocumentDO before = BeanUtil.copyProperties(beforeDO, KnowledgeDocumentDO.class);
+        // 事务回调里没有请求上下文可依赖，租户在这里取出并闭包传入。
+        // 同一份租户必须写进事件：消费线程没有登录主体，缺它会被平台租户行拦截器
+        // 在 ai_knowledge_document 的第一次 DB 操作前拒绝（F22:2 真机第四缺口）。
+        String tenantId = requireTenantId();
         KnowledgeDocumentChunkEvent event = KnowledgeDocumentChunkEvent.builder()
                 .docId(docId)
                 .operator(UserContext.getUsername())
+                .tenantId(tenantId)
                 .build();
-        // 事务回调里没有请求上下文可依赖，租户在这里取出并闭包传入
-        String tenantId = requireTenantId();
 
         messageQueueProducer.sendInTransaction(
                 chunkTopic,

@@ -17,9 +17,12 @@
 
 package com.nageoffer.ai.ragent.knowledge.mq;
 
+import cn.hutool.core.util.StrUtil;
 import com.nageoffer.ai.ragent.framework.context.LoginUser;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
+import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.framework.mq.MessageWrapper;
 import com.nageoffer.ai.ragent.knowledge.mq.event.KnowledgeDocumentChunkEvent;
 import com.nageoffer.ai.ragent.knowledge.service.KnowledgeDocumentService;
@@ -53,6 +56,13 @@ public class KnowledgeDocumentChunkConsumer implements RocketMQListener<MessageW
     private final KnowledgeDocumentService documentService;
     private final ObjectProvider<SaasCapabilityBoundary> capabilityBoundary;
 
+    /**
+     * 租户作用域绑定端口（F22:2 真机第四缺口）：platform 侧存在 MyBatis 租户行拦截器，
+     * 消费线程没有登录主体，必须在任何 DB 访问之前把事件携带的租户绑定到当前线程；
+     * 独立应用没有拦截器时端口缺席，按直接执行（与 {@code MessageFeedbackConsumer} 同款）。
+     */
+    private final ObjectProvider<TenantScopeBinder> tenantScopeBinder;
+
     @Override
     public void onMessage(MessageWrapper<KnowledgeDocumentChunkEvent> message) {
         // 第一行：关闭判定必须早于日志正文、UserContext.set 与任何 service 调用
@@ -60,14 +70,30 @@ public class KnowledgeDocumentChunkConsumer implements RocketMQListener<MessageW
                 SaasCapabilityBoundary.LegacyCapability.KB_DOCUMENT_CHUNK_CONSUMER);
 
         KnowledgeDocumentChunkEvent event = message.getBody();
+        log.info("[消费者] 开始消费文档分块任务，docId={}, tenantId={}, keys={}",
+                event.getDocId(), event.getTenantId(), message.getKeys());
 
-        log.info("[消费者] 开始消费文档分块任务，docId={}, keys={}", event.getDocId(), message.getKeys());
+        Runnable execute = () -> {
+            UserContext.set(LoginUser.builder().username(event.getOperator()).build());
+            try {
+                documentService.executeChunk(event.getDocId());
+            } finally {
+                UserContext.clear();
+            }
+        };
 
-        UserContext.set(LoginUser.builder().username(event.getOperator()).build());
-        try {
-            documentService.executeChunk(event.getDocId());
-        } finally {
-            UserContext.clear();
+        TenantScopeBinder binder = tenantScopeBinder == null ? null : tenantScopeBinder.getIfAvailable();
+        if (binder == null) {
+            // 独立应用：没有租户行拦截器，保持原形态（事件租户仍由投递侧携带）。
+            execute.run();
+            return;
         }
+        // 平台形态：缺租户说明投递侧漏传（或投递的是本改动之前入队的旧事件）。
+        // 必须显式拒绝，不能以无租户身份查租户业务表，也不落默认租户。
+        if (StrUtil.isBlank(event.getTenantId())) {
+            throw new ClientException("文档分块事件缺少 tenantId，拒绝执行：docId=" + event.getDocId()
+                    + "（租户业务表查询必须限域，不落默认租户）");
+        }
+        binder.runWithTenant(event.getTenantId(), execute);
     }
 }

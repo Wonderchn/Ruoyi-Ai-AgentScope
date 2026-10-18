@@ -17,8 +17,11 @@
 
 package com.nageoffer.ai.ragent.knowledge.mq;
 
+import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
+import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.framework.mq.MessageWrapper;
 import com.nageoffer.ai.ragent.framework.mq.producer.DelegatingTransactionListener;
 import com.nageoffer.ai.ragent.framework.mq.producer.TransactionChecker;
@@ -32,6 +35,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
+
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 知识库删除清理事务消息回查器
@@ -55,6 +60,14 @@ public class KnowledgeBaseCleanupTransactionChecker implements TransactionChecke
      */
     @Autowired(required = false)
     private SaasCapabilityBoundary capabilityBoundary;
+
+    /**
+     * 租户作用域绑定端口（F22:2 真机第四缺口）：broker 回查线程没有登录主体，
+     * 而 {@code ai_knowledge_base} 是租户业务表，查询前必须绑定事件租户；
+     * 独立应用没有租户拦截器时端口缺席，按直接执行。
+     */
+    @Autowired(required = false)
+    private TenantScopeBinder tenantScopeBinder;
 
     @Value("knowledge-base-cleanup_topic${unique-name:}")
     private String cleanupTopic;
@@ -90,8 +103,22 @@ public class KnowledgeBaseCleanupTransactionChecker implements TransactionChecke
         log.info("[事务回查] 知识库删除清理，消息体：{}", JSONUtil.toJsonStr(message));
 
         KnowledgeBaseCleanupEvent event = message.getBody();
+        if (tenantScopeBinder == null) {
+            // 独立应用：没有租户行拦截器，保持原查询形态。
+            return isDeleted(event.getKbId());
+        }
+        if (StrUtil.isBlank(event.getTenantId())) {
+            throw new ClientException("知识库清理回查事件缺少 tenantId，拒绝执行：kbId=" + event.getKbId()
+                    + "（租户业务表查询必须限域，不落默认租户）");
+        }
+        AtomicBoolean deleted = new AtomicBoolean();
+        tenantScopeBinder.runWithTenant(event.getTenantId(), () -> deleted.set(isDeleted(event.getKbId())));
+        return deleted.get();
+    }
+
+    private boolean isDeleted(String kbId) {
         // 逻辑删除后 selectById 不可见；查不到即视为本地事务（软删知识库）已提交
-        KnowledgeBaseDO kbDO = knowledgeBaseMapper.selectById(event.getKbId());
+        KnowledgeBaseDO kbDO = knowledgeBaseMapper.selectById(kbId);
         return kbDO == null;
     }
 }

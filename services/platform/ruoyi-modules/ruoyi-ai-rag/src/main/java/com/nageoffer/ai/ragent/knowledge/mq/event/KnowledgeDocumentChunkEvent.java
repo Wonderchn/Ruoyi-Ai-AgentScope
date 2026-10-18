@@ -51,4 +51,15 @@ public class KnowledgeDocumentChunkEvent implements Serializable {
      * 操作人
      */
     private String operator;
+
+    /**
+     * 租户 ID（F22:2 真机第四缺口）。
+     *
+     * <p>消费/回查线程没有登录主体，而 platform 的 MyBatis 租户行拦截器
+     * （{@code tenant.enable=true}）对 {@code ai_knowledge_document} 等租户业务表
+     * fail-closed：任一 DB 操作之前必须有可信租户。事件必须携带投递侧可信的租户号，
+     * 消费侧在任何 DB 访问前把它绑定到当前线程；缺失即按"投递侧漏传"拒绝，
+     * 不落默认租户、不静默跳过。
+     */
+    private String tenantId;
 }

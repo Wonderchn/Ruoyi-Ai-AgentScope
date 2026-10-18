@@ -19,6 +19,7 @@ package org.ruoyi.aiweb.embedded;
 
 import com.nageoffer.ai.ragent.core.ingest.embed.ChunkEmbeddingService;
 import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.framework.mq.producer.DelegatingTransactionListener;
 import com.nageoffer.ai.ragent.infra.token.HeuristicTokenCounterService;
 import com.nageoffer.ai.ragent.infra.token.TokenCounterService;
@@ -196,13 +197,19 @@ public class AiEmbeddedKnowledgeConfiguration {
     @ConditionalOnProperty(name = "ai.integration.legacy-listeners-enabled", havingValue = "true")
     public static class LegacyKnowledgeMqAssembly {
 
-        /** 文档分块任务消费者（chunk 真正执行的入口）。 */
+        /**
+         * 文档分块任务消费者（chunk 真正执行的入口）。
+         *
+         * <p>平台侧 {@code RuoYiTenantScopeBinder} 提供租户作用域绑定：消费线程没有登录主体，
+         * 事件租户必须在 {@code executeChunk} 的任何 DB 访问前绑定（F22:2 真机第四缺口）。
+         */
         @Bean
         @ConditionalOnMissingBean
         public KnowledgeDocumentChunkConsumer knowledgeDocumentChunkConsumer(
                 KnowledgeDocumentService documentService,
-                ObjectProvider<SaasCapabilityBoundary> capabilityBoundary) {
-            return new KnowledgeDocumentChunkConsumer(documentService, capabilityBoundary);
+                ObjectProvider<SaasCapabilityBoundary> capabilityBoundary,
+                ObjectProvider<TenantScopeBinder> tenantScopeBinder) {
+            return new KnowledgeDocumentChunkConsumer(documentService, capabilityBoundary, tenantScopeBinder);
         }
 
         /** 知识库删除后的物理资源清理消费者。 */

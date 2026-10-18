@@ -118,7 +118,7 @@ class P1TriggerBoundaryTest {
     void chunkConsumerRejectsDirectInvocationBeforeAnyServiceCall() {
         KnowledgeDocumentService documentService = mock(KnowledgeDocumentService.class);
         KnowledgeDocumentChunkConsumer consumer = new KnowledgeDocumentChunkConsumer(
-                documentService, providerOf(CLOSED_BOUNDARY));
+                documentService, providerOf(CLOSED_BOUNDARY), providerOf(null));
 
         SaasCapabilityBoundary.ClosedCapabilityException failure = assertThrows(
                 SaasCapabilityBoundary.ClosedCapabilityException.class,
