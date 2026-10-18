@@ -142,11 +142,12 @@ class CodingHarnessHardeningTest {
     void createRunRepairsItsEventAfterAPublishFailure() {
         FailingHub eventHub = new FailingHub(store, Runnable::run, 1);
         CodingHarnessApplicationService service = service(eventHub, command -> {
+            throw new java.util.concurrent.RejectedExecutionException("test executor");
         }, request -> ModelTurn.content("done"));
         HarnessSessionState session = session(service, HarnessApprovalPolicy.NEVER, "s-c1-create");
-        assertThatThrownBy(() -> run(service, session.sessionId(), "do it", "r-c1-create",
-                ALL_ACTIONS)).isInstanceOf(IllegalStateException.class);
-        HarnessRunState first = service.listRuns(owner, session.sessionId()).get(0);
+        HarnessRunState first = run(service, session.sessionId(), "do it", "r-c1-create",
+                ALL_ACTIONS);
+        assertThat(first.status()).isEqualTo(com.nageoffer.ai.ragent.coding.model.HarnessRunStatus.QUEUED);
         List<HarnessEvent> firstEvents = service.readEvents(owner, session.sessionId(),
                 first.runId(), 0, 100);
         assertThat(firstEvents).isEmpty();

@@ -1,8 +1,12 @@
 package org.ruoyi.aiweb.embedded;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.nageoffer.ai.ragent.agent.config.AgentModelFactory;
 import com.nageoffer.ai.ragent.coding.app.CodingHarnessApplicationService;
+import com.nageoffer.ai.ragent.coding.app.CodingModelGateway;
+import com.nageoffer.ai.ragent.coding.app.UnconfiguredCodingModelGateway;
 import com.nageoffer.ai.ragent.coding.controller.CodingHarnessController;
+import com.nageoffer.ai.ragent.coding.model.AgentModelFactoryCodingModelGateway;
 import com.nageoffer.ai.ragent.coding.store.FileHarnessStore;
 import com.nageoffer.ai.ragent.runtime.web.DeliveryPermits;
 import org.junit.jupiter.api.Tag;
@@ -63,5 +67,25 @@ class AiEmbeddedCodingConfigurationTest {
                         .doesNotHaveBean(CodingHarnessApplicationService.class);
             });
         }
+    }
+
+    @Test
+    void withoutAgentModelFactoryTheGatewayStaysFailClosed() {
+        configurations().run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context.getBean(CodingModelGateway.class))
+                    .isInstanceOf(UnconfiguredCodingModelGateway.class);
+        });
+    }
+
+    @Test
+    void withAgentModelFactoryTheRealAdapterIsSelected() {
+        configurations()
+                .withBean(AgentModelFactory.class, () -> (tenantId, modelId) -> null)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(CodingModelGateway.class))
+                            .isInstanceOf(AgentModelFactoryCodingModelGateway.class);
+                });
     }
 }
