@@ -24,6 +24,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.function.Function;
 
 /**
  * {@code auth_config}/{@code config_json} 的解析、掩码与凭据引用（brief §2.6）。
@@ -39,7 +40,23 @@ public final class McpConfigJson {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
+    /**
+     * 环境变量查找（生产 = {@link System#getenv}）。测试可替换为假实现以验证
+     * {@code env:NAME} 的解析链，而不需要真实进程环境。
+     */
+    private static volatile Function<String, String> environment = System::getenv;
+
     private McpConfigJson() {
+    }
+
+    /** 测试 seam：替换环境变量查找（包内可见，不进入产品 API）。 */
+    static void setEnvironmentLookup(Function<String, String> lookup) {
+        environment = lookup == null ? System::getenv : lookup;
+    }
+
+    /** 测试 seam：恢复 {@link System#getenv}。 */
+    static void resetEnvironmentLookup() {
+        environment = System::getenv;
     }
 
     /** {@code baseUrl} 原样返回；缺失/非文本/null 返回 null。 */
@@ -125,6 +142,30 @@ public final class McpConfigJson {
     }
 
     /**
+     * 只取 {@code headers} 的<b>原始引用</b>（不解析 {@code env:NAME}、不落明文）。
+     *
+     * <p>用于 load：把市场 {@code auth_config} 的头引用原样搬运到本地工具
+     * {@code config_json}，连接测试/刷新时才解析。非对象/不可解析/值不是文本 ⇒ 跳过
+     * （不写 headers，保持零部分写语义）。
+     */
+    public static Map<String, String> rawHeaders(String configJson) {
+        JsonNode root = parse(configJson);
+        JsonNode headers = root == null ? null : root.get("headers");
+        if (headers == null || !headers.isObject()) {
+            return Map.of();
+        }
+        Map<String, String> refs = new LinkedHashMap<>();
+        Iterator<Map.Entry<String, JsonNode>> fields = headers.fields();
+        while (fields.hasNext()) {
+            Map.Entry<String, JsonNode> entry = fields.next();
+            if (entry.getValue().isTextual()) {
+                refs.put(entry.getKey(), entry.getValue().asText());
+            }
+        }
+        return Map.copyOf(refs);
+    }
+
+    /**
      * 从 JSON 的 {@code headers} 解析连接头：{@code env:NAME} 取环境变量，其余按字面量。
      *
      * <p>引用不可解析时抛具名 {@link McpAdminError#CREDENTIAL_UNAVAILABLE}，且调用发生在
@@ -146,7 +187,7 @@ public final class McpConfigJson {
             String value = entry.getValue().asText();
             if (value.startsWith("env:")) {
                 String variable = value.substring("env:".length()).trim();
-                String fromEnv = variable.isEmpty() ? null : System.getenv(variable);
+                String fromEnv = variable.isEmpty() ? null : environment.apply(variable);
                 if (fromEnv == null || fromEnv.isBlank()) {
                     throw new McpAdminException(McpAdminError.CREDENTIAL_UNAVAILABLE, variable);
                 }

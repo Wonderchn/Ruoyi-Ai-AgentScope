@@ -81,6 +81,7 @@ class McpAdminServiceRemoteTest {
     @AfterEach
     void tearDown() {
         PrincipalContext.clear();
+        McpConfigJson.resetEnvironmentLookup();
     }
 
     @Test
@@ -291,11 +292,104 @@ class McpAdminServiceRemoteTest {
                 objectMapper, transactionManager);
     }
 
+    @Test
+    @DisplayName("W1：加载把市场 auth_config 的 headers 引用原样写入 config_json（不解析、不落明文）")
+    void loadCarriesMarketHeaderRefsWithoutResolving() throws Exception {
+        String authConfig = """
+                {"headers":{"Authorization":"env:FAKE_MCP_TOKEN","X-Literal":"literal-secret"}}
+                """;
+        when(marketToolMapper.selectOne(any())).thenReturn(marketTool(61L, 5L, "alpha", 0));
+        when(marketMapper.selectOne(any())).thenReturn(
+                market(5L, "http://127.0.0.1:1", authConfig));
+        when(toolMapper.insert(any(McpToolDO.class))).thenAnswer(inv -> {
+            McpToolDO tool = inv.getArgument(0);
+            tool.setId(88L);
+            return 1;
+        });
+
+        service.loadMarketTool(61L);
+
+        ArgumentCaptor<McpToolDO> created = ArgumentCaptor.forClass(McpToolDO.class);
+        verify(toolMapper).insert(created.capture());
+        String configJson = created.getValue().getConfigJson();
+        com.fasterxml.jackson.databind.JsonNode config = objectMapper.readTree(configJson);
+        assertThat(config.path("baseUrl").asText()).isEqualTo("http://127.0.0.1:1");
+        assertThat(config.path("headers").path("Authorization").asText())
+                .isEqualTo("env:FAKE_MCP_TOKEN");
+        assertThat(config.path("headers").path("X-Literal").asText()).isEqualTo("literal-secret");
+        assertThat(configJson).doesNotContain("Bearer secret-token");
+    }
+
+    @Test
+    @DisplayName("W1：连接测试解析加载行里的 env: 引用并真正带上 Authorization 头")
+    void connectionTestResolvesHeaderRefsFromLoadedTool() throws Exception {
+        try (FakeMcpHttpServer server = new FakeMcpHttpServer()) {
+            allow(server.baseUri().toString());
+            String authConfig = """
+                    {"headers":{"Authorization":"env:FAKE_MCP_TOKEN"}}
+                    """;
+            when(marketToolMapper.selectOne(any())).thenReturn(marketTool(62L, 5L, "alpha", 0));
+            when(marketMapper.selectOne(any())).thenReturn(
+                    market(5L, server.baseUri().toString(), authConfig));
+            java.util.concurrent.atomic.AtomicReference<McpToolDO> loaded =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            when(toolMapper.insert(any(McpToolDO.class))).thenAnswer(inv -> {
+                McpToolDO tool = inv.getArgument(0);
+                tool.setId(89L);
+                loaded.set(tool);
+                return 1;
+            });
+            when(toolMapper.selectOne(any())).thenAnswer(inv -> loaded.get());
+
+            service.loadMarketTool(62L);
+            assertThat(loaded.get()).isNotNull();
+            assertThat(loaded.get().getConfigJson()).contains("env:FAKE_MCP_TOKEN");
+
+            McpConfigJson.setEnvironmentLookup(
+                    name -> "FAKE_MCP_TOKEN".equals(name) ? "Bearer secret-token" : null);
+            McpTestResult result = service.testTool(89L);
+
+            assertThat(result.success()).isTrue();
+            assertThat(server.lastAuthorization()).isEqualTo("Bearer secret-token");
+            assertThat(loaded.get().getConfigJson())
+                    .as("连接期解析不得回写明文")
+                    .doesNotContain("Bearer secret-token")
+                    .contains("env:FAKE_MCP_TOKEN");
+        }
+    }
+
+    @Test
+    @DisplayName("W1：市场 auth_config 非对象/无 headers → 本地工具只有 baseUrl（不写 headers）")
+    void loadWithoutUsableMarketHeadersKeepsBaseUrlOnly() throws Exception {
+        when(marketToolMapper.selectOne(any())).thenReturn(marketTool(63L, 5L, "alpha", 0));
+        when(marketMapper.selectOne(any())).thenReturn(
+                market(5L, "http://127.0.0.1:1", "\"not-an-object\""));
+        when(toolMapper.insert(any(McpToolDO.class))).thenAnswer(inv -> {
+            McpToolDO tool = inv.getArgument(0);
+            tool.setId(90L);
+            return 1;
+        });
+
+        service.loadMarketTool(63L);
+
+        ArgumentCaptor<McpToolDO> created = ArgumentCaptor.forClass(McpToolDO.class);
+        verify(toolMapper).insert(created.capture());
+        com.fasterxml.jackson.databind.JsonNode config =
+                objectMapper.readTree(created.getValue().getConfigJson());
+        assertThat(config.has("headers")).isFalse();
+        assertThat(config.path("baseUrl").asText()).isEqualTo("http://127.0.0.1:1");
+    }
+
     private static McpMarketDO market(Long id, String url) {
+        return market(id, url, null);
+    }
+
+    private static McpMarketDO market(Long id, String url, String authConfig) {
         return McpMarketDO.builder()
                 .id(id)
                 .name("市场" + id)
                 .url(url)
+                .authConfig(authConfig)
                 .status("ENABLED")
                 .tenantId(TENANT)
                 .delFlag("0")

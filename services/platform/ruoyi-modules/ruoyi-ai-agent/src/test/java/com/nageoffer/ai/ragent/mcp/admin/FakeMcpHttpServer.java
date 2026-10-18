@@ -30,6 +30,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * F12-M1 连接测试/刷新的进程内 MCP stub。
@@ -51,6 +52,7 @@ final class FakeMcpHttpServer implements AutoCloseable {
     private final AtomicInteger requests = new AtomicInteger();
     private final AtomicInteger initializes = new AtomicInteger();
     private final AtomicInteger toolLists = new AtomicInteger();
+    private final AtomicReference<String> lastAuthorization = new AtomicReference<>();
     private final List<Map<String, Object>> tools;
     private volatile int rejectStatus;
 
@@ -81,6 +83,11 @@ final class FakeMcpHttpServer implements AutoCloseable {
         return toolLists.get();
     }
 
+    /** 最近一次请求携带的 Authorization 头（用于证明连接测试带上了解析后的凭据）。 */
+    String lastAuthorization() {
+        return lastAuthorization.get();
+    }
+
     void rejectWith(int status) {
         this.rejectStatus = status;
     }
@@ -92,6 +99,10 @@ final class FakeMcpHttpServer implements AutoCloseable {
 
     private void handle(HttpExchange exchange) throws IOException {
         requests.incrementAndGet();
+        String authorization = exchange.getRequestHeaders().getFirst("Authorization");
+        if (authorization != null) {
+            lastAuthorization.set(authorization);
+        }
         try {
             String method = exchange.getRequestMethod();
             if ("GET".equalsIgnoreCase(method)) {

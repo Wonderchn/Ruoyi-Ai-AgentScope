@@ -285,6 +285,14 @@ public class McpAdminServiceImpl implements McpAdminService {
             throw new McpAdminException(McpAdminError.TOOL_ALREADY_LOADED);
         }
         McpMarketDO market = loadMarket(row.getMarketId(), tenant);
+        // 市场 auth_config 的头引用原样搬运（env:NAME 不解析、不落明文）；
+        // 非对象/不可解析 ⇒ 不写 headers（保持零部分写语义）
+        Map<String, Object> localConfig = new LinkedHashMap<>();
+        localConfig.put("baseUrl", market.getUrl());
+        Map<String, String> headerRefs = McpConfigJson.rawHeaders(market.getAuthConfig());
+        if (!headerRefs.isEmpty()) {
+            localConfig.put("headers", headerRefs);
+        }
 
         transactions.executeWithoutResult(status -> {
             McpToolDO localTool = McpToolDO.builder()
@@ -292,7 +300,7 @@ public class McpAdminServiceImpl implements McpAdminService {
                     .description(row.getToolDescription())
                     .type("REMOTE")
                     .status("ENABLED")
-                    .configJson(writeJson(Map.of("baseUrl", market.getUrl())))
+                    .configJson(writeJson(localConfig))
                     .tenantId(tenant)
                     .delFlag("0")
                     .build();
