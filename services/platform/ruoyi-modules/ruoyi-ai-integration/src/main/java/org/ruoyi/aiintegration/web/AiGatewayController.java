@@ -458,6 +458,22 @@ public class AiGatewayController {
             // 由 AiEmbeddedFlowConfiguration 显式装配、in AutoConfiguration.imports。
             // 四条动作 flow.list/read/write/delete 默认授予全为"否"。
             // 两条 GET 在网关走字节分支，故内层必须同时给整数 ApiEnvelope 与两个回执头。
+            // F13:2（2026-10-18）：AIFlow 运行面 runtime 视图 5 条（action flow.run.read / flow.delete）。
+            // 内层 handler = FlowRuntimeController（类级 /internal/ai/v1；由
+            // AiEmbeddedFlowRunConfiguration 显式装配，随 AutoConfiguration.imports 生效）。
+            // ⚠️ 声明序（matchRoute 取声明序首个命中）：
+            //   GET /flows/runs（2 段字面量）必须在 GET /flows/{uuid} **之前**；
+            //   GET /flows/runs/{runtimeUuid}（3 段）必须在 GET /flows/{uuid}/nodes 之前
+            //   （否则 /flows/runs/nodes 会被变量形吃成"读图"）。
+            // 三条 GET 在网关走字节分支，内层控制器先取数后自铸整数 ApiEnvelope + 两个回执头；
+            // 两条写面走 JSON 分支、内层不铸回执。
+            // SSE（POST /flows/{uuid}/run、GET /flows/runs/{runtimeUuid}/events）**不在此登记**：
+            // 它们由 AiGatewayStreamController 精确映射，先于 catch-all 生效。
+            new Route("GET", "/flows/runs", "flow.run.read"),
+            new Route("GET", "/flows/runs/{runtimeUuid}", "flow.run.read"),
+            new Route("GET", "/flows/runs/{runtimeUuid}/nodes", "flow.run.read"),
+            new Route("POST", "/flows/runs/clear", "flow.delete"),
+            new Route("DELETE", "/flows/runs/{runtimeUuid}", "flow.delete"),
             new Route("GET", "/flows", "flow.list"),
             // F13-M1（2026-10-18，维护者 B 批项 5）：发布/公开面 6 条。
             // 公开语义写死：同租户、跨用户、只读；跨租户永不因 is_public 可见

@@ -27,3 +27,4 @@ org.ruoyi.aiweb.embedded.AiEmbeddedAgentSkillConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedAttachmentConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedMcpAdminConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedGraphConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedFlowRunConfiguration

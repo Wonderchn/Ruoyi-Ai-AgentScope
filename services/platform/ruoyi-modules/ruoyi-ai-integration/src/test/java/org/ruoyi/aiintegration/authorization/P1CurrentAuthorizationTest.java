@@ -263,12 +263,19 @@ class P1CurrentAuthorizationTest {
                 "mcp.list", "mcp.read", "mcp.write", "mcp.delete", "mcp.test");
         Set<String> approvedF13M1Increment = Set.of(
                 "flow.publish");
+        // F13:2（2026-10-18，维护者「继续 / 预算提高 / F20 快做」既有批准范围内连续施工）：
+        // AIFlow 运行面再增**恰好 2 条**：flow.run / flow.run.read → ai:flow:run / ai:flow:run:read。
+        // 权限行由 V40__aiflow_run_permissions.sql 注册（7208/7209，order 72/73，默认不分配）。
+        // 合并口径：34 + 4 + 1 + 4 + 1 + 5 + 1 + 2 = 52。
+        Set<String> approvedF13RunIncrement = Set.of(
+                "flow.run", "flow.run.read");
         Set<String> approvedAllIncrements = new LinkedHashSet<>(approvedIncrement);
         approvedAllIncrements.addAll(approvedA1Increment);
         approvedAllIncrements.addAll(approvedF11Increment);
         approvedAllIncrements.addAll(approvedF06Increment);
         approvedAllIncrements.addAll(approvedF12Increment);
         approvedAllIncrements.addAll(approvedF13M1Increment);
+        approvedAllIncrements.addAll(approvedF13RunIncrement);
         Set<String> fullList = new LinkedHashSet<>(oldFrozen);
         fullList.addAll(approvedAllIncrements);
 
@@ -318,6 +325,9 @@ class P1CurrentAuthorizationTest {
         expectedPairs.put("flow.node.write", "ai:flow:design");
         // F13-M1（2026-10-18，维护者 B 批项 5）：发布/公开开关动作（V34/7149）。
         expectedPairs.put("flow.publish", "ai:flow:publish");
+        // F13:2（2026-10-18）：运行面两条动作（V40/7208/7209）。
+        expectedPairs.put("flow.run", "ai:flow:run");
+        expectedPairs.put("flow.run.read", "ai:flow:run:read");
         expectedPairs.put("flow.read", "ai:flow:read");
         expectedPairs.put("flow.write", "ai:flow:write");
         expectedPairs.put("ingestion.run", "ai:ingestion:run");

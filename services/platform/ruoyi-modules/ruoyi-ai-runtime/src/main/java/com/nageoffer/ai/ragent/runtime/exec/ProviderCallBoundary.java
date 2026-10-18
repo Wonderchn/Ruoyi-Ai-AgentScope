@@ -31,10 +31,26 @@ public class ProviderCallBoundary {
     public ProviderCallBoundary(RunAccessService access,ObjectProvider<RevocationGuard> guards){this.access=access;this.guards=guards;}
     public RevocationGuard.Operation enter(RunExecution execution) {
         execution.guard().commitAtomic(()->null);
+        // F13:2：flow.run 的资源是运行实例（ai_resource RUN），不是知识库/文档；
+        // 若仍走 kb.read 分支，执行首步会因缺 kb scope 403（坑 2）。
+        if (FlowRunActions.FLOW_RUN.equals(execution.run().action())) {
+            var flowPrincipal=access.current(execution.run(),Set.of(FlowRunActions.FLOW_RUN));
+            var flowGuard=guards.getIfAvailable();
+            if(flowGuard==null) throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE);
+            return flowGuard.enter(flowPrincipal,FlowRunActions.FLOW_RUN,"run:"+execution.runId());
+        }
         boolean ingest=java.util.Set.of("document.ingest","ingestion.run").contains(execution.run().action());
         var principal=access.current(execution.run(),ingest?Set.of("kb.read","document.read"):Set.of("kb.read"));
         var guard=guards.getIfAvailable();
         if(guard==null) throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE);
         return guard.enter(principal,ingest?"document.read":"kb.read","run:"+execution.runId());
+    }
+
+    /** 字面量锚点：runtime 模块不反向依赖 flow 模块，故动作名落在这里。 */
+    private static final class FlowRunActions {
+        private static final String FLOW_RUN = "flow.run";
+
+        private FlowRunActions() {
+        }
     }
 }

@@ -92,6 +92,14 @@ public final class AiCanonicalAction {
         // 由 provisioning 逐码授予）。公开语义写死：同租户、跨用户、只读；
         // 跨租户永不因 is_public 可见。
         actions.put("flow.publish", "ai:flow:publish");
+        // F13:2（2026-10-18，维护者「继续 / 预算提高 / F20 快做」既有批准范围内连续施工）：
+        // AIFlow 运行面新增**恰两条**动作——flow.run → ai:flow:run；
+        // flow.run.read → ai:flow:run:read（第 51/52 条）。
+        // 资源是运行实例（ai_flow_runtime，带 tenant_id ⇒ 租户级，**不进** PLATFORM_ADMIN_ACTIONS）。
+        // 权限行由 V40__aiflow_run_permissions.sql 注册（menu_id 7208/7209，order 72/73，
+        // 默认不分配，由 provisioning 逐码授予）。
+        actions.put("flow.run", "ai:flow:run");
+        actions.put("flow.run.read", "ai:flow:run:read");
         // F11-A1（2026-10-11，维护者批"新建最小样本＋安全约束＋本期范围"）：Skills 管理面
         // 接线批新增**恰四条**动作——skill.list / skill.read / skill.write / skill.delete
         // → ai:skill:*（第 40-43 条）。七条既有端点对号：列表与 tool-options 归 skill.list（Spec §6-P3），

@@ -280,13 +280,71 @@ public class AiGatewayStreamController {
 
     @GetMapping("/runs/{runId}/events")
     public void events(@PathVariable String runId, HttpServletRequest request, HttpServletResponse response) {
+        if (runId == null || runId.isBlank() || !runId.matches("[A-Za-z0-9_-]{1,64}")) {
+            writeError(response, P04ErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
+            return;
+        }
+        streamEvents(request, response, "run.stream", "/runs/" + runId + "/events");
+    }
+
+    /**
+     * F13:2 AIFlow 运行起跑 SSE（{@code POST /api/ai/v1/flows/{uuid}/run}）。
+     *
+     * <p>与 Agent chat 同一条专用流通道：精确映射（先于 catch-all 生效）、独立建连/空闲/
+     * 总时长预算、同一委托链（动作 {@code flow.run}）、逐帧交付回执。
+     * 体上限 256 KiB（§4.3）；uuid 只接受 32 位小写 hex。
+     */
+    @PostMapping("/flows/{uuid}/run")
+    public void flowRun(@PathVariable String uuid, HttpServletRequest request, HttpServletResponse response) {
         try {
-            if (runId == null || runId.isBlank() || !runId.matches("[A-Za-z0-9_-]{1,64}")) {
+            if (uuid == null || !uuid.matches("[0-9a-f]{32}")) {
                 writeError(response, P04ErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
                 return;
             }
-            GatewayAuthorizer.Authorized authorized = authorizer.authorize(request, "run.stream");
-            URI target = targetUri(request, "/runs/" + runId + "/events");
+            long declared = request.getContentLengthLong();
+            if (declared > FLOW_RUN_MAX_BYTES) {
+                writeError(response, P04ErrorCode.BAD_REQUEST);
+                return;
+            }
+            byte[] body;
+            try (java.io.InputStream in = request.getInputStream()) {
+                body = in.readNBytes(FLOW_RUN_MAX_BYTES + 1);
+            }
+            if (body.length > FLOW_RUN_MAX_BYTES) {
+                writeError(response, P04ErrorCode.BAD_REQUEST);
+                return;
+            }
+            streamAgent(request, response, "flow.run", "POST", "/flows/" + uuid + "/run", body);
+        } catch (P04Exception e) {
+            writeError(response, e.errorCode());
+        } catch (AiGatewayClient.UpstreamUnavailableException e) {
+            writeError(response, P04ErrorCode.AUTHORIZATION_UNAVAILABLE);
+        } catch (java.io.IOException e) {
+            writeError(response, P04ErrorCode.BAD_REQUEST);
+        }
+    }
+
+    /**
+     * F13:2 AIFlow 续流 SSE（D3，{@code GET /api/ai/v1/flows/runs/{runtimeUuid}/events}）。
+     *
+     * <p>动作 {@code flow.run.read}（owner-only 由内层账本复核）；不新增第三个动作。
+     */
+    @GetMapping("/flows/runs/{runtimeUuid}/events")
+    public void flowRunEvents(@PathVariable String runtimeUuid, HttpServletRequest request,
+                              HttpServletResponse response) {
+        if (runtimeUuid == null || !runtimeUuid.matches("[0-9a-f]{32}")) {
+            writeError(response, P04ErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
+            return;
+        }
+        streamEvents(request, response, "flow.run.read", "/flows/runs/" + runtimeUuid + "/events");
+    }
+
+    /** 通用事件流转发（run.stream / flow.run.read 共用同一传输语义）。 */
+    private void streamEvents(HttpServletRequest request, HttpServletResponse response, String action,
+                              String subPath) {
+        try {
+            GatewayAuthorizer.Authorized authorized = authorizer.authorize(request, action);
+            URI target = targetUri(request, subPath);
             Map<String, String> headers = GatewayHeaders.sanitize(request);
             if (authorized.delegationToken() != null) {
                 headers.put("Authorization", "Bearer " + authorized.delegationToken());
@@ -298,15 +356,19 @@ public class AiGatewayStreamController {
             headers.put("Accept", "text/event-stream");
             client.forwardEventStream(new AiGatewayClient.ForwardRequest("GET", target, Map.copyOf(headers), null),
                     response, properties.getSseConnectTimeoutMillis(), properties.getSseIdleTimeoutMillis(),
-                    properties.getSseMaxDurationMillis(),new AiGatewayClient.DeliveryAck(
-                            URI.create(base()+AI_INTERNAL_PREFIX+"/authorization/deliveries/release"),
-                            authorized.member().tenantId(),authorized.member().membershipId(),properties.getServiceCredential()));
+                    properties.getSseMaxDurationMillis(), new AiGatewayClient.DeliveryAck(
+                            URI.create(base() + AI_INTERNAL_PREFIX + "/authorization/deliveries/release"),
+                            authorized.member().tenantId(), authorized.member().membershipId(),
+                            properties.getServiceCredential()));
         } catch (P04Exception e) {
             writeError(response, e.errorCode());
         } catch (AiGatewayClient.UpstreamUnavailableException e) {
             writeError(response, P04ErrorCode.AUTHORIZATION_UNAVAILABLE);
         }
     }
+
+    /** F13:2 flow.run 请求体上限（§4.3：256 KiB）。 */
+    static final int FLOW_RUN_MAX_BYTES = 256 * 1024;
 
     /** 传输基地址：local 形态是本进程（占位主机，仅保持 URI 形状）；http 形态取真实 AI 基地址。 */
     private String base() {
