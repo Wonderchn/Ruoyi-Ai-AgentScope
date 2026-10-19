@@ -323,6 +323,7 @@ export function useMediaWorkbench() {
             responseFormat: input.responseFormat || undefined,
             speed: input.speed,
             instructions: input.instructions.trim() || undefined,
+            requestId,
           })
         : await generateVideo({
             model: transient.model,
@@ -330,6 +331,7 @@ export function useMediaWorkbench() {
             size: input.size.trim() || undefined,
             seconds: input.seconds,
             quality: input.quality.trim() || undefined,
+            requestId,
           });
       if (disposed || version !== operationVersion)
         return;
