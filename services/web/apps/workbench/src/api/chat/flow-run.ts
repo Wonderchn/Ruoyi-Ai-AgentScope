@@ -271,8 +271,7 @@ export function createFlowRunClient(deps: FlowRunClientDeps): FlowRunClient {
   async function* run(input: FlowRunRequestInput): AsyncGenerator<FlowRunUpdate, void, undefined> {
     const flowUuid = typeof input.flowUuid === 'string' ? input.flowUuid : '';
     const question = input.flowQuestion ?? input.text ?? '';
-    const body = buildFlowRunBody(flowUuid, input.flowInputs ?? [], question, input.budget,
-      input.conversationId);
+    const body = buildFlowRunBody(flowUuid, input.flowInputs ?? [], question, input.budget, input.conversationId);
     const key = isValidIdempotencyKey(input.idempotencyKey)
       ? input.idempotencyKey
       : `${FLOW_RUN_IDEMPOTENCY_PREFIX}${newRequestId()}`;
