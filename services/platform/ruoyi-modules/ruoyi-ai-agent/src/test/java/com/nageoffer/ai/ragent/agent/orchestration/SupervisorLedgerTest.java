@@ -57,7 +57,7 @@ import static org.mockito.Mockito.when;
  * <p>账本断言：受理写恰一行 {@code ai_agent_run}；预算默认 3000/9/1；spendStep/addTokens
  * 受 max_steps/max_tokens 约束；绑定兼容是纯函数。
  *
- * <p>护栏断言：canonical 仍 56 条且无 {@code agent.supervisor}；迁移最高 V43（F14:2 市场表）；
+ * <p>护栏断言：canonical 仍 56 条且无 {@code agent.supervisor}；迁移最高 V44（V43 市场表 + V44 媒体任务）；
  * 网关源码无 supervisor 路由；orchestration 包无 {@code @TableName}、无第二账本写入、
  * 不写 {@code ai_tool_call}/{@code ai_agent_checkpoint}/{@code ai_run_event}。
  */
@@ -210,7 +210,7 @@ class SupervisorLedgerTest {
     // ------------------------------------------------------------ R17：零新增共享面
 
     @Test
-    @DisplayName("R17：canonical 仍 56 条、无 agent.supervisor；迁移最高 V43（F14:2 市场表）；网关无 supervisor 路由")
+    @DisplayName("R17：canonical 仍 56 条、无 agent.supervisor；迁移最高 V44（V43 市场表 + V44 媒体任务）；网关无 supervisor 路由")
     void zeroNewCanonicalMigrationOrRoute() throws Exception {
         Set<String> actions = org.ruoyi.ai.api.action.AiCanonicalAction.knownActions();
         assertEquals(56, actions.size());
@@ -230,7 +230,8 @@ class SupervisorLedgerTest {
                 }
             }
         }
-        assertEquals(43, max, "migration version must stay frozen at V43 (F14:2 ai_multi_agent_app)");
+        // F19 媒体任务（维护者 2026-10-19 批准）新增 V44；"零新增"口径按已批准批次显式上移。
+        assertEquals(44, max, "migration version must stay frozen at V44 (V43 F14:2 market, V44 F19 media tasks)");
 
         Path gateway = platformRoot().resolve(
                 "ruoyi-modules/ruoyi-ai-integration/src/main/java/org/ruoyi/aiintegration/web/AiGatewayController.java");
