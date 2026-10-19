@@ -74,8 +74,7 @@ describe('Supervisor 受理体（使用入口）', () => {
     const body = buildSupervisorRunBody({ text: '写一份风险清单', agents: AGENTS, appId: APP_ID });
     assert.equal(SUPERVISOR_ACTION, 'agent.supervisor');
     assert.equal(SUPERVISOR_VERSION, 'supervisor-v1');
-    assert.deepEqual(Object.keys(body).sort(),
-      ['action', 'agentVersion', 'budget', 'input', 'resourceRefs', 'schemaVersion']);
+    assert.deepEqual(Object.keys(body).sort(), ['action', 'agentVersion', 'budget', 'input', 'resourceRefs', 'schemaVersion']);
     assert.equal(body.schemaVersion, 1);
     assert.equal(body.action, 'agent.supervisor');
     assert.equal(body.agentVersion, 'supervisor-v1');
@@ -127,14 +126,18 @@ describe('Supervisor 受理体（使用入口）', () => {
 
   it('预算收敛到服务端边界（1..8192 / 1..600）', () => {
     const body = buildSupervisorRunBody({
-      text: 'q', agents: AGENTS, budget: { maxTokens: 0, maxWallClockSeconds: 0 },
+      text: 'q',
+      agents: AGENTS,
+      budget: { maxTokens: 0, maxWallClockSeconds: 0 },
     });
     assert.equal(body.budget.maxTokens, 1);
     assert.equal(body.budget.maxWallClockSeconds, 1);
     assert.equal(SUPERVISOR_MAX_WALL_CLOCK_SECONDS, 120);
     assert.equal(SUPERVISOR_MAX_WALL_CLOCK_SECONDS_CEILING, 600);
     const capped = buildSupervisorRunBody({
-      text: 'q', agents: AGENTS, budget: { maxTokens: 99999, maxWallClockSeconds: 99999 },
+      text: 'q',
+      agents: AGENTS,
+      budget: { maxTokens: 99999, maxWallClockSeconds: 99999 },
     });
     assert.equal(capped.budget.maxTokens, 8192);
     assert.equal(capped.budget.maxWallClockSeconds, 600);

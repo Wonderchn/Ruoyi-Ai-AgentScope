@@ -167,8 +167,7 @@ export function buildSupervisorRunBody(input: {
     resourceRefs: [],
     budget: {
       maxTokens: clamp(input.budget?.maxTokens, SUPERVISOR_MAX_TOKENS, 1, SUPERVISOR_MAX_TOKENS_CEILING),
-      maxWallClockSeconds: clamp(input.budget?.maxWallClockSeconds, SUPERVISOR_MAX_WALL_CLOCK_SECONDS,
-        1, SUPERVISOR_MAX_WALL_CLOCK_SECONDS_CEILING),
+      maxWallClockSeconds: clamp(input.budget?.maxWallClockSeconds, SUPERVISOR_MAX_WALL_CLOCK_SECONDS, 1, SUPERVISOR_MAX_WALL_CLOCK_SECONDS_CEILING),
     },
   };
   if (input.appId !== undefined) {
