@@ -143,10 +143,11 @@ class AgentTracingConfigurationTest {
         Files.writeString(buildInfo, "build.version=9.9.9-audit\n");
         new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(ProjectInfoAutoConfiguration.class))
-                .withUserConfiguration(AgentTraceProperties.class, AgentTracingConfiguration.class)
+                .withUserConfiguration(AgentTracingConfiguration.class)
                 .withPropertyValues(
                         "ragent.engine.type=agent",
                         "agent.trace.enabled=true",
+                        "agent.trace.endpoint=http://127.0.0.1:4318/v1/traces",
                         "agent.trace.public-key=pk-test",
                         "agent.trace.secret-key=sk-test",
                         "spring.application.name=ragent-test-service",
@@ -165,8 +166,8 @@ class AgentTracingConfigurationTest {
     }
 
     /**
-     * 字段缺省值与基础配置都明确默认采集内容：只打开 tracing 就应得到可读的 Input / Output，
-     * 需要纯骨架或有额外合规要求的部署再显式关闭内容采集
+     * 独立 AI 应用的 yaml 仍显式开内容采集；F18:4 只把"没有 yaml 时的 Java 缺省"改成纯骨架，
+     * 不改变独立部署的既有取值（yaml 是显式 true）。
      */
     @Test
     void shouldKeepContentCaptureEnabledInBaseConfiguration() {
@@ -177,11 +178,12 @@ class AgentTracingConfigurationTest {
     }
 
     /**
-     * 不经过 yaml 绑定时也要遵守同一默认契约，避免不同启动路径得到一套有内容、一套空节点的 trace
+     * 不经过 yaml 绑定时遵守内嵌默认契约：只开 tracing 得到纯骨架（capture-content=false），
+     * 不把提示词/工具出入参带进链路；独立应用需要内容时在 yaml 显式开启。
      */
     @Test
-    void shouldEnableContentCaptureInPropertyDefaults() {
-        assertThat(new AgentTraceProperties().isCaptureContent()).isTrue();
+    void shouldKeepContentCaptureOffInPropertyDefaults() {
+        assertThat(new AgentTraceProperties().isCaptureContent()).isFalse();
     }
 
     /**
