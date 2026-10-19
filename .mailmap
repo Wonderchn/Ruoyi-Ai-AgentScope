@@ -1,0 +1,4 @@
+# Normalize duplicate maintainer identities for log/blame display.
+# This changes presentation only; commit SHAs and history stay untouched.
+Wonderchn <wonderchn@foxmail.com> Wonderchn <46928995+Wonderchn@users.noreply.github.com>
+Wonderchn <wonderchn@foxmail.com> wonderchn <wonderchn@foxmail.com>
