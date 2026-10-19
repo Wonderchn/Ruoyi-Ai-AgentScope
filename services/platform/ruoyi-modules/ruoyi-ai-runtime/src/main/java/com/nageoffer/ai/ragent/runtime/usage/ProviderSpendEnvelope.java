@@ -66,15 +66,54 @@ public class ProviderSpendEnvelope {
      * 真实单价以 provider 账单为准；这里预占的是上限。
      */
     public static BigDecimal estimateMedia(String provider, int images, BigDecimal maxCostPerImageCny) {
-        if(!"dashscope".equals(provider))
+        return estimateMediaUnits(provider, MEDIA_TYPE_IMAGE, images, maxCostPerImageCny);
+    }
+
+    /** 媒体类型标识（与 {@code ai_media_task.media_type} / V46 CHECK 一致）。 */
+    public static final String MEDIA_TYPE_IMAGE = "image";
+    public static final String MEDIA_TYPE_AUDIO = "audio";
+    public static final String MEDIA_TYPE_VIDEO = "video";
+
+    /**
+     * F19:0/F19:2 媒体计价扩展（与图片同信封/同 cap，单位独立、不混加）。
+     *
+     * <ul>
+     *   <li>{@code image}：单位 = 张数（1..10），{@code maxUnitCostCny} = 单张最坏成本上限；</li>
+     *   <li>{@code audio}：单位 = <b>输入字符数</b>（1..100000），
+     *       {@code maxUnitCostCny} = 每千字符最坏成本上限（qwen-tts 按输入字符计费）；</li>
+     *   <li>{@code video}：单位 = <b>生成次数</b>（1..4，本切片固定 1），
+     *       {@code maxUnitCostCny} = 单次最坏成本上限（时长 × 分辨率单价取上界）。</li>
+     * </ul>
+     *
+     * <p>金额向上取整到 6 位小数并保留 0.01 CNY 最低预占；provider 只认 {@code dashscope}。
+     * 真实单价以 provider 账单为准，UNKNOWN 不退还预占。
+     */
+    public static BigDecimal estimateMediaUnits(String provider, String mediaType, long units,
+                                                BigDecimal maxUnitCostCny) {
+        if (!"dashscope".equals(provider))
             throw denied();
-        if(images<1 || images>10)
+        if (units < 1)
             throw denied();
-        if(maxCostPerImageCny==null || maxCostPerImageCny.signum()<=0
-                || maxCostPerImageCny.compareTo(new BigDecimal("5.000000"))>0)
+        if (maxUnitCostCny == null || maxUnitCostCny.signum() <= 0)
             throw denied();
-        return maxCostPerImageCny.multiply(BigDecimal.valueOf(images))
-                .setScale(6,RoundingMode.CEILING).max(new BigDecimal("0.010000"));
+        BigDecimal cost;
+        if (MEDIA_TYPE_IMAGE.equals(mediaType)) {
+            if (units > 10 || maxUnitCostCny.compareTo(new BigDecimal("5.000000")) > 0)
+                throw denied();
+            cost = maxUnitCostCny.multiply(BigDecimal.valueOf(units));
+        } else if (MEDIA_TYPE_AUDIO.equals(mediaType)) {
+            if (units > 100000 || maxUnitCostCny.compareTo(new BigDecimal("1.000000")) > 0)
+                throw denied();
+            cost = maxUnitCostCny.multiply(BigDecimal.valueOf(units))
+                    .divide(BigDecimal.valueOf(1000), 6, RoundingMode.CEILING);
+        } else if (MEDIA_TYPE_VIDEO.equals(mediaType)) {
+            if (units > 4 || maxUnitCostCny.compareTo(new BigDecimal("10.000000")) > 0)
+                throw denied();
+            cost = maxUnitCostCny.multiply(BigDecimal.valueOf(units));
+        } else {
+            throw denied();
+        }
+        return cost.setScale(6, RoundingMode.CEILING).max(new BigDecimal("0.010000"));
     }
 
     public String reserve(String provider,String model,long inputBytes,int maxOutputTokens) {
@@ -89,9 +128,15 @@ public class ProviderSpendEnvelope {
      * 支付型调用前调用；预占失败 = 零 provider 调用。
      */
     public String reserveMedia(String provider,String model,int images,BigDecimal maxCostPerImageCny) {
+        return reserveMedia(provider, model, MEDIA_TYPE_IMAGE, images, maxCostPerImageCny);
+    }
+
+    /** F19:0/F19:2 媒体类型化预占；单位与上限口径见 {@link #estimateMediaUnits}。 */
+    public String reserveMedia(String provider,String model,String mediaType,long units,
+                               BigDecimal maxUnitCostCny) {
         if(!enabled || !executionId.matches("[a-zA-Z0-9_-]{1,128}") || cap==null || cap.signum()<=0 || cap.compareTo(new BigDecimal("20"))>0)
             throw denied();
-        BigDecimal amount=estimateMedia(provider,images,maxCostPerImageCny);
+        BigDecimal amount=estimateMediaUnits(provider,mediaType,units,maxUnitCostCny);
         return reserveAmount(provider,model,amount);
     }
 

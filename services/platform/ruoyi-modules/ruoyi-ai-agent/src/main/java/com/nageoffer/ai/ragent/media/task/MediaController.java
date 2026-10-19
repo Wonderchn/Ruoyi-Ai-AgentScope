@@ -49,7 +49,10 @@ import java.util.regex.Pattern;
  * <p><b>路由（与 workbench 现有契约对齐）。</b>
  * <ul>
  *   <li>{@code POST /media/image}：提交图片任务，返回任务 ID/状态；</li>
- *   <li>{@code GET /media/prediction?model&predictionId}：查询任务；</li>
+ *   <li>{@code POST /media/speech}：F19:0 提交语音任务（qwen-tts 同步）；</li>
+ *   <li>{@code POST /media/video}：F19:2 提交视频任务（异步）；</li>
+ *   <li>{@code GET /media/prediction?model&predictionId}：通用任务查询；</li>
+ *   <li>{@code GET /media/speech} / {@code GET /media/video}：语音/视频任务查询别名；</li>
  *   <li>{@code GET /media/tasks} / {@code GET /media/tasks/{id}}：服务端任务列表/详情；</li>
  *   <li>{@code POST /media/tasks/{id}/retry}：显式重试（新 attempt）；</li>
  *   <li>{@code GET /media/content?model&predictionId}：受控私有取流（Range/Content-Type）。</li>
@@ -97,13 +100,78 @@ public class MediaController {
         }
     }
 
+    /** F19:0 提交语音合成任务（同步 provider；成功时直接返回 completed）。 */
+    @PostMapping("/media/speech")
+    public ResponseEntity<?> submitSpeech(@RequestBody(required = false) SpeechRequest body,
+                                          @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+        String requestId = "req-" + UUID.randomUUID();
+        try {
+            ExecutionPrincipal principal = principal();
+            SpeechRequest request = body == null
+                    ? new SpeechRequest(null, null, null, null, null, null, null) : body;
+            String id = idempotencyKey == null || idempotencyKey.isBlank()
+                    ? request.requestId() : idempotencyKey;
+            MediaTaskView view = service.submitAudio(principal,
+                    new MediaTaskService.AudioSubmitCommand(request.model(), request.input(),
+                            request.voice(), request.responseFormat(), request.speed(),
+                            request.instructions(), id));
+            return RunApiResponses.ok(HttpStatus.OK, view, requestId);
+        } catch (RunApiException e) {
+            return RunApiResponses.fail(e.errorCode(), e.getMessage(), requestId);
+        } catch (ClientException e) {
+            return RunApiResponses.fail(RunErrorCode.AUTH_REQUIRED, RunErrorCode.AUTH_REQUIRED.message(), requestId);
+        }
+    }
+
+    /** F19:2 提交视频生成任务（DashScope 异步协议）。 */
+    @PostMapping("/media/video")
+    public ResponseEntity<?> submitVideo(@RequestBody(required = false) VideoRequest body,
+                                         @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+        String requestId = "req-" + UUID.randomUUID();
+        try {
+            ExecutionPrincipal principal = principal();
+            VideoRequest request = body == null
+                    ? new VideoRequest(null, null, null, null, null, null) : body;
+            String id = idempotencyKey == null || idempotencyKey.isBlank()
+                    ? request.requestId() : idempotencyKey;
+            MediaTaskView view = service.submitVideo(principal,
+                    new MediaTaskService.VideoSubmitCommand(request.model(), request.prompt(),
+                            request.size(), request.seconds(), request.quality(), id));
+            return RunApiResponses.ok(HttpStatus.OK, view, requestId);
+        } catch (RunApiException e) {
+            return RunApiResponses.fail(e.errorCode(), e.getMessage(), requestId);
+        } catch (ClientException e) {
+            return RunApiResponses.fail(RunErrorCode.AUTH_REQUIRED, RunErrorCode.AUTH_REQUIRED.message(), requestId);
+        }
+    }
+
     /** 查询任务（workbench 轮询沿用 {@code /media/prediction}）。 */
     @GetMapping("/media/prediction")
     public ResponseEntity<?> prediction(@RequestParam(value = "model", required = false) String model,
                                         @RequestParam(value = "predictionId", required = false) String predictionId) {
+        return queryResponse(predictionId);
+    }
+
+    /** F19:0 语音任务查询（兼容 {@code speechId}/{@code predictionId}）。 */
+    @GetMapping("/media/speech")
+    public ResponseEntity<?> speech(@RequestParam(value = "model", required = false) String model,
+                                    @RequestParam(value = "speechId", required = false) String speechId,
+                                    @RequestParam(value = "predictionId", required = false) String predictionId) {
+        return queryResponse(speechId == null || speechId.isBlank() ? predictionId : speechId);
+    }
+
+    /** F19:2 视频任务查询（兼容 {@code videoId}/{@code predictionId}）。 */
+    @GetMapping("/media/video")
+    public ResponseEntity<?> video(@RequestParam(value = "model", required = false) String model,
+                                   @RequestParam(value = "videoId", required = false) String videoId,
+                                   @RequestParam(value = "predictionId", required = false) String predictionId) {
+        return queryResponse(videoId == null || videoId.isBlank() ? predictionId : videoId);
+    }
+
+    private ResponseEntity<?> queryResponse(String taskId) {
         try {
             ExecutionPrincipal principal = principal();
-            MediaTaskView view = service.query(principal, predictionId);
+            MediaTaskView view = service.query(principal, taskId);
             DeliveryPermits.Permit permit = permits.enter(principal, "run.get", "media:" + view.id());
             try {
                 return ResponseEntity.ok()
@@ -303,6 +371,16 @@ public class MediaController {
             case "image/webp" -> "webp";
             case "image/gif" -> "gif";
             case "image/avif" -> "avif";
+            case "audio/mpeg", "audio/mp3" -> "mp3";
+            case "audio/wav", "audio/x-wav" -> "wav";
+            case "audio/ogg" -> "ogg";
+            case "audio/opus" -> "opus";
+            case "audio/aac" -> "aac";
+            case "audio/flac" -> "flac";
+            case "audio/pcm", "audio/l16" -> "pcm";
+            case "video/mp4" -> "mp4";
+            case "video/webm" -> "webm";
+            case "video/ogg" -> "ogv";
             default -> "bin";
         };
         String base = id.length() > 80 ? id.substring(0, 80) : id;
@@ -310,6 +388,16 @@ public class MediaController {
     }
 
     public record ImageRequest(String model, String prompt, String size, Integer seed, String requestId) {
+    }
+
+    /** F19:0 语音提交 DTO（与 workbench SpeechGenerationDTO 对齐）。 */
+    public record SpeechRequest(String model, String input, String voice, String responseFormat,
+                                Double speed, String instructions, String requestId) {
+    }
+
+    /** F19:2 视频提交 DTO（与 workbench VideoGenerationDTO 对齐）。 */
+    public record VideoRequest(String model, String prompt, String size, Integer seconds,
+                               String quality, String requestId) {
     }
 
     public record RetryRequest(String requestId) {

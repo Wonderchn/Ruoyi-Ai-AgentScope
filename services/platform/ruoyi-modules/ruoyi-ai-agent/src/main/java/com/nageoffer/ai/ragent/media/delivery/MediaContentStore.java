@@ -109,10 +109,11 @@ public class MediaContentStore {
 
     static String normalizeMime(String mimeType) {
         String mime = mimeType == null ? "" : mimeType.trim().toLowerCase(Locale.ROOT);
-        if (mime.startsWith("image/") && mime.length() <= 64) {
+        boolean supported = mime.startsWith("image/") || mime.startsWith("audio/") || mime.startsWith("video/");
+        if (supported && mime.length() <= 64) {
             return mime;
         }
-        throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE, "媒体结果不是图片");
+        throw new RunApiException(RunErrorCode.DEPENDENCY_UNAVAILABLE, "媒体结果类型不受支持");
     }
 
     static String extensionOf(String mime) {
@@ -122,6 +123,17 @@ public class MediaContentStore {
             case "image/webp" -> "webp";
             case "image/gif" -> "gif";
             case "image/avif" -> "avif";
+            case "audio/mpeg" -> "mp3";
+            case "audio/mp3" -> "mp3";
+            case "audio/wav", "audio/x-wav" -> "wav";
+            case "audio/ogg" -> "ogg";
+            case "audio/opus" -> "opus";
+            case "audio/aac" -> "aac";
+            case "audio/flac" -> "flac";
+            case "audio/pcm", "audio/l16" -> "pcm";
+            case "video/mp4" -> "mp4";
+            case "video/webm" -> "webm";
+            case "video/ogg" -> "ogv";
             default -> "bin";
         };
     }

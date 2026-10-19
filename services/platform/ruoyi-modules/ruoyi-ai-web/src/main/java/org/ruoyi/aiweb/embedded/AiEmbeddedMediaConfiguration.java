@@ -20,6 +20,8 @@ package org.ruoyi.aiweb.embedded;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.authorization.TenantObjectReferenceRepository;
 import com.nageoffer.ai.ragent.ingest.PrivateObjectStore;
+import com.nageoffer.ai.ragent.media.audio.DashScopeAudioGenerationService;
+import com.nageoffer.ai.ragent.media.audio.MediaAudioProvider;
 import com.nageoffer.ai.ragent.media.config.MediaProperties;
 import com.nageoffer.ai.ragent.media.delivery.MediaContentStore;
 import com.nageoffer.ai.ragent.media.image.JdkWanxHttpTransport;
@@ -31,6 +33,8 @@ import com.nageoffer.ai.ragent.media.task.MediaController;
 import com.nageoffer.ai.ragent.media.task.MediaTaskRepository;
 import com.nageoffer.ai.ragent.media.task.MediaTaskService;
 import com.nageoffer.ai.ragent.media.usage.MediaUsageMeter;
+import com.nageoffer.ai.ragent.media.video.DashScopeVideoGenerationService;
+import com.nageoffer.ai.ragent.media.video.MediaVideoProvider;
 import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
 import com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope;
 import com.nageoffer.ai.ragent.runtime.web.DeliveryPermits;
@@ -92,6 +96,20 @@ public class AiEmbeddedMediaConfiguration {
 
             @Bean
             @ConditionalOnMissingBean
+            public DashScopeAudioGenerationService dashScopeAudioGenerationService(
+                    MediaProperties properties, WanxHttpTransport transport, ObjectMapper objectMapper) {
+                return new DashScopeAudioGenerationService(properties, transport, objectMapper);
+            }
+
+            @Bean
+            @ConditionalOnMissingBean
+            public DashScopeVideoGenerationService dashScopeVideoGenerationService(
+                    MediaProperties properties, WanxHttpTransport transport, ObjectMapper objectMapper) {
+                return new DashScopeVideoGenerationService(properties, transport, objectMapper);
+            }
+
+            @Bean
+            @ConditionalOnMissingBean
             public MediaTaskRepository mediaTaskRepository(JdbcTemplate jdbc) {
                 return new JdbcMediaTaskRepository(jdbc);
             }
@@ -117,14 +135,17 @@ public class AiEmbeddedMediaConfiguration {
             @ConditionalOnMissingBean
             public MediaTaskService mediaTaskService(MediaTaskRepository repository,
                                                      MediaImageProvider imageProvider,
+                                                     MediaAudioProvider audioProvider,
+                                                     MediaVideoProvider videoProvider,
                                                      MediaContentStore contentStore,
                                                      MediaUsageMeter usage,
                                                      MediaProperties properties,
                                                      ObjectProvider<EgressPolicy> egress,
                                                      ObjectMapper objectMapper,
                                                      ObjectProvider<Clock> clock) {
-                return new MediaTaskService(repository, imageProvider, contentStore, usage, properties,
-                        egress.getIfAvailable(), objectMapper, clock.getIfAvailable(Clock::systemUTC));
+                return new MediaTaskService(repository, imageProvider, audioProvider, videoProvider,
+                        contentStore, usage, properties, egress.getIfAvailable(), objectMapper,
+                        clock.getIfAvailable(Clock::systemUTC));
             }
 
             @Bean

@@ -63,6 +63,8 @@ export interface VideoGenerationDTO {
   size?: string;
   seconds?: number;
   quality?: string;
+  /** Client-generated idempotency key; the server never submits the same key twice. */
+  requestId?: string;
 }
 
 export interface SpeechGenerationDTO {
@@ -72,4 +74,6 @@ export interface SpeechGenerationDTO {
   responseFormat?: string;
   speed?: number;
   instructions?: string;
+  /** Client-generated idempotency key; the server never submits the same key twice. */
+  requestId?: string;
 }

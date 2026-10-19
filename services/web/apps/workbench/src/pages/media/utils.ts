@@ -14,8 +14,9 @@ export function createDraft(): MediaDraft {
   return { model: '', prompt: '', size: '', voice: '', responseFormat: '', instructions: '', quality: '' };
 }
 
-export function supportsMedia(provider: string, kind: MediaType): boolean {
-  return ['openai', 'atlas', 'custom_api'].includes(provider) || (kind === 'image' && provider === 'Tongyiwanx');
+export function supportsMedia(provider: string, _kind: MediaType): boolean {
+  // F19:0/2: the DashScope media models (image/audio/video) are exposed as Tongyiwanx.
+  return ['openai', 'atlas', 'custom_api'].includes(provider) || provider === 'Tongyiwanx';
 }
 
 export function canQueryMedia(provider: string, kind: MediaType): boolean {

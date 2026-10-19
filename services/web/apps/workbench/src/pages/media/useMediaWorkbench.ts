@@ -298,33 +298,55 @@ export function useMediaWorkbench() {
       await submitImageTask(input, version);
       return;
     }
-    const task = newTask('submitting', input.prompt.trim());
+    // F19:0/2: speech/video are server tasks too — the response is the task authority view,
+    // so they use the same server-task/controlled-content path as images (no provider URL).
+    const requestId = newRequestId();
+    const transient: MediaTask = {
+      key: requestId,
+      kind: kind.value,
+      model: input.model,
+      modelLabel: selectedModel.value!.label,
+      provider: selectedModel.value!.providerCode,
+      prompt: input.prompt.trim(),
+      createdAt: Date.now(),
+      state: 'submitting',
+      message: '正在提交，请稍候。',
+    };
+    tasks.value = [transient, ...tasks.value].slice(0, 20);
+    selectedKey.value = requestId;
     try {
-      const response = task.kind === 'audio'
+      const response = transient.kind === 'audio'
         ? await generateSpeech({
-            model: task.model,
-            input: task.prompt,
+            model: transient.model,
+            input: transient.prompt,
             voice: input.voice.trim() || undefined,
             responseFormat: input.responseFormat || undefined,
             speed: input.speed,
             instructions: input.instructions.trim() || undefined,
+            requestId,
           })
         : await generateVideo({
-            model: task.model,
-            prompt: task.prompt,
+            model: transient.model,
+            prompt: transient.prompt,
             size: input.size.trim() || undefined,
             seconds: input.seconds,
             quality: input.quality.trim() || undefined,
+            requestId,
           });
       if (disposed || version !== operationVersion)
         return;
-      applyResult(task.key, response.data);
+      const task = toMediaTask(response.data);
+      tasks.value = [task, ...tasks.value.filter(item => item.key !== requestId && item.serverId !== task.serverId)]
+        .slice(0, 20);
+      selectedKey.value = task.key;
+      void loadServerTasks();
       deadline = Date.now() + POLL_TIMEOUT;
-      scheduleQuery(task.key, version);
+      if (task.state === 'waiting')
+        scheduleQuery(task.key, version);
     }
     catch (error) {
       if (!disposed && version === operationVersion)
-        updateTask(task.key, { state: 'failed', message: `生成请求未完成：${requestError(error)}` });
+        updateTask(requestId, { state: 'failed', message: `生成请求未完成：${requestError(error)}` });
     }
   }
 

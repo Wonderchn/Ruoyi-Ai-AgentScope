@@ -651,6 +651,14 @@ public class AiGatewayController {
             // 段数/声明序：2 段 /media/tasks 排在 3 段 /media/tasks/{taskId} 之前；
             // /media/prediction 与 /media/content 为 2 段字面量，与 /media/image 不同方法，互不遮蔽。
             new Route("POST", "/media/image", "run.submit"),
+            // F19:0/2（2026-10-19）：语音合成/视频生成，复用同一任务权威与动作集合：
+            //   提交 → run.submit；查询/取流 → run.get。GET 走网关字节分支（内层铸回执）。
+            // 两条 GET 均为 2 段字面量，与 /media/image（不同方法）、/media/tasks（2 段）、
+            // /media/tasks/{taskId}（3 段）互不遮蔽。
+            new Route("POST", "/media/speech", "run.submit"),
+            new Route("GET", "/media/speech", "run.get"),
+            new Route("POST", "/media/video", "run.submit"),
+            new Route("GET", "/media/video", "run.get"),
             new Route("GET", "/media/prediction", "run.get"),
             new Route("GET", "/media/tasks", "run.get"),
             new Route("GET", "/media/tasks/{taskId}", "run.get"),

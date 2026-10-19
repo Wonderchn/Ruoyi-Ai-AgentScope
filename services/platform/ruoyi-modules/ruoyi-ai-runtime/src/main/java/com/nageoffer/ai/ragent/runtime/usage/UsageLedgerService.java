@@ -106,9 +106,47 @@ public class UsageLedgerService {
      * <p>只认 {@code images} 为非负整数；缺失/非法 → {@code null}（未知，不得按零结算）。
      */
     public static Long mediaUnits(Map<String,Object> usage) {
+        return countField(usage, "images");
+    }
+
+    /**
+     * F19:0 音频用量单位：<b>输入字符数</b>（qwen-tts 按输入字符计费）。
+     *
+     * <p>只认 {@code characters} 为非负整数；缺失/非法 → {@code null}
+     * （调用方可用已提交的文本长度作事实回退，但不得按零结算）。
+     */
+    public static Long audioUnits(Map<String,Object> usage) {
+        return countField(usage, "characters");
+    }
+
+    /**
+     * F19:2 视频用量单位：<b>生成次数</b>（本切片固定 1 次请求 1 条视频）。
+     *
+     * <p>优先 {@code video_count}，兼容 {@code videos}；缺失/非法 → {@code null}。
+     */
+    public static Long videoUnits(Map<String,Object> usage) {
+        Long count = countField(usage, "video_count");
+        return count != null ? count : countField(usage, "videos");
+    }
+
+    /**
+     * 按媒体类型取单位：image=张数、audio=字符数、video=生成次数。
+     * 未知类型返回 {@code null}（不得猜单位混加）。
+     */
+    public static Long mediaUnits(Map<String,Object> usage, String mediaType) {
+        if (mediaType == null) return null;
+        return switch (mediaType) {
+            case "image" -> mediaUnits(usage);
+            case "audio" -> audioUnits(usage);
+            case "video" -> videoUnits(usage);
+            default -> null;
+        };
+    }
+
+    private static Long countField(Map<String,Object> usage, String field) {
         if(usage==null) return null;
-        Object images=usage.get("images");
-        if(!(images instanceof Number n) || n.longValue()<0 || n.doubleValue()!=n.longValue()) return null;
+        Object value=usage.get(field);
+        if(!(value instanceof Number n) || n.longValue()<0 || n.doubleValue()!=n.longValue()) return null;
         return n.longValue();
     }
 
