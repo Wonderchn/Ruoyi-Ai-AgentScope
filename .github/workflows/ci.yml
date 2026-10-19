@@ -199,6 +199,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: native-runtime-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 30
           path: |
             target/native-runtime-evidence/**/source-revision.txt
             target/native-runtime-evidence/**/artifacts.sha256

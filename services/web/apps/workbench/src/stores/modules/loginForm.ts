@@ -1,6 +1,12 @@
+import type { LoginTenant } from '@/utils/login-tenants';
 // 登录表单状态管理
 import { defineStore } from 'pinia';
 import { loginTenants } from '@/api/auth';
+import {
+  defaultLoginTenant,
+  loginTenantEmptyMessage,
+  normalizeLoginTenants,
+} from '@/utils/login-tenants';
 
 type LoginFormType = 'AccountPassword' | 'VerificationCode' | 'RegistrationForm';
 
@@ -8,26 +14,24 @@ export const useLoginFormStore = defineStore('loginForm', () => {
   const LoginFormType = ref<LoginFormType>('AccountPassword');
   const tenantId = ref('');
   const tenantEnabled = ref(true);
-  const tenants = ref<{ tenantId: string; companyName: string }[]>([]);
+  const tenants = ref<LoginTenant[]>([]);
   const tenantsReady = ref(false);
   const tenantError = ref('');
   let loading: Promise<void> | undefined;
 
-  const loadTenants = () => {
-    if (tenantsReady.value)
+  const loadTenants = (force = false) => {
+    if (tenantsReady.value && !force)
       return Promise.resolve();
     if (loading)
       return loading;
     loading = (async () => {
       tenantError.value = '';
       try {
-        const response = await loginTenants();
-        const result = response?.data ?? response;
-        if (typeof result?.tenantEnabled !== 'boolean')
-          throw new Error('租户列表响应无效');
+        const result = normalizeLoginTenants(await loginTenants());
         tenantEnabled.value = result.tenantEnabled;
-        tenants.value = result.voList ?? [];
-        tenantId.value = '';
+        tenants.value = result.tenants;
+        tenantId.value = defaultLoginTenant(result.tenantEnabled, result.tenants);
+        tenantError.value = loginTenantEmptyMessage(result.tenantEnabled, result.tenants);
         tenantsReady.value = true;
       }
       catch {
