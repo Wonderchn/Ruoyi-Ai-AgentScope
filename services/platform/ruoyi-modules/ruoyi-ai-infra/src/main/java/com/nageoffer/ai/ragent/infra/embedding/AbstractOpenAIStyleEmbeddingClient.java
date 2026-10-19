@@ -21,6 +21,7 @@ import cn.hutool.core.collection.CollUtil;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.nageoffer.ai.ragent.infra.chat.ChatEgressDeniedException;
 import com.nageoffer.ai.ragent.infra.config.AIModelProperties;
 import com.nageoffer.ai.ragent.infra.enums.ModelCapability;
 import com.nageoffer.ai.ragent.infra.http.HttpMediaTypes;
@@ -29,11 +30,14 @@ import com.nageoffer.ai.ragent.infra.http.ModelClientErrorType;
 import com.nageoffer.ai.ragent.infra.http.ModelClientException;
 import com.nageoffer.ai.ragent.infra.http.ModelUrlResolver;
 import com.nageoffer.ai.ragent.infra.model.ModelTarget;
+import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -49,8 +53,32 @@ public abstract class AbstractOpenAIStyleEmbeddingClient implements EmbeddingCli
 
     protected final OkHttpClient httpClient;
 
+    /**
+     * F22:6 统一出口 allow-list：bean 缺席按拒绝处理（fail-closed）。
+     *
+     * <p>字段注入而不是构造参数：内嵌形态由 {@code @Bean} 工厂显式 new 这些客户端，
+     * 字段注入能覆盖两种装配（组件扫描 / 显式 @Bean），无需改共享的 embedded 配置。
+     */
+    @Autowired(required = false)
+    private ObjectProvider<EgressPolicy> egressPolicy;
+
     protected AbstractOpenAIStyleEmbeddingClient(OkHttpClient httpClient) {
         this.httpClient = httpClient;
+    }
+
+    /**
+     * 发起任何网络请求前的统一出口检查；拒绝抛 {@link ChatEgressDeniedException}（终态，不降级）。
+     */
+    protected void requireEgressAllowed() {
+        EgressPolicy policy = egressPolicy == null ? null : egressPolicy.getIfAvailable();
+        if (policy == null) {
+            throw new ChatEgressDeniedException("egress policy unavailable for provider=" + provider());
+        }
+        try {
+            policy.requireAllowed(provider());
+        } catch (RuntimeException denied) {
+            throw new ChatEgressDeniedException("egress denied for provider=" + provider(), denied);
+        }
     }
 
     // ==================== 子类钩子方法 ====================
@@ -113,6 +141,8 @@ public abstract class AbstractOpenAIStyleEmbeddingClient implements EmbeddingCli
      * 构建请求、发送 HTTP、解析 OpenAI 格式响应
      */
     protected List<List<Float>> doEmbed(List<String> texts, ModelTarget target) {
+        // F22:6：先过出口 allow-list，再碰任何 provider 配置/URL/HTTP
+        requireEgressAllowed();
         AIModelProperties.ProviderConfig provider = HttpResponseHelper.requireProvider(target, provider());
         if (requiresApiKey()) {
             HttpResponseHelper.requireApiKey(provider, provider());

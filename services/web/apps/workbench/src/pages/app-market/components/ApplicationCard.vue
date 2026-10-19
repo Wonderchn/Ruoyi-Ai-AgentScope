@@ -2,20 +2,26 @@
 import { ArrowRight, ChatDotRound } from '@element-plus/icons-vue';
 import WorkflowIcon from '@/components/WorkflowIcon/index.vue';
 
-defineProps<{ title: string; description: string; type: 'agent' | 'workflow'; loading?: boolean }>();
+defineProps<{ title: string; description: string; type: 'agent' | 'workflow' | 'multi-agent'; loading?: boolean }>();
 defineEmits<{ select: [] }>();
+
+function typeLabel(type: 'agent' | 'workflow' | 'multi-agent'): string {
+  if (type === 'workflow')
+    return '工作流';
+  return type === 'multi-agent' ? '多智能体' : '智能体';
+}
 </script>
 
 <template>
   <button class="application-card" :disabled="loading" :aria-label="`使用${title}`" @click="$emit('select')">
     <span class="card-top">
       <span class="app-icon"><WorkflowIcon v-if="type === 'workflow'" /><el-icon v-else><ChatDotRound /></el-icon></span>
-      <span class="type-label">{{ type === 'workflow' ? '工作流' : '智能体' }}</span>
+      <span class="type-label">{{ typeLabel(type) }}</span>
     </span>
     <strong class="card-title">{{ title }}</strong>
     <span class="card-description">{{ description }}</span>
     <span class="card-footer">
-      <span>{{ type === 'workflow' ? '工作流' : '智能体' }}</span>
+      <span>{{ typeLabel(type) }}</span>
       <span class="card-action">{{ loading ? '正在打开' : '开始使用' }}<el-icon><ArrowRight /></el-icon></span>
     </span>
   </button>

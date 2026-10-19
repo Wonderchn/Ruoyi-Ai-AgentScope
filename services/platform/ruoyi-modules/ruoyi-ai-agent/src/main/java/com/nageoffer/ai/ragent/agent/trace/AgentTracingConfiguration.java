@@ -23,6 +23,7 @@ import io.agentscope.core.tracing.OtelTracingMiddleware;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.exporter.otlp.http.trace.OtlpHttpSpanExporter;
+import io.opentelemetry.exporter.otlp.http.trace.OtlpHttpSpanExporterBuilder;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.resources.ResourceBuilder;
@@ -36,6 +37,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.info.BuildProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -47,11 +49,17 @@ import java.util.UUID;
 /**
  * 追踪装配：OTLP 导出器 + 官方 span 骨架 + 我们的内容装饰
  * 只在 agent.trace.enabled=true 时进来，关掉时连 Reactor 全局钩子都不装
+ *
+ * <p><b>F18:4 配置契约。</b>显式开启后 {@code agent.trace.endpoint} 必填（缺了在装配期
+ * 指名配置键拒绝启动）；{@code public-key}/{@code secret-key} 可选但必须同配或同缺——
+ * 本地 OTLP 接收端无需鉴权，只配一侧属于半套凭据，不发出去。{@code capture-content}
+ * 默认 {@code false}（纯骨架），需要提示词/工具出入参时显式开启。
  */
 @Slf4j
 @Configuration
 @ConditionalOnAgentEngine
 @ConditionalOnProperty(prefix = "agent.trace", name = "enabled", havingValue = "true")
+@EnableConfigurationProperties(AgentTraceProperties.class)
 @RequiredArgsConstructor
 public class AgentTracingConfiguration {
 
@@ -96,10 +104,17 @@ public class AgentTracingConfiguration {
     @Bean(destroyMethod = "close")
     public OpenTelemetrySdk agentOpenTelemetrySdk(
             @Value("${spring.application.name}") String applicationName) {
-        if (StrUtil.isBlank(traceProperties.getEndpoint())
-                || StrUtil.isBlank(traceProperties.getPublicKey())
-                || StrUtil.isBlank(traceProperties.getSecretKey())) {
-            throw new IllegalStateException("agent.trace 已开启但 endpoint / public-key / secret-key 未配置齐全");
+        // F18:4：endpoint 是显式开启后的必填项；缺了就在装配期指名配置键拒绝，不把空端点交给 SDK。
+        if (StrUtil.isBlank(traceProperties.getEndpoint())) {
+            throw new IllegalStateException("agent.trace.enabled=true 但 agent.trace.endpoint 未配置："
+                    + "请设置 OTLP/HTTP 端点（如 http://127.0.0.1:4318/v1/traces）");
+        }
+        // 凭据可选（本地 OTLP 接收端无需鉴权），但必须是完整的一套：只配一侧等于半个凭据。
+        boolean hasPublicKey = StrUtil.isNotBlank(traceProperties.getPublicKey());
+        boolean hasSecretKey = StrUtil.isNotBlank(traceProperties.getSecretKey());
+        if (hasPublicKey != hasSecretKey) {
+            throw new IllegalStateException(
+                    "agent.trace.public-key 与 agent.trace.secret-key 必须同时配置或同时留空");
         }
         // 抢不到全局位置与缺配置同属一类失败：追踪都给不出来，都在显式开启之后，故一样按启动失败处理
         // isSet 为真有两种来源，另一套 OTel 装配，或更早的 GlobalOpenTelemetry.get() 把它就地设成了 no-op
@@ -108,12 +123,14 @@ public class AgentTracingConfiguration {
                     + "LangFuse 只会收到孤儿轮次或干脆收不到, 关掉 agent.trace.enabled 或排掉另一套 OTel 装配");
         }
 
-        // LangFuse 只收 HTTP 的 OTLP，没有 gRPC 端点
-        OtlpHttpSpanExporter exporter = OtlpHttpSpanExporter.builder()
+        // LangFuse 只收 HTTP 的 OTLP，没有 gRPC 端点；本地接收端同样用 OTLP/HTTP。
+        OtlpHttpSpanExporterBuilder exporterBuilder = OtlpHttpSpanExporter.builder()
                 .setEndpoint(traceProperties.getEndpoint())
-                .addHeader("Authorization", basicCredential())
-                .addHeader(INGESTION_VERSION_HEADER, "4")
-                .build();
+                .addHeader(INGESTION_VERSION_HEADER, "4");
+        if (hasPublicKey) {
+            exporterBuilder.addHeader("Authorization", basicCredential());
+        }
+        OtlpHttpSpanExporter exporter = exporterBuilder.build();
 
         SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
                 .setResource(resource(traceProperties, buildProperties.getIfAvailable(), applicationName))

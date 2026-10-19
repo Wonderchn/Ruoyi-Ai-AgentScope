@@ -18,6 +18,7 @@
 package org.ruoyi.aiweb.embedded;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.nageoffer.ai.ragent.agent.config.AgentModelFactory;
 import com.nageoffer.ai.ragent.agent.config.ReActAgentProvider;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryControlMapper;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryExtractionMapper;
@@ -56,6 +57,7 @@ import com.nageoffer.ai.ragent.rag.core.rewrite.QueryTermMappingCacheManager;
 import com.nageoffer.ai.ragent.rag.core.skill.AgentSkillCacheManager;
 import com.nageoffer.ai.ragent.rag.core.skill.AgentSkillRegistry;
 import com.nageoffer.ai.ragent.rag.core.vector.VectorRetrieverService;
+import com.nageoffer.ai.ragent.rag.service.RuntimeCatalogService;
 import com.nageoffer.ai.ragent.rag.dao.mapper.AgentSkillMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.IntentNodeMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.QueryTermMappingMapper;
@@ -162,6 +164,8 @@ class AiEmbeddedAgentEngineClosureAssemblyTest {
                 .withBean(VectorRetrieverService.class, () -> mock(VectorRetrieverService.class))
                 .withBean("syncHttpClient", OkHttpClient.class, () -> mock(OkHttpClient.class))
                 .withBean(AIModelProperties.class, AiEmbeddedAgentEngineClosureAssemblyTest::aiModelProperties)
+                // F09:3-C：绑定模型工厂的目录依赖（生产由 AiEmbeddedRagConfiguration 注册，同门控）
+                .withBean(RuntimeCatalogService.class, () -> mock(RuntimeCatalogService.class))
                 // F09 目录面（不属本闭包）：只占类型在场
                 .withBean(AgentPromptResolver.class, () -> mock(AgentPromptResolver.class));
     }
@@ -197,6 +201,17 @@ class AiEmbeddedAgentEngineClosureAssemblyTest {
             // V3 最小解锁：读端技能件在场（管理面/导入导出不在本批）
             assertThat(context).hasSingleBean(AgentSkillRegistry.class);
             assertThat(context).hasSingleBean(AgentSkillCacheManager.class);
+        });
+    }
+
+    @Test
+    @DisplayName("F09:3-C：绑定模型工厂 bean 在场；无绑定权威/连接引导时上下文照常启动")
+    void modelFactoryBeanIsPresentWithoutBindingAuthority() {
+        runner().run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).hasSingleBean(AgentModelFactory.class);
+            assertThat(context.getBean(AgentModelFactory.class))
+                    .isInstanceOf(EmbeddedAgentModelFactory.class);
         });
     }
 

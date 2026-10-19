@@ -81,9 +81,20 @@ public class RunEventStreamService {
     /** 入口：鉴权 → 保留期检查 → 流式输出。返回 false 表示已写错误响应。 */
     public boolean stream(ExecutionPrincipal principal, String runId, long afterSeq, HttpServletResponse response)
             throws IOException {
+        return stream(principal, runId, afterSeq, response, "run.stream");
+    }
+
+    /**
+     * F13:2：同一账本事件流，授权动作可指定（默认 {@code run.stream}）。
+     *
+     * <p>AIFlow 续流使用 {@code flow.run.read}（D3）；除入口/逐帧授权动作外，
+     * 回放、心跳、410 与有界缓冲语义完全一致。
+     */
+    public boolean stream(ExecutionPrincipal principal, String runId, long afterSeq,
+                          HttpServletResponse response, String streamAction) throws IOException {
         RunRecord run;
         try {
-            run=authorizeCurrent(principal,runId);
+            run=authorizeCurrent(principal,runId,streamAction);
         } catch (RunApiException denied) {
             writeJson(response,denied.errorCode().status().value(),errorBody(denied.errorCode(),denied.errorCode().message()));
             return false;
@@ -97,16 +108,16 @@ public class RunEventStreamService {
         boolean retentionExpired = dao.retentionExpired(principal.tenantId(), runId, afterSeq,
                 properties.getEvents().getRetentionHours());
         if (afterSeq > 0 && min > 0 && afterSeq < min - 1) {
-            writeCursorExpired(response, principal, runId, afterSeq, run);
+            writeCursorExpired(response, principal, runId, afterSeq, run, streamAction);
             return false;
         }
         if (afterSeq == 0 && min > 1) {
-            writeCursorExpired(response, principal, runId, 0, run);
+            writeCursorExpired(response, principal, runId, 0, run, streamAction);
             return false;
         }
         if (retentionExpired) {
             // 保留期外回放请求：与 minSeq 游标路径同形，410 + 快照（P0.3 §3.3）
-            writeCursorExpired(response, principal, runId, afterSeq, run);
+            writeCursorExpired(response, principal, runId, afterSeq, run, streamAction);
             return false;
         }
         response.setStatus(HttpServletResponse.SC_OK);
@@ -125,8 +136,8 @@ public class RunEventStreamService {
                 properties.getEvents().getBufferMaxBytes(),
                 Duration.ofSeconds(properties.getEvents().getHeartbeatSeconds()).toMillis(), content -> {
                     if (content.startsWith(": ping")) return content;
-                    if (!authorize(principal, runId)) throw new RunApiException(RunErrorCode.FORBIDDEN, "stream revoked");
-                    var permit = permits.enter(principal, "run.stream", "run:" + runId);
+                    if (!authorize(principal, runId, streamAction)) throw new RunApiException(RunErrorCode.FORBIDDEN, "stream revoked");
+                    var permit = permits.enter(principal, streamAction, "run:" + runId);
                     // Only the final gateway can confirm application delivery has ended.
                     return ": ai-delivery " + permit.permitId() + " " + permit.operationId() + "\n" + content;
                 });
@@ -134,7 +145,7 @@ public class RunEventStreamService {
         Thread writer = sink.startWriter(closed);
         AutoCloseable subscription = bus.subscribe(principal.tenantId(), runId, seq -> sink.wake());
         try {
-            runStreamLoop(principal, run, afterSeq, sink, closed);
+            runStreamLoop(principal, run, afterSeq, sink, closed, streamAction);
         } catch (RuntimeException e) {
             closed.set(true);
             throw e;
@@ -157,7 +168,7 @@ public class RunEventStreamService {
     }
 
     private void runStreamLoop(ExecutionPrincipal principal, RunRecord run, long afterSeq,
-                               BoundedSink sink, AtomicBoolean closed) {
+                               BoundedSink sink, AtomicBoolean closed, String streamAction) {
         String tenantId = run.tenantId();
         String runId = run.runId();
         long cursor = afterSeq;
@@ -199,7 +210,7 @@ public class RunEventStreamService {
                 continue;
             }
             // 无新事件：心跳 + 短暂等待（通知只是加速，轮询是扫描补偿）
-            if (!authorize(principal, runId) || !sink.heartbeatIfIdle()) {
+            if (!authorize(principal, runId, streamAction) || !sink.heartbeatIfIdle()) {
                 closed.set(true);
                 return;
             }
@@ -207,9 +218,9 @@ public class RunEventStreamService {
         }
     }
 
-    private boolean authorize(ExecutionPrincipal principal, String runId) {
+    private boolean authorize(ExecutionPrincipal principal, String runId, String streamAction) {
         try {
-            authorizeCurrent(principal,runId);
+            authorizeCurrent(principal,runId,streamAction);
             return true;
         } catch (RuntimeException e) {
             // 授权源故障：拒绝而不是放行
@@ -217,11 +228,11 @@ public class RunEventStreamService {
         }
     }
 
-    private RunRecord authorizeCurrent(ExecutionPrincipal principal,String runId) {
+    private RunRecord authorizeCurrent(ExecutionPrincipal principal,String runId,String streamAction) {
         var run=lifecycle.get(principal,runId);
         var service=authorization.getIfAvailable();
         if(service==null) throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE);
-        var verdict=service.check(principal,"run.stream","run:"+runId);
+        var verdict=service.check(principal,streamAction,"run:"+runId);
         if(verdict==com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict.UNKNOWN) throw new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE);
         if(verdict!=com.nageoffer.ai.ragent.framework.security.ResourceAuthorizationService.Verdict.GRANT) throw new RunApiException(RunErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
         return run;
@@ -263,8 +274,9 @@ public class RunEventStreamService {
     }
 
     private void writeCursorExpired(HttpServletResponse response, ExecutionPrincipal principal,
-                                    String runId, long afterSeq, RunRecord run) throws IOException {
-        var permit = permits.enter(principal, "run.stream", "run:" + runId);
+                                    String runId, long afterSeq, RunRecord run, String streamAction)
+            throws IOException {
+        var permit = permits.enter(principal, streamAction, "run:" + runId);
         response.setHeader("X-AI-Delivery-Permit", permit.permitId());
         response.setHeader("X-AI-Delivery-Operation", permit.operationId());
         Map<String, Object> data = new LinkedHashMap<>();

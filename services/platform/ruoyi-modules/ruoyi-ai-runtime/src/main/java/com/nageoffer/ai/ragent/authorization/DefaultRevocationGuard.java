@@ -245,8 +245,10 @@ public class DefaultRevocationGuard implements RevocationGuard {
         // （AgentProfileController 三条 GET 铸造回执头；其许可另有请求级 holder 兜底，
         // 不入白名单会让 ACK 恒失败并产生 WARN 噪音）。写侧动作（flow.write/flow.delete 等
         // JSON 分支）按设计**不铸造回执头**，不入白名单。
+        // F13:2 窗口实测：flow.run（POST run SSE 逐帧）与 flow.run.read（运行视图/续流 GET）
+        // 也铸造回执头；缺白名单会使每帧 ACK 恒失败、网关在首帧后中止流。补入二者。
         Long owned=jdbc.queryForObject("SELECT count(*) FROM ai_execution_permit WHERE tenant_id=? AND member_id=?"
-                + " AND permit_id=? AND operation_id=? AND action IN ('document.download','document.list','conversation.export','kb.list','kb.read','document.read','conversation.read','memory.read','run.get','run.events','run.stream','kb.retrieve','run.approve','run.reconcile','config.read','flow.list','flow.read','agent.list','agent.read')",
+                + " AND permit_id=? AND operation_id=? AND action IN ('document.download','document.list','conversation.export','kb.list','kb.read','document.read','conversation.read','memory.read','run.get','run.events','run.stream','kb.retrieve','run.approve','run.reconcile','config.read','flow.list','flow.read','flow.run','flow.run.read','agent.list','agent.read')",
                 Long.class,tenantId,memberId,permitId,operationId);
         if(owned==null || owned!=1){throw new ClientException("delivery identity mismatch");}
         release(permitId,operationId);

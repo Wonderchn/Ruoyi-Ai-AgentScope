@@ -18,13 +18,28 @@
 package org.ruoyi.aiweb.embedded;
 
 import com.nageoffer.ai.ragent.core.ingest.embed.ChunkEmbeddingService;
+import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
+import com.nageoffer.ai.ragent.framework.mq.producer.DelegatingTransactionListener;
 import com.nageoffer.ai.ragent.infra.token.HeuristicTokenCounterService;
 import com.nageoffer.ai.ragent.infra.token.TokenCounterService;
+import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeBaseMapper;
+import com.nageoffer.ai.ragent.knowledge.dao.mapper.KnowledgeDocumentMapper;
+import com.nageoffer.ai.ragent.knowledge.mq.KnowledgeBaseCleanupConsumer;
+import com.nageoffer.ai.ragent.knowledge.mq.KnowledgeBaseCleanupTransactionChecker;
+import com.nageoffer.ai.ragent.knowledge.mq.KnowledgeDocumentChunkConsumer;
+import com.nageoffer.ai.ragent.knowledge.mq.KnowledgeDocumentChunkTransactionChecker;
+import com.nageoffer.ai.ragent.knowledge.service.KnowledgeDocumentService;
 import com.nageoffer.ai.ragent.knowledge.sink.RelationalChunkSink;
 import com.nageoffer.ai.ragent.rag.config.RAGDefaultProperties;
+import com.nageoffer.ai.ragent.rag.core.graph.LightRagClient;
+import com.nageoffer.ai.ragent.rag.core.keyword.KeywordIndexService;
 import com.nageoffer.ai.ragent.rag.core.vector.PgVectorRetrieverService;
 import com.nageoffer.ai.ragent.rag.core.vector.PgVectorStoreAdmin;
 import com.nageoffer.ai.ragent.rag.core.vector.PgVectorStoreService;
+import com.nageoffer.ai.ragent.rag.core.vector.VectorStoreAdmin;
+import com.nageoffer.ai.ragent.rag.service.FileStorageService;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -47,7 +62,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * 自己就带这个 {@code @ConditionalOnProperty}，本组沿用同一个条件，
  * 保证"内嵌态装配的那套"和"独立 AI 态装配的那套"是同一个判据——
  * 不出现内嵌下装了 Milvus 而独立态装的是 PG 这种分叉。
- * 本期只装配 PG：Milvus/ES/LightRAG 属可选技术后端（WP-053），本轮不冒充已启用。
+ * 本类只装配 PG；Milvus/ES/LightRAG 属可选技术后端，由
+ * {@link AiEmbeddedF22BackendsConfiguration} 按各自的 {@code rag.*.type} 显式选择装配，
+ * shipped 配置仍是 {@code pg} / {@code none} / 无 graph，不冒充已启用。
  *
  * <p><b>PG 向量表形状由迁移拥有，应用只用 DML。</b>
  * {@code ai_knowledge_vector} 的列、{@code (tenant_id, id)} 复合唯一键与
@@ -150,6 +167,80 @@ public class AiEmbeddedKnowledgeConfiguration {
                     TokenCounterService tokenCounterService) {
                 return new RelationalChunkSink(chunkMapper, tokenCounterService);
             }
+        }
+    }
+
+    /**
+     * 旧知识链 MQ 消费者与事务回查器（F22:2 真机第三缺口）。
+     *
+     * <p><b>为什么需要这一组。</b>{@link KnowledgeDocumentChunkConsumer}、
+     * {@link KnowledgeBaseCleanupConsumer} 及两个 {@code TransactionChecker} 都是
+     * {@code com.nageoffer.ai.ragent.**} 下的 {@code @Component}——platform 的扫描根是
+     * {@code org.ruoyi}，所以即使 {@code ai.integration.legacy-listeners-enabled=true}，
+     * 内嵌形态也只注册了反馈消费者：文档分块事务消息能发出（SEND_OK/COMMIT_MESSAGE），
+     * 但消费端没有 bean，chunk 永不执行。
+     *
+     * <p><b>门控与 {@code AiEmbeddedFeedbackConfiguration} 的 legacy 装配同口径：</b>
+     * {@code ai.integration.enabled=true} × {@code ai.integration.legacy-listeners-enabled=true}。
+     * 开关关闭时本组零 bean；打开时同组的边界与事务监听器由
+     * {@code LegacyCapabilityBoundaryAssembly} / {@code LegacyFeedbackProducerAssembly} 提供，
+     * 回查器在 {@code @PostConstruct} 里按 topic 注册进 {@code DelegatingTransactionListener}
+     * （与 broker 回查的查找方式一致），因此无需真 broker 即可完成装配。
+     *
+     * <p>若 legacy 打开但 {@code KnowledgeDocumentService}（FullAdmin）或
+     * {@code VectorStoreAdmin}/{@code FileStorageService} 等协作件缺席，启动会以
+     * "no qualifying bean" 响亮失败——与 {@code AiEmbeddedFeedbackConfiguration} 的
+     * fail-closed 口径一致，不静默注册一个永远消费不了的监听器。
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
+    @ConditionalOnProperty(name = "ai.integration.legacy-listeners-enabled", havingValue = "true")
+    public static class LegacyKnowledgeMqAssembly {
+
+        /**
+         * 文档分块任务消费者（chunk 真正执行的入口）。
+         *
+         * <p>平台侧 {@code RuoYiTenantScopeBinder} 提供租户作用域绑定：消费线程没有登录主体，
+         * 事件租户必须在 {@code executeChunk} 的任何 DB 访问前绑定（F22:2 真机第四缺口）。
+         */
+        @Bean
+        @ConditionalOnMissingBean
+        public KnowledgeDocumentChunkConsumer knowledgeDocumentChunkConsumer(
+                KnowledgeDocumentService documentService,
+                ObjectProvider<SaasCapabilityBoundary> capabilityBoundary,
+                ObjectProvider<TenantScopeBinder> tenantScopeBinder) {
+            return new KnowledgeDocumentChunkConsumer(documentService, capabilityBoundary, tenantScopeBinder);
+        }
+
+        /** 知识库删除后的物理资源清理消费者。 */
+        @Bean
+        @ConditionalOnMissingBean
+        public KnowledgeBaseCleanupConsumer knowledgeBaseCleanupConsumer(
+                VectorStoreAdmin vectorStoreAdmin,
+                FileStorageService fileStorageService,
+                ObjectProvider<KeywordIndexService> keywordIndexServiceProvider,
+                ObjectProvider<LightRagClient> lightRagClientProvider,
+                ObjectProvider<SaasCapabilityBoundary> capabilityBoundary) {
+            return new KnowledgeBaseCleanupConsumer(vectorStoreAdmin, fileStorageService,
+                    keywordIndexServiceProvider, lightRagClientProvider, capabilityBoundary);
+        }
+
+        /** 文档分块事务消息回查器（按 topic 注册进 DelegatingTransactionListener）。 */
+        @Bean
+        @ConditionalOnMissingBean
+        public KnowledgeDocumentChunkTransactionChecker knowledgeDocumentChunkTransactionChecker(
+                KnowledgeDocumentMapper documentMapper,
+                DelegatingTransactionListener transactionListener) {
+            return new KnowledgeDocumentChunkTransactionChecker(documentMapper, transactionListener);
+        }
+
+        /** 知识库清理事务消息回查器。 */
+        @Bean
+        @ConditionalOnMissingBean
+        public KnowledgeBaseCleanupTransactionChecker knowledgeBaseCleanupTransactionChecker(
+                KnowledgeBaseMapper knowledgeBaseMapper,
+                DelegatingTransactionListener transactionListener) {
+            return new KnowledgeBaseCleanupTransactionChecker(knowledgeBaseMapper, transactionListener);
         }
     }
 }

@@ -232,13 +232,21 @@ public class SearchChannelProperties implements InitializingBean {
 
         /**
          * 是否启用
-         * 默认关闭；开启后还需配置 api-key（或环境变量 YDC_API_KEY），两者缺一通道不生效
+         * 默认关闭；开启后还需配置所选 provider 的 API Key，两者缺一通道不生效
          */
         private boolean enabled = false;
 
         /**
-         * 最多返回的结果条数（网页 + 新闻合计）
-         * 默认 5，上限 20；向 You.com 传的是「每 section」数量，合并后由通道统一截断到此值
+         * 联网搜索后端（F22:5）。
+         * <p>默认 {@code youcom}，保持既有行为逐字节等价；显式设 {@code deepseek} 时由
+         * DeepSeekWebSearchChannel 承接（使用 {@link DeepSeek#getApiKey()} 或环境变量
+         * {@code DEEPSEEK_API_KEY}），You.com 通道在无 YDC_API_KEY 时天然停用。
+         */
+        private String provider = "youcom";
+
+        /**
+         * 最多返回的结果条数（网页/搜索结果合计）
+         * 默认 5；You.com 上限 20，DeepSeek Search 上限 50，由各自通道在请求与截断时收紧
          */
         private int count = 5;
 
@@ -258,6 +266,30 @@ public class SearchChannelProperties implements InitializingBean {
          * 一般无需修改，测试时可指向本地 stub
          */
         private String apiUrl = "https://ydc-index.io/v1/search";
+
+        /**
+         * DeepSeek Search 配置（F22:5，仅 {@code provider=deepseek} 时使用）。
+         */
+        private DeepSeek deepseek = new DeepSeek();
+    }
+
+    /**
+     * DeepSeek Search（{@code POST /v1/tools/search}）连接配置。
+     */
+    @Data
+    public static class DeepSeek {
+
+        /**
+         * DeepSeek API Key。
+         * <p>建议留空，此时回退读取环境变量 {@code DEEPSEEK_API_KEY}（与既有模型客户端同源），
+         * 避免密钥落入配置文件/日志。
+         */
+        private String apiKey = "";
+
+        /**
+         * DeepSeek Search API 地址；一般无需修改，测试时可指向本地 stub。
+         */
+        private String apiUrl = "https://api.deepseek.com/v1/tools/search";
     }
 
     @Data

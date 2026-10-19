@@ -150,6 +150,15 @@
             <version>${s3.version}</version>
         </dependency>
 
+        <!-- F22:3：同步 S3Client 需要同步 HTTP 实现；fat jar 现有 netty-nio-client 仅服务异步客户端，
+             缺同步实现时 S3Client 启动报 "Unable to load an HTTP implementation"。
+             url-connection-client 为零额外依赖的同步实现，版本由父 POM aws.sdk.version 统一管理。 -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>url-connection-client</artifactId>
+            <version>2.28.22</version>
+        </dependency>
+
         <!-- 阿里云 OSS SDK：rag.storage.type=oss 时启用；含 jdom2/commons 传递依赖，如与 Spring BOM 冲突再按需 exclude -->
         <dependency>
             <groupId>com.aliyun.oss</groupId>

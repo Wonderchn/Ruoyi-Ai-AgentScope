@@ -15,8 +15,8 @@
 import type { ChatAttachment } from '../ai/attachments';
 
 /**
- * 工作流 start 节点输入参数定义（来自 GET /workflow/{uuid} 返回的 start 节点
- * inputConfig.user_inputs）。type: 1=文本 2=数字 3=? 4=文件 5=布尔。
+ * 工作流 start 节点输入参数定义（来自 `GET /api/ai/v1/flows/public/{uuid}/inputs`
+ * 的 `inputs[]`）。type: 1=文本 2=数字 4=文件 5=布尔（服务端已归一）。
  */
 export interface WfNodeInputDef {
   uuid?: string;
@@ -104,48 +104,45 @@ export interface ChatMessageVo {
 
 export interface workflowVo {
   keyword?: string;
-  currentPage?: number;
-
-  pageSize?: number;
+  /** 页码（后端 `FlowWorkflowQueryRequest.current`）。 */
+  current?: number;
+  /** 每页条数（后端 `size`，1..100）。 */
+  size?: number;
 }
 
 /**
- * 工作流列表/详情响应（对应后端 WorkflowResp）。
- * /admin/workflow/search 返回 R<Page<WorkflowResp>>，列表项也是这个结构（nodes/edges 可能为空）。
+ * 公开工作流列表项（`GET /api/ai/v1/flows/public/search` 的 `records[]`）。
+ *
+ * 公开只读面不回传所有者 id；列表只需要展示字段。
  */
 export interface WorkflowResp {
-  id?: number;
   uuid: string;
   title: string;
   remark?: string;
-  isPublic?: boolean;
-  userId?: number;
-  userUuid?: string;
-  userName?: string;
-  nodes?: WorkflowNodeDto[];
-  edges?: WorkflowEdgeDto[];
+  isPublic?: number;
+  isEnable?: number;
   createTime?: string;
   updateTime?: string;
 }
 
-export interface WorkflowNodeDto {
+/** 公开输入 schema 里的图节点摘要（只含 uuid/title/type）。 */
+export interface PublicFlowInputsNode {
   uuid: string;
   title?: string;
-  workflowUuid?: string;
-  workflowComponentId?: number | string;
-  wfComponent?: { name?: string; title?: string };
-  inputConfig?: any;
-  nodeConfig?: any;
-  outputConfig?: any;
-  positionX?: number;
-  positionY?: number;
+  type: 'START' | 'LLM' | 'END';
 }
 
-export interface WorkflowEdgeDto {
+/**
+ * `GET /api/ai/v1/flows/public/{uuid}/inputs` 的响应。
+ *
+ * 服务端不传 node_config / prompt / owner / tenant；前端只按声明渲染输入对话框，
+ * 并按 `nodes` 把 `run.step_*` 的 `node:<uuid>` 映射成节点标题。
+ */
+export interface PublicFlowInputs {
   uuid: string;
-  sourceNodeUuid: string;
-  sourceHandle?: string;
-  targetNodeUuid: string;
+  title: string;
+  inputs: WfNodeInputDef[];
+  nodes: PublicFlowInputsNode[];
 }
 
 /**

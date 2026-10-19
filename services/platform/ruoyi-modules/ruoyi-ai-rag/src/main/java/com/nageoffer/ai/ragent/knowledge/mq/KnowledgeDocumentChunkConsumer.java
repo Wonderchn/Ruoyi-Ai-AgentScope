@@ -17,9 +17,15 @@
 
 package com.nageoffer.ai.ragent.knowledge.mq;
 
+import cn.hutool.core.util.StrUtil;
+import com.nageoffer.ai.ragent.framework.context.AsyncPrincipalReference;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.LoginUser;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
+import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.framework.mq.MessageWrapper;
 import com.nageoffer.ai.ragent.knowledge.mq.event.KnowledgeDocumentChunkEvent;
 import com.nageoffer.ai.ragent.knowledge.service.KnowledgeDocumentService;
@@ -53,6 +59,13 @@ public class KnowledgeDocumentChunkConsumer implements RocketMQListener<MessageW
     private final KnowledgeDocumentService documentService;
     private final ObjectProvider<SaasCapabilityBoundary> capabilityBoundary;
 
+    /**
+     * 租户作用域绑定端口（F22:2 真机第四缺口）：platform 侧存在 MyBatis 租户行拦截器，
+     * 消费线程没有登录主体，必须在任何 DB 访问之前把事件携带的租户绑定到当前线程；
+     * 独立应用没有拦截器时端口缺席，按直接执行（与 {@code MessageFeedbackConsumer} 同款）。
+     */
+    private final ObjectProvider<TenantScopeBinder> tenantScopeBinder;
+
     @Override
     public void onMessage(MessageWrapper<KnowledgeDocumentChunkEvent> message) {
         // 第一行：关闭判定必须早于日志正文、UserContext.set 与任何 service 调用
@@ -61,13 +74,42 @@ public class KnowledgeDocumentChunkConsumer implements RocketMQListener<MessageW
 
         KnowledgeDocumentChunkEvent event = message.getBody();
 
-        log.info("[消费者] 开始消费文档分块任务，docId={}, keys={}", event.getDocId(), message.getKeys());
-
-        UserContext.set(LoginUser.builder().username(event.getOperator()).build());
-        try {
-            documentService.executeChunk(event.getDocId());
-        } finally {
-            UserContext.clear();
+        // F22:2 真机第五缺口：chunk 执行链（VectorTargetResolver.resolve）要求 AI 侧
+        // PrincipalContext；事件必须携带受理线程降格出的身份引用。缺失/租户不一致一律
+        // fail-closed，不落默认主体（05 §4.3：异步只传身份引用，引用不是授权证据）。
+        AsyncPrincipalReference principalRef = event.getPrincipalRef();
+        if (principalRef == null) {
+            throw new ClientException("文档分块事件缺少 principalRef，拒绝执行：docId=" + event.getDocId()
+                    + "（异步执行必须携带身份引用，不落默认主体）");
         }
+        if (StrUtil.isBlank(event.getTenantId()) || !event.getTenantId().equals(principalRef.tenantId())) {
+            throw new ClientException("文档分块事件的 tenantId 与 principalRef 不一致，拒绝执行：docId="
+                    + event.getDocId() + ", tenantId=" + event.getTenantId()
+                    + ", principalTenant=" + principalRef.tenantId());
+        }
+
+        log.info("[消费者] 开始消费文档分块任务，docId={}, tenantId={}, keys={}",
+                event.getDocId(), event.getTenantId(), message.getKeys());
+
+        Runnable execute = () -> {
+            ExecutionPrincipal previous = PrincipalContext.set(principalRef.toExecutionPrincipal());
+            try {
+                UserContext.set(LoginUser.builder().username(event.getOperator()).build());
+                documentService.executeChunk(event.getDocId());
+            } finally {
+                // 清理顺序：先恢复主体，再清旧用户上下文；平台租户由 binder 在
+                // runnable 返回后清理（TenantHelper.dynamic 的 finally）。
+                PrincipalContext.restore(previous);
+                UserContext.clear();
+            }
+        };
+
+        TenantScopeBinder binder = tenantScopeBinder == null ? null : tenantScopeBinder.getIfAvailable();
+        if (binder == null) {
+            // 独立应用：没有租户行拦截器，但身份引用仍必须恢复（执行链需要 PrincipalContext）。
+            execute.run();
+            return;
+        }
+        binder.runWithTenant(event.getTenantId(), execute);
     }
 }

@@ -17,6 +17,7 @@
 
 package org.ruoyi.aiweb.embedded;
 
+import com.nageoffer.ai.ragent.audit.support.BizChangeLogContext;
 import com.nageoffer.ai.ragent.authorization.AiResourceAuthorizationService;
 import com.nageoffer.ai.ragent.authorization.AiResourceController;
 import com.nageoffer.ai.ragent.authorization.AiResourceWriteService;
@@ -203,8 +204,14 @@ public class AiEmbeddedRagConfiguration {
         @Bean
         @ConditionalOnMissingBean
         public AiResourceController aiResourceController(AiResourceAuthorizationService authorization,
-                                                         AiResourceWriteService writeService) {
-            return new AiResourceController(authorization, writeService);
+                                                         AiResourceWriteService writeService,
+                                                         ObjectProvider<BizChangeLogContext> bizChangeLogContext) {
+            AiResourceController controller = new AiResourceController(authorization, writeService);
+            // F18:2：复数资源面 KB 创建/删除的审计上下文，与单数管理面同口径。
+            // ObjectProvider 而非直接参数：切片/非 embedded 上下文可以没有该 bean，
+            // 缺席时 setter 保持 null（业务行为不变，审计缺席不吞错）。
+            controller.setBizChangeLogContext(bizChangeLogContext.getIfAvailable());
+            return controller;
         }
 
         // RW-01（T0 集成；t2r-runtime 交付）：F03 普通会话批量删除（D05）。

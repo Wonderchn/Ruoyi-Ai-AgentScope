@@ -25,6 +25,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.infra.util.LLMResponseCleaner;
 import com.nageoffer.ai.ragent.infra.util.LogSafe;
 import com.nageoffer.ai.ragent.rag.config.OrchestrationMode;
@@ -37,6 +39,8 @@ import com.nageoffer.ai.ragent.infra.chat.LLMService;
 import com.nageoffer.ai.ragent.rag.core.prompt.PromptTemplateLoader;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayDeque;
@@ -47,6 +51,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 import static com.nageoffer.ai.ragent.rag.constant.RAGConstant.INTENT_CLASSIFIER_PROMPT_PATH;
@@ -66,6 +71,20 @@ public class DefaultIntentClassifier implements IntentClassifier, IntentNodeRegi
     private final PromptTemplateLoader promptTemplateLoader;
     private final IntentTreeCacheManager intentTreeCacheManager;
     private final OrchestrationProperties orchestrationProperties;
+
+    /**
+     * F09:3-D3 租户作用域端口：冷缓存加载意图树时，agent 引擎线程没有 Sa-Token 登录主体/
+     * 动态租户，平台租户行拦截器会在 SQL 下发前拒绝（真机原文 {@code tenant.context.missing}，
+     * 栈：{@code AgentToolCatalog.mcpToolIds()} → {@code listMcpToolNodes()} →
+     * {@code loadIntentTreeFromDB()} 的 {@code ai_intent_node} 查询）；查询须在
+     * {@code TenantHelper.dynamic} 等价作用域内执行。
+     *
+     * <p>embedded 生产装配（{@code AiEmbeddedAgentEngineClosureConfiguration:417}）用 5 参
+     * {@code @Bean} 创建本对象，故除 5 参构造外必须保留本字段注入（{@code @Autowired}
+     * 后处理器同样作用于 @Bean 返回的对象）。端口缺席（独立应用无拦截器）⇒ 直跑。
+     */
+    @Autowired(required = false)
+    private ObjectProvider<TenantScopeBinder> tenantScopeBinder;
 
     /**
      * 从Redis加载意图树并构建内存结构
@@ -277,13 +296,37 @@ public class DefaultIntentClassifier implements IntentClassifier, IntentNodeRegi
         );
     }
 
-    private List<IntentNode> loadIntentTreeFromDB() {
-        // 1. 查出所有未删除且已启用的节点（扁平结构）
-        List<IntentNodeDO> intentNodeDOList = intentNodeMapper.selectList(
+    /**
+     * 冷缓存查库（F09:3-D3）：有租户作用域端口时以当前主体租户包住查询；端口缺席直跑。
+     * 查询异常不捕获、不转换——是否 fail-closed 由调用方决定。
+     */
+    private List<IntentNodeDO> queryIntentNodesInTenantScope() {
+        TenantScopeBinder binder = tenantScopeBinder == null ? null : tenantScopeBinder.getIfAvailable();
+        if (binder == null) {
+            return queryIntentNodes();
+        }
+        String tenantId = PrincipalContext.require().tenantId();
+        AtomicReference<List<IntentNodeDO>> holder = new AtomicReference<>();
+        binder.runWithTenant(tenantId, () -> holder.set(queryIntentNodes()));
+        List<IntentNodeDO> rows = holder.get();
+        if (rows == null) {
+            // 绑定端口没有执行给定动作 ⇒ 不冒充"空意图树"（读不出要响亮失败）
+            throw new IllegalStateException("租户作用域绑定端口未执行意图节点查询");
+        }
+        return rows;
+    }
+
+    private List<IntentNodeDO> queryIntentNodes() {
+        return intentNodeMapper.selectList(
                 Wrappers.lambdaQuery(IntentNodeDO.class)
                         .eq(IntentNodeDO::getDeleted, 0)
                         .eq(IntentNodeDO::getEnabled, 1)
         );
+    }
+
+    private List<IntentNode> loadIntentTreeFromDB() {
+        // 1. 查出所有未删除且已启用的节点（扁平结构；租户作用域由 queryIntentNodesInTenantScope 包住）
+        List<IntentNodeDO> intentNodeDOList = queryIntentNodesInTenantScope();
 
         if (intentNodeDOList.isEmpty()) {
             return List.of();

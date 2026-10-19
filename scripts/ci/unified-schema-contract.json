@@ -30,10 +30,16 @@
     31,
     32,
     33,
+    34,
     35,
     36,
     37,
-    38
+    38,
+    39,
+    40,
+    41,
+    42,
+    43
   ],
   "aiVersions": [
     1,
@@ -89,6 +95,8 @@
     "ai_flow_trace_node",
     "ai_flow_trace_run",
     "ai_flow_workflow",
+    "ai_graph_entity",
+    "ai_graph_relation",
     "ai_ingestion_pipeline",
     "ai_ingestion_pipeline_node",
     "ai_ingestion_task",

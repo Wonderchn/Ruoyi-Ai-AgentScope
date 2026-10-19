@@ -48,9 +48,14 @@ interface FakeRun {
   submits: any[];
   cancels: number;
   resets: number;
+  /** 页面挂上的终态钩子（flow 分支回显由 `onTerminal` 驱动）。 */
+  emitTerminal: (update: any) => void;
+  emitStep: (update: any) => void;
+  emitDelta: (text: string, dropped: boolean) => void;
 }
 
-function fakeRun(): FakeRun {
+function fakeRun(options: { hooks?: Record<string, (...args: any[]) => void> } = {}): FakeRun {
+  const hooks = options.hooks ?? {};
   const state = {
     running: vue.ref(false),
     error: vue.ref(''),
@@ -77,6 +82,15 @@ function fakeRun(): FakeRun {
       state.error.value = '';
       state.notice.value = '';
       state.runId.value = '';
+    },
+    emitTerminal(update: any) {
+      hooks.onTerminal?.(update);
+    },
+    emitStep(update: any) {
+      hooks.onStep?.(update);
+    },
+    emitDelta(text: string, dropped: boolean) {
+      hooks.onDelta?.(text, dropped);
     },
   };
   return state as FakeRun;
@@ -132,10 +146,14 @@ interface MountOptions {
   kbRows?: Array<{ kbId: string; name: string }>;
   kbError?: Error;
   attachmentClient?: ReturnType<typeof fakeAttachmentClient>;
+  /** F03:0：工作流首句的会话创建客户端；缺省返回 conv-created 并记录调用。 */
+  conversationClient?: { createConversation: (title: string) => Promise<{ conversationId: string; created?: boolean }> };
 }
 
 function mountPage(options: MountOptions = {}) {
   const run = fakeRun();
+  /** 页面第二次 `useChatRun` 调用（带注入 client 的那次）= flow 编排。 */
+  let flowRun = fakeRun();
   const user = vue.reactive({
     token: options.token ?? 'tok-1',
     authEpoch: options.authEpoch ?? 1,
@@ -155,9 +173,13 @@ function mountPage(options: MountOptions = {}) {
   const session = {
     pendingFirstMessage: '',
     takePendingFirstMessage: () => '',
+    setCurrentSession: () => {},
   };
   const route = vue.reactive({ params: { id: options.routeId ?? 'c-1' } });
   const attachments = options.attachmentClient ?? fakeAttachmentClient();
+  const conversations = options.conversationClient ?? {
+    createConversation: async () => ({ conversationId: 'conv-created', created: true }),
+  };
 
   const modules: Record<string, unknown> = {
     'vue': { ...vue, nextTick: vue.nextTick },
@@ -198,9 +220,28 @@ function mountPage(options: MountOptions = {}) {
     '@/stores/modules/chat': { useChatStore: () => chat },
     '@/stores/modules/model': { useModelStore: () => ({ requestModelList: async () => {} }) },
     '@/stores/modules/session': { useSessionStore: () => session },
+    // F03:0：页面 setup 阶段构造会话写入口；工作流首句无会话 id 时先创建会话。
+    '@/api/session/conversations': { createConversationApi: () => conversations },
     '@/stores/modules/user': { useUserStore: () => user },
     '@/utils/markdownRenderers': { codeXRender: () => '' },
-    './useChatRun': { useChatRun: () => run },
+    // 页面按「无 client」/「带 client」区分普通聊天与工作流两条编排。
+    './useChatRun': {
+      useChatRun: (options: { client?: unknown; hooks?: Record<string, (...args: any[]) => void> } = {}) => {
+        if (options.client) {
+          flowRun = fakeRun({ hooks: options.hooks });
+          return flowRun;
+        }
+        return run;
+      },
+    },
+    // flow 运行客户端（真实实现的行为在 flow-run.test.ts 覆盖；页面测试只关心接线）。
+    '../../../../api/chat/flow-run': {
+      createFlowRunClient: () => ({
+        async* run() {},
+        cancel: async () => ({}),
+        getRun: async () => ({}),
+      }),
+    },
     './components/MessageDetails.vue': { default: { name: 'MessageDetails' } },
     './components/ToolCallCard.vue': { default: { name: 'ToolCallCard' } },
     './components/WorkflowRunStatus.vue': { default: { name: 'WorkflowRunStatus' } },
@@ -248,7 +289,17 @@ function mountPage(options: MountOptions = {}) {
   const realmError = vm.runInContext('Error', context) as new (message: string) => Error;
   const scope = vue.effectScope();
   const page = scope.run(() => exportsObject.default.setup({}, { expose() {} }));
-  return { page: page as Record<string, any>, scope, run, user, chat, session, attachments, realmError };
+  return {
+    page: page as Record<string, any>,
+    scope,
+    run,
+    getFlowRun: () => flowRun,
+    user,
+    chat,
+    session,
+    attachments,
+    realmError,
+  };
 }
 
 async function settle(): Promise<void> {
@@ -327,16 +378,132 @@ describe('正例：普通聊天提交走运行面', () => {
   });
 });
 
-describe('互斥模式在旧契约退场后如实拒绝', () => {
-  it('选中工作流 → 不发请求，error 指向 RW-17（工作流对话入口无替代契约）', async () => {
-    const { page, scope, run } = mountPage({ workflow: { uuid: 'wf-1', title: '流程A', startInputs: [], inputs: [] } });
+describe('工作流模式走 flow.run（替代旧“如实拒绝”）', () => {
+  const workflow = {
+    uuid: 'wf-1',
+    title: '流程A',
+    startInputs: [],
+    inputs: [{ name: 'var_user_input', content: { title: '用户输入', value: null, type: 1 } }],
+    nodes: [{ uuid: 'n-start', title: '开始', type: 'START' }],
+  };
+
+  it('选中工作流 → flow client 恰一次、普通聊天 0 次、无拒绝文案', async () => {
+    const { page, scope, run, getFlowRun } = mountPage({ workflow });
     try {
       await settle();
       await page.submitMessage('你好');
-      assert.equal(run.submits.length, 0, '不得带着工作流参数打已退场的端点');
-      assert.match(run.error.value, /工作流/);
-      assert.match(run.error.value, /RW-17/);
-      assert.equal((page.bubbleItems.value as any[]).length, 0);
+      await settle();
+
+      assert.equal(run.submits.length, 0, '工作流模式不得再打 rag.chat');
+      const flowRun = getFlowRun();
+      assert.equal(flowRun.submits.length, 1, '工作流模式必须打 flow.run 一次');
+      const submitted = flowRun.submits[0];
+      assert.equal(submitted.flowUuid, 'wf-1');
+      assert.equal(submitted.flowQuestion, '你好');
+      assert.equal(submitted.flowInputs.length, 1);
+      assert.equal(run.error.value, '', '不得再出现 RW-17 拒绝文案');
+      assert.equal((page.bubbleItems.value as any[]).length, 2, '用户气泡 + 助手气泡');
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  it('step 卡映射节点标题；终态把 output.value 写进最后气泡与回显位', async () => {
+    const { page, scope, getFlowRun } = mountPage({ workflow });
+    try {
+      await settle();
+      await page.submitMessage('你好');
+      await settle();
+
+      const flowRun = getFlowRun();
+      flowRun.emitStep({ kind: 'step', event: 'run.step_started', stepId: 'node:n-start', stepName: 'node:n-start', payload: {} });
+      flowRun.emitStep({ kind: 'step', event: 'run.step_completed', stepId: 'node:n-start', stepName: 'node:n-start', payload: {} });
+      await settle();
+      assert.equal(page.flowSteps.value.length, 1, '同一节点 step_started/completed 合并为一张卡');
+      assert.equal(page.flowSteps.value[0].title, '开始');
+
+      flowRun.emitTerminal({
+        kind: 'terminal',
+        status: 'SUCCEEDED',
+        errorCode: null,
+        answer: '最终输出',
+        citations: [],
+        evidenceInsufficient: false,
+        terminalResult: '{"output":{"value":"最终输出"}}',
+      });
+      await settle();
+
+      const bubbles = page.bubbleItems.value as any[];
+      assert.equal(bubbles.at(-1).content, '最终输出', '终态必须回写到最后一个气泡');
+      assert.equal(bubbles.at(-1).messageStatus, 'SUCCEEDED');
+      assert.equal(page.flowTerminal.value, 'SUCCEEDED');
+      assert.equal(page.flowOutput.value, '最终输出');
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  it('F03:0 无会话 id 首句进入 workflow：先 createConversation，再以新 id 提交', async () => {
+    const calls: string[] = [];
+    const { page, scope, getFlowRun } = mountPage({
+      workflow,
+      routeId: '',
+      conversationClient: {
+        async createConversation(title: string) {
+          calls.push(title);
+          return { conversationId: 'conv-new', created: true };
+        },
+      },
+    });
+    try {
+      await settle();
+      await page.submitMessage('你好');
+      await settle();
+
+      assert.deepEqual(calls, ['你好'], '首句必须先创建会话');
+      const submitted = getFlowRun().submits[0];
+      assert.equal(submitted.conversationId, 'conv-new', 'flow.run 必须带新建会话 id');
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  it('F03:0 创建会话失败 → 不发起 flow.run，错误可见', async () => {
+    const { page, scope, getFlowRun, run } = mountPage({
+      workflow,
+      routeId: '',
+      conversationClient: {
+        async createConversation() {
+          // 跨 vm realm 的 Error 不满足页面的 instanceof 判断；断言用两侧共同的文案前缀。
+          throw new Error('创建会话失败（测试）');
+        },
+      },
+    });
+    try {
+      await settle();
+      await page.submitMessage('你好');
+      await settle();
+
+      assert.equal(getFlowRun().submits.length, 0, '会话创建失败不得发起运行');
+      assert.match(run.error.value, /创建会话失败/);
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  it('工作流模式带附件 → 明确拒绝，不发 flow.run', async () => {
+    const { page, scope, run, getFlowRun } = mountPage({ workflow });
+    try {
+      await settle();
+      page.pendingAttachments.value = [{ file: fakeFile('a.pdf', 'application/pdf'), progress: 100, status: 'ready', attachment: attachmentOf() }];
+      await page.submitMessage('带附件');
+      await settle();
+      assert.equal(getFlowRun().submits.length, 0);
+      assert.match(run.error.value, /附件/);
     }
     finally {
       scope.stop();
@@ -406,6 +573,12 @@ describe('模板：错误与提示必须可见（静态判据 + 绑定判据）'
     assert.match(PAGE_SOURCE, /data-testid="chat-run-status"/);
     assert.match(PAGE_SOURCE, /data-testid="chat-kb-select"/);
     assert.match(PAGE_SOURCE, /data-testid="chat-kb-error"/);
+  });
+
+  it('工作流运行回显位（step / 终态 / 输出）都在模板里', () => {
+    assert.match(PAGE_SOURCE, /data-testid="flow-run-status"/);
+    assert.match(PAGE_SOURCE, /data-testid="flow-run-terminal"/);
+    assert.match(PAGE_SOURCE, /data-testid="flow-run-output"/);
   });
 
   it('模板绑定的是新的提交/取消/加载状态', () => {

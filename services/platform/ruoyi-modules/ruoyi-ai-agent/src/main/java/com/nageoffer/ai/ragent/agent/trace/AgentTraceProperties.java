@@ -40,15 +40,22 @@ public class AgentTraceProperties {
     private boolean enabled = false;
 
     /**
-     * 内容采集默认开启，记录提示词、模型输出与工具出入参；显式关掉后只上报结构、状态与用量
-     * 与 enabled 分开是因为两者防的不是一件事：一个决定要不要观测，一个决定观测里落不落业务数据
+     * 内容采集默认关闭：没有 yaml 显式开启时只上报结构、状态与用量，不落提示词/模型输出/工具出入参。
+     *
+     * <p>F18:4 起内嵌闭包沿用这个默认（纯骨架）；独立 AI 应用的 {@code application.yaml}
+     * 仍显式写 {@code capture-content: true}，需要可读内容时在部署侧显式开启。
+     * 与 enabled 分开是因为两者防的不是一件事：一个决定要不要观测，一个决定观测里落不落业务数据。
      */
-    private boolean captureContent = true;
+    private boolean captureContent = false;
 
     /**
-     * LangFuse 的 OTLP 入口，只支持 HTTP，写到 /v1/traces 这一层
+     * 上报端点（显式开启追踪时的必填项）：OTLP/HTTP traces 路径，
+     * 如 {@code http://127.0.0.1:4318/v1/traces}。
+     *
+     * <p>没有内置默认：缺了就在装配期以指名配置键的错误拒绝启动，
+     * 不把空端点交给 SDK 换一个模糊异常。
      */
-    private String endpoint = "http://localhost:3000/api/public/otel/v1/traces";
+    private String endpoint;
 
     /**
      * LangFuse 项目公钥 pk-lf-*，与私钥一起拼 Basic 凭据

@@ -22,11 +22,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
 import com.nageoffer.ai.ragent.rag.config.SearchChannelProperties;
+import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
@@ -71,9 +74,18 @@ public class WebSearchChannel implements SearchChannel {
      */
     private static final int DEFAULT_COUNT = 5;
 
+    /**
+     * F22:6 统一出口 allow-list 的 provider id。
+     */
+    private static final String EGRESS_PROVIDER = "youcom";
+
     private final OkHttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final SearchChannelProperties properties;
+
+    /** F22:6：缺席即拒绝；字段注入覆盖组件扫描与内嵌 @Bean 两种装配。 */
+    @Autowired(required = false)
+    private ObjectProvider<EgressPolicy> egressPolicy;
 
     public WebSearchChannel(@Qualifier("syncHttpClient") OkHttpClient httpClient,
                                   ObjectMapper objectMapper,
@@ -103,6 +115,11 @@ public class WebSearchChannel implements SearchChannel {
     public SearchChannelResult search(SearchContext context) {
         long startTime = System.currentTimeMillis();
         try {
+            // F22:6：联网外发前必须过统一 allow-list；拒绝按既有降级语义交空结果，不抛到检索链
+            if (!egressAllowed()) {
+                return emptyResult(System.currentTimeMillis() - startTime);
+            }
+
             String query = context.getMainQuestion();
             if (StrUtil.isBlank(query)) {
                 log.info("You.com 联网检索问题为空，跳过");
@@ -156,6 +173,24 @@ public class WebSearchChannel implements SearchChannel {
             // 联网检索属于补充通道，任何异常（含超时、响应解析失败）都不允许向上抛出
             log.warn("You.com 联网检索失败，降级为空结果: {}", e.getMessage());
             return emptyResult(System.currentTimeMillis() - startTime);
+        }
+    }
+
+    /**
+     * 出口策略：bean 缺席即拒绝；拒绝只 warn（含 provider 名，不含凭据），不抛出。
+     */
+    private boolean egressAllowed() {
+        EgressPolicy policy = egressPolicy == null ? null : egressPolicy.getIfAvailable();
+        if (policy == null) {
+            log.warn("You.com 联网检索出口策略缺席，按拒绝处理 provider={}", EGRESS_PROVIDER);
+            return false;
+        }
+        try {
+            policy.requireAllowed(EGRESS_PROVIDER);
+            return true;
+        } catch (RuntimeException denied) {
+            log.warn("You.com 联网检索出口未允许，按拒绝处理 provider={}", EGRESS_PROVIDER);
+            return false;
         }
     }
 

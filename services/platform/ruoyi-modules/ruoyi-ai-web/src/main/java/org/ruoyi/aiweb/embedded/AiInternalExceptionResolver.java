@@ -24,6 +24,7 @@ import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
 import com.nageoffer.ai.ragent.framework.security.P04AiErrorCode;
 import com.nageoffer.ai.ragent.framework.security.P04AiException;
 import com.nageoffer.ai.ragent.framework.security.StaleVersionException;
+import com.nageoffer.ai.ragent.rag.core.graph.GraphOperationException;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpHeaders;
@@ -86,6 +87,10 @@ public class AiInternalExceptionResolver implements HandlerExceptionResolver, Or
         }
         if (ex instanceof com.nageoffer.ai.ragent.runtime.config.ConfigAuthorityUnavailable) {
             return ApiEnvelope.error(503, "运行配置不可用", "CONFIG_AUTHORITY_UNAVAILABLE");
+        }
+        if (ex instanceof GraphOperationException graph) {
+            // F08:0–3：图谱面自带 400/404/409/503 语义，不能收敛成 ServiceException 的统一 503。
+            return ApiEnvelope.error(graph.httpStatus(), graph.getMessage(), graph.errorCode().name());
         }
         if (ex instanceof org.springframework.dao.DataAccessException
                 || ex instanceof org.springframework.transaction.TransactionException) {

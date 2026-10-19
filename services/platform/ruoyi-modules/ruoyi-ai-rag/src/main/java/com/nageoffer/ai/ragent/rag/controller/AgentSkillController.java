@@ -26,8 +26,14 @@ import com.nageoffer.ai.ragent.rag.controller.request.AgentSkillSaveRequest;
 import com.nageoffer.ai.ragent.rag.controller.vo.AgentSkillToolOptionVO;
 import com.nageoffer.ai.ragent.rag.controller.vo.AgentSkillVO;
 import com.nageoffer.ai.ragent.rag.service.AgentSkillAdminService;
+import com.nageoffer.ai.ragent.rag.skillpackage.SkillPackageException;
+import com.nageoffer.ai.ragent.rag.skillpackage.SkillPackageExport;
+import com.nageoffer.ai.ragent.rag.skillpackage.SkillPackageImportResult;
+import com.nageoffer.ai.ragent.rag.skillpackage.SkillPackageService;
 import com.nageoffer.ai.ragent.runtime.web.DeliveryPermits;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.ContentDisposition;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -38,7 +44,10 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
@@ -72,6 +81,16 @@ import java.util.List;
  * Mapper（{@code AgentSkillMapper}）由 {@code AiEmbeddedMapperConfiguration} 的
  * {@code @MapperScan} 覆盖。权限行由 {@code V33__agent_skill_permissions.sql} 注册
  * （7137-7140 + 7142）。
+ *
+ * <p><b>F11:4 技能包（有限闭环）新增两条内层 handler</b>：
+ * {@code POST /agent-skills/import}（动作 {@code skill.write}）与
+ * {@code GET /agent-skills/{id}/export}（动作 {@code skill.read}）。
+ * 公开面 {@code AiGatewayController.ROUTES} 由协调者集成时单写（逐条登记，不用通配）；
+ * export 走 GET 字节分支，故本类自铸两个交付回执头；import 走 JSON 分支、不铸回执。
+ * <b>multipart 导入的传输前提</b>：外层网关的 multipartResolver 会先消费原始体，
+ * 该路径必须与 {@code GatewayMultipartConfiguration}/{@code GatewayRawUploadFilter}
+ * 的排除集成对登记（或改走专用流通道），否则请求到不了本 handler——这是集成期动作，
+ * 作者未改这两个类。
  */
 @RestController
 @RequestMapping("/internal/ai/v1/agent-catalog")
@@ -79,6 +98,9 @@ import java.util.List;
 public class AgentSkillController {
 
     private final AgentSkillAdminService agentSkillAdminService;
+
+    /** F11:4 技能包导入导出（同一个 bean 由 AgentSkillAdminServiceImpl 实现）。 */
+    private final SkillPackageService skillPackageService;
 
     /** 交付许可铸造器（GET 走字节分支，必须带回执头；见类注释三件套③）。 */
     private final DeliveryPermits deliveryPermits;
@@ -177,5 +199,70 @@ public class AgentSkillController {
     public ApiEnvelope<Void> toggleEnabled(@PathVariable String id, @RequestParam boolean enabled) {
         agentSkillAdminService.toggleEnabled(id, enabled);
         return ApiEnvelope.ok(null);
+    }
+
+    /**
+     * 导入技能包（动作 skill.write；multipart {@code file}）。
+     *
+     * <p>坏包/超限/冲突由服务层抛 {@link SkillPackageException}，这里在方法内映射成具名
+     * 4xx（HTTP status == body.code），不落到全局解析器的 403/5xx 兜底。
+     */
+    @PostMapping("/agent-skills/import")
+    public ResponseEntity<?> importPackage(
+            @RequestParam(value = "file", required = false) MultipartFile file) {
+        try {
+            SkillPackageImportResult result = skillPackageService.importPackage(file);
+            return ResponseEntity.ok()
+                    .header("Cache-Control", "no-store")
+                    .body(ApiEnvelope.ok(result));
+        } catch (SkillPackageException e) {
+            return skillPackageError(e);
+        }
+    }
+
+    /**
+     * 导出技能包（动作 skill.read；GET 走网关字节分支，必须铸交付回执）。
+     *
+     * <p>顺序：先取数（不存在/未授权时不铸许可），再铸许可并直接写 ZIP 字节；
+     * 写失败时关闭许可，避免留下永久 ACTIVE 的许可。
+     */
+    @GetMapping("/agent-skills/{id}/export")
+    public ResponseEntity<?> exportPackage(@PathVariable String id, HttpServletResponse response)
+            throws IOException {
+        ExecutionPrincipal principal = PrincipalContext.require();
+        SkillPackageExport export;
+        try {
+            export = skillPackageService.exportPackage(id);
+        } catch (SkillPackageException e) {
+            return skillPackageError(e);
+        }
+        DeliveryPermits.Permit permit = deliveryPermits.enter(
+                principal, "skill.read", "agent-catalog:skill:" + id + ":export");
+        try {
+            response.setContentType("application/zip");
+            response.setHeader("Content-Disposition", ContentDisposition.attachment()
+                    .filename(export.filename(), StandardCharsets.UTF_8)
+                    .build()
+                    .toString());
+            response.setHeader("Cache-Control", "no-store");
+            response.setHeader("X-AI-Delivery-Permit", permit.permitId());
+            response.setHeader("X-AI-Delivery-Operation", permit.operationId());
+            response.setContentLength(export.bytes().length);
+            response.getOutputStream().write(export.bytes());
+            response.getOutputStream().flush();
+            return null;
+        } catch (IOException | RuntimeException e) {
+            permit.close();
+            if (!response.isCommitted()) {
+                response.reset();
+            }
+            throw e;
+        }
+    }
+
+    private static ResponseEntity<?> skillPackageError(SkillPackageException e) {
+        return ResponseEntity.status(e.httpStatus())
+                .header("Cache-Control", "no-store")
+                .body(ApiEnvelope.error(e.httpStatus(), e.getMessage(), e.errorCode()));
     }
 }

@@ -60,6 +60,22 @@ public class KeywordProperties {
         private String uris = "http://127.0.0.1:9200";
 
         /**
+         * ES 用户名；与 {@link #password} 同时非空时启用 Basic Auth。
+         * <p>
+         * 环境变量：{@code RAG_KEYWORD_ES_USERNAME}（Spring relaxed binding）。
+         * 凭据值只经部署环境注入，不写入仓库、不进入日志。
+         */
+        private String username = "";
+
+        /**
+         * ES 密码；与 {@link #username} 同时非空时启用 Basic Auth。
+         * <p>
+         * 环境变量：{@code RAG_KEYWORD_ES_PASSWORD}（Spring relaxed binding）。
+         * 凭据值只经部署环境注入，不写入仓库、不进入日志。
+         */
+        private String password = "";
+
+        /**
          * 共享索引名称：所有知识库的关键词数据都写在此索引，按 collection_name 字段过滤
          */
         private String index = "rag_keyword_store";

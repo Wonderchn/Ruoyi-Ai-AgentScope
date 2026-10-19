@@ -5,6 +5,7 @@ import com.nageoffer.ai.ragent.admin.controller.DashboardController;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
 import com.nageoffer.ai.ragent.ingestion.controller.IngestionPipelineController;
+import com.nageoffer.ai.ragent.rag.controller.GraphController;
 import com.nageoffer.ai.ragent.rag.controller.IntentTreeController;
 import com.nageoffer.ai.ragent.rag.controller.QueryTermMappingController;
 import com.nageoffer.ai.ragent.rag.controller.RagTraceController;
@@ -34,7 +35,7 @@ public class AiEmbeddedAdminDeliveryConfiguration {
     @RestControllerAdvice(assignableTypes = {IntentTreeController.class, QueryTermMappingController.class,
             SampleQuestionController.class, RagTraceController.class, BizChangeLogController.class,
             EvalController.class, DashboardController.class, RuntimeCatalogController.class,
-            IngestionPipelineController.class})
+            IngestionPipelineController.class, GraphController.class})
     @ConditionalOnEmbeddedLocal
     @ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
     public static class AdminDeliveryAdvice implements ResponseBodyAdvice<Object> {
@@ -97,6 +98,11 @@ public class AiEmbeddedAdminDeliveryConfiguration {
                 // S2-F06-A1：/ingestion/pipelines 两条 GET（列表/详情）同走网关字节分支，
                 // 与 RuntimeCatalogController 同形；动作 config.read（→ ai:config:read，V28-7150）。
                 return "config.read";
+            }
+            if (controller == GraphController.class) {
+                // F08:0–3：三个 GET 走网关字节分支。status 是连通性/投影统计（config.read）；
+                // graph/labels 是知识内容读取（kb.read）。rebuild 是 POST，不经过本 Advice。
+                return "status".equals(method.getMethod().getName()) ? "config.read" : "kb.read";
             }
             return controller == EvalController.class ? "kb.retrieve" : null;
         }

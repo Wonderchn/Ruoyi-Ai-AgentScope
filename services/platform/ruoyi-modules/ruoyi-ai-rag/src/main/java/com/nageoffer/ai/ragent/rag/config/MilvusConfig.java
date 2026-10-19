@@ -20,6 +20,7 @@ package com.nageoffer.ai.ragent.rag.config;
 import io.milvus.v2.client.ConnectConfig;
 import io.milvus.v2.client.MilvusClientV2;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -57,6 +58,7 @@ public class MilvusConfig {
      * @return 配置完成的 {@link MilvusClientV2} 客户端实例
      */
     @Bean(destroyMethod = "close")
+    @ConditionalOnMissingBean(MilvusClientV2.class)
     public MilvusClientV2 milvusClient(@Value("${milvus.uri}") String uri,
                                        @Value("${milvus.token:}") String token) {
 

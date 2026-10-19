@@ -23,6 +23,7 @@ import com.nageoffer.ai.ragent.rag.config.GraphProperties;
 import com.nageoffer.ai.ragent.rag.config.SearchChannelProperties;
 import com.nageoffer.ai.ragent.rag.core.graph.GraphEvidence;
 import com.nageoffer.ai.ragent.rag.core.graph.LightRagClient;
+import com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -76,10 +77,20 @@ public class GraphSearchChannel implements SearchChannel {
     public SearchChannelResult search(SearchContext context) {
         long startTime = System.currentTimeMillis();
         try {
-            // 作用域由引擎统一解析：定向为命中库，全局为全部有效库
-            // 全局也下发库集做结果侧过滤：图谱删除是 best-effort，已删库的残留只能在这里拦住
+            // F05:4-R1：空授权 / 无授权 collection / 无已发布 chunk 引用时，
+            // 必须在任何 LightRAG 调用之前交空卷（与向量、关键词通道同口径）。
+            AuthorizedRetrievalScope authorizedScope = context.getAuthorizedScope();
+            if (!AuthorizedChannelSupport.hasUsableGraphScope(authorizedScope)) {
+                log.info("图谱检索授权作用域为空或缺少已发布文档引用，跳过");
+                return emptyResult(System.currentTimeMillis() - startTime);
+            }
+
+            // 作用域由引擎统一解析：定向为命中库，全局为全部有效库。
+            // 请求库集只是选择条件，必须与授权集合求交后才允许下发给 LightRAG。
+            // 全局也下发库集做结果侧过滤：图谱删除是 best-effort，已删库的残留只能在这里拦住。
             RetrievalScope scope = context.getRetrievalScope();
-            List<String> collections = scope.targetCollections();
+            List<String> collections = AuthorizedChannelSupport.intersect(
+                    authorizedScope, scope.targetCollections());
             if (CollUtil.isEmpty(collections)) {
                 log.info("图谱检索未解析到有效知识库，跳过");
                 return emptyResult(System.currentTimeMillis() - startTime);
@@ -95,9 +106,16 @@ public class GraphSearchChannel implements SearchChannel {
                 log.warn("图谱全局检索过滤掉 {} 条无主证据（已删库残留或解析失败），残留会挤占 top_k 名额，建议清理图谱",
                         evidence.unmatched().size());
             }
+            // 结果侧纵深防御（P2 文档级映射）：matched 与 unmatched（补充路）都只保留
+            // 「collection 已授权 + 文档已发布（doc:<docId>）」的证据；
+            // 未授权、未发布或无法解析 file_path 的无主残留不得进入融合。
+            List<RetrievedChunk> matched = AuthorizedChannelSupport.retainAuthorizedGraph(
+                    authorizedScope, evidence.matched());
+            List<RetrievedChunk> unmatched = AuthorizedChannelSupport.retainAuthorizedGraph(
+                    authorizedScope, evidence.unmatched());
             ScopeQuota quota = ScopeQuota.split(scope, baseTopK, properties.getScope().getSupplementRatio());
-            List<RetrievedChunk> primary = ScopeQuota.cap(evidence.matched(), quota.primary());
-            List<RetrievedChunk> supplement = ScopeQuota.cap(evidence.unmatched(), quota.supplement());
+            List<RetrievedChunk> primary = ScopeQuota.cap(matched, quota.primary());
+            List<RetrievedChunk> supplement = ScopeQuota.cap(unmatched, quota.supplement());
 
             long latency = System.currentTimeMillis() - startTime;
             log.info("图谱检索完成，范围={}，命中 {} 条，补充 {} 条，耗时 {}ms",

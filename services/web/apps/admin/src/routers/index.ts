@@ -168,6 +168,14 @@ export const layoutRouter: RouteRecordRaw[] = [
         meta: { title: '知识库', icon: 'Reading', permission: 'ai:kb:list' },
       },
       {
+        // F08:0–3（2026-10-18）：知识图谱页面。权限串 ai:kb:read 复用 V4-7102，
+        // 零新增 canonical 动作/权限/菜单行；端点 /api/ai/v1/admin/kg/** 由网关四条放行。
+        path: 'ai/knowledge-graph',
+        name: 'aiKnowledgeGraph',
+        component: () => import('@/pages/ai/knowledge-graph/index.vue'),
+        meta: { title: '知识图谱', icon: 'Share', permission: 'ai:kb:read' },
+      },
+      {
         path: 'ai/knowledge/:kbId',
         name: 'aiKnowledgeDocuments',
         component: () => import('@/pages/ai/knowledge/documents.vue'),
@@ -212,7 +220,7 @@ export const layoutRouter: RouteRecordRaw[] = [
         path: 'ai/mcp',
         name: 'aiMcp',
         component: () => import('@/pages/ai/mcp/index.vue'),
-        meta: { title: 'MCP 工具目录', icon: 'SetUp', permission: 'mcp:tool:list' },
+        meta: { title: 'MCP 工具目录', icon: 'SetUp', permission: 'ai:mcp:list' },
       },
       {
         // S2-F06-A1（2026-10-10）：管线 CRUD 5 条已装配并进白名单

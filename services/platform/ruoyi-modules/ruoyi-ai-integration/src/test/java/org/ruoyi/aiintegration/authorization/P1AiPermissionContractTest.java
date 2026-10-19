@@ -32,6 +32,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
@@ -82,10 +83,14 @@ class P1AiPermissionContractTest {
         assertThat(declared)
                 .as("锚点：必须真的从迁移里读到权限行，否则本判据是空跑")
                 .hasSizeGreaterThanOrEqualTo(25)
-                .contains("ai:kb:list", "ai:run:submit", "ai:agent:execute", "ai:conversation:read");
+                .contains("ai:kb:list", "ai:run:submit", "ai:agent:execute", "ai:conversation:read",
+                        // F13-M1：V34 的单行权限必须被真实读到。
+                        "ai:flow:publish");
         assertThat(canonicalPermissions)
                 .as("锚点：规范动作表必须真的读到 25 个权限")
-                .hasSizeGreaterThanOrEqualTo(25);
+                .hasSizeGreaterThanOrEqualTo(25)
+                // F13-M1（2026-10-18）：发布面动作与 V34 权限行必须同时进入两侧锚点。
+                .contains("ai:flow:publish");
 
         assertThat(declared)
                 .as("有路由/动作却没有可授予的权限行 → 作用域永远拿不到它，端点恒 403")
@@ -102,7 +107,9 @@ class P1AiPermissionContractTest {
         assertThat(actions)
                 .as("锚点：必须真的读到网关路由表")
                 .hasSizeGreaterThanOrEqualTo(30)
-                .contains("kb.list", "run.submit", "conversation.read");
+                .contains("kb.list", "run.submit", "conversation.read",
+                        // F13-M1：发布/公开面路由动作必须在表内。
+                        "flow.publish");
 
         List<String> unknown = new ArrayList<>();
         for (String action : actions) {
@@ -191,6 +198,125 @@ class P1AiPermissionContractTest {
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * F12-M1（2026-10-18，维护者批 B 批 G-22）：MCP 管理面。
+     *
+     * <p>在既有双向相等判据之外补两条锚点：
+     * <ol>
+     *   <li>五个 canonical 动作逐条映射到 {@code ai:mcp:*}，且 V39 的五行权限真的落库；</li>
+     *   <li>18 条公开路由逐条登记，且不存在 {@code /mcp/**} 通配——
+     *       通配会把同前缀下任何将来新增端点一起放行，等于取消白名单。</li>
+     * </ol>
+     */
+    @Test
+    @DisplayName("F12-M1：MCP 管理面 5 动作 ↔ 权限行，18 条路由逐条登记且禁止通配")
+    void mcpAdminSurfaceIsRegisteredIndividually() throws Exception {
+        Map<String, String> actions = new java.util.LinkedHashMap<>();
+        actions.put("mcp.list", "ai:mcp:list");
+        actions.put("mcp.read", "ai:mcp:read");
+        actions.put("mcp.write", "ai:mcp:write");
+        actions.put("mcp.delete", "ai:mcp:delete");
+        actions.put("mcp.test", "ai:mcp:test");
+        actions.forEach((action, permission) -> assertThat(AiCanonicalAction.permissionOf(action))
+                .as("规范动作 %s 必须映射到 %s", action, permission)
+                .contains(permission));
+        assertThat(declaredPermissions())
+                .as("V39 必须注册五行 ai:mcp:* 权限（默认不分配）")
+                .containsAll(actions.values());
+
+        List<String> patterns = whitelistedPatterns();
+        assertThat(patterns)
+                .as("18 条 MCP 管理路由逐条登记")
+                .contains(
+                        "GET /mcp/markets",
+                        "GET /mcp/markets/all",
+                        "GET /mcp/markets/export",
+                        "GET /mcp/markets/{id}",
+                        "GET /mcp/markets/{id}/tools",
+                        "POST /mcp/markets/{id}/refresh",
+                        "POST /mcp/markets/{id}/status",
+                        "DELETE /mcp/markets/{ids}",
+                        "GET /mcp/tools",
+                        "GET /mcp/tools/all",
+                        "GET /mcp/tools/options",
+                        "GET /mcp/tools/export",
+                        "GET /mcp/tools/{id}",
+                        "POST /mcp/tools/{id}/status",
+                        "POST /mcp/tools/{id}/test",
+                        "DELETE /mcp/tools/{ids}",
+                        "POST /mcp/market-tools/{id}/load",
+                        "POST /mcp/market-tools/batch-load");
+        assertThat(patterns)
+                .as("禁止 /mcp/** 通配")
+                .noneMatch(pattern -> pattern.contains("/mcp/**"));
+        assertThat(whitelistedActions())
+                .as("18 条路由只使用五个新动作")
+                .contains("mcp.list", "mcp.read", "mcp.write", "mcp.delete", "mcp.test");
+    }
+
+    /**
+     * F20-A（2026-10-18，维护者「F20快做」＋ D1 批）：编程助手 Harness 面。
+     *
+     * <p>四条动作 ↔ V41 四行权限（7204-7207，默认不分配），且 22 条 JSON 路由逐条登记；
+     * 不许出现 {@code /coding/**} 通配。两条 SSE 由专用流控制器精确映射，不在此表
+     *（登记了却没有 handler 会变成不可达死路由）。
+     */
+    @Test
+    @DisplayName("F20-A：coding.* 4 动作 ↔ V41 权限行，22 条路由逐条登记且禁止通配")
+    void codingHarnessSurfaceIsRegisteredIndividually() throws Exception {
+        Map<String, String> actions = new java.util.LinkedHashMap<>();
+        actions.put("coding.use", "ai:coding:use");
+        actions.put("coding.write", "ai:coding:write");
+        actions.put("coding.approve", "ai:coding:approve");
+        actions.put("coding.command", "ai:coding:command");
+        actions.forEach((action, permission) -> assertThat(AiCanonicalAction.permissionOf(action))
+                .as("规范动作 %s 必须映射到 %s", action, permission)
+                .contains(permission));
+        assertThat(AiCanonicalAction.requiresPlatformAdmin("coding.use"))
+                .as("coding.* 是租户级工作区面，不进 PLATFORM_ADMIN_ACTIONS")
+                .isFalse();
+        assertThat(declaredPermissions())
+                .as("V41 必须注册四行 ai:coding:* 权限（默认不分配）")
+                .containsAll(actions.values());
+
+        List<String> patterns = whitelistedPatterns();
+        assertThat(patterns)
+                .as("F20-A 的 22 条 JSON 路由逐条登记")
+                .contains(
+                        "POST /coding/sessions",
+                        "GET /coding/sessions",
+                        "GET /coding/sessions/{sessionId}",
+                        "PUT /coding/sessions/{sessionId}/pin",
+                        "DELETE /coding/sessions/{sessionId}",
+                        "POST /coding/sessions/{sessionId}/restore",
+                        "GET /coding/sessions/{sessionId}/messages",
+                        "POST /coding/sessions/{sessionId}/runs",
+                        "GET /coding/sessions/{sessionId}/runs",
+                        "GET /coding/sessions/{sessionId}/runs/{runId}",
+                        "GET /coding/sessions/{sessionId}/runs/{runId}/events",
+                        "POST /coding/sessions/{sessionId}/runs/{runId}/inputs",
+                        "POST /coding/sessions/{sessionId}/runs/{runId}/cancel",
+                        "POST /coding/sessions/{sessionId}/runs/{runId}/resume",
+                        "POST /coding/sessions/{sessionId}/runs/{runId}/approvals/{approvalId}/resolve",
+                        "POST /coding/sessions/{sessionId}/runs/{runId}/plan/approve",
+                        "POST /coding/sessions/{sessionId}/runs/{runId}/plan/revision",
+                        "GET /coding/models",
+                        "GET /coding/workspace",
+                        "GET /coding/file",
+                        "PUT /coding/file",
+                        "POST /coding/command");
+        assertThat(patterns)
+                .as("禁止 /coding/** 通配；SSE 走专用流精确映射")
+                .noneMatch(pattern -> pattern.contains("/coding/**"))
+                .doesNotContain("POST /coding/chat")
+                .noneMatch(pattern -> pattern.endsWith("/events/stream"));
+        assertThat(whitelistedActions())
+                .as("22 条路由只使用四个新动作")
+                .contains("coding.use", "coding.write", "coding.approve", "coding.command");
+    }
+
+    // ------------------------------------------------------------------ helpers (reflection / SQL)
 
     /** 反射读网关的私有路由表：白名单是运行期固定表，测试要枚举它而不是抄一份。 */
     private static List<String> whitelistedActions() throws Exception {

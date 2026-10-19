@@ -20,12 +20,11 @@
  *    但前端没有入口 ⇒ 用户"有权限却看不见任何东西"。
  * 2. **有页面无权限**（G-10 反向）：路由挂出来、后端却会拒绝 ⇒ "菜单可见进去就 403"。
  *
- * ## 本期不做（K2/F08 与 F19/F21 裁决，裁决优先于分母）
+ * ## 本期不做（F19/F21 裁决，裁决优先于分母）
  *
- * - F08 知识图谱页面：不做（K2）。入口只保留"未配置"提示（/ai/knowledge 页内
- *   data-testid="kg-unconfigured"）。`/admin/kg/graph`、`/admin/kg/labels` 两个
- *   API 分母不建页、不造页。该行以 `status: 'deferred'` 记录，双向断言跳过。
  * - F19 媒体 / F21 短剧页面：不做（本期范围外），同 deferred。
+ * - K2 的 F08 裁决已由协调者 D9（2026-10-18）改判：知识图谱页 `live`，
+ *   权限复用既有 `ai:kb:read`（V4-7102），零新增权限/菜单行。
  */
 
 /** 成对表的一行。 */
@@ -174,23 +173,19 @@ export const AI_ADMIN_PAIRS: readonly PermissionPagePair[] = [
     endpoint: 'BLOCKED-BY-G-22',
     note: 'RW-07 退役：不再有页面使用 system:provider:list',
   },
+  // ---- MCP 工具目录（F12-M1，2026-10-18）：**有行有页，端点活** ----
+  // 旧 V2 种子行 `mcp:tool:list` / `mcp:market:list`（菜单 2001/2010）随 ruoyi-chat
+  // 未打包（G-22）一并退役；V39 播 5 条动作行 7144-7148（页面/列表取 ai:mcp:list），
+  // 18 条端点经网关白名单 `/api/ai/v1/mcp/**` 逐条放行，信封整数 `ApiEnvelope`，
+  // 列表 `data` 是 `IPage`（current/size）。按钮按 read/write/delete/test 显隐。
   {
-    permission: 'mcp:tool:list',
-    rowSource: 'V2__seed_system.sql 菜单 2001',
+    permission: 'ai:mcp:list',
+    rowSource: 'V39__mcp_catalog_permissions.sql 菜单 7144-7148',
     route: '/ai/mcp',
-    page: 'MCP 工具目录（工具 Tab）',
+    page: 'MCP 工具目录（工具 + 市场双 Tab）',
     status: 'live',
-    endpoint: 'BLOCKED-BY-G-22',
-    note: '/mcp/tool/** 在 ruoyi-chat',
-  },
-  {
-    permission: 'mcp:market:list',
-    rowSource: 'V2__seed_system.sql 菜单 2010',
-    route: '/ai/mcp',
-    page: 'MCP 工具目录（市场 Tab）',
-    status: 'live',
-    endpoint: 'BLOCKED-BY-G-22',
-    note: '/mcp/market/** 同上',
+    endpoint: 'live',
+    note: 'GET /api/ai/v1/mcp/{tools,markets,markets/{id}/tools}（mcp.list，IPage current/size）；详情/导出=mcp.read，启停/刷新/加载=mcp.write，删除=mcp.delete，连接测试=mcp.test',
   },
 
   // ---- Agent 目录（F09）：**有行有页且有可达端点**（RW-03 2026-10-07 接通）----
@@ -306,16 +301,21 @@ export const AI_ADMIN_PAIRS: readonly PermissionPagePair[] = [
     note: 'DELETE /agent-catalog/agent-skills/{id}（skill.delete）',
   },
 
-  // ---- 裁决行（双向断言跳过）----
+  // ---- 知识图谱（F08:0–3，2026-10-18，D9 改判 K2）----
+  // 页面与知识库共用 ai:kb:read（V4-7102）；status 用 config.read，重建用 kb.write。
+  // 4 条 /api/ai/v1/admin/kg/** 逐条放行，内层 GraphController 由
+  // AiEmbeddedGraphConfiguration 装配；读路径只读主库投影（零 LightRAG 外呼）。
   {
-    permission: '（K2 裁决：F08 本期不做）',
-    rowSource: '（无——图谱端点 /admin/kg/** 属 ai_reference_only 且不建页）',
-    route: '',
-    page: '知识图谱（F08）',
-    status: 'deferred',
-    endpoint: 'BLOCKED-BY-EMBEDDED-REGISTRY',
-    note: 'K2：图谱入口保留"未配置"提示（/ai/knowledge 页 kg-unconfigured），不建页不造页',
+    permission: 'ai:kb:read',
+    rowSource: 'V4__ai_policy_revision.sql 菜单 7102（复用既有行）',
+    route: '/ai/knowledge-graph',
+    page: '知识图谱（状态卡 / 筛选 / SVG 图 / 溯源面板）',
+    status: 'live',
+    endpoint: 'live',
+    note: 'GET /api/ai/v1/admin/kg/{graph,labels}（kb.read）；status=config.read（V28-7150），rebuild=kb.write（V4-7103）；GET 走网关字节分支，回执由网关消费',
   },
+
+  // ---- 裁决行（双向断言跳过）----
   {
     permission: '（本期范围外：F19/F21）',
     rowSource: '（无）',

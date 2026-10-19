@@ -65,6 +65,7 @@ class P2RetrievalProjectionTest {
                     .containsEntry("docs", List.of("doc1"));
             var row = mock(ResultSet.class);
             when(row.getString("id")).thenReturn("version1:chunk-key1");
+            when(row.getString("doc_id")).thenReturn("doc1");
             when(row.getString("collection_name")).thenReturn("collection1");
             ((RowCallbackHandler) call.getArgument(2)).processRow(row);
             return null;
@@ -72,6 +73,7 @@ class P2RetrievalProjectionTest {
         var scope = service.toRetrievalScope(AuthorizedResourceScope.granted(
                 principal, "kb.retrieve", List.of("kb:kb1"), 0));
         assertThat(scope.publishedChunkRefs()).containsExactly("chunk:version1:chunk-key1");
+        assertThat(scope.publishedDocRefs()).containsExactly("doc:doc1");
         assertThat(scope.authorizedDocRefs()).containsExactly("doc:doc1");
         assertThat(scope.authorizedCollections()).containsExactly("collection1");
     }

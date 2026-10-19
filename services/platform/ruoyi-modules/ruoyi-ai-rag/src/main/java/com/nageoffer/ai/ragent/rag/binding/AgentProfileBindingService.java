@@ -20,18 +20,23 @@ package com.nageoffer.ai.ragent.rag.binding;
 import cn.hutool.crypto.SecureUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.rag.dao.entity.AgentProfileBindingDO;
 import com.nageoffer.ai.ragent.rag.dao.mapper.AgentProfileBindingMapper;
-import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * P3-BIND：Agent 绑定的保存/读取（F09:3 权威；F11:3 复用）。
@@ -47,13 +52,38 @@ import java.util.Set;
  *       供运行期冻结绑定视图（无需新列）。</li>
  * </ul>
  */
+@Slf4j
 @Service
-@RequiredArgsConstructor
 public class AgentProfileBindingService {
 
     /** 四类绑定引用（闭集）。 */
     public enum RefType {
         MODEL, SKILL, MCP, ORCHESTRATION
+    }
+
+    /** 运行期编排缺省值：无 ORCHESTRATION 绑定 = 现状 ReAct。 */
+    public static final String DEFAULT_ORCHESTRATION = "REACT";
+
+    /**
+     * F09:3-C：一次读取取齐的运行期绑定视图。
+     *
+     * <p>与保存/校验语义无关，只服务运行消费：MODEL 与 ORCHESTRATION 各自**多条取
+     * sortOrder 首条**（读取顺序即 {@code bindingsOf} 的顺序），SKILL/MCP 保持全集合。
+     * {@code bindingVersion} 与 {@link #bindingVersion(List)} 同源，可供调用方冻结视图。
+     */
+    public record RuntimeBindings(Optional<String> modelId,
+                                  String orchestrationMode,
+                                  Set<String> skillCodes,
+                                  Set<String> mcpToolIds,
+                                  String bindingVersion) {
+
+        public RuntimeBindings {
+            modelId = modelId == null ? Optional.empty() : modelId;
+            skillCodes = skillCodes == null ? Set.of()
+                    : Collections.unmodifiableSet(new LinkedHashSet<>(skillCodes));
+            mcpToolIds = mcpToolIds == null ? Set.of()
+                    : Collections.unmodifiableSet(new LinkedHashSet<>(mcpToolIds));
+        }
     }
 
     /** 一条绑定引用。 */
@@ -83,6 +113,34 @@ public class AgentProfileBindingService {
 
     private final AgentProfileBindingMapper bindingMapper;
     private final ObjectProvider<RefLookup> refLookup;
+    /**
+     * P3-BIND 运行修复（F09:3-D1，2026-10-18）：租户作用域绑定端口。
+     *
+     * <p>agent 引擎线程（boundedElastic）没有 Sa-Token 登录主体/动态租户，平台侧 MyBatis
+     * 租户行拦截器（{@code tenant.enable=true}）会在 SQL 下发前拒绝（真机原文
+     * {@code tenant.context.missing}）。查询必须经本端口在 {@code TenantHelper.dynamic}
+     * 等价作用域内执行。端口缺席（独立应用无拦截器）⇒ 按原样直跑。
+     */
+    private final ObjectProvider<TenantScopeBinder> tenantScopeBinder;
+
+    /**
+     * 生产构造（Spring 装配）：3 参；构造上标 {@link Autowired}，避免"双公开构造无注解"
+     * 时 Spring 无法选择（同模块既有教训，见 embedded 装配注释）。
+     */
+    @Autowired
+    public AgentProfileBindingService(AgentProfileBindingMapper bindingMapper,
+                                      ObjectProvider<RefLookup> refLookup,
+                                      ObjectProvider<TenantScopeBinder> tenantScopeBinder) {
+        this.bindingMapper = bindingMapper;
+        this.refLookup = refLookup;
+        this.tenantScopeBinder = tenantScopeBinder;
+    }
+
+    /** 兼容构造：无租户作用域绑定端口（既有测试/老装配；按"无拦截器"直跑）。 */
+    public AgentProfileBindingService(AgentProfileBindingMapper bindingMapper,
+                                      ObjectProvider<RefLookup> refLookup) {
+        this(bindingMapper, refLookup, null);
+    }
 
     /**
      * 保存某 Agent 的绑定集合（替换语义）：全量校验通过后，先作废旧行再逐条落库。
@@ -142,9 +200,30 @@ public class AgentProfileBindingService {
         return bindingVersion(normalized);
     }
 
-    /** 读取该 Agent 的生效绑定（租户收窄、enabled=1、按 sortOrder）。未绑定 ⇒ 空列表。 */
+    /**
+     * 读取该 Agent 的生效绑定（租户收窄、enabled=1、按 sortOrder）。未绑定 ⇒ 空列表。
+     *
+     * <p>运行期（agent 引擎线程）没有 Sa-Token 登录主体/动态租户：租户行拦截器会在查询前
+     * 拒绝。有 {@link TenantScopeBinder} 时把查询包进该主体的租户作用域；端口缺席
+     * （独立应用无拦截器）按原样直跑。查询失败**不吞**——是否 fail-closed 由调用方决定。
+     */
     public List<BindingReference> bindingsOf(String agentProfileId) {
         String tenantId = PrincipalContext.require().tenantId();
+        TenantScopeBinder binder = tenantScopeBinder == null ? null : tenantScopeBinder.getIfAvailable();
+        if (binder == null) {
+            return readBindings(agentProfileId, tenantId);
+        }
+        AtomicReference<List<BindingReference>> holder = new AtomicReference<>();
+        binder.runWithTenant(tenantId, () -> holder.set(readBindings(agentProfileId, tenantId)));
+        List<BindingReference> bindings = holder.get();
+        if (bindings == null) {
+            // 绑定端口没有执行给定动作 ⇒ 不冒充"空绑定"（读不出要响亮失败）
+            throw new IllegalStateException("租户作用域绑定端口未执行绑定查询");
+        }
+        return bindings;
+    }
+
+    private List<BindingReference> readBindings(String agentProfileId, String tenantId) {
         return bindingMapper.selectList(Wrappers.lambdaQuery(AgentProfileBindingDO.class)
                         .eq(AgentProfileBindingDO::getAgentProfileId, agentProfileId)
                         .eq(AgentProfileBindingDO::getEnabled, 1)
@@ -178,6 +257,54 @@ public class AgentProfileBindingService {
             }
         }
         return toolIds;
+    }
+
+    /**
+     * F09:3-C：运行期绑定视图（MODEL/ORCHESTRATION/SKILL/MCP 一次读取取齐）。
+     *
+     * <p>口径写死：
+     * <ul>
+     *   <li>只用一次 {@link #bindingsOf(String)} 查询快照，不按类型多次查库；</li>
+     *   <li>MODEL/ORCHESTRATION 存在多条历史行时取 sortOrder 首条并 WARN（不静默混用）；</li>
+     *   <li>无 ORCHESTRATION 行 ⇒ {@link #DEFAULT_ORCHESTRATION}；</li>
+     *   <li>未知编排码（历史脏行）⇒ 读取即拒绝，不回落默认模式；</li>
+     *   <li>空绑定 ⇒ 空集合 + 空模型（绝不等于全量）。</li>
+     * </ul>
+     *
+     * @throws IllegalStateException 未知编排模式（fail-closed）
+     */
+    public RuntimeBindings runtimeBindings(String agentProfileId) {
+        List<BindingReference> refs = bindingsOf(agentProfileId);
+        String modelId = null;
+        String orchestration = null;
+        Set<String> skillCodes = new LinkedHashSet<>();
+        Set<String> mcpToolIds = new LinkedHashSet<>();
+        for (BindingReference ref : refs) {
+            switch (ref.type()) {
+                case MODEL -> {
+                    if (modelId == null) {
+                        modelId = ref.refId();
+                    } else {
+                        log.warn("Agent 存在多条 MODEL 绑定，运行期按 sortOrder 首条生效: {}", agentProfileId);
+                    }
+                }
+                case ORCHESTRATION -> {
+                    if (orchestration == null) {
+                        orchestration = ref.refId();
+                    } else {
+                        log.warn("Agent 存在多条 ORCHESTRATION 绑定，运行期按 sortOrder 首条生效: {}", agentProfileId);
+                    }
+                }
+                case SKILL -> skillCodes.add(ref.refId());
+                case MCP -> mcpToolIds.add(ref.refId());
+            }
+        }
+        if (orchestration != null && !ORCHESTRATION_MODES.contains(orchestration)) {
+            throw new IllegalStateException("未知编排模式（运行期拒绝，不回落默认模式）: " + orchestration);
+        }
+        return new RuntimeBindings(Optional.ofNullable(modelId),
+                orchestration == null ? DEFAULT_ORCHESTRATION : orchestration,
+                skillCodes, mcpToolIds, bindingVersion(refs));
     }
 
     /** 绑定版本：集合的确定性哈希（排序后拼接再 sha256）。 */

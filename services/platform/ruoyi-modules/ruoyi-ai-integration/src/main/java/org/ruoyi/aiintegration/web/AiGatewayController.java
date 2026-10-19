@@ -107,6 +107,14 @@ public class AiGatewayController {
             new Route("POST", "/runtime-config/revisions", "config.publish"),
             new Route("POST", "/runtime-config/revisions/{revisionId}/revoke", "config.revoke"),
             new Route("POST", "/runtime-config/revisions/{revisionId}/rollback", "config.publish"),
+            // F08:0–3（2026-10-18）：知识图谱管理面 4 条。内层 handler = GraphController
+            // （类级 /internal/ai/v1/admin/kg）。三个 GET 走网关字节分支，必须整数 ApiEnvelope
+            // + 交付回执（AiEmbeddedAdminDeliveryConfiguration 已登记该控制器）；POST 重建走 JSON 分支。
+            // 动作复用既有 kb.read / config.read / kb.write，零新增 canonical 动作/权限/菜单行。
+            new Route("GET", "/admin/kg/status", "config.read"),
+            new Route("GET", "/admin/kg/graph", "kb.read"),
+            new Route("GET", "/admin/kg/labels", "kb.read"),
+            new Route("POST", "/admin/kg/projection/rebuild", "kb.write"),
             new Route("GET", "/knowledge-bases", "kb.list"),
             new Route("POST", "/knowledge-bases", "kb.write"),
             new Route("GET", "/knowledge-bases/{id}", "kb.read"),
@@ -233,6 +241,14 @@ public class AiGatewayController {
             new Route("POST", "/agent/v1/stop", "run.cancel"),
             new Route("GET", "/agent/v1/meta", "agent.execute"),
             new Route("GET", "/agent/v1/agents", "agent.execute"),
+            // F14:2（2026-10-19）：多 Agent 应用市场公开面 2 条（动作复用 agent.execute）。
+            // 可见性 = tenant_id=当前 AND is_public=1 AND is_enable=1 AND deleted=0；
+            // 跨租户/私有/停用/软删/不存在统一 404 同文案「应用不存在」。
+            // ⚠️ 声明序：字面量 /multi-agent/public/search 必须在
+            // GET /multi-agent/public/{uuid} 之前（matchRoute 取声明序首个命中）。
+            // 两条 GET 走字节分支：内层自铸整数 ApiEnvelope + 两个交付回执头。
+            new Route("GET", "/multi-agent/public/search", "agent.execute"),
+            new Route("GET", "/multi-agent/public/{uuid}", "agent.execute"),
             // 另两条是 text/event-stream（GET /agent/v1/chat、POST /agent/v1/chat/confirm），
             // **刻意不在此登记**：本通用转发有 2s/2MiB 上限且不做 SSE，登记了只会超时或缓冲失败。
             // 它们由 AiGatewayStreamController 逐条精确映射（专用流式受限传输，先于 catch-all 生效）。
@@ -433,6 +449,15 @@ public class AiGatewayController {
             new Route("GET", "/rag/traces/runs/{traceId}", "run.get"),
             new Route("GET", "/rag/traces/runs/{traceId}/nodes", "run.events"),
             new Route("GET", "/biz-change-logs", "run.get"),
+            // F18:2（2026-10-18）：成员端读面。动作复用 `run.get`（成员读自己的变更日志，
+            // **不新增 canonical 动作、不新增权限行、不新增迁移**）。
+            // ⚠️ 声明序：两段字面量 `/biz-change-logs/mine` 必须排在
+            // `GET /biz-change-logs/{id}` **之前**——matchRoute 取声明序首个命中，
+            // 否则 "mine" 会被 {id} 当成管理端详情 id 吃掉（admin 语义被静默改写）。
+            // 3 段 `/biz-change-logs/mine/{id}` 与 2 段 `{id}` 不同形，但仍紧随字面量登记，
+            // 使成员面在表中成对可读。
+            new Route("GET", "/biz-change-logs/mine", "run.get"),
+            new Route("GET", "/biz-change-logs/mine/{id}", "run.get"),
             new Route("GET", "/biz-change-logs/{id}", "run.get"),
             new Route("GET", "/rag/eval", "kb.retrieve"),
             // F13-SLICE-1（AIFlow 工作流定义面）。逐条登记，不用通配 `/flows/**`
@@ -441,7 +466,49 @@ public class AiGatewayController {
             // 由 AiEmbeddedFlowConfiguration 显式装配、in AutoConfiguration.imports。
             // 四条动作 flow.list/read/write/delete 默认授予全为"否"。
             // 两条 GET 在网关走字节分支，故内层必须同时给整数 ApiEnvelope 与两个回执头。
+            // F13:2（2026-10-18）：AIFlow 运行面 runtime 视图 5 条（action flow.run.read / flow.delete）。
+            // 内层 handler = FlowRuntimeController（类级 /internal/ai/v1；由
+            // AiEmbeddedFlowRunConfiguration 显式装配，随 AutoConfiguration.imports 生效）。
+            // ⚠️ 声明序（matchRoute 取声明序首个命中）：
+            //   GET /flows/runs（2 段字面量）必须在 GET /flows/{uuid} **之前**；
+            //   GET /flows/runs/{runtimeUuid}（3 段）必须在 GET /flows/{uuid}/nodes 之前
+            //   （否则 /flows/runs/nodes 会被变量形吃成"读图"）。
+            // 三条 GET 在网关走字节分支，内层控制器先取数后自铸整数 ApiEnvelope + 两个回执头；
+            // 两条写面走 JSON 分支、内层不铸回执。
+            // SSE（POST /flows/{uuid}/run、GET /flows/runs/{runtimeUuid}/events）**不在此登记**：
+            // 它们由 AiGatewayStreamController 精确映射，先于 catch-all 生效。
+            new Route("GET", "/flows/runs", "flow.run.read"),
+            new Route("GET", "/flows/runs/{runtimeUuid}", "flow.run.read"),
+            new Route("GET", "/flows/runs/{runtimeUuid}/nodes", "flow.run.read"),
+            new Route("POST", "/flows/runs/clear", "flow.delete"),
+            new Route("DELETE", "/flows/runs/{runtimeUuid}", "flow.delete"),
             new Route("GET", "/flows", "flow.list"),
+            // F13-M1（2026-10-18，维护者 B 批项 5）：发布/公开面 6 条。
+            // 公开语义写死：同租户、跨用户、只读；跨租户永不因 is_public 可见
+            // （服务层谓词 = is_public=1 AND is_enable=1 AND is_deleted=0 AND tenant_id=当前）。
+            //
+            // ⚠️ 声明序：四条 /flows/public/** 必须排在既有 GET /flows/{uuid} 与
+            // GET /flows/{uuid}/nodes **之前**——matchRoute 取声明序首个命中，
+            // 否则 "public" 会被 {uuid} 当成工作流 uuid 吃掉，公开面被静默改写成
+            // 「我的工作流详情 / 图读」语义。公开详情 404 由控制器直接返回
+            // （同文案「工作流不存在」，私有/停用/软删/跨租户不泄露存在性）。
+            //
+            // 动作映射：搜索 → flow.list；操作符 → flow.list（静态目录，无 DB）；
+            // 公开组件库 → flow.read；公开详情 → flow.read；
+            // 启停/公开开关 → **flow.publish**（→ V34 播种的 ai:flow:publish，
+            // 租户级、不进 PLATFORM_ADMIN_ACTIONS，与 flow.node.write 同口径）。
+            // 三条 GET（搜索/操作符/组件库）与公开详情都在网关走字节分支，
+            // 控制器必须自铸整数 ApiEnvelope + 两个交付回执头；两条写面走 JSON 分支、
+            // 内层**不铸**回执（JSON 分支铸造 = 永久 ACTIVE 许可泄漏）。
+            new Route("GET", "/flows/public/search", "flow.list"),
+            new Route("GET", "/flows/public/operators", "flow.list"),
+            new Route("GET", "/flows/public/component/list", "flow.read"),
+            // F13:4（2026-10-18）：公开 START 输入 schema（动作 flow.read，GET 字节分支）。
+            // 段数 5 与公开详情 4 段不同形，仍紧随公开块登记，避免将来变量形扩张时被遮蔽。
+            new Route("GET", "/flows/public/{uuid}/inputs", "flow.read"),
+            new Route("GET", "/flows/public/{uuid}", "flow.read"),
+            new Route("POST", "/flows/{uuid}/enabled", "flow.publish"),
+            new Route("POST", "/flows/{uuid}/public", "flow.publish"),
             new Route("GET", "/flows/{uuid}", "flow.read"),
             new Route("POST", "/flows", "flow.write"),
             new Route("PUT", "/flows/{uuid}", "flow.write"),
@@ -493,7 +560,84 @@ public class AiGatewayController {
             new Route("POST", "/agent-catalog/agent-skills", "skill.write"),
             new Route("PUT", "/agent-catalog/agent-skills/{id}", "skill.write"),
             new Route("DELETE", "/agent-catalog/agent-skills/{id}", "skill.delete"),
-            new Route("POST", "/agent-catalog/agent-skills/{id}/enabled", "skill.write"));
+            new Route("POST", "/agent-catalog/agent-skills/{id}/enabled", "skill.write"),
+            // F11:4 技能包导出（GET 字节分支 + 交付回执）；import 走 AiGatewayStreamController
+            // 专用上传通道（精确映射先于 catch-all），此处刻意不登记 import（避免死路由）。
+            new Route("GET", "/agent-catalog/agent-skills/{id}/export", "skill.read"),
+            // F12-M1（2026-10-18，维护者批 B 批 G-22）：MCP 管理面 18 条，逐条登记、禁止通配。
+            // 内层 handler = McpAdminController（类级 /internal/ai/v1/mcp），由
+            // AiEmbeddedMcpAdminConfiguration 显式装配；三件套已归位（前缀＋整数 ApiEnvelope＋
+            // GET 交付回执）。动作映射见 brief §2.3：列表/全部/选项/市场工具列表 → mcp.list；
+            // 详情/导出 → mcp.read；启停/刷新/加载/批量加载 → mcp.write；删除 → mcp.delete；
+            // 连接测试 → mcp.test。五条动作全部进 PLATFORM_ADMIN_ACTIONS 第二道门，
+            // 权限行由 V39 注册（7144-7148，默认不分配）。
+            // 声明序（matchRoute 取声明序首个命中）：同为 3 段的字面量 all/export/options
+            // 必须排在 {id} 之前，否则会被当成 id 吃掉；4 段 {id}/tools 与 3 段 {id} 不同形。
+            // 六条 GET 在网关走字节分支，故内层必须同时给整数 ApiEnvelope 与两个回执头；
+            // 写面走 JSON 分支、内层不铸回执。
+            new Route("GET", "/mcp/markets", "mcp.list"),
+            new Route("GET", "/mcp/markets/all", "mcp.list"),
+            new Route("GET", "/mcp/markets/export", "mcp.read"),
+            new Route("GET", "/mcp/markets/{id}", "mcp.read"),
+            new Route("GET", "/mcp/markets/{id}/tools", "mcp.list"),
+            new Route("POST", "/mcp/markets/{id}/refresh", "mcp.write"),
+            new Route("POST", "/mcp/markets/{id}/status", "mcp.write"),
+            new Route("DELETE", "/mcp/markets/{ids}", "mcp.delete"),
+            new Route("GET", "/mcp/tools", "mcp.list"),
+            new Route("GET", "/mcp/tools/all", "mcp.list"),
+            new Route("GET", "/mcp/tools/options", "mcp.list"),
+            new Route("GET", "/mcp/tools/export", "mcp.read"),
+            new Route("GET", "/mcp/tools/{id}", "mcp.read"),
+            new Route("POST", "/mcp/tools/{id}/status", "mcp.write"),
+            new Route("POST", "/mcp/tools/{id}/test", "mcp.test"),
+            new Route("DELETE", "/mcp/tools/{ids}", "mcp.delete"),
+            // 3 段字面量 batch-load 排在 4 段变量形 {id}/load 之前（literal-before-variable）
+            new Route("POST", "/mcp/market-tools/batch-load", "mcp.write"),
+            new Route("POST", "/mcp/market-tools/{id}/load", "mcp.write"),
+            // F20-A（2026-10-18，维护者「F20快做」＋ D1 批）：编程助手 Harness 面 22 条 JSON 路由。
+            // 内层 handler = CodingHarnessController（类级 /internal/ai/v1/coding），由
+            // AiEmbeddedCodingConfiguration 显式装配。动作映射（brief §2）：
+            //   读（会话/消息/运行/事件/模型/工作区/文件读）→ coding.use
+            //   写（建会话/置顶/删除/恢复/建运行/输入/取消/恢复运行/文件写）→ coding.write
+            //   审批与计划（工具审批 resolve / plan approve / plan revision）→ coding.approve
+            //   命令（execute_process）→ coding.command
+            // 权限行由 V41__coding_harness_permissions.sql 注册（7204-7207，默认不分配；
+            // 租户级 ⇒ 不进 PLATFORM_ADMIN_ACTIONS）。
+            // **两条 SSE 不在此登记**：POST /coding/chat 与 GET .../events/stream 由
+            // AiGatewayStreamController 精确映射（先于 catch-all 生效）；登记了也不会被
+            // 本通用转发承接，只会变成不可达死路由。
+            // 段数互不遮蔽：/coding/sessions 2 段；{sessionId} 3 段；
+            // {sessionId}/runs 与 {sessionId}/messages 4 段；runs/{runId} 5 段；
+            // .../events 6 段；.../inputs|cancel|resume 与 plan/approve|revision 7 段；
+            // approvals/{approvalId}/resolve 8 段。
+            // 九条 GET 在网关走字节分支 ⇒ 控制器自铸 DeliveryPermits 回执头；
+            // 写面走 JSON 分支，内层不铸回执（铸造 = 永久 ACTIVE 许可泄漏）。
+            new Route("POST", "/coding/sessions", "coding.write"),
+            new Route("GET", "/coding/sessions", "coding.use"),
+            new Route("GET", "/coding/sessions/{sessionId}", "coding.use"),
+            new Route("PUT", "/coding/sessions/{sessionId}/pin", "coding.write"),
+            new Route("DELETE", "/coding/sessions/{sessionId}", "coding.write"),
+            new Route("POST", "/coding/sessions/{sessionId}/restore", "coding.write"),
+            new Route("GET", "/coding/sessions/{sessionId}/messages", "coding.use"),
+            new Route("POST", "/coding/sessions/{sessionId}/runs", "coding.write"),
+            new Route("GET", "/coding/sessions/{sessionId}/runs", "coding.use"),
+            new Route("GET", "/coding/sessions/{sessionId}/runs/{runId}", "coding.use"),
+            new Route("GET", "/coding/sessions/{sessionId}/runs/{runId}/events", "coding.use"),
+            new Route("POST", "/coding/sessions/{sessionId}/runs/{runId}/inputs", "coding.write"),
+            new Route("POST", "/coding/sessions/{sessionId}/runs/{runId}/cancel", "coding.write"),
+            new Route("POST", "/coding/sessions/{sessionId}/runs/{runId}/resume", "coding.write"),
+            new Route("POST",
+                    "/coding/sessions/{sessionId}/runs/{runId}/approvals/{approvalId}/resolve",
+                    "coding.approve"),
+            new Route("POST", "/coding/sessions/{sessionId}/runs/{runId}/plan/approve",
+                    "coding.approve"),
+            new Route("POST", "/coding/sessions/{sessionId}/runs/{runId}/plan/revision",
+                    "coding.approve"),
+            new Route("GET", "/coding/models", "coding.use"),
+            new Route("GET", "/coding/workspace", "coding.use"),
+            new Route("GET", "/coding/file", "coding.use"),
+            new Route("PUT", "/coding/file", "coding.write"),
+            new Route("POST", "/coding/command", "coding.command"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;

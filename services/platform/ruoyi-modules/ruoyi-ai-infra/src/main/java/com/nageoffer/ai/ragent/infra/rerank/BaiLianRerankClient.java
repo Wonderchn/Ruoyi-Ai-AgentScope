@@ -22,6 +22,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
+import com.nageoffer.ai.ragent.infra.chat.ChatEgressDeniedException;
 import com.nageoffer.ai.ragent.infra.config.AIModelProperties;
 import com.nageoffer.ai.ragent.infra.enums.ModelCapability;
 import com.nageoffer.ai.ragent.infra.enums.ModelProvider;
@@ -31,12 +32,15 @@ import com.nageoffer.ai.ragent.infra.http.ModelClientErrorType;
 import com.nageoffer.ai.ragent.infra.http.ModelClientException;
 import com.nageoffer.ai.ragent.infra.http.ModelUrlResolver;
 import com.nageoffer.ai.ragent.infra.model.ModelTarget;
+import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
@@ -53,6 +57,10 @@ public class BaiLianRerankClient implements RerankClient {
 
     @Qualifier("syncHttpClient")
     private final OkHttpClient httpClient;
+
+    /** F22:6：缺席即拒绝；字段注入覆盖组件扫描与内嵌 @Bean 两种装配。 */
+    @Autowired(required = false)
+    private ObjectProvider<EgressPolicy> egressPolicy;
 
     @Override
     public String provider() {
@@ -83,6 +91,8 @@ public class BaiLianRerankClient implements RerankClient {
     }
 
     private List<RetrievedChunk> doRerank(String query, List<RetrievedChunk> candidates, int topN, ModelTarget target) {
+        // F22:6：先过出口 allow-list，再碰任何 provider 配置/URL/HTTP
+        requireEgressAllowed();
         AIModelProperties.ProviderConfig provider = HttpResponseHelper.requireProvider(target, provider());
 
         if (candidates == null || candidates.isEmpty() || topN <= 0) {
@@ -192,6 +202,21 @@ public class BaiLianRerankClient implements RerankClient {
         }
 
         return reranked;
+    }
+
+    /**
+     * 发起任何网络请求前的统一出口检查；拒绝抛 {@link ChatEgressDeniedException}（终态，不降级）。
+     */
+    private void requireEgressAllowed() {
+        EgressPolicy policy = egressPolicy == null ? null : egressPolicy.getIfAvailable();
+        if (policy == null) {
+            throw new ChatEgressDeniedException("egress policy unavailable for provider=" + provider());
+        }
+        try {
+            policy.requireAllowed(provider());
+        } catch (RuntimeException denied) {
+            throw new ChatEgressDeniedException("egress denied for provider=" + provider(), denied);
+        }
     }
 
     /**

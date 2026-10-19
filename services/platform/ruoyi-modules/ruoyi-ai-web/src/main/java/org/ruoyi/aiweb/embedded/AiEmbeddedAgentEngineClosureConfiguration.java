@@ -20,6 +20,7 @@ package org.ruoyi.aiweb.embedded;
 import cn.hutool.core.thread.ThreadFactoryBuilder;
 import cn.hutool.core.util.StrUtil;
 import com.alibaba.ttl.threadpool.TtlExecutors;
+import com.nageoffer.ai.ragent.agent.config.AgentModelFactory;
 import com.nageoffer.ai.ragent.agent.config.AgentProperties;
 import com.nageoffer.ai.ragent.agent.config.ReActAgentProvider;
 import com.nageoffer.ai.ragent.agent.confirm.AgentConfirmDenialMiddleware;
@@ -27,6 +28,7 @@ import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryControlMapper;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryExtractionMapper;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMemoryMapper;
 import com.nageoffer.ai.ragent.agent.dao.mapper.AgentMessageMapper;
+import com.nageoffer.ai.ragent.agent.dao.mapper.McpToolMapper;
 import com.nageoffer.ai.ragent.agent.identity.AgentRunScopeRegistry;
 import com.nageoffer.ai.ragent.agent.memory.AgentContextCompactionMiddleware;
 import com.nageoffer.ai.ragent.agent.memory.AgentContextCompactor;
@@ -46,6 +48,8 @@ import com.nageoffer.ai.ragent.agent.skill.AgentSkillMaskingMiddleware;
 import com.nageoffer.ai.ragent.agent.state.PgAgentStateStore;
 import com.nageoffer.ai.ragent.agent.tool.AgentMcpClients;
 import com.nageoffer.ai.ragent.agent.tool.AgentMcpProperties;
+import com.nageoffer.ai.ragent.agent.tool.AgentMcpRuntimeCatalog;
+import com.nageoffer.ai.ragent.agent.tool.AgentMcpRuntimeProperties;
 import com.nageoffer.ai.ragent.agent.tool.AgentToolBatchMiddleware;
 import com.nageoffer.ai.ragent.agent.tool.AgentToolCatalog;
 import com.nageoffer.ai.ragent.agent.trace.AgentTraceEnrichmentMiddleware;
@@ -56,6 +60,7 @@ import com.nageoffer.ai.ragent.infra.chat.LLMService;
 import com.nageoffer.ai.ragent.infra.config.AIModelProperties;
 import com.nageoffer.ai.ragent.infra.enums.ModelProvider;
 import com.nageoffer.ai.ragent.knowledge.service.impl.ChunkMetadataResolver;
+import com.nageoffer.ai.ragent.rag.binding.AgentProfileBindingService;
 import com.nageoffer.ai.ragent.rag.config.GuidanceProperties;
 import com.nageoffer.ai.ragent.rag.config.OrchestrationProperties;
 import com.nageoffer.ai.ragent.rag.config.RAGConfigProperties;
@@ -91,6 +96,7 @@ import com.nageoffer.ai.ragent.rag.core.source.CitationContextEnricher;
 import com.nageoffer.ai.ragent.rag.dao.mapper.AgentSkillMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.IntentNodeMapper;
 import com.nageoffer.ai.ragent.rag.service.KnowledgeSearchFacade;
+import com.nageoffer.ai.ragent.rag.service.RuntimeCatalogService;
 import io.agentscope.core.tracing.OtelTracingMiddleware;
 import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import io.agentscope.extensions.model.openai.compat.deepseek.DeepSeekFormatter;
@@ -181,7 +187,8 @@ import java.util.concurrent.TimeUnit;
 @ConditionalOnProperty(name = "ai.integration.enabled", havingValue = "true")
 @ConditionalOnEmbeddedLocal
 @ConditionalOnProperty(name = "ragent.engine.type", havingValue = "agent")
-@EnableConfigurationProperties({GuidanceProperties.class, SearchChannelProperties.class})
+@EnableConfigurationProperties({GuidanceProperties.class, SearchChannelProperties.class,
+        AgentMcpRuntimeProperties.class})
 @Import({
         // ---------------------------------------------------------- A2 记忆子闭包（7）
         AgentMemoryJudge.class,
@@ -326,10 +333,35 @@ public class AiEmbeddedAgentEngineClosureConfiguration {
                                                  AgentSkillMaskingMiddleware skillMaskingMiddleware,
                                                  AgentToolBatchMiddleware toolBatchMiddleware,
                                                  ObjectProvider<OtelTracingMiddleware> otelTracingMiddleware,
-                                                 ObjectProvider<AgentTraceEnrichmentMiddleware> traceEnrichmentMiddleware) {
-        return new ReActAgentProvider(agentPromptResolver, toolCatalog, agentChatModel, agentStateStore,
-                agentProperties, userMemoryMiddleware, contextCompactionMiddleware, confirmDenialMiddleware,
-                skillMaskingMiddleware, toolBatchMiddleware, otelTracingMiddleware, traceEnrichmentMiddleware);
+                                                 ObjectProvider<AgentTraceEnrichmentMiddleware> traceEnrichmentMiddleware,
+                                                 ObjectProvider<AgentProfileBindingService> bindingService,
+                                                 ObjectProvider<AgentModelFactory> modelFactory) {
+        ReActAgentProvider provider = new ReActAgentProvider(agentPromptResolver, toolCatalog, agentChatModel,
+                agentStateStore, agentProperties, userMemoryMiddleware, contextCompactionMiddleware,
+                confirmDenialMiddleware, skillMaskingMiddleware, toolBatchMiddleware,
+                otelTracingMiddleware, traceEnrichmentMiddleware);
+        // F09:3-C：保留既有 12 参构造，两端口经显式装配入口传入（字段注入亦覆盖扫描形态）
+        provider.bindModelOrchestration(bindingService, modelFactory);
+        return provider;
+    }
+
+    /**
+     * F09:3-C：绑定 MODEL 的运行时工厂（内嵌形态）。
+     *
+     * <p>解析顺序与 fail-closed 口径见 {@link EmbeddedAgentModelFactory}：目录
+     * {@code currentRevision} 优先、{@code knownModels} 唯一 provider 兜底，歧义/未知/配置缺失即抛；
+     * 端点与凭据只来自既有 {@code ai.providers.*}（可选连接引导），不新增凭据。
+     */
+    @Bean
+    @ConditionalOnMissingBean(AgentModelFactory.class)
+    public AgentModelFactory embeddedAgentModelFactory(
+            RuntimeCatalogService runtimeCatalogService,
+            AIModelProperties aiModelProperties,
+            com.nageoffer.ai.ragent.runtime.usage.EgressPolicy engineEgressPolicy,
+            com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope engineProviderSpendEnvelope,
+            ObjectProvider<com.nageoffer.ai.ragent.runtime.config.ProviderConnectionPort> providerConnectionPort) {
+        return new EmbeddedAgentModelFactory(runtimeCatalogService, aiModelProperties, engineEgressPolicy,
+                engineProviderSpendEnvelope, providerConnectionPort);
     }
 
     /** 工具目录（A1 #2）：KB 检索 + 意图树 + MCP + 记忆 + 技能读端的聚合点。 */
@@ -356,6 +388,30 @@ public class AiEmbeddedAgentEngineClosureConfiguration {
     public AgentMcpClients agentMcpClients(AgentMcpProperties agentMcpProperties,
                                            ObjectProvider<SaasCapabilityBoundary> capabilityBoundary) {
         return new AgentMcpClients(agentMcpProperties, capabilityBoundary);
+    }
+
+    /**
+     * F12-M2 运行期受控 MCP 目录（协调者集成单写）：旧启动门保持关闭；
+     * 意图树点名的受管工具按需惰性连接（每次解析复查 allow-list、租户作用域查
+     * {@code ai_mcp_tool}、连接失败返 null 不炸对话链）。
+     *
+     * <p>{@code McpEndpointAllowList} 由 {@code AiEmbeddedMcpAdminConfiguration}
+     * （embedded local × p2）提供；缺席（如 p2 关闭）⇒ 运行期目录一律拒绝（fail-closed）。
+     */
+    @Bean
+    @ConditionalOnMissingBean(AgentMcpRuntimeCatalog.class)
+    public AgentMcpRuntimeCatalog agentMcpRuntimeCatalog(
+            ObjectProvider<McpToolMapper> toolMapper,
+            ObjectProvider<com.nageoffer.ai.ragent.mcp.admin.McpEndpointAllowList> allowList,
+            ObjectProvider<com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder> tenantScopeBinder,
+            AgentMcpRuntimeProperties properties) {
+        // 装配切片的 ApplicationContextRunner 不带 MapperScan；Mapper 缺席时不建该 bean
+        // （不要用 @ConditionalOnBean：自动配置类解析顺序不保证 MapperScan 已注册）。
+        McpToolMapper mapper = toolMapper.getIfAvailable();
+        if (mapper == null) {
+            return null;
+        }
+        return new AgentMcpRuntimeCatalog(mapper, allowList, tenantScopeBinder, properties);
     }
 
     /** 技能读端注册表（A1 #8 / V3 最小解锁）：只读 + 租户化缓存，管理面维持 BLOCKED。 */

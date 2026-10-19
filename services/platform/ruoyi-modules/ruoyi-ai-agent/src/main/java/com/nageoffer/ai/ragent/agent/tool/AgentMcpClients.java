@@ -28,6 +28,7 @@ import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.stereotype.Component;
 
@@ -55,6 +56,15 @@ public class AgentMcpClients {
      * 旧能力关闭判定；缺席按关闭处理（不默认放行）。
      */
     private final ObjectProvider<SaasCapabilityBoundary> capabilityBoundary;
+    /**
+     * F12-M2：运行期受控目录（可选）。旧启动表命中优先；provider 缺席时 {@link #get} 保持关闭语义。
+     *
+     * <p>刻意用字段注入而不是构造参数：既有两参构造是 {@code P1McpStartupBoundaryTest}
+     * 与引擎闭包 {@code new AgentMcpClients(properties, capabilityBoundary)} 的可用性契约，
+     * 不因新增可选依赖而改变。
+     */
+    @Autowired(required = false)
+    private ObjectProvider<AgentMcpRuntimeCatalog> runtimeCatalog;
     private final Map<String, RemoteTool> tools = new LinkedHashMap<>();
     private final List<McpClientWrapper> clients = new ArrayList<>();
 
@@ -149,8 +159,24 @@ public class AgentMcpClients {
         }
     }
 
+    /**
+     * 工具解析：旧启动连接表优先；未命中时委托运行期受控目录
+     * （F12-M2：{@code ai_mcp_tool} 受管行按需惰性连接）。
+     *
+     * <p>运行期目录 Bean 缺席（未装配/独立形态/切片测试）时返回 {@code null}，
+     * 与旧门关闭时的行为一致——绝不回落成"默认放行"。
+     */
     public RemoteTool get(String toolId) {
-        return tools.get(toolId);
+        RemoteTool startup = tools.get(toolId);
+        if (startup != null) {
+            return startup;
+        }
+        ObjectProvider<AgentMcpRuntimeCatalog> provider = runtimeCatalog;
+        if (provider == null) {
+            return null;
+        }
+        AgentMcpRuntimeCatalog catalog = provider.getIfAvailable();
+        return catalog == null ? null : catalog.resolve(toolId);
     }
 
     @PreDestroy

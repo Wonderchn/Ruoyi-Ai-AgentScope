@@ -96,7 +96,11 @@ class AuthorizedRunConversationContextTest {
     }
 
     private static RunRecord run(String runId, String inputJson) {
-        return new RunRecord(TENANT, runId, MEMBER, USER, "rag.chat", "RUNNING", "hash", "key",
+        return run("rag.chat", runId, inputJson);
+    }
+
+    private static RunRecord run(String action, String runId, String inputJson) {
+        return new RunRecord(TENANT, runId, MEMBER, USER, action, "RUNNING", "hash", "key",
                 inputJson, "{}", "p2-v1", 1, 1, "[]", 1L, 1L, 1, 0L,
                 "worker-1", null, null, null, null, null, Instant.EPOCH, Instant.EPOCH, null);
     }
@@ -216,7 +220,7 @@ class AuthorizedRunConversationContextTest {
     @DisplayName("账本查询故障 ⇒ 503")
     void ledgerFailureIs503() {
         authorizeConversation();
-        when(ledger.listCompletedConversationRuns(TENANT, MEMBER, USER, CONV, CURRENT_RUN, KEEP))
+        when(ledger.listCompletedConversationRuns(TENANT, MEMBER, USER, "rag.chat", CONV, CURRENT_RUN, KEEP))
                 .thenThrow(new IllegalStateException("ledger offline"));
 
         RunApiException e = assertThrows(RunApiException.class, () -> context.load(currentRun(), principal()));
@@ -228,7 +232,7 @@ class AuthorizedRunConversationContextTest {
     void answerLookupFailureIs503() {
         authorizeConversation();
         RunRecord r1 = historyRun("run-1", "q1");
-        when(ledger.listCompletedConversationRuns(TENANT, MEMBER, USER, CONV, CURRENT_RUN, KEEP))
+        when(ledger.listCompletedConversationRuns(TENANT, MEMBER, USER, "rag.chat", CONV, CURRENT_RUN, KEEP))
                 .thenReturn(List.of(r1));
         when(ledger.loadCompletedConversationAnswer(TENANT, "run-1"))
                 .thenThrow(new IllegalStateException("answer store offline"));
@@ -246,7 +250,7 @@ class AuthorizedRunConversationContextTest {
         RunRecord r2 = historyRun("run-2", "q2");
         RunRecord r3 = historyRun("run-3", "q3");
         // DAO 契约：created_at DESC, run_id DESC（最近在前）
-        when(ledger.listCompletedConversationRuns(TENANT, MEMBER, USER, CONV, CURRENT_RUN, KEEP))
+        when(ledger.listCompletedConversationRuns(TENANT, MEMBER, USER, "rag.chat", CONV, CURRENT_RUN, KEEP))
                 .thenReturn(List.of(r3, r2, r1));
         when(ledger.loadCompletedConversationAnswer(TENANT, "run-1")).thenReturn(Optional.of("a1"));
         when(ledger.loadCompletedConversationAnswer(TENANT, "run-2")).thenReturn(Optional.empty());
@@ -262,7 +266,26 @@ class AuthorizedRunConversationContextTest {
         verify(access).visible(principal, r1);
         verify(access).visible(principal, r3);
         // 查询范围：当前 run 显式排除 + 配置上限透传
-        verify(ledger).listCompletedConversationRuns(TENANT, MEMBER, USER, CONV, CURRENT_RUN, KEEP);
+        verify(ledger).listCompletedConversationRuns(TENANT, MEMBER, USER, "rag.chat", CONV, CURRENT_RUN, KEEP);
+    }
+
+    @Test
+    @DisplayName("flow.run：action 透传到账本，问题取 inputs.input（与 rag.chat 的 text 分派）")
+    void flowRunQuestionComesFromInputsInput() {
+        ExecutionPrincipal principal = principal();
+        authorizeConversation();
+        RunRecord current = run("flow.run", CURRENT_RUN,
+                "{\"inputs\":{\"input\":\"本轮流程问题\"},\"conversationId\":\"" + CONV + "\"}");
+        RunRecord previous = run("flow.run", "run-f1",
+                "{\"inputs\":{\"input\":\"上一轮流程问题\"},\"conversationId\":\"" + CONV + "\"}");
+        when(ledger.listCompletedConversationRuns(TENANT, MEMBER, USER, "flow.run", CONV, CURRENT_RUN, KEEP))
+                .thenReturn(List.of(previous));
+        when(ledger.loadCompletedConversationAnswer(TENANT, "run-f1")).thenReturn(Optional.of("上一轮流程答案"));
+
+        List<ChatMessage> messages = context.load(current, principal);
+
+        assertMessages(messages, "上一轮流程问题", "上一轮流程答案");
+        verify(ledger).listCompletedConversationRuns(TENANT, MEMBER, USER, "flow.run", CONV, CURRENT_RUN, KEEP);
     }
 
     @Test
@@ -273,7 +296,7 @@ class AuthorizedRunConversationContextTest {
         RunRecord r1 = historyRun("run-1", "q1");
         RunRecord r2 = historyRun("run-2", "q2");
         RunRecord r3 = historyRun("run-3", "q3");
-        when(ledger.listCompletedConversationRuns(TENANT, MEMBER, USER, CONV, CURRENT_RUN, KEEP))
+        when(ledger.listCompletedConversationRuns(TENANT, MEMBER, USER, "rag.chat", CONV, CURRENT_RUN, KEEP))
                 .thenReturn(List.of(r3, r2, r1));
         when(ledger.loadCompletedConversationAnswer(TENANT, "run-1")).thenReturn(Optional.of("a1"));
         when(ledger.loadCompletedConversationAnswer(TENANT, "run-2")).thenReturn(Optional.of("a2"));
@@ -290,7 +313,7 @@ class AuthorizedRunConversationContextTest {
         ExecutionPrincipal principal = principal();
         authorizeConversation();
         RunRecord r1 = historyRun("run-1", "q1");
-        when(ledger.listCompletedConversationRuns(TENANT, MEMBER, USER, CONV, CURRENT_RUN, KEEP))
+        when(ledger.listCompletedConversationRuns(TENANT, MEMBER, USER, "rag.chat", CONV, CURRENT_RUN, KEEP))
                 .thenReturn(List.of(r1));
         when(ledger.loadCompletedConversationAnswer(TENANT, "run-1")).thenReturn(Optional.of("a1"));
         doThrow(new RunApiException(RunErrorCode.AUTHORIZATION_UNAVAILABLE, "recheck unavailable"))
@@ -305,7 +328,7 @@ class AuthorizedRunConversationContextTest {
     void unexpectedRecheckFailureIs503() {
         authorizeConversation();
         RunRecord r1 = historyRun("run-1", "q1");
-        when(ledger.listCompletedConversationRuns(TENANT, MEMBER, USER, CONV, CURRENT_RUN, KEEP))
+        when(ledger.listCompletedConversationRuns(TENANT, MEMBER, USER, "rag.chat", CONV, CURRENT_RUN, KEEP))
                 .thenReturn(List.of(r1));
         when(ledger.loadCompletedConversationAnswer(TENANT, "run-1")).thenReturn(Optional.of("a1"));
         doThrow(new IllegalStateException("boom")).when(access).visible(any(), eq(r1));

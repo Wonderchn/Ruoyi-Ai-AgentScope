@@ -20,13 +20,18 @@ package com.nageoffer.ai.ragent.infra.rerank;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
+import com.nageoffer.ai.ragent.infra.chat.ChatEgressDeniedException;
 import com.nageoffer.ai.ragent.infra.config.AIModelProperties;
 import com.nageoffer.ai.ragent.infra.model.ModelTarget;
+import com.nageoffer.ai.ragent.runtime.usage.EgressPolicy;
 import com.sun.net.httpserver.HttpServer;
 import okhttp3.OkHttpClient;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -40,6 +45,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Tag;
 
@@ -61,6 +67,12 @@ class BaiLianRerankClientTest {
     private final AtomicReference<String> lastRequest = new AtomicReference<>();
 
     private HttpServer server;
+
+    /** F22:6：既有正例显式注入允许策略；出口拒绝/缺席由专门用例覆盖。 */
+    @BeforeEach
+    void allowEgress() {
+        ReflectionTestUtils.setField(client, "egressPolicy", providerOf(policy("bailian")));
+    }
 
     @AfterEach
     void tearDown() {
@@ -153,6 +165,61 @@ class BaiLianRerankClientTest {
 
         assertEquals(2, result.size());
         assertNull(lastRequest.get(), "不限条数时没有可排的必要，不该产生远端调用");
+    }
+
+    // ============== F22:6 出口 allow-list ==============
+
+    @Test
+    @DisplayName("出口策略拒绝：抛受控异常且零请求")
+    void deniedEgressMakesNoRequestAndThrows() throws IOException {
+        serve("{\"output\":{\"results\":[{\"index\":0,\"relevance_score\":0.9}]}}");
+        ReflectionTestUtils.setField(client, "egressPolicy", providerOf(policy("deepseek")));
+
+        assertThrows(ChatEgressDeniedException.class,
+                () -> client.rerank("问题", List.of(chunk("a")), 1, target()));
+        assertNull(lastRequest.get(), "出口拒绝时不得发起任何请求");
+    }
+
+    @Test
+    @DisplayName("出口策略 bean 缺席：fail-closed，零请求")
+    void absentEgressPolicyMakesNoRequestAndThrows() throws IOException {
+        serve("{\"output\":{\"results\":[{\"index\":0,\"relevance_score\":0.9}]}}");
+        ReflectionTestUtils.setField(client, "egressPolicy", null);
+
+        assertThrows(ChatEgressDeniedException.class,
+                () -> client.rerank("问题", List.of(chunk("a")), 1, target()));
+        assertNull(lastRequest.get(), "策略缺席必须按拒绝处理，不得外呼");
+    }
+
+    static EgressPolicy policy(String... providers) {
+        EgressPolicy policy = new EgressPolicy();
+        policy.setEnabled(true);
+        policy.setAllowedProviders(String.join(",", providers));
+        return policy;
+    }
+
+    static <T> ObjectProvider<T> providerOf(T value) {
+        return new ObjectProvider<>() {
+            @Override
+            public T getObject(Object... args) {
+                return value;
+            }
+
+            @Override
+            public T getIfAvailable() {
+                return value;
+            }
+
+            @Override
+            public T getIfUnique() {
+                return value;
+            }
+
+            @Override
+            public T getObject() {
+                return value;
+            }
+        };
     }
 
     private void serve(String responseJson) throws IOException {

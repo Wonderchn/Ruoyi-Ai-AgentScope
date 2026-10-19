@@ -230,6 +230,14 @@ class P1CurrentAuthorizationTest {
         // 的并，不再混成一个数。
         // F06:1/2-A（2026-10-15，维护者批）：canonical 摄取任务面再增**恰好 1 条**：
         // ingestion.run → ai:ingestion:run。合并口径：34 + 4 + 1 + 4 + 1 = 44（第 44 条）。
+        // F12-M1（2026-10-18，维护者「授权 B+C+D 全部」B 批项 1/2；协调者 2026-10-18 明确追加）：
+        // MCP 管理面再增**恰好 5 条**：mcp.list / mcp.read / mcp.write / mcp.delete / mcp.test
+        // → ai:mcp:*。权限行由 V39__mcp_catalog_permissions.sql 注册（7144-7148，默认不分配）。
+        // F13-M1（2026-10-18，维护者 B 批项 5）：AIFlow 发布/公开面再增**恰好 1 条**：
+        // flow.publish → ai:flow:publish（权限行 V34，menu_id 7149，默认不分配）。
+        // 启停/公开开关共用这一条写权限；公开搜索/详情复用既有 flow.list/flow.read。
+        // 合并口径：34 + 4 + 1 + 4 + 1 + 5 + 1 = 50（mcp.* 第 45-49 条，flow.publish 第 50 条）。
+        // **不放宽任何既有断言**：两批增量各自单独成集合，仍要求 diff 逐项相等。
         Set<String> oldFrozen = Set.of(
                 "kb.list", "kb.read", "kb.write", "kb.delete", "kb.acl.manage", "kb.retrieve",
                 "document.read", "document.download", "document.list", "document.upload",
@@ -251,10 +259,30 @@ class P1CurrentAuthorizationTest {
                 "skill.list", "skill.read", "skill.write", "skill.delete");
         Set<String> approvedF06Increment = Set.of(
                 "ingestion.run");
+        Set<String> approvedF12Increment = Set.of(
+                "mcp.list", "mcp.read", "mcp.write", "mcp.delete", "mcp.test");
+        Set<String> approvedF13M1Increment = Set.of(
+                "flow.publish");
+        // F13:2（2026-10-18，维护者「继续 / 预算提高 / F20 快做」既有批准范围内连续施工）：
+        // AIFlow 运行面再增**恰好 2 条**：flow.run / flow.run.read → ai:flow:run / ai:flow:run:read。
+        // 权限行由 V40__aiflow_run_permissions.sql 注册（7208/7209，order 72/73，默认不分配）。
+        Set<String> approvedF13RunIncrement = Set.of(
+                "flow.run", "flow.run.read");
+        // F20-A（2026-10-18，维护者「F20快做」＋ D1 批）：编程助手 Harness 面再增**恰好 4 条**：
+        // coding.use / coding.write / coding.approve / coding.command → ai:coding:*。
+        // 权限行由 V41__coding_harness_permissions.sql 注册（7204-7207，默认不分配）。
+        // 资源是租户级工作区/会话（带 tenant+user 属主），**不进** PLATFORM_ADMIN_ACTIONS。
+        // 合并口径：50 + 2 + 4 = 56。
+        Set<String> approvedF20Increment = Set.of(
+                "coding.use", "coding.write", "coding.approve", "coding.command");
         Set<String> approvedAllIncrements = new LinkedHashSet<>(approvedIncrement);
         approvedAllIncrements.addAll(approvedA1Increment);
         approvedAllIncrements.addAll(approvedF11Increment);
         approvedAllIncrements.addAll(approvedF06Increment);
+        approvedAllIncrements.addAll(approvedF12Increment);
+        approvedAllIncrements.addAll(approvedF13M1Increment);
+        approvedAllIncrements.addAll(approvedF13RunIncrement);
+        approvedAllIncrements.addAll(approvedF20Increment);
         Set<String> fullList = new LinkedHashSet<>(oldFrozen);
         fullList.addAll(approvedAllIncrements);
 
@@ -266,7 +294,8 @@ class P1CurrentAuthorizationTest {
                 "old frozen actions must be fully preserved; missing=" + diff(oldFrozen, actual));
         // ② 批准增量逐项集合相等：多的、少的、改名的都要红
         assertEquals(approvedAllIncrements, diff(new LinkedHashSet<>(actual), oldFrozen),
-                "approved increments must equal the union of F13-SLICE-1 + F13-A1 + F11-A1 sets exactly");
+                "approved increments must equal the union of F13-SLICE-1 + F13-A1 + F11-A1 + "
+                        + "F06:1/2-A + F12-M1 + F13-M1 + F20-A sets exactly");
         // ③ 总数等于完整清单（作为 ①② 的推论，仍显式断言）
         assertEquals(fullList.size(), actual.size(),
                 "total must equal the complete list, not merely be >= 34");
@@ -275,8 +304,9 @@ class P1CurrentAuthorizationTest {
         // ④ (动作 -> 权限) 逐项相等。Spec §5.1 第 1 条要求的是"映射"逐项相等，不只是动作名集合相等。
         // 只比名字会漏掉"值替换"这一类变异：例如把 kb.read 的权限改成 ai:kb:list，
         // 动作名集合不变、总数不变，①②③ 全绿，P1AiPermissionContractTest 也拦不住
-        // （新值同样在 sys_menu 里有行）。所以这里把全部 44 条映射钉死
-        //（合并口径 = 34 + flow.*4 + flow.node.write 1 + F11-A1 skill.*4 + F06:1/2-A 1）：
+        // （新值同样在 sys_menu 里有行）。所以这里把全部 56 条映射钉死
+        //（合并口径 = 34 + flow.*4 + flow.node.write 1 + F11-A1 skill.*4 + F06:1/2-A 1
+        //  + F12-M1 mcp.*5 + F13-M1 flow.publish 1 + F13:2 flow.run/read 2 + F20-A coding.*4）：
         // 任何一条的值被改动，都必须显式修改本清单，否则本判据红。
         Map<String, String> expectedPairs = new LinkedHashMap<>();
         expectedPairs.put("agent.activate", "ai:agent:activate");
@@ -288,6 +318,11 @@ class P1CurrentAuthorizationTest {
         expectedPairs.put("config.publish", "ai:config:publish");
         expectedPairs.put("config.read", "ai:config:read");
         expectedPairs.put("config.revoke", "ai:config:revoke");
+        // F20-A（编程助手 Harness 面）：4 条新动作 → ai:coding:*（权限行由 V41 注册，7204-7207）。
+        expectedPairs.put("coding.approve", "ai:coding:approve");
+        expectedPairs.put("coding.command", "ai:coding:command");
+        expectedPairs.put("coding.use", "ai:coding:use");
+        expectedPairs.put("coding.write", "ai:coding:write");
         expectedPairs.put("conversation.delete", "ai:conversation:delete");
         expectedPairs.put("conversation.export", "ai:conversation:export");
         expectedPairs.put("conversation.read", "ai:conversation:read");
@@ -300,6 +335,11 @@ class P1CurrentAuthorizationTest {
         expectedPairs.put("flow.delete", "ai:flow:delete");
         expectedPairs.put("flow.list", "ai:flow:list");
         expectedPairs.put("flow.node.write", "ai:flow:design");
+        // F13-M1（2026-10-18，维护者 B 批项 5）：发布/公开开关动作（V34/7149）。
+        expectedPairs.put("flow.publish", "ai:flow:publish");
+        // F13:2（2026-10-18）：运行面两条动作（V40/7208/7209）。
+        expectedPairs.put("flow.run", "ai:flow:run");
+        expectedPairs.put("flow.run.read", "ai:flow:run:read");
         expectedPairs.put("flow.read", "ai:flow:read");
         expectedPairs.put("flow.write", "ai:flow:write");
         expectedPairs.put("ingestion.run", "ai:ingestion:run");
@@ -309,6 +349,12 @@ class P1CurrentAuthorizationTest {
         expectedPairs.put("kb.read", "ai:kb:read");
         expectedPairs.put("kb.retrieve", "ai:kb:retrieve");
         expectedPairs.put("kb.write", "ai:kb:write");
+        // F12-M1（MCP 管理面）：5 条新动作 → ai:mcp:*（权限行由 V39 注册，7144-7148）。
+        expectedPairs.put("mcp.delete", "ai:mcp:delete");
+        expectedPairs.put("mcp.list", "ai:mcp:list");
+        expectedPairs.put("mcp.read", "ai:mcp:read");
+        expectedPairs.put("mcp.test", "ai:mcp:test");
+        expectedPairs.put("mcp.write", "ai:mcp:write");
         expectedPairs.put("memory.read", "ai:memory:read");
         expectedPairs.put("run.approve", "ai:run:approve");
         expectedPairs.put("run.cancel", "ai:run:cancel");
@@ -332,6 +378,7 @@ class P1CurrentAuthorizationTest {
         assertEquals(expectedPairs, actualPairs,
                 "every (action -> permission) pair must match exactly; a swapped value must go red");
         assertEquals(Optional.of("ai:flow:design"), AiActionRegistry.permissionOf("flow.node.write"));
+        assertEquals(Optional.of("ai:flow:publish"), AiActionRegistry.permissionOf("flow.publish"));
         assertEquals(Optional.of("ai:config:read"), AiActionRegistry.permissionOf("config.read"));
         assertEquals(Optional.of("ai:config:publish"), AiActionRegistry.permissionOf("config.publish"));
         assertEquals(Optional.of("ai:config:revoke"), AiActionRegistry.permissionOf("config.revoke"));

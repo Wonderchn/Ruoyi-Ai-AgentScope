@@ -25,3 +25,10 @@ org.ruoyi.aiweb.embedded.AiEmbeddedDashboardConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedKnowledgeScheduleConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedAgentSkillConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedAttachmentConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedMcpAdminConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedGraphConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedF22BackendsConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedF22SearchConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedFlowRunConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedCodingConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedMultiAgentConfiguration

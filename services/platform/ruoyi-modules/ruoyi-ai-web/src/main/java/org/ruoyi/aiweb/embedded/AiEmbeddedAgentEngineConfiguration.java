@@ -27,6 +27,7 @@ import com.nageoffer.ai.ragent.agent.service.handler.AgentRunGate;
 import com.nageoffer.ai.ragent.agent.state.PgAgentStateStore;
 import com.nageoffer.ai.ragent.agent.tool.AgentMcpProperties;
 import com.nageoffer.ai.ragent.agent.tool.AgentToolCatalog;
+import com.nageoffer.ai.ragent.agent.trace.AgentTracingConfiguration;
 import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.framework.web.StreamTaskManager;
 import com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority;
@@ -125,7 +126,10 @@ public class AiEmbeddedAgentEngineConfiguration {
         @ConditionalOnProperty(name = "ragent.engine.type", havingValue = "agent")
         @EnableConfigurationProperties({AgentProperties.class, AgentMemoryProperties.class,
                 AgentMcpProperties.class})
-        @Import(AiEmbeddedAgentEngineClosureConfiguration.class)
+        // F18:4 T1：追踪配置只在引擎门内按 agent.trace.enabled=true 挂入。
+        // 关闭（默认）时该配置的条件不匹配 ⇒ 零 tracing bean/零 exporter；
+        // 显式开启后 endpoint 缺省在装配期指名拒绝（见 AgentTracingConfiguration）。
+        @Import({AiEmbeddedAgentEngineClosureConfiguration.class, AgentTracingConfiguration.class})
         public static class EngineEnabled {
 
             // ---------------------------------------------------------- 配置权威（D02/C1）

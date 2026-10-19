@@ -17,20 +17,25 @@
 
 package com.nageoffer.ai.ragent.rag.core.retrieval.channel;
 
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.convention.RetrievedChunk;
+import com.nageoffer.ai.ragent.framework.security.AuthorizedResourceScope;
 import com.nageoffer.ai.ragent.rag.config.GraphProperties;
 import com.nageoffer.ai.ragent.rag.config.SearchChannelProperties;
 import com.nageoffer.ai.ragent.rag.core.graph.GraphEvidence;
 import com.nageoffer.ai.ragent.rag.core.graph.LightRagClient;
 import com.nageoffer.ai.ragent.rag.core.intent.IntentNode;
 import com.nageoffer.ai.ragent.rag.core.intent.NodeScore;
+import com.nageoffer.ai.ragent.rag.core.retrieval.AuthorizedRetrievalScope;
 import com.nageoffer.ai.ragent.rag.core.retrieval.RetrievalBudget;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -112,6 +117,7 @@ class GraphSearchChannelTest {
                 .originalQuestion("报销发票贴哪张表？")
                 .budget(PRODUCTION_BUDGET)
                 .retrievalScope(RetrievalScope.global(0.3, List.of("kb-finance", "kb-hr")))
+                .authorizedScope(authorizedScope())
                 .build();
         List<RetrievedChunk> chunks = channel.search(context).getChunks();
 
@@ -139,10 +145,89 @@ class GraphSearchChannelTest {
                 .originalQuestion("报销发票贴哪张表？")
                 .budget(PRODUCTION_BUDGET)
                 .retrievalScope(RetrievalScope.global(0.0, List.of()))
+                .authorizedScope(authorizedScope())
                 .build();
 
         assertTrue(channel.search(context).getChunks().isEmpty());
         verifyNoInteractions(lightRagClient);
+    }
+
+    @Test
+    @DisplayName("空授权作用域：零 LightRAG 调用，直接空结果")
+    void emptyAuthorizationSkipsBeforeBackendCalls() {
+        SearchContext context = SearchContext.builder()
+                .originalQuestion("报销发票贴哪张表？")
+                .budget(PRODUCTION_BUDGET)
+                .retrievalScope(new RetrievalScope(true, 0.9, List.of(intent("finance")),
+                        List.of("kb-finance"), List.of("kb-hr")))
+                .authorizedScope(AuthorizedRetrievalScope.denied())
+                .build();
+
+        assertTrue(channel.search(context).getChunks().isEmpty());
+        verifyNoInteractions(lightRagClient);
+    }
+
+    @Test
+    @DisplayName("已授权但无已发布文档引用：零 LightRAG 调用，直接空结果")
+    void emptyPublishedDocRefsSkipsBeforeBackendCalls() {
+        SearchContext context = SearchContext.builder()
+                .originalQuestion("报销发票贴哪张表？")
+                .budget(PRODUCTION_BUDGET)
+                .retrievalScope(new RetrievalScope(true, 0.9, List.of(intent("finance")),
+                        List.of("kb-finance"), List.of("kb-hr")))
+                .authorizedScope(authorizedScopeWithoutPublishedDocs())
+                .build();
+
+        assertTrue(channel.search(context).getChunks().isEmpty());
+        verifyNoInteractions(lightRagClient);
+    }
+
+    @Test
+    @DisplayName("意图库集含未授权 collection：只把授权交集下发给 LightRAG")
+    void unauthorizedCollectionsAreNotPassedToBackend() {
+        NodeScore intent = NodeScore.builder()
+                .node(IntentNode.builder().id("finance").name("财务")
+                        .collectionNames(List.of("kb-finance")).build())
+                .score(0.9)
+                .build();
+        SearchContext context = SearchContext.builder()
+                .originalQuestion("报销发票贴哪张表？")
+                .budget(PRODUCTION_BUDGET)
+                .retrievalScope(new RetrievalScope(true, 0.9, List.of(intent),
+                        List.of("kb-finance", "kb-secret"), List.of("kb-hr", "kb-evil")))
+                .authorizedScope(authorizedScope())
+                .build();
+        stub(List.of(), List.of());
+
+        channel.search(context);
+
+        verify(lightRagClient).retrieveByScope(anyString(), any(), eq(60), eq(List.of("kb-finance")));
+    }
+
+    @Test
+    @DisplayName("结果过滤：未授权 collection 或未发布 id 的证据一律丢弃")
+    void chunksOutsideAuthorizedCollectionsOrNotPublishedAreDropped() {
+        stub(List.of(
+                evidence("m0", 0, "kb-finance"),
+                evidence("m1", 1, "kb-secret"),
+                evidence("rogue-unpublished", 2, "kb-finance")), List.of());
+
+        List<RetrievedChunk> chunks = channel.search(directedContext()).getChunks();
+
+        assertEquals(List.of("m0"), chunks.stream().map(RetrievedChunk::getId).toList(),
+                "只保留授权 collection 且已发布的证据");
+    }
+
+    @Test
+    @DisplayName("unmatched 补充分支：未授权/无主证据全部丢弃")
+    void unmatchedEvidenceFromUnauthorizedCollectionIsDropped() {
+        stub(List.of(), List.of(
+                evidence("u0", 0, "kb-secret"),
+                evidence("u1", 1, null)));
+
+        List<RetrievedChunk> chunks = channel.search(directedContext()).getChunks();
+
+        assertTrue(chunks.isEmpty(), "unmatched 分支不得返回未授权或无主证据");
     }
 
     private void stub(List<RetrievedChunk> matched, List<RetrievedChunk> unmatched) {
@@ -164,6 +249,57 @@ class GraphSearchChannelTest {
                 .budget(PRODUCTION_BUDGET)
                 .retrievalScope(new RetrievalScope(
                         true, 0.9, List.of(intent), List.of("kb-finance"), List.of("kb-hr")))
+                .authorizedScope(authorizedScope())
+                .build();
+    }
+
+    /** finance 为主份、hr 为补充份，二者均已授权；桩可能产出的文档全部已发布。 */
+    private static AuthorizedRetrievalScope authorizedScope() {
+        Set<String> collections = Set.of("kb-finance", "kb-hr");
+        return AuthorizedRetrievalScope.of(resourceScope(), collections, Set.of(),
+                publishedIds(), publishedDocRefs(), collections);
+    }
+
+    private static AuthorizedRetrievalScope authorizedScopeWithoutPublishedDocs() {
+        Set<String> collections = Set.of("kb-finance", "kb-hr");
+        return AuthorizedRetrievalScope.of(resourceScope(), collections, Set.of(),
+                publishedIds(), Set.of(), collections);
+    }
+
+    private static Set<String> publishedDocRefs() {
+        Set<String> docs = new HashSet<>();
+        for (String id : publishedIds()) {
+            // 与 evidence 的 docId="doc-<id>" 对齐：publishedDocRefs 的形态是 doc:<docId>
+            docs.add("doc:doc-" + id);
+        }
+        return Set.copyOf(docs);
+    }
+
+    private static AuthorizedResourceScope resourceScope() {
+        ExecutionPrincipal principal = new ExecutionPrincipal(
+                "000000", "1", ExecutionPrincipal.canonicalMembershipId("000000", "1"),
+                1, 1, Set.of(), "jti-test", "platform:local", 1_000L, 2_000L);
+        return AuthorizedResourceScope.granted(principal, "rag.retrieve",
+                Set.of("kb-finance", "kb-hr"), 1_000L);
+    }
+
+    private static Set<String> publishedIds() {
+        Set<String> ids = new HashSet<>();
+        for (int index = 0; index < 100; index++) {
+            ids.add("m" + index);
+            ids.add("u" + index);
+        }
+        return Set.copyOf(ids);
+    }
+
+    private static NodeScore intent(String collection) {
+        return NodeScore.builder()
+                .node(IntentNode.builder()
+                        .id(collection)
+                        .name(collection)
+                        .collectionNames(List.of(collection))
+                        .build())
+                .score(0.9)
                 .build();
     }
 
@@ -175,9 +311,15 @@ class GraphSearchChannelTest {
      * 按全图名次构造一条图谱证据，分数与 {@code LightRagClient} 的中性分数口径一致
      */
     private static RetrievedChunk evidence(String id, int graphRank) {
+        return evidence(id, graphRank, id.startsWith("u") ? "kb-hr" : "kb-finance");
+    }
+
+    private static RetrievedChunk evidence(String id, int graphRank, String collectionName) {
         return RetrievedChunk.builder()
                 .id(id)
                 .text(id)
+                .collectionName(collectionName)
+                .docId("doc-" + id)
                 .score(1.0F / (graphRank + 1))
                 .build();
     }

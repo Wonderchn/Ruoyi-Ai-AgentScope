@@ -1,12 +1,4 @@
-import type { WfNodeInput, WfNodeInputDef, WorkflowResp } from '@/api/chat/types';
-
-export function getStartInputs(workflow: WorkflowResp): WfNodeInputDef[] {
-  const targets = new Set((workflow.edges ?? []).map(edge => edge.targetNodeUuid));
-  const start = workflow.nodes?.find(node => node.wfComponent?.name === 'Start')
-    ?? workflow.nodes?.find(node => String(node.workflowComponentId) === '1')
-    ?? workflow.nodes?.find(node => !targets.has(node.uuid) && Array.isArray(node.inputConfig?.user_inputs));
-  return start?.inputConfig?.user_inputs ?? [];
-}
+import type { WfNodeInput, WfNodeInputDef } from '@/api/chat/types';
 
 export function defaultWorkflowInputs(defs: WfNodeInputDef[]): WfNodeInput[] {
   return defs.map(def => ({

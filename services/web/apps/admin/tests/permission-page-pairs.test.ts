@@ -181,19 +181,24 @@ describe('双向断言二：有页面 ⇒ 必须有权限行（或显式登记�
   });
 });
 
-describe('裁决行不被实现侧悄悄推翻（K2/F19/F21）', () => {
+describe('裁决行不被实现侧悄悄推翻（F19/F21）', () => {
   it('deferred 行不得声称有页面路由', () => {
     for (const pair of AI_ADMIN_PAIRS) {
       if (pair.status === 'deferred')
-        assert.equal(pair.route, '', `deferred 行 '${pair.page}' 不得有路由（K2/本期范围外裁决）`);
+        assert.equal(pair.route, '', `deferred 行 '${pair.page}' 不得有路由（本期范围外裁决）`);
     }
   });
 
-  it('知识图谱页面不存在（K2），图谱入口提示存在于知识库页', () => {
+  it('F08 后知识图谱页与知识库入口成对存在（K2 已由 D9 改判）', () => {
     const knowledgePage = readFileSync(join(appRoot, 'src', 'pages', 'ai', 'knowledge', 'index.vue'), 'utf8');
-    assert.ok(knowledgePage.includes('kg-unconfigured'), '知识库页必须有图谱"未配置"提示标记');
+    assert.ok(knowledgePage.includes('kg-entry'), '知识库页必须提供图谱入口 data-testid="kg-entry"');
     const routers = readRoutersSource();
-    assert.ok(!routers.includes('knowledge-graph'), '路由表不得登记 knowledge-graph 页面（K2 裁决）');
+    assert.ok(routers.includes('knowledge-graph'), '路由表必须登记知识图谱页面（F08 接线）');
+    const graphPair = assertablePairs().find(pair => pair.route === '/ai/knowledge-graph');
+    assert.ok(graphPair, '成对表必须登记 /ai/knowledge-graph live 行');
+    assert.equal(graphPair.permission, 'ai:kb:read');
+    const sqls = readMigrationSqls();
+    assert.ok(sqls.some(s => s.text.includes(`'ai:kb:read'`)), 'ai:kb:read 权限行必须来自既有迁移（零新增行）');
   });
 });
 

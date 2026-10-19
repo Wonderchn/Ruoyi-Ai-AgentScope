@@ -178,7 +178,8 @@ public class AuthorizedRunConversationContext implements ConversationContextPort
     private List<RunRecord> listRecentCompleted(RunRecord currentRun, String conversationId) {
         try {
             return ledger.listCompletedConversationRuns(currentRun.tenantId(), currentRun.memberId(),
-                    currentRun.subject(), conversationId, currentRun.runId(), historyKeepTurns);
+                    currentRun.subject(), currentRun.action(), conversationId, currentRun.runId(),
+                    historyKeepTurns);
         } catch (RunApiException e) {
             throw e;
         } catch (RuntimeException e) {
@@ -208,11 +209,21 @@ public class AuthorizedRunConversationContext implements ConversationContextPort
         }
     }
 
-    /** 问题取 run 行受理 input 的 text（与执行器读同一份权威载荷）；缺失/畸形视为无内容轮。 */
+    /**
+     * 问题取 run 行受理 input（与执行器读同一份权威载荷），按 action 分派：
+     * {@code flow.run} 的问题在 {@code inputs.input}；其余沿用 {@code text}。
+     * 缺失/畸形视为无内容轮。
+     */
     private String questionOf(RunRecord run) {
         try {
             JsonNode input = run.inputJson() == null ? null : objectMapper.readTree(run.inputJson());
-            return input == null ? "" : input.path("text").asText("");
+            if (input == null) {
+                return "";
+            }
+            if ("flow.run".equals(run.action())) {
+                return input.path("inputs").path("input").asText("");
+            }
+            return input.path("text").asText("");
         } catch (Exception e) {
             return "";
         }

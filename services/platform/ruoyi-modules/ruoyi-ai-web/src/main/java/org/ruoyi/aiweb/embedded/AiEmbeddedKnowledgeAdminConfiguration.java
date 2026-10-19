@@ -71,19 +71,26 @@ import com.nageoffer.ai.ragent.knowledge.support.IngestionSpecSchemaProvider;
 import com.nageoffer.ai.ragent.knowledge.support.VectorTargetResolver;
 import com.nageoffer.ai.ragent.rag.config.RAGDefaultProperties;
 import com.nageoffer.ai.ragent.rag.config.RagStorageProperties;
+import com.nageoffer.ai.ragent.rag.config.StorageClientConfig;
 import com.nageoffer.ai.ragent.rag.core.storage.ObjectStorageClient;
+import com.nageoffer.ai.ragent.rag.core.storage.OssObjectStorageClient;
+import com.nageoffer.ai.ragent.rag.core.storage.S3ObjectStorageClient;
 import com.nageoffer.ai.ragent.rag.core.vector.sink.VectorChunkSink;
 import com.nageoffer.ai.ragent.rag.service.impl.DefaultFileStorageService;
 import okhttp3.OkHttpClient;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
+import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.EnvironmentAware;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.env.Environment;
 import org.springframework.util.StringUtils;
 
 import java.util.function.Consumer;
@@ -224,7 +231,7 @@ public class AiEmbeddedKnowledgeAdminConfiguration {
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnEmbeddedLocal
     @ConditionalOnProperty(name = "ai.embedded.knowledge-admin.full", havingValue = "true")
-    @EnableConfigurationProperties({RagStorageProperties.class, KnowledgeScheduleProperties.class,
+    @EnableConfigurationProperties({KnowledgeScheduleProperties.class,
             MinerUProperties.class, ImageParseProperties.class})
     @Import({KnowledgeBaseServiceImpl.class, KnowledgeBaseController.class,
             KnowledgeDocumentServiceImpl.class, KnowledgeDocumentController.class,
@@ -249,7 +256,9 @@ public class AiEmbeddedKnowledgeAdminConfiguration {
             // 远程取件闭包（三件 HTTP 协作件走本组显式 @Bean，见 httpClientHelper）
             RemoteFileFetcher.class,
             // 计划读写面（只装配服务与属性；调度作业仍属 ScheduleEnabled 门）
-            KnowledgeDocumentScheduleServiceImpl.class})
+            KnowledgeDocumentScheduleServiceImpl.class,
+            // F22:3：对象存储后端按 rag.storage.type 条件装配（fs/s3/oss）
+            StorageBackends.class})
     static class FullAdmin {
 
         /**
@@ -280,20 +289,6 @@ public class AiEmbeddedKnowledgeAdminConfiguration {
         }
 
         /**
-         * 内嵌档案的本地对象存储后端（{@code rag.storage.type=fs}）。
-         *
-         * <p>只在显式选择 fs 时注册：{@code rag.storage.type=s3|oss} 时本 bean 缺席，
-         * 由那两个后端自己的实现承接（内嵌接线属 F22 op3，本切片不冒充已接通）。
-         */
-        @Bean
-        @ConditionalOnMissingBean(ObjectStorageClient.class)
-        @ConditionalOnProperty(name = "rag.storage.type", havingValue = "fs")
-        public ObjectStorageClient fsObjectStorageClient(
-                @Value("${rag.storage.root:./data/kb-objects}") String root) {
-            return new EmbeddedFsObjectStorageClient(root);
-        }
-
-        /**
          * 内嵌形态的消息生产者：<b>没有 broker 时不静默降级，发送即显式失败</b>。
          *
          * <p><b>为什么需要这个 bean（而不是让端口缺席）。</b>知识库删除与文档重解析走
@@ -318,6 +313,81 @@ public class AiEmbeddedKnowledgeAdminConfiguration {
                 havingValue = "false", matchIfMissing = true)
         public MessageQueueProducer knowledgeAdminMessageQueueProducer() {
             return new EmbeddedBrokerAbsentMessageQueueProducer();
+        }
+    }
+
+    /**
+     * F22:3：内嵌知识面的对象存储后端，按 {@code rag.storage.type} 条件装配。
+     *
+     * <p><b>为什么需要这一组。</b>{@code DefaultFileStorageService} 的构造参数是
+     * {@code ObjectStorageClient}。内嵌形态此前只注册 {@code type=fs} 的本地实现
+     * （{@link EmbeddedFsObjectStorageClient}）；切到 {@code type=s3} 时 fs bean 按条件缺席，
+     * 而 standalone 的 {@link S3ObjectStorageClient}/{@link OssObjectStorageClient} 与
+     * {@link StorageClientConfig} 都在 {@code com.nageoffer.ai.ragent} 扫描根外 ⇒ 无 bean，
+     * 应用以 "required a bean of type ObjectStorageClient" 启动失败（真机已复现）。
+     *
+     * <p><b>装配方式是复用，不是复制。</b>直接 {@code @Import} 既有的
+     * {@link StorageClientConfig}（S3Client/S3Presigner/OSS）与两个 {@code ObjectStorageClient}
+     * 实现；它们各自的 {@code @ConditionalOnProperty(rag.storage.type=...)} 保持不变。
+     * {@code type=fs} 仍是原来的本地后端，行为逐字节不变。
+     *
+     * <p><b>缺配置 fail-closed。</b>{@code s3|oss} 已选择但 endpoint/access-key/secret-key
+     * 或 {@code rag.storage.kb-bucket} 为空时，用 {@link BeanFactoryPostProcessor} 在客户端
+     * 创建之前以指名配置键的消息拒绝启动；不静默回退 fs，也不把空凭据交给 SDK 换一个模糊异常。
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnEmbeddedLocal
+    @ConditionalOnProperty(name = "ai.embedded.knowledge-admin.full", havingValue = "true")
+    @EnableConfigurationProperties(RagStorageProperties.class)
+    @Import({StorageClientConfig.class, S3ObjectStorageClient.class, OssObjectStorageClient.class})
+    static class StorageBackends {
+
+        /** 内嵌档案的本地对象存储后端（{@code rag.storage.type=fs}），与 F22:2 前逐行为一致。 */
+        @Bean
+        @ConditionalOnMissingBean(ObjectStorageClient.class)
+        @ConditionalOnProperty(name = "rag.storage.type", havingValue = "fs")
+        public ObjectStorageClient fsObjectStorageClient(
+                @Value("${rag.storage.root:./data/kb-objects}") String root) {
+            return new EmbeddedFsObjectStorageClient(root);
+        }
+
+        /** s3/oss 关键配置的启动期检查；必须在客户端实例化之前。 */
+        @Bean
+        public static BeanFactoryPostProcessor storageBackendFailClosed() {
+            return new StorageBackendFailClosed();
+        }
+
+        private static final class StorageBackendFailClosed
+                implements BeanFactoryPostProcessor, EnvironmentAware {
+
+            private Environment environment;
+
+            @Override
+            public void setEnvironment(Environment environment) {
+                this.environment = environment;
+            }
+
+            @Override
+            public void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory) {
+                String type = environment == null ? null
+                        : environment.getProperty("rag.storage.type", "s3");
+                if (!"s3".equals(type) && !"oss".equals(type)) {
+                    return;
+                }
+                String prefix = "s3".equals(type) ? "rag.storage.s3" : "rag.storage.oss";
+                require(prefix + ".endpoint", type);
+                require(prefix + ".access-key", type);
+                require(prefix + ".secret-key", type);
+                require("rag.storage.kb-bucket", type);
+            }
+
+            private void require(String key, String type) {
+                if (!StringUtils.hasText(environment.getProperty(key))) {
+                    throw new IllegalStateException(key + " 为空：rag.storage.type=" + type
+                            + " 已选择，拒绝启动（不静默回退 fs）。请配置 " + key
+                            + "，或显式设回 rag.storage.type=fs。");
+                }
+            }
         }
     }
 

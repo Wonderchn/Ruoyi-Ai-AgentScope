@@ -23,7 +23,7 @@ function submit() {
 </script>
 
 <template>
-  <el-dialog :model-value="open" :title="title" width="min(520px, calc(100vw - 32px))" class="workflow-input-dialog" @update:model-value="emit('update:open', $event)">
+  <el-dialog :model-value="open" :title="title" width="min(520px, calc(100vw - 32px))" class="workflow-input-dialog" data-testid="app-market-input-dialog" @update:model-value="emit('update:open', $event)">
     <div class="input-intro">
       <WorkflowIcon /><div><strong>设置运行参数</strong><p>这些参数会用于接下来的每次运行。</p></div>
     </div>
@@ -32,16 +32,16 @@ function submit() {
     </div>
     <el-form label-position="top" @submit.prevent="submit">
       <el-form-item v-for="input in fields" :key="input.name" :label="input.content.title || input.name" :required="input.required">
-        <el-input v-if="input.content.type === 1" v-model="input.content.value" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" :placeholder="`请输入${input.content.title || input.name}`" />
-        <el-input-number v-else-if="input.content.type === 2" v-model="input.content.value" class="number-input" :aria-label="input.content.title || input.name" />
-        <el-switch v-else-if="input.content.type === 5" v-model="input.content.value" active-text="是" inactive-text="否" :aria-label="input.content.title || input.name" />
+        <el-input v-if="input.content.type === 1" v-model="input.content.value" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }" :placeholder="`请输入${input.content.title || input.name}`" :data-testid="`app-market-input-${input.name}`" />
+        <el-input-number v-else-if="input.content.type === 2" v-model="input.content.value" class="number-input" :aria-label="input.content.title || input.name" :data-testid="`app-market-input-${input.name}`" />
+        <el-switch v-else-if="input.content.type === 5" v-model="input.content.value" active-text="是" inactive-text="否" :aria-label="input.content.title || input.name" :data-testid="`app-market-input-${input.name}`" />
         <el-alert v-else type="warning" :closable="false" title="此输入类型请在管理端运行，Web 端暂不支持。" />
       </el-form-item>
     </el-form>
     <template #footer>
       <el-button @click="emit('update:open', false)">
         取消
-      </el-button><el-button class="continue-button" type="primary" :disabled="unsupported || incomplete" :loading="loading" @click="submit">
+      </el-button><el-button class="continue-button" type="primary" data-testid="app-market-input-submit" :disabled="unsupported || incomplete" :loading="loading" @click="submit">
         进入对话
       </el-button>
     </template>

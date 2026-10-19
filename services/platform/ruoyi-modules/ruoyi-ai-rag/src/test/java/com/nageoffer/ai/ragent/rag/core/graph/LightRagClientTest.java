@@ -31,12 +31,15 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Tag;
 
@@ -46,13 +49,14 @@ class LightRagClientTest {
     private MockWebServer server;
     private LightRagClient client;
     private SearchChannelProperties searchProperties;
+    private GraphProperties properties;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @BeforeEach
     void setUp() throws Exception {
         server = new MockWebServer();
         server.start();
-        GraphProperties properties = new GraphProperties();
+        properties = new GraphProperties();
         properties.getLightrag().setBaseUrl(server.url("/").toString());
         searchProperties = new SearchChannelProperties();
         client = new LightRagClient(new OkHttpClient(), objectMapper, properties, searchProperties);
@@ -147,6 +151,64 @@ class LightRagClientTest {
         GraphEvidence evidence = client.retrieveByScope("报销流程", "mix", 10, List.of());
 
         assertTrue(evidence.matched().isEmpty());
+    }
+
+    @Test
+    @DisplayName("R11 /health 2xx=UP、非2xx=DOWN、超时=TIMEOUT")
+    void probeDistinguishesUpDownTimeout() {
+        server.enqueue(json("{\"status\":\"healthy\"}").newBuilder().code(200).build());
+        LightRagClient.ProbeResult up = client.probe();
+        assertTrue(up.reachable());
+        assertFalse(up.timedOut());
+        assertTrue(up.latencyMs() >= 0);
+
+        server.enqueue(json("{}").newBuilder().code(500).build());
+        LightRagClient.ProbeResult down = client.probe();
+        assertFalse(down.reachable());
+        assertFalse(down.timedOut());
+
+        properties.getStatus().setTimeoutMs(100);
+        server.enqueue(json("{}").newBuilder().headersDelay(1, TimeUnit.SECONDS).build());
+        LightRagClient.ProbeResult timeout = client.probe();
+        assertFalse(timeout.reachable());
+        assertTrue(timeout.timedOut());
+    }
+
+    @Test
+    @DisplayName("R7 严格 /graphs：非 2xx 抛错而不是降级 null")
+    void strictGraphFetchThrowsOnFailure() throws IOException {
+        server.enqueue(json("{}").newBuilder().code(503).build());
+        assertThrows(IOException.class, () -> client.fetchGraphStrict("*", 2, 50));
+
+        server.enqueue(json("{\"nodes\":[{\"id\":\"n1\"}],\"edges\":[],\"is_truncated\":false}"));
+        assertNotNull(client.fetchGraphStrict("*", 2, 50).path("nodes").get(0));
+    }
+
+    @Test
+    @DisplayName("R7 /documents 状态机：processed/pending/failed/missing 分类")
+    void documentStateClassifiesLightRagGroups() throws Exception {
+        String statuses = """
+                {"statuses":{
+                  "processed":[{"id":"lr-1","file_path":"kb_100"}],
+                  "pending":[{"id":"lr-2","file_path":"kb_101"}],
+                  "failed":[{"id":"lr-3","file_path":"kb_102"}]
+                }}
+                """;
+        server.enqueue(json(statuses));
+        assertEquals(LightRagClient.DocumentStatus.PROCESSED, client.documentState("kb_100", "100").status());
+        server.enqueue(json(statuses));
+        assertEquals(LightRagClient.DocumentStatus.PENDING, client.documentState("kb_101", "101").status());
+        server.enqueue(json(statuses));
+        assertEquals(LightRagClient.DocumentStatus.FAILED, client.documentState("kb_102", "102").status());
+        server.enqueue(json(statuses));
+        assertEquals(LightRagClient.DocumentStatus.MISSING, client.documentState("kb_999", "999").status());
+    }
+
+    @Test
+    @DisplayName("R7 严格写入：非 2xx 抛错，调用方据此 503 而不是假成功")
+    void strictInsertThrowsOnFailure() {
+        server.enqueue(json("{}").newBuilder().code(500).build());
+        assertThrows(IOException.class, () -> client.insertTextOrThrow("正文", "kb_100"));
     }
 
     private MockResponse json(String body) {

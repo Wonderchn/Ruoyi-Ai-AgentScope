@@ -23,6 +23,7 @@ import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mzt.logapi.starter.annotation.LogRecord;
 import com.nageoffer.ai.ragent.audit.constant.BizChangeBizType;
 import com.nageoffer.ai.ragent.audit.constant.BizChangeOperationType;
@@ -38,19 +39,29 @@ import com.nageoffer.ai.ragent.rag.core.skill.AgentSkillCacheManager;
 import com.nageoffer.ai.ragent.rag.dao.entity.AgentSkillDO;
 import com.nageoffer.ai.ragent.rag.dao.mapper.AgentSkillMapper;
 import com.nageoffer.ai.ragent.rag.service.AgentSkillAdminService;
+import com.nageoffer.ai.ragent.rag.skillpackage.SkillPackageCodec;
+import com.nageoffer.ai.ragent.rag.skillpackage.SkillPackageData;
+import com.nageoffer.ai.ragent.rag.skillpackage.SkillPackageError;
+import com.nageoffer.ai.ragent.rag.skillpackage.SkillPackageException;
+import com.nageoffer.ai.ragent.rag.skillpackage.SkillPackageExport;
+import com.nageoffer.ai.ragent.rag.skillpackage.SkillPackageImportResult;
+import com.nageoffer.ai.ragent.rag.skillpackage.SkillPackageService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.regex.Pattern;
 
 @Service
 @RequiredArgsConstructor
-public class AgentSkillAdminServiceImpl implements AgentSkillAdminService {
+public class AgentSkillAdminServiceImpl implements AgentSkillAdminService, SkillPackageService {
 
     /**
      * 技能标识是模型加载正文时报的名字，限定小写字母开头的蛇形串，中文和空格模型报不准
@@ -67,6 +78,7 @@ public class AgentSkillAdminServiceImpl implements AgentSkillAdminService {
     private final AgentSkillCacheManager cacheManager;
     private final IntentNodeRegistry intentNodeRegistry;
     private final BizChangeLogContext bizChangeLogContext;
+    private final ObjectMapper objectMapper;
 
     @Override
     public IPage<AgentSkillVO> pageQuery(AgentSkillPageRequest requestParam) {
@@ -202,6 +214,102 @@ public class AgentSkillAdminServiceImpl implements AgentSkillAdminService {
         bizChangeLogContext.put(id, before, agentSkillMapper.selectById(id));
     }
 
+    // ------------------------------------------------------------------ F11:4 技能包
+
+    /**
+     * 导入技能包：全部校验通过后才插入一行；冲突默认拒绝（零写入）。
+     *
+     * <p>身份/租户不取自包：manifest 白名单拒绝 {@code tenantId}/{@code createBy} 等未知字段；
+     * 行落库时的 {@code tenant_id} 仍由请求线程的平台租户拦截器按当前主体注入。
+     */
+    @Override
+    @LogRecord(
+            success = "导入技能包",
+            fail = "导入技能包失败：{{#_errorMsg}}",
+            type = BizChangeBizType.AGENT_SKILL,
+            subType = BizChangeOperationType.CREATE,
+            bizNo = BizChangeLogContext.BIZ_ID_EXPRESSION,
+            extra = BizChangeLogContext.SNAPSHOT_EXPRESSION,
+            condition = BizChangeLogContext.RECORD_CONDITION
+    )
+    public SkillPackageImportResult importPackage(MultipartFile file) {
+        byte[] zipBytes = SkillPackageCodec.readUpload(file);
+        SkillPackageData data = SkillPackageCodec.read(zipBytes, objectMapper);
+        List<String> toolIds = validateImportedToolIds(data.toolIds());
+
+        // 冲突检查放在全部内容校验之后：坏包/坏工具引用不会先触碰数据库
+        boolean duplicated = agentSkillMapper.exists(Wrappers.lambdaQuery(AgentSkillDO.class)
+                .eq(AgentSkillDO::getSkillCode, data.skillCode()));
+        if (duplicated) {
+            throw new SkillPackageException(SkillPackageError.SKILL_CONFLICT, data.skillCode());
+        }
+
+        AgentSkillDO record = AgentSkillDO.builder()
+                .skillCode(data.skillCode())
+                .name(data.name())
+                .description(data.description())
+                .content(data.content())
+                .toolIds(toolIds)
+                .sortOrder(data.sortOrder())
+                .enabled(data.enabled() ? 1 : 0)
+                .build();
+        try {
+            agentSkillMapper.insert(record);
+        } catch (DuplicateKeyException e) {
+            // exists 与 insert 之间的并发窗口由 (tenant_id, skill_code) 唯一索引兜底；
+            // 驱动异常翻译成具名 409，不冒成 5xx。
+            throw new SkillPackageException(SkillPackageError.SKILL_CONFLICT, data.skillCode());
+        }
+        cacheManager.clearCache();
+        bizChangeLogContext.put(record.getId(), null, record);
+        return new SkillPackageImportResult(record.getId(), record.getSkillCode());
+    }
+
+    /**
+     * 导出技能包：只写 manifest.json + skill.md，不带内部 id/租户/创建人/凭据。
+     */
+    @Override
+    public SkillPackageExport exportPackage(String id) {
+        if (id == null || id.isBlank()) {
+            throw new SkillPackageException(SkillPackageError.SKILL_NOT_FOUND);
+        }
+        AgentSkillDO record = agentSkillMapper.selectById(id);
+        if (record == null) {
+            throw new SkillPackageException(SkillPackageError.SKILL_NOT_FOUND);
+        }
+        List<String> toolIds = record.getToolIds() == null
+                ? List.of()
+                : record.getToolIds().stream().filter(Objects::nonNull).toList();
+        SkillPackageData data = new SkillPackageData(
+                record.getSkillCode(),
+                record.getName(),
+                record.getDescription(),
+                toolIds,
+                record.getSortOrder() == null ? 0 : record.getSortOrder(),
+                record.getEnabled() == null || record.getEnabled() != 0,
+                record.getContent() == null ? "" : record.getContent());
+        return new SkillPackageExport(record.getSkillCode() + ".zip",
+                SkillPackageCodec.write(data, objectMapper));
+    }
+
+    /**
+     * 导入路径的工具引用校验：与创建共用"意图树可用 MCP 节点"判据，但错误码走技能包 400，
+     * 不污染既有 CRUD 的 ClientException 语义。
+     */
+    private List<String> validateImportedToolIds(List<String> toolIds) {
+        if (toolIds == null || toolIds.isEmpty()) {
+            return List.of();
+        }
+        LinkedHashSet<String> available = availableToolIds();
+        for (String toolId : toolIds) {
+            if (!available.contains(toolId)) {
+                throw new SkillPackageException(SkillPackageError.INVALID_PACKAGE,
+                        "工具不在意图树的可用 MCP 节点中: " + toolId);
+            }
+        }
+        return List.copyOf(toolIds);
+    }
+
     @Override
     public List<AgentSkillToolOptionVO> listToolOptions() {
         Map<String, String> ownerBySkill = referencedToolOwners();
@@ -246,13 +354,7 @@ public class AgentSkillAdminServiceImpl implements AgentSkillAdminService {
         if (toolIds == null || toolIds.isEmpty()) {
             return List.of();
         }
-        LinkedHashSet<String> available = new LinkedHashSet<>();
-        intentNodeRegistry.listMcpToolNodes().forEach(node -> {
-            String toolId = StrUtil.trimToNull(node.getMcpToolId());
-            if (toolId != null) {
-                available.add(toolId);
-            }
-        });
+        LinkedHashSet<String> available = availableToolIds();
 
         LinkedHashSet<String> selected = new LinkedHashSet<>();
         for (String toolId : toolIds) {
@@ -266,6 +368,20 @@ public class AgentSkillAdminServiceImpl implements AgentSkillAdminService {
             selected.add(trimmed);
         }
         return List.copyOf(selected);
+    }
+
+    /**
+     * 当前意图树里可引用的 MCP 工具 ID（创建与导入共用同一判据）。
+     */
+    private LinkedHashSet<String> availableToolIds() {
+        LinkedHashSet<String> available = new LinkedHashSet<>();
+        intentNodeRegistry.listMcpToolNodes().forEach(node -> {
+            String toolId = StrUtil.trimToNull(node.getMcpToolId());
+            if (toolId != null) {
+                available.add(toolId);
+            }
+        });
+        return available;
     }
 
     private String normalizeSkillCode(String skillCode) {

@@ -5,11 +5,15 @@ import type { BubbleProps } from 'vue-element-plus-x/types/Bubble';
 import type { BubbleListInstance } from 'vue-element-plus-x/types/BubbleList';
 import type { ThinkingStatus } from 'vue-element-plus-x/types/Thinking';
 import type { ChatAttachment } from '../../../../api/ai/attachments';
+import type { RunStepUpdate, RunTerminalUpdate } from '../../../../api/chat/run-chat';
+import type { PublicFlowInputsNode } from '../../../../api/chat/types';
 import type { ToolCallInfo } from './types';
 import type { UseAgentChatBaseOptions } from './useAgentChat';
+import type { WorkflowBinding } from '@/stores/modules/chat';
 import { nextTick } from 'vue';
 import { useRoute } from 'vue-router';
 import { listKnowledgeBases } from '@/api/rag';
+import { createConversationApi } from '@/api/session/conversations';
 import ChatSender from '@/components/ChatSender/index.vue';
 import { useAgentStore } from '@/stores/modules/agent';
 import { useChatStore } from '@/stores/modules/chat';
@@ -17,6 +21,7 @@ import { useSessionStore } from '@/stores/modules/session';
 import { useUserStore } from '@/stores/modules/user';
 import { codeXRender } from '@/utils/markdownRenderers';
 import { createAttachmentClient } from '../../../../api/ai/attachments';
+import { createFlowRunClient } from '../../../../api/chat/flow-run';
 import ChatAttachments from '../../../../components/rag/ChatAttachments.vue';
 import AgentRawLogDrawer from './components/AgentRawLogDrawer.vue';
 import AgentTurn from './components/AgentTurn.vue';
@@ -51,6 +56,16 @@ const chatStore = useChatStore();
 const agentStore = useAgentStore();
 const sessionStore = useSessionStore();
 const userStore = useUserStore();
+
+// F03:0：工作流绑定会话。路由带 id 时沿用；从市场首句进入（无 id）时先创建会话，
+// 否则服务端 ai_message 归属校验会拒绝写历史。创建只走写入口，不在这里切路由。
+const conversationClient = createConversationApi({
+  baseUrl: import.meta.env.VITE_API_URL,
+  clientId: import.meta.env.VITE_CLIENT_ID,
+  identity: () => ({ token: userStore.token, epoch: userStore.authEpoch }),
+  onAuthExpired: () => userStore.handleAuthExpired(),
+});
+let flowConversationId = '';
 
 interface PendingAttachment { file: File; progress: number; status: 'uploading' | 'failed' | 'ready'; attachment?: ChatAttachment; error?: string }
 const pendingAttachments = ref<PendingAttachment[]>([]);
@@ -102,8 +117,23 @@ const toolCallEvents = ref<ToolCallInfo[]>([]);
 // 工具调用事件计数器（用于生成唯一 key）
 let toolCallKeyCounter = 0;
 
-// 当前是否选中工作流（全局，与智能体互斥）
-const currentBinding = computed(() => chatStore.currentWorkflow);
+// 当前是否选中工作流（全局，与智能体互斥）。
+// 市场选择时会把公开 inputs 端点返回的 nodes 摘要一并挂到 binding 上
+// （store 类型不变，避免为一步展示改共享 store；结构化读取即可）。
+type MarketWorkflowBinding = WorkflowBinding & { nodes?: PublicFlowInputsNode[] };
+const currentBinding = computed(() => chatStore.currentWorkflow as MarketWorkflowBinding | null);
+
+// 工作流运行的页面状态：step 卡（按节点映射标题）与终态回显。
+const flowSteps = ref<Array<{ key: number; stepId: string; title: string; status: 'pending' | 'success' }>>([]);
+const flowTerminal = ref('');
+const flowOutput = ref('');
+let flowStepKey = 0;
+
+/** `node:<uuid>` → 公开 nodes 摘要里的标题；找不到时退回 uuid/stepId 原文（不编造）。 */
+function flowNodeTitle(stepId: string): string {
+  const uuid = stepId.startsWith('node:') ? stepId.slice('node:'.length) : stepId;
+  return currentBinding.value?.nodes?.find(node => node.uuid === uuid)?.title || uuid || stepId;
+}
 
 // 是否有工具调用事件
 const hasToolCallEvents = computed(() => toolCallEvents.value.length > 0);
@@ -225,6 +255,87 @@ const {
   reset: resetRun,
 } = chatRun;
 
+/**
+ * 工作流运行编排（F13:4）：与普通聊天共用 `useChatRun`，只替换客户端为
+ * `createFlowRunClient`（POST `/api/v1/flows/{uuid}/run` 的 SSE）。
+ *
+ * 协议细节（body 白名单、字符串化、终态唯一、非 SSE 失败体）全在 `api/chat/flow-run`；
+ * 本页只做：step 卡映射节点标题、终态写最后气泡、失败/提示可见。
+ */
+const flowChatRun = useChatRun({
+  baseUrl: import.meta.env.VITE_API_URL,
+  clientId: import.meta.env.VITE_CLIENT_ID,
+  identity: () => ({ token: userStore.token, epoch: userStore.authEpoch }),
+  onAuthExpired: () => userStore.handleAuthExpired(),
+  client: createFlowRunClient({
+    baseUrl: import.meta.env.VITE_API_URL,
+    clientId: import.meta.env.VITE_CLIENT_ID,
+    identity: () => ({ token: userStore.token, epoch: userStore.authEpoch }),
+    onAuthExpired: () => userStore.handleAuthExpired(),
+  }),
+  hooks: {
+    onStep: (update: RunStepUpdate) => {
+      const stepId = update.stepId || update.stepName;
+      const completed = update.event === 'run.step_completed';
+      const existing = flowSteps.value.find(step => step.stepId === stepId);
+      if (existing) {
+        existing.status = completed ? 'success' : existing.status;
+        flowSteps.value = [...flowSteps.value];
+      }
+      else {
+        flowSteps.value = [
+          ...flowSteps.value,
+          { key: ++flowStepKey, stepId, title: flowNodeTitle(stepId), status: completed ? 'success' : 'pending' },
+        ];
+      }
+    },
+    onDelta: (text, dropped) => {
+      handleContentChunk(text);
+      if (dropped)
+        runNoticeFallback('服务端标记部分增量被丢弃（dropped=true）。');
+    },
+    onTerminal: (update: RunTerminalUpdate) => {
+      flowTerminal.value = update.status;
+      flowOutput.value = update.answer;
+      const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
+      if (!lastMessage)
+        return;
+      lastMessage.messageStatus = update.status;
+      // 工作流终态正文来自 END 节点（`output.value` 已由 readTerminalPayload 回退）。
+      if (update.answer)
+        lastMessage.content = update.answer;
+      if (update.status === 'FAILED' || update.status === 'CANCELLED') {
+        lastMessage.content = lastMessage.content
+          || `> 本次工作流运行未完成（${update.status}${update.errorCode ? ` / ${update.errorCode}` : ''}）。`;
+      }
+      bubbleItems.value = [...bubbleItems.value];
+      bubbleListRef.value?.scrollToBottom();
+    },
+    onEvent: (update) => {
+      if (update.type === 'run.error') {
+        const code = (update.payload as AnyObject)?.errorCode;
+        runErrorFallback(`运行错误事件：${typeof code === 'string' ? code : '未知原因'}`);
+      }
+    },
+  },
+});
+
+const {
+  running: flowRunning,
+  error: flowError,
+  notice: flowNotice,
+  cancel: cancelFlowRun,
+  reset: resetFlowRun,
+} = flowChatRun;
+
+/** 错误/提示位按当前模式选择来源，模板只读这两个 computed。 */
+const visibleRunError = computed(() => currentBinding.value
+  ? (flowError.value || runError.value)
+  : runError.value);
+const visibleRunNotice = computed(() => currentBinding.value
+  ? (flowNotice.value || runNotice.value)
+  : runNotice.value);
+
 async function selectAttachments(event: Event) {
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files ?? []);
@@ -274,8 +385,14 @@ const {
   rowsOf: agentRowsOf,
 } = agentChat;
 
-/** 输入框与停止按钮对 Agent 模式共用同一「在跑」信号。 */
-const senderBusy = computed(() => (agentMode.value ? agentStreaming.value : runRunning.value));
+/** 输入框与停止按钮对 Agent/工作流/普通聊天三种模式共用同一「在跑」信号。 */
+const senderBusy = computed(() => {
+  if (agentMode.value)
+    return agentStreaming.value;
+  if (currentBinding.value)
+    return flowRunning.value;
+  return runRunning.value;
+});
 const agentPanelOpen = ref(false);
 /**
  * 本页持有的 Agent 会话 id。
@@ -319,7 +436,11 @@ let isThinking = false;
 watch(() => userStore.authEpoch, () => {
   // 权限失效：中止在飞运行 + 清空页面与运行状态（不留下不属于新身份的运行数据）。
   resetRun();
+  resetFlowRun();
   resetAgent();
+  flowSteps.value = [];
+  flowTerminal.value = '';
+  flowOutput.value = '';
   agentLoadId.value = '';
   agentPanelOpen.value = false;
   bubbleItems.value = [];
@@ -396,11 +517,12 @@ watch(
 /**
  * 提交一轮对话。
  *
- * 两种互斥契约：
+ * 三种互斥契约：
+ * - **工作流模式**（市场选中工作流）：`POST /flows/{uuid}/run`（SSE），
+ *   编排在 `./useChatRun` + `api/chat/flow-run`；
  * - **Agent 模式**（选中智能体）：引擎面 `GET /agent/v1/chat`（SSE 八类帧），
  *   编排在 `./useAgentChat` —— 过程卡/确认卡/原始帧抽屉都在那条链上；
  * - **普通聊天**：运行面 `rag.chat`（受理 + `run-events`），本函数下半段负责。
- * 工作流仍**如实拒绝**（替代契约属 RW-17，不在本卡范围）。
  */
 async function submitMessage(content: string) {
   const text = String(content ?? '').trim();
@@ -421,9 +543,59 @@ async function submitMessage(content: string) {
     return;
   }
 
-  // —— 互斥模式边界（如实告知，不静默降级）——
+  // —— 工作流模式：走已集成的 flow.run（SSE），不再"如实拒绝"——
   if (currentBinding.value) {
-    runError.value = `已选择工作流「${currentBinding.value.title}」：工作流对话的替代契约尚未交付（旧的聊天发送端点已随退场模块失效），属 RW-17 范围，本次未发送。`;
+    if (pendingAttachments.value.length) {
+      runError.value = '工作流对话仅支持文本，请移除附件后重试';
+      return;
+    }
+    const binding = currentBinding.value;
+    const epoch = userStore.authEpoch;
+    inputValue.value = '';
+    runError.value = '';
+    toolCallEvents.value = [];
+    toolCallKeyCounter = 0;
+    flowSteps.value = [];
+    flowTerminal.value = '';
+    flowOutput.value = '';
+    addMessage(text, true);
+    addMessage('', false);
+    bubbleListRef.value?.scrollToBottom();
+    const routeConversationId = route.params?.id && route.params.id !== 'not_login'
+      ? String(route.params.id)
+      : '';
+    if (routeConversationId !== '')
+      flowConversationId = routeConversationId;
+    if (flowConversationId === '') {
+      try {
+        const created = await conversationClient.createConversation(text.slice(0, 30));
+        flowConversationId = created.conversationId;
+        sessionStore.setCurrentSession({ id: flowConversationId, sessionTitle: text.slice(0, 30), createTime: new Date() });
+      }
+      catch (error) {
+        runError.value = error instanceof Error ? error.message : '创建会话失败，未发起工作流运行';
+        return;
+      }
+    }
+    await flowChatRun.submit({
+      text,
+      conversationId: flowConversationId,
+      flowUuid: binding.uuid,
+      flowInputs: binding.inputs,
+      flowQuestion: text,
+    });
+    if (epoch !== userStore.authEpoch)
+      return;
+    // 停止打字器状态（无论成功、失败还是被取消）
+    if (bubbleItems.value.length) {
+      const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
+      lastMessage.typing = false;
+      lastMessage.loading = false;
+      if (lastMessage.thinkingStatus === 'thinking')
+        lastMessage.thinkingStatus = 'end';
+      bubbleItems.value = [...bubbleItems.value];
+    }
+    await nextTick();
     return;
   }
 
@@ -547,6 +719,16 @@ async function cancelSSE() {
     await stopAgentTask();
     return;
   }
+  if (currentBinding.value) {
+    await cancelFlowRun();
+    if (bubbleItems.value.length) {
+      const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
+      lastMessage.typing = false;
+      lastMessage.loading = false;
+      bubbleItems.value = [...bubbleItems.value];
+    }
+    return;
+  }
   await cancelRun();
   if (bubbleItems.value.length) {
     const lastMessage = bubbleItems.value[bubbleItems.value.length - 1];
@@ -644,22 +826,22 @@ function sendMessageByKey(key: number) {
         这里**不做**任何"降级成普通回答"的处理：服务端说失败就显示失败。
       -->
       <ElAlert
-        v-if="runError"
+        v-if="visibleRunError"
         class="run-alert"
         type="error"
         :closable="false"
         show-icon
         title="本次运行未完成"
-        :description="runError"
+        :description="visibleRunError"
         data-testid="chat-run-error"
       />
       <ElAlert
-        v-if="runNotice"
+        v-if="visibleRunNotice"
         class="run-alert"
         type="warning"
         :closable="false"
         show-icon
-        :description="runNotice"
+        :description="visibleRunNotice"
         data-testid="chat-run-notice"
       />
 
@@ -687,6 +869,24 @@ function sendMessageByKey(key: number) {
         </el-select>
         <span v-if="kbError" class="kb-error" data-testid="chat-kb-error">{{ kbError }}</span>
         <span v-if="runStatus" class="run-status" data-testid="chat-run-status">运行状态：{{ runStatus }}</span>
+      </div>
+
+      <!--
+        工作流运行回显（F13:4）：step 卡按公开 nodes 摘要映射节点标题；
+        终态只认 run.terminal，正文来自 END 节点（output.value）。
+      -->
+      <div v-if="currentBinding" class="flow-panel" data-testid="flow-run-status">
+        <div class="flow-panel-head">
+          <span>工作流「{{ currentBinding.title }}」</span>
+          <span class="flow-panel-state">{{ flowRunning ? '运行中…' : (flowTerminal || '待运行') }}</span>
+        </div>
+        <div v-for="step in flowSteps" :key="step.key" class="flow-step" :data-status="step.status">
+          {{ step.title }} · {{ step.status === 'success' ? '完成' : '执行中' }}
+        </div>
+        <div v-if="flowTerminal" class="flow-terminal" data-testid="flow-run-terminal">
+          终态：{{ flowTerminal }}
+        </div>
+        <pre v-if="flowOutput" class="flow-output" data-testid="flow-run-output">{{ flowOutput }}</pre>
       </div>
 
       <!-- 工具调用事件区域 -->
@@ -899,6 +1099,37 @@ function sendMessageByKey(key: number) {
     color: var(--el-text-color-secondary, #909399);
     font-size: 12px;
   }
+}
+
+.flow-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 12px 0;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary, #909399);
+  border: 1px solid var(--el-border-color-lighter, #ebeef5);
+  border-radius: 8px;
+}
+
+.flow-panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--el-text-color-primary, #303133);
+}
+
+.flow-step[data-status='success'] {
+  color: var(--el-color-success, #67c23a);
+}
+
+.flow-output {
+  margin: 0;
+  font-family: inherit;
+  color: var(--el-text-color-primary, #303133);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 :deep(.editing-bubble.el-bubble) {

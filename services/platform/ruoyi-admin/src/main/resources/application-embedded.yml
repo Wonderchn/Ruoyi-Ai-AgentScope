@@ -223,11 +223,45 @@ p2:
   outbox:
     relay-enabled: true
 
+# F20-A 编程助手 Harness（内嵌）。shipped 默认全 fail-closed：
+# - 模型网关未配置 ⇒ run 以 MODEL_NOT_CONFIGURED 终态结束，不发起任何提供方调用；
+# - execute_process 关闭，且 Docker 沙箱缺任一配置即 SANDBOX_NOT_CONFIGURED（零执行）；
+# - 模型目录为空表示"未登记可用模型"，会话仍可创建但真实运行会 fail-closed。
+# 数据目录只写相对路径；绝对路径/凭据由部署环境变量注入。
+coding:
+  harness:
+    data-dir: ${CODING_HARNESS_DATA_DIR:./data/coding-harness}
+    workspace:
+      owner-root: ${CODING_HARNESS_WORKSPACE_OWNER_ROOT:./data/coding-workspaces}
+      shared-root: ${CODING_HARNESS_WORKSPACE_SHARED_ROOT:}
+    models: ${CODING_HARNESS_MODELS:}
+    tools:
+      execute-process:
+        enabled: ${CODING_HARNESS_EXECUTE_PROCESS_ENABLED:false}
+        sandbox:
+          docker-executable: ${CODING_HARNESS_DOCKER_EXECUTABLE:}
+          docker-executable-sha256: ${CODING_HARNESS_DOCKER_EXECUTABLE_SHA256:}
+          docker-config-directory: ${CODING_HARNESS_DOCKER_CONFIG_DIRECTORY:}
+          docker-host: ${CODING_HARNESS_DOCKER_HOST:}
+          image: ${CODING_HARNESS_SANDBOX_IMAGE:}
+
 # Agent 会话面必须在实际 embedded profile 中启用；需要 Redis 保护在途会话删除。
 # 与 ReAct 引擎开关独立，缺 Redis 时明确启动失败，不绕过运行闸门。
 agent:
   conversation:
     enabled: true
+  # F12-M1：MCP 受控端点 allow-list（fail-closed，默认空 = 刷新/连接测试零网络）。
+  # 真实目标由协调者在启动 env 注入（AGENT_MCP_ALLOW_LIST_ENDPOINTS_0=scheme://host:port），
+  # shipped 配置与代码不写死任何地址/端口；条目按 scheme+host+port 精确匹配。
+  mcp:
+    allow-list:
+      endpoints: []
+    # F12-M2：运行期按需连接受管 MCP 工具（惰性、受 allow-list 约束）。
+    # 未批准目标零网络；缓存键=(tenant, tool, baseUrl, headers)，TTL 到期重连、超限 LRU 关闭。
+    runtime:
+      cache-ttl: 5m
+      connect-timeout: 10s
+      max-cached-clients: 32
 
 # P3 受控动作面（动作账本/审批/对账）——与独立 AI 应用同一开关。
 # 沙箱票据客户端指向独立沙箱进程（有界回环端点）；未启用时以 SANDBOX_CLOSED fail-closed。
@@ -239,7 +273,9 @@ p3:
 # 内嵌形态只装配 PG——`PgVectorStoreService`/`PgVectorRetrieverService`/`PgVectorStoreAdmin`
 # 自身就带 `@ConditionalOnProperty(rag.vector.type=pg)`；这里显式写出，让"内嵌态用哪套后端"
 # 在配置里可读，不依赖条件注解潜在的 matchIfMissing 语义。
-# milvus / es / lightrag 是可选技术后端（WP-053）：本轮不装配，也不冒充已启用。
+# milvus / es / lightrag 是可选技术后端（WP-053）：F22:2 起由
+# AiEmbeddedF22BackendsConfiguration 按显式 type（milvus|es|lightrag）条件装配；
+# shipped 默认仍是 pg / none / 无 graph，不冒充已启用。
 rag:
   vector:
     type: pg

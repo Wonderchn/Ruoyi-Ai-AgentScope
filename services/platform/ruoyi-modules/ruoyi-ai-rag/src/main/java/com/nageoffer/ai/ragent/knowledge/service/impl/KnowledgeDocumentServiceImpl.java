@@ -40,6 +40,8 @@ import com.nageoffer.ai.ragent.core.ingest.IngestionSpec;
 import com.nageoffer.ai.ragent.core.ingest.VectorTarget;
 import com.nageoffer.ai.ragent.core.ingest.sink.ChunkIndexWriter;
 import com.nageoffer.ai.ragent.core.parser.registry.ParserRegistry;
+import com.nageoffer.ai.ragent.framework.context.AsyncPrincipalReference;
+import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.context.UserContext;
 import com.nageoffer.ai.ragent.framework.exception.ClientException;
@@ -232,12 +234,27 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
         Assert.notNull(beforeDO, () -> new ClientException("文档不存在"));
         bizChangeLogContext.putName(beforeDO.getDocName());
         KnowledgeDocumentDO before = BeanUtil.copyProperties(beforeDO, KnowledgeDocumentDO.class);
+        // 事务回调里没有请求上下文可依赖，租户/主体在这里取出并闭包传入。
+        // 同一份租户必须写进事件：消费线程没有登录主体，缺它会被平台租户行拦截器
+        // 在 ai_knowledge_document 的第一次 DB 操作前拒绝（F22:2 真机第四缺口）。
+        // 同一受理线程把已验签主体降格为身份引用随事件传递（05 §4.3：异步只传引用，
+        // 不传 bearer）；消费线程恢复出的主体 scopes 为空，只用于租户/归属定位
+        // （F22:2 真机第五缺口：VectorTargetResolver 需要 PrincipalContext）。
+        ExecutionPrincipal principal = PrincipalContext.require();
+        String tenantId = principal.tenantId();
+        // 内嵌传输下 UserContext 恒空（AiEmbeddedAgentConversationConfiguration 注释与
+        // KnowledgeBaseServiceImpl.create 已实证），而 ai_knowledge_chunk.created_by 是
+        // NOT NULL。缺旧用户名时回退到已验签主体的 userId（与 KB 创建同一口径），
+        // 事件与事务闭包的 updatedBy 统一使用这个局部，避免两处来源分叉。
+        String legacyOperator = UserContext.getUsername();
+        // 单次赋值，保持 effectively final：同一 operator 要被事件构造与事务闭包同时捕获。
+        String operator = StrUtil.isBlank(legacyOperator) ? principal.userId() : legacyOperator;
         KnowledgeDocumentChunkEvent event = KnowledgeDocumentChunkEvent.builder()
                 .docId(docId)
-                .operator(UserContext.getUsername())
+                .operator(operator)
+                .tenantId(tenantId)
+                .principalRef(AsyncPrincipalReference.from(principal))
                 .build();
-        // 事务回调里没有请求上下文可依赖，租户在这里取出并闭包传入
-        String tenantId = requireTenantId();
 
         messageQueueProducer.sendInTransaction(
                 chunkTopic,
@@ -249,7 +266,7 @@ public class KnowledgeDocumentServiceImpl implements KnowledgeDocumentService {
                     int updated = documentMapper.update(
                             new LambdaUpdateWrapper<KnowledgeDocumentDO>()
                                     .set(KnowledgeDocumentDO::getStatus, DocumentStatus.RUNNING.getCode())
-                                    .set(KnowledgeDocumentDO::getUpdatedBy, event.getOperator())
+                                    .set(KnowledgeDocumentDO::getUpdatedBy, operator)
                                     .set(KnowledgeDocumentDO::getUpdateTime, new Date())
                                     .eq(KnowledgeDocumentDO::getId, docId)
                                     .apply(TENANT_PREDICATE, tenantId)

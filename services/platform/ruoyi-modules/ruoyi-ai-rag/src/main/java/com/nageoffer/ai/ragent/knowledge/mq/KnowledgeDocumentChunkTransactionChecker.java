@@ -17,8 +17,11 @@
 
 package com.nageoffer.ai.ragent.knowledge.mq;
 
+import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
+import com.nageoffer.ai.ragent.framework.exception.ClientException;
 import com.nageoffer.ai.ragent.framework.integration.SaasCapabilityBoundary;
+import com.nageoffer.ai.ragent.framework.integration.TenantScopeBinder;
 import com.nageoffer.ai.ragent.framework.mq.MessageWrapper;
 import com.nageoffer.ai.ragent.framework.mq.producer.DelegatingTransactionListener;
 import com.nageoffer.ai.ragent.framework.mq.producer.TransactionChecker;
@@ -33,6 +36,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
+
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 文档分块事务消息回查器
@@ -61,6 +66,14 @@ public class KnowledgeDocumentChunkTransactionChecker implements TransactionChec
      */
     @Autowired(required = false)
     private SaasCapabilityBoundary capabilityBoundary;
+
+    /**
+     * 租户作用域绑定端口（F22:2 真机第四缺口）：broker 回查线程没有登录主体，
+     * 而 {@code ai_knowledge_document} 是租户业务表，查询前必须绑定事件租户；
+     * 独立应用没有租户拦截器时端口缺席，按直接执行。
+     */
+    @Autowired(required = false)
+    private TenantScopeBinder tenantScopeBinder;
 
     @Value("knowledge-document-chunk_topic${unique-name:}")
     private String chunkTopic;
@@ -96,9 +109,24 @@ public class KnowledgeDocumentChunkTransactionChecker implements TransactionChec
         log.info("[事务回查] 文档分块，消息体：{}", JSONUtil.toJsonStr(message));
 
         KnowledgeDocumentChunkEvent event = message.getBody();
-        String docId = event.getDocId();
-        KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
+        // 回查路径只做一次租户限定的 ai_knowledge_document SELECT，不调用 executeChunk /
+        // VectorTargetResolver，因此不需要恢复事件里的 PrincipalContext；
+        // principalRef 只供消费路径使用（F22:2 真机第五缺口）。
+        if (tenantScopeBinder == null) {
+            // 独立应用：没有租户行拦截器，保持原查询形态。
+            return isRunning(event.getDocId());
+        }
+        if (StrUtil.isBlank(event.getTenantId())) {
+            throw new ClientException("文档分块回查事件缺少 tenantId，拒绝执行：docId=" + event.getDocId()
+                    + "（租户业务表查询必须限域，不落默认租户）");
+        }
+        AtomicBoolean committed = new AtomicBoolean();
+        tenantScopeBinder.runWithTenant(event.getTenantId(), () -> committed.set(isRunning(event.getDocId())));
+        return committed.get();
+    }
 
+    private boolean isRunning(String docId) {
+        KnowledgeDocumentDO documentDO = documentMapper.selectById(docId);
         return documentDO != null
                 && DocumentStatus.RUNNING.getCode().equals(documentDO.getStatus());
     }

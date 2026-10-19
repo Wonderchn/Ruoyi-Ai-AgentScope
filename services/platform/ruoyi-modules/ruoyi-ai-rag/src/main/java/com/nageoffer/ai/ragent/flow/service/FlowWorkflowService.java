@@ -20,10 +20,13 @@ package com.nageoffer.ai.ragent.flow.service;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.nageoffer.ai.ragent.flow.controller.request.FlowWorkflowQueryRequest;
 import com.nageoffer.ai.ragent.flow.controller.request.FlowWorkflowSaveRequest;
+import com.nageoffer.ai.ragent.flow.controller.vo.FlowComponentVO;
 import com.nageoffer.ai.ragent.flow.controller.vo.FlowWorkflowVO;
 
+import java.util.List;
+
 /**
- * AIFlow 工作流定义服务（F13 op3 + op0 的定义增删改查部分）。
+ * AIFlow 工作流定义服务（F13 op3 + op0 的定义增删改查部分 + F13-M1 发布/公开面）。
  */
 public interface FlowWorkflowService {
 
@@ -41,4 +44,38 @@ public interface FlowWorkflowService {
 
     /** 逻辑删除，限本人 + 本租户。 */
     void delete(String uuid);
+
+    /**
+     * 启用/停用工作流（发布面写操作），限本人 + 本租户 + 未删；0 行即失败。
+     *
+     * <p>只改 {@code is_enable}，<b>不改变</b> {@code is_public}。
+     */
+    void enable(String uuid, boolean enabled);
+
+    /**
+     * 设置/取消公开（发布面写操作），限本人 + 本租户 + 未删；0 行即失败。
+     *
+     * <p>只改 {@code is_public}，<b>不改变</b> {@code is_enable}。
+     */
+    void setPublic(String uuid, boolean isPublic);
+
+    /**
+     * 公开搜索：<b>同租户、跨用户、只读</b>。
+     *
+     * <p>固定谓词 {@code is_public=1 AND is_enable=1 AND is_deleted=0 AND tenant_id=当前}；
+     * <b>无</b> owner 谓词；跨租户永不因 {@code is_public} 可见。
+     * 返回视图不含所有者 id（{@code userId=null}）。
+     */
+    IPage<FlowWorkflowVO> searchPublic(FlowWorkflowQueryRequest request);
+
+    /**
+     * 公开详情：与 {@link #searchPublic} 同一组可见性谓词。
+     *
+     * <p>不存在/停用/私有/软删/跨租户一律返回 {@code null}（调用方映射为 404 同文案，
+     * 不泄露存在性）；返回视图不含所有者 id。
+     */
+    FlowWorkflowVO getPublic(String uuid);
+
+    /** 公开组件库：当前租户中 {@code is_enable=1 AND is_deleted=0} 的组件列表（只读）。 */
+    List<FlowComponentVO> listPublicComponents();
 }
