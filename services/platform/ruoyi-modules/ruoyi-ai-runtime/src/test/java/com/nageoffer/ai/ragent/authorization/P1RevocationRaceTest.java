@@ -222,6 +222,41 @@ class P1RevocationRaceTest {
     }
 
     @Test
+    @DisplayName("交付回执白名单：agent/mcp/skill/coding/conversation 的铸造动作全覆盖；非铸造动作不入列")
+    void releaseDeliveryWhitelistCoversAgentMcpSkillCodingMintActions() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForObject(contains("action IN"), any(Class.class), any(Object[].class))).thenReturn(1L);
+        when(jdbc.update(contains("SET status = 'RELEASED'"), any(Object[].class))).thenReturn(1);
+
+        new DefaultRevocationGuard(jdbc).releaseDelivery("T1", "platform:T1:2101", "permit-1", "op-1");
+
+        org.mockito.ArgumentCaptor<String> whitelistSql = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(jdbc).queryForObject(whitelistSql.capture(), any(Class.class), any(Object[].class));
+        assertThat(whitelistSql.getValue())
+                // agent 面：发现面（agent.execute，含 /agent/v1/agents 与多 Agent 市场 GET）
+                // + 目录列表/详情/导出（agent.list/agent.read）
+                // + reply() 同样铸造回执头的写面（agent.write/delete/activate）
+                .contains("'agent.execute'").contains("'agent.list'").contains("'agent.read'")
+                .contains("'agent.write'").contains("'agent.delete'").contains("'agent.activate'")
+                // MCP 管理面 GET（markets/tools 列表/详情/导出）
+                .contains("'mcp.list'").contains("'mcp.read'")
+                // 技能管理面 GET（列表/详情/导出）
+                .contains("'skill.list'").contains("'skill.read'")
+                // 编码会话读面（含逐帧 : ai-delivery 的 events/stream）
+                .contains("'coding.use'")
+                // 会话写面 reply() 也铸造回执头（JSON 分支由请求级 holder 释放，ACK 路仍须可释放）
+                .contains("'conversation.rename'").contains("'conversation.delete'")
+                // 非铸造动作不得入列：白名单不是"凡写都放行"的例外清单
+                .doesNotContain("'flow.write'").doesNotContain("'flow.delete'")
+                .doesNotContain("'mcp.write'").doesNotContain("'mcp.delete'")
+                .doesNotContain("'skill.write'").doesNotContain("'skill.delete'")
+                .doesNotContain("'coding.write'").doesNotContain("'coding.approve'")
+                .doesNotContain("'agent.run'").doesNotContain("'document.ingest'")
+                .doesNotContain("'tool.sandbox.write'");
+        verify(jdbc).update(contains("SET status = 'RELEASED'"), any(Object[].class));
+    }
+
+    @Test
     @DisplayName("屏障状态写入：NO_ROW 拒绝；UNKNOWN 可写；upsert 含 ON CONFLICT（原位更新）")
     void barrierStateWritesAreGuarded() {
         JdbcTemplate jdbc = jdbcWithEpoch(3, List.of());

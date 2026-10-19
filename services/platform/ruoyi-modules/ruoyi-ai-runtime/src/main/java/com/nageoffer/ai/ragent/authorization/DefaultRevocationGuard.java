@@ -238,7 +238,7 @@ public class DefaultRevocationGuard implements RevocationGuard {
     @Override
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public void releaseDelivery(String tenantId, String memberId, String permitId, String operationId) {
-        // 白名单 = "会携带交付回执头（X-AI-Delivery-*）的读动作"集合，ACK 是它们的正常释放路。
+        // 白名单 = "会携带交付回执头（X-AI-Delivery-*）的响应动作"集合，ACK 是它们的正常释放路。
         // R12 卡2 修复：补入 flow.list/flow.read/config.read（FlowWorkflowController 两条 GET、
         // AdminDeliveryAdvice 的 config.read 族 GET——缺一即"可铸造、不可释放"→ ACTIVE 泄漏，
         // W6/W8 实测每次 GET 泄 1 条）；复核（A 类 PASS）补入 agent.list/agent.read
@@ -247,8 +247,17 @@ public class DefaultRevocationGuard implements RevocationGuard {
         // JSON 分支）按设计**不铸造回执头**，不入白名单。
         // F13:2 窗口实测：flow.run（POST run SSE 逐帧）与 flow.run.read（运行视图/续流 GET）
         // 也铸造回执头；缺白名单会使每帧 ACK 恒失败、网关在首帧后中止流。补入二者。
+        // F18:4/F12/F13 窗口实测（delivery acknowledgement unavailable）：
+        //   - agent.execute：AgentOptionController /agent/v1/agents 与 F14:2 多 Agent 市场两条 GET；
+        //   - agent.write/delete/activate：AgentProfileController 的 reply() 在写面同样铸造回执头
+        //     （JSON 分支由请求级 holder 释放，但缺失会让 ACK 路不可释放）；
+        //   - mcp.list/mcp.read、skill.list/skill.read：McpAdminController / AgentSkillController 的 GET；
+        //   - coding.use：CodingHarnessController 的读/续流（逐帧 : ai-delivery）；
+        //   - conversation.rename/delete：AiResourceController 的 PUT/DELETE 也走 reply() 铸头。
+        // 只登记"实际铸造点"，不放宽为通配：mcp.write/delete、skill.write/delete、coding.write/approve、
+        // flow.write/delete 等不铸头的动作仍在名单外。
         Long owned=jdbc.queryForObject("SELECT count(*) FROM ai_execution_permit WHERE tenant_id=? AND member_id=?"
-                + " AND permit_id=? AND operation_id=? AND action IN ('document.download','document.list','conversation.export','kb.list','kb.read','document.read','conversation.read','memory.read','run.get','run.events','run.stream','kb.retrieve','run.approve','run.reconcile','config.read','flow.list','flow.read','flow.run','flow.run.read','agent.list','agent.read')",
+                + " AND permit_id=? AND operation_id=? AND action IN ('document.download','document.list','conversation.export','kb.list','kb.read','document.read','conversation.read','memory.read','run.get','run.events','run.stream','kb.retrieve','run.approve','run.reconcile','config.read','flow.list','flow.read','flow.run','flow.run.read','agent.list','agent.read','agent.execute','agent.write','agent.delete','agent.activate','mcp.list','mcp.read','skill.list','skill.read','coding.use','conversation.rename','conversation.delete')",
                 Long.class,tenantId,memberId,permitId,operationId);
         if(owned==null || owned!=1){throw new ClientException("delivery identity mismatch");}
         release(permitId,operationId);
