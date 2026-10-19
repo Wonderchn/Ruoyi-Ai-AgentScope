@@ -293,6 +293,47 @@ public class AiGatewayStreamController {
         }
     }
 
+    /**
+     * F21 从创意创建 SSE（{@code POST /api/ai/v1/short-drama/projects/create-from-idea/stream}）。
+     *
+     * <p>与 Agent/coding 对话同一条专用流通道：精确映射（先于 catch-all 生效）、独立建连/
+     * 空闲/总时长预算、同一委托链。动作 {@code drama.generate}（创意创建属于 LLM 生成面）。
+     * 请求体是小 JSON（创意/项目名/风格/画幅/幂等键），上限 64 KiB。
+     *
+     * <p>刻意不做 {@code /short-drama/**} 通配：同前缀下的 14 条 JSON 路由由 ROUTES 逐条放行，
+     * 这里的流只映射这一条路径。
+     */
+    @PostMapping("/short-drama/projects/create-from-idea/stream")
+    public void shortDramaCreateFromIdeaStream(HttpServletRequest request,
+                                               HttpServletResponse response) {
+        try {
+            long declared = request.getContentLengthLong();
+            if (declared > SHORT_DRAMA_STREAM_MAX_BYTES) {
+                writeError(response, P04ErrorCode.BAD_REQUEST);
+                return;
+            }
+            byte[] body;
+            try (java.io.InputStream in = request.getInputStream()) {
+                body = in.readNBytes(SHORT_DRAMA_STREAM_MAX_BYTES + 1);
+            }
+            if (body.length > SHORT_DRAMA_STREAM_MAX_BYTES) {
+                writeError(response, P04ErrorCode.BAD_REQUEST);
+                return;
+            }
+            streamAgent(request, response, "drama.generate", "POST",
+                    "/short-drama/projects/create-from-idea/stream", body);
+        } catch (P04Exception e) {
+            writeError(response, e.errorCode());
+        } catch (AiGatewayClient.UpstreamUnavailableException e) {
+            writeError(response, P04ErrorCode.AUTHORIZATION_UNAVAILABLE);
+        } catch (java.io.IOException e) {
+            writeError(response, P04ErrorCode.BAD_REQUEST);
+        }
+    }
+
+    /** F21 从创意创建请求体上限（小 JSON；创意文本上限由内层校验）。 */
+    static final int SHORT_DRAMA_STREAM_MAX_BYTES = 64 * 1024;
+
     /** F20-A 对话体上限：需求文本 + 会话/模型字段，远小于通用转发上限。 */
     static final int CODING_CHAT_MAX_BYTES = 256 * 1024;
 

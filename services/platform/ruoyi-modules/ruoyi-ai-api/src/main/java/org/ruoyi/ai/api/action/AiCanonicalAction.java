@@ -146,6 +146,15 @@ public final class AiCanonicalAction {
         actions.put("coding.write", "ai:coding:write");
         actions.put("coding.approve", "ai:coding:approve");
         actions.put("coding.command", "ai:coding:command");
+        // F21（2026-10-19，维护者 2026-10-18「授权 B+C+D 全部」D 批）：短剧 LLM-only 三项。
+        // 资源是 ai_short_drama_project/script/storyboard（tenant_id + 属主 user_id 双重限定）
+        // ⇒ 租户级，**不进** PLATFORM_ADMIN_ACTIONS。
+        // 权限行由 V45__short_drama_permissions.sql 注册（menu_id 7210-7212，默认不分配）。
+        // 公开路由见 AiGatewayController.ROUTES 的 /short-drama/**（14 条 JSON）
+        // 与 AiGatewayStreamController 的 create-from-idea/stream（1 条 SSE）。
+        actions.put("drama.read", "ai:drama:read");
+        actions.put("drama.write", "ai:drama:write");
+        actions.put("drama.generate", "ai:drama:generate");
         return Collections.unmodifiableMap(actions);
     }
 
