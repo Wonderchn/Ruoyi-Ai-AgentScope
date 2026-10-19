@@ -56,3 +56,20 @@ export function retryMediaTask(taskId: string, requestId: string) {
     post<MediaTaskDTO>(mediaTaskRetryPath(taskId), { requestId }, { timeout: 60000 }).json(),
   );
 }
+
+/** F19:3 server task list; the page must not treat page memory as the authority. */
+export function listMediaTasks(limit = 20) {
+  return readMediaApiResult<MediaTaskListDTO>(get<MediaTaskListDTO>(MEDIA_TASKS_PATH, { limit }, { timeout: 30000 }).json());
+}
+
+/** Task detail (poll/refresh path). */
+export function getMediaTask(taskId: string) {
+  return readMediaApiResult<MediaTaskDTO>(get<MediaTaskDTO>(mediaTaskPath(taskId), {}, { timeout: 30000 }).json());
+}
+
+/** Explicit retry: new attempt, linked to the previous task id by the server. */
+export function retryMediaTask(taskId: string, requestId: string) {
+  return readMediaApiResult<MediaTaskDTO>(
+    post<MediaTaskDTO>(mediaTaskRetryPath(taskId), { requestId }, { timeout: 60000 }).json(),
+  );
+}
