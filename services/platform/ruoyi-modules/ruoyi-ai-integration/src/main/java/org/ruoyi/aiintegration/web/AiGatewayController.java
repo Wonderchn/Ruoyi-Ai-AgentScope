@@ -655,8 +655,30 @@ public class AiGatewayController {
             new Route("GET", "/media/tasks", "run.get"),
             new Route("GET", "/media/tasks/{taskId}", "run.get"),
             new Route("POST", "/media/tasks/{taskId}/retry", "run.submit"),
-            new Route("GET", "/media/content", "run.get"));
-
+            new Route("GET", "/media/content", "run.get"),
+            // F21（2026-10-19，维护者 2026-10-18「授权 B+C+D 全部」D 批）：短剧 LLM-only 三项。
+            // 内层 handler = ShortDramaController（类级 /internal/ai/v1，由
+            // ShortDramaAutoConfiguration 显式装配并在 AutoConfiguration.imports 登记）。
+            // 动作：drama.read（读）/ drama.write（手动增删改）/ drama.generate（LLM 生成）。
+            // 逐条登记、禁止 /short-drama/** 通配；段数不冲突：
+            //   POST /short-drama/projects/create-from-idea 是 3 段字面量，
+            //   其余 4-5 段为 {projectId} 变量形，声明序不影响命中。
+            // SSE 创建不在此表：由 AiGatewayStreamController 的精确 POST 映射承接
+            // （登记了却没有 handler 会变成不可达死路由）。
+            new Route("GET", "/short-drama/projects", "drama.read"),
+            new Route("POST", "/short-drama/projects", "drama.write"),
+            new Route("GET", "/short-drama/projects/{projectId}", "drama.read"),
+            new Route("PUT", "/short-drama/projects/{projectId}", "drama.write"),
+            new Route("DELETE", "/short-drama/projects/{projectId}", "drama.write"),
+            new Route("POST", "/short-drama/projects/create-from-idea", "drama.generate"),
+            new Route("GET", "/short-drama/projects/{projectId}/scripts", "drama.read"),
+            new Route("POST", "/short-drama/projects/{projectId}/scripts", "drama.write"),
+            new Route("PUT", "/short-drama/projects/{projectId}/scripts/{scriptId}", "drama.write"),
+            new Route("POST", "/short-drama/projects/{projectId}/scripts/generate", "drama.generate"),
+            new Route("POST", "/short-drama/projects/{projectId}/scripts/polish", "drama.generate"),
+            new Route("POST", "/short-drama/projects/{projectId}/analyze-assets", "drama.generate"),
+            new Route("POST", "/short-drama/projects/{projectId}/photography-rules", "drama.generate"),
+            new Route("POST", "/short-drama/projects/{projectId}/acting-directions", "drama.generate"));
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;

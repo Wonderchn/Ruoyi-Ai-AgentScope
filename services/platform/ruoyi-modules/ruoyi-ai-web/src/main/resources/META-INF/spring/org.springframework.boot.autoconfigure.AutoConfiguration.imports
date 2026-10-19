@@ -33,3 +33,4 @@ org.ruoyi.aiweb.embedded.AiEmbeddedFlowRunConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedCodingConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedMultiAgentConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedMediaConfiguration
+com.nageoffer.ai.ragent.shortdrama.config.ShortDramaAutoConfiguration
