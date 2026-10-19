@@ -24,6 +24,8 @@ export type TaskState = 'submitting' | 'waiting' | 'success' | 'failed' | 'pause
 
 export interface MediaTask {
   key: string;
+  /** Server task authority id; present for every task read from or submitted to the server. */
+  serverId?: string;
   kind: MediaType;
   model: string;
   modelLabel: string;
@@ -32,5 +34,10 @@ export interface MediaTask {
   createdAt: number;
   state: TaskState;
   message: string;
+  errorCode?: string;
+  attempt?: number;
+  previousTaskId?: string;
+  /** Server status is UNKNOWN (or unrecognized): terminal for polling, explicit retry only. */
+  terminalUnknown?: boolean;
   result?: MediaGenerationResponse;
 }

@@ -2,11 +2,20 @@ import type { MediaModel, MediaTask } from './types';
 import type { MediaGenerationResponse, MediaType } from '@/api/media/types';
 import type { GetSessionListVO } from '@/api/model/types';
 import { computed, onBeforeUnmount, readonly, shallowRef, watch } from 'vue';
-import { generateImage, generateSpeech, generateVideo, getPrediction, getVideoResult } from '@/api/media';
+import {
+  generateImage,
+  generateSpeech,
+  generateVideo,
+  getPrediction,
+  getVideoResult,
+  listMediaTasks,
+  retryMediaTask,
+} from '@/api/media';
 import { readMediaApiResult } from '@/api/media/response';
 import { getModelList } from '@/api/model';
 import { newRequestId } from '@/api/rag';
 import { useUserStore } from '@/stores';
+import { applyServerOutcome, canRetryServerTask, mergeServerTasks, toMediaTask } from './server-tasks';
 import { canQueryMedia, classifyResult, createDraft, requestError, supportsMedia, validateDraft } from './utils';
 
 const POLL_INTERVAL = 4000;
@@ -24,6 +33,7 @@ export function useMediaWorkbench() {
   const selectedKey = shallowRef('');
   const queryingKey = shallowRef('');
   const taskId = shallowRef('');
+  const tasksLoading = shallowRef(false);
   const loggedIn = computed(() => Boolean(userStore.token));
   const selectedModel = computed(() => models.value.find(model => model.modelName === draft.value.model));
   const selectedTask = computed(() => tasks.value.find(task => task.key === selectedKey.value));
@@ -83,6 +93,32 @@ export function useMediaWorkbench() {
     }
   }
 
+  /**
+   * F19:3: the task list is read from the server, not from page memory.
+   * A failed list read must not wipe the tasks already shown; the transient
+   * in-flight task stays until the server answers.
+   */
+  async function loadServerTasks() {
+    if (!loggedIn.value)
+      return;
+    const version = operationVersion;
+    tasksLoading.value = true;
+    try {
+      const { data } = await listMediaTasks();
+      if (disposed || version !== operationVersion)
+        return;
+      const items = Array.isArray(data?.items) ? data.items : [];
+      tasks.value = mergeServerTasks(tasks.value, items).slice(0, 20);
+    }
+    catch {
+      // Keep the current list; the submit/query path reports actionable errors.
+    }
+    finally {
+      if (!disposed && version === operationVersion)
+        tasksLoading.value = false;
+    }
+  }
+
   function selectModel(modelName: string) {
     draft.value = { ...createDraft(), prompt: draft.value.prompt, model: modelName };
     formError.value = '';
@@ -98,6 +134,7 @@ export function useMediaWorkbench() {
     updateTask(key, { state: 'paused', message });
   }
 
+  /** Legacy (audio/video) result classification; F19 image tasks use server state. */
   function applyResult(key: string, response: MediaGenerationResponse | null | undefined) {
     const task = tasks.value.find(item => item.key === key);
     if (!task)
@@ -106,7 +143,6 @@ export function useMediaWorkbench() {
       updateTask(key, { state: 'failed', message: '服务返回了空结果，请检查模型配置和服务端日志。' });
       return;
     }
-    // Keep only display fields in page memory; raw provider responses may contain sensitive data.
     const result: MediaGenerationResponse = {
       id: response?.id || task.result?.id,
       status: response?.status,
@@ -141,17 +177,29 @@ export function useMediaWorkbench() {
     if (disposed || version !== operationVersion || !task?.result?.id)
       return;
     if (Date.now() >= deadline) {
-      pause(key, '已达到 10 分钟查询上限，可稍后继续查询。');
+      pause(key, '已达到 10 分钟查询上限，任务可能仍在生成。可稍后继续查询。');
       return;
     }
     queryingKey.value = key;
     try {
-      const response = task.kind === 'video'
-        ? await getVideoResult({ model: task.model, videoId: task.result.id })
-        : await getPrediction({ model: task.model, predictionId: task.result.id });
-      if (disposed || version !== operationVersion)
-        return;
-      applyResult(key, response.data);
+      if (task.kind === 'video' && !task.serverId) {
+        const response = await getVideoResult({ model: task.model, videoId: task.result.id });
+        if (disposed || version !== operationVersion)
+          return;
+        applyResult(key, response.data);
+      }
+      else if (task.serverId || task.kind === 'image') {
+        const response = await getPrediction({ model: task.model, predictionId: task.result.id });
+        if (disposed || version !== operationVersion)
+          return;
+        updateTask(key, applyServerOutcome(task, response.data));
+      }
+      else {
+        const response = await getPrediction({ model: task.model, predictionId: task.result.id });
+        if (disposed || version !== operationVersion)
+          return;
+        applyResult(key, response.data);
+      }
       scheduleQuery(key, version);
     }
     catch (error) {
@@ -177,7 +225,7 @@ export function useMediaWorkbench() {
       state,
       message: '正在提交，请稍候。',
     };
-    tasks.value = [task, ...tasks.value].slice(0, 10);
+    tasks.value = [task, ...tasks.value].slice(0, 20);
     selectedKey.value = task.key;
     return task;
   }
@@ -197,6 +245,47 @@ export function useMediaWorkbench() {
     return true;
   }
 
+  async function submitImageTask(input: ReturnType<typeof createDraft>, version: number) {
+    const requestId = newRequestId();
+    const transient: MediaTask = {
+      key: requestId,
+      kind: 'image',
+      model: input.model,
+      modelLabel: selectedModel.value!.label,
+      provider: selectedModel.value!.providerCode,
+      prompt: input.prompt.trim(),
+      createdAt: Date.now(),
+      state: 'submitting',
+      message: '正在提交，请稍候。',
+    };
+    tasks.value = [transient, ...tasks.value].slice(0, 20);
+    selectedKey.value = requestId;
+    try {
+      const response = await generateImage({
+        model: transient.model,
+        prompt: transient.prompt,
+        size: input.size.trim() || undefined,
+        seed: input.seed,
+        requestId,
+      });
+      if (disposed || version !== operationVersion)
+        return;
+      const task = toMediaTask(response.data);
+      tasks.value = [task, ...tasks.value.filter(item => item.key !== requestId && item.serverId !== task.serverId)]
+        .slice(0, 20);
+      selectedKey.value = task.key;
+      // Reconcile with the server authority (restart/refresh list), then poll.
+      void loadServerTasks();
+      deadline = Date.now() + POLL_TIMEOUT;
+      if (task.state === 'waiting')
+        scheduleQuery(task.key, version);
+    }
+    catch (error) {
+      if (!disposed && version === operationVersion)
+        updateTask(requestId, { state: 'failed', message: `生成请求未完成：${requestError(error)}` });
+    }
+  }
+
   async function submit() {
     if (!checkModel())
       return;
@@ -204,27 +293,29 @@ export function useMediaWorkbench() {
     if (formError.value)
       return;
     const input = { ...draft.value };
-    const task = newTask('submitting', input.prompt.trim());
     const version = ++operationVersion;
+    if (kind.value === 'image') {
+      await submitImageTask(input, version);
+      return;
+    }
+    const task = newTask('submitting', input.prompt.trim());
     try {
-      const response = task.kind === 'image'
-        ? await generateImage({ model: task.model, prompt: task.prompt, size: input.size.trim() || undefined, seed: input.seed })
-        : task.kind === 'audio'
-          ? await generateSpeech({
-              model: task.model,
-              input: task.prompt,
-              voice: input.voice.trim() || undefined,
-              responseFormat: input.responseFormat || undefined,
-              speed: input.speed,
-              instructions: input.instructions.trim() || undefined,
-            })
-          : await generateVideo({
-              model: task.model,
-              prompt: task.prompt,
-              size: input.size.trim() || undefined,
-              seconds: input.seconds,
-              quality: input.quality.trim() || undefined,
-            });
+      const response = task.kind === 'audio'
+        ? await generateSpeech({
+            model: task.model,
+            input: task.prompt,
+            voice: input.voice.trim() || undefined,
+            responseFormat: input.responseFormat || undefined,
+            speed: input.speed,
+            instructions: input.instructions.trim() || undefined,
+          })
+        : await generateVideo({
+            model: task.model,
+            prompt: task.prompt,
+            size: input.size.trim() || undefined,
+            seconds: input.seconds,
+            quality: input.quality.trim() || undefined,
+          });
       if (disposed || version !== operationVersion)
         return;
       applyResult(task.key, response.data);
@@ -239,12 +330,41 @@ export function useMediaWorkbench() {
 
   function resume(key: string) {
     const task = tasks.value.find(item => item.key === key);
-    if (busy.value || !loggedIn.value || !task?.result?.id || !canQueryMedia(task.provider, task.kind))
+    if (busy.value || !loggedIn.value || !task?.result?.id)
+      return;
+    if (!task.serverId && !canQueryMedia(task.provider, task.kind))
       return;
     selectedKey.value = key;
     updateTask(key, { state: 'waiting', message: '正在查询任务结果。' });
     deadline = Date.now() + POLL_TIMEOUT;
     void runQuery(key, ++operationVersion);
+  }
+
+  /**
+   * F19:3 explicit retry: only FAILED/UNKNOWN; creates a new server attempt.
+   * UNKNOWN tasks are never retried automatically.
+   */
+  async function retry(key: string) {
+    const task = tasks.value.find(item => item.key === key);
+    if (!task || !canRetryServerTask(task))
+      return;
+    const version = ++operationVersion;
+    try {
+      const response = await retryMediaTask(task.serverId!, newRequestId());
+      if (disposed || version !== operationVersion)
+        return;
+      const next = toMediaTask(response.data);
+      tasks.value = [next, ...tasks.value.filter(item => item.key !== next.key)].slice(0, 20);
+      selectedKey.value = next.key;
+      void loadServerTasks();
+      deadline = Date.now() + POLL_TIMEOUT;
+      if (next.state === 'waiting')
+        scheduleQuery(next.key, version);
+    }
+    catch (error) {
+      if (!disposed && version === operationVersion)
+        formError.value = `重试未完成：${requestError(error)}`;
+    }
   }
 
   function queryExisting() {
@@ -260,7 +380,7 @@ export function useMediaWorkbench() {
       return;
     }
     const task = newTask('paused', '查询已有任务');
-    updateTask(task.key, { result: { id } });
+    updateTask(task.key, { result: { id }, serverId: id });
     resume(task.key);
   }
 
@@ -271,6 +391,7 @@ export function useMediaWorkbench() {
     selectedKey.value = '';
     queryingKey.value = '';
     taskId.value = '';
+    void loadServerTasks();
   }, { flush: 'sync' });
 
   watch([kind, () => userStore.token], () => {
@@ -278,6 +399,7 @@ export function useMediaWorkbench() {
     formError.value = '';
     taskId.value = '';
     void loadModels();
+    void loadServerTasks();
   }, { immediate: true });
 
   onBeforeUnmount(() => {
@@ -300,15 +422,18 @@ export function useMediaWorkbench() {
     modelsLoading: readonly(modelsLoading),
     modelsError: readonly(modelsError),
     tasks: readonly(tasks),
+    tasksLoading: readonly(tasksLoading),
     selectedKey: readonly(selectedKey),
     queryingKey: readonly(queryingKey),
     formError: readonly(formError),
     login,
     loadModels,
+    loadServerTasks,
     selectModel,
     submit,
     pause,
     resume,
+    retry,
     queryExisting,
     selectTask: (key: string) => { selectedKey.value = key; },
   };

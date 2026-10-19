@@ -1,9 +1,9 @@
 import { useUserStore } from '@/stores';
+import { mediaContentQuery } from './paths';
 
 /** Binary responses do not use the JSON-envelope request plugin. */
 export async function getMediaContent(params: { model: string; predictionId: string }, signal: AbortSignal) {
-  const query = new URLSearchParams(params);
-  const response = await fetch(`${(import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')}/media/content?${query}`, {
+  const response = await fetch(`${(import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')}${mediaContentQuery(params)}`, {
     headers: {
       Authorization: `Bearer ${useUserStore().token}`,
       ClientID: import.meta.env.VITE_CLIENT_ID ?? '',

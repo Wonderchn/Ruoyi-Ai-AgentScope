@@ -37,6 +37,12 @@ public class UsageLedgerService {
 
     public static final String KIND_CHAT = "CHAT";
     public static final String KIND_EMBEDDING = "EMBEDDING";
+    /**
+     * 媒体调用单位（F19:5）：{@code units = 图片张数}。媒体用量不写
+     * {@code ai_model_call}（该表以 {@code run_id} 外键绑定 run，伪造 run 行不可接受），
+     * 事实落 {@code ai_media_task.usage_raw/units}，与 token 单位不混加。
+     */
+    public static final String KIND_IMAGE = "IMAGE";
     public static final String STATE_STARTED = "STARTED";
     public static final String STATE_SETTLED = "SETTLED";
     public static final String STATE_FAILED = "FAILED";
@@ -92,6 +98,18 @@ public class UsageLedgerService {
         }
         if(!(total instanceof Number n) || n.longValue()<0 || n.doubleValue()!=n.longValue()) return null;
         return (n.longValue()+999)/1000;
+    }
+
+    /**
+     * 媒体用量单位（F19:5）：张数。与文本 {@link #units} 分开，二者不混加。
+     *
+     * <p>只认 {@code images} 为非负整数；缺失/非法 → {@code null}（未知，不得按零结算）。
+     */
+    public static Long mediaUnits(Map<String,Object> usage) {
+        if(usage==null) return null;
+        Object images=usage.get("images");
+        if(!(images instanceof Number n) || n.longValue()<0 || n.doubleValue()!=n.longValue()) return null;
+        return n.longValue();
     }
 
     public void markFailed(String tenantId, String callId, String errorCode) {

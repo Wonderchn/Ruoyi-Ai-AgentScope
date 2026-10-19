@@ -27,6 +27,7 @@ const {
   submit,
   pause,
   resume,
+  retry,
   queryExisting,
   selectTask,
 } = useMediaWorkbench();
@@ -68,9 +69,9 @@ const modes = [
         :model-error="modelsError" :error="formError" :busy="busy" :logged-in="loggedIn" :can-query="canQuerySelected"
         @submit="submit" @refresh="loadModels" @login="login" @select-model="selectModel" @query="queryExisting"
       />
-      <MediaPreview :kind="kind" :task="selectedTask" :querying="queryingKey === selectedKey && Boolean(queryingKey)" :busy="busy" @pause="pause" @resume="resume" />
+      <MediaPreview :kind="kind" :task="selectedTask" :querying="queryingKey === selectedKey && Boolean(queryingKey)" :busy="busy" @pause="pause" @resume="resume" @retry="retry" />
     </div>
-    <MediaTasks :tasks="tasks" :selected-key="selectedKey" @select="selectTask" />
+    <MediaTasks :tasks="tasks" :selected-key="selectedKey" @select="selectTask" @retry="retry" />
   </main>
 </template>
 

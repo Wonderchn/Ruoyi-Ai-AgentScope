@@ -58,10 +58,44 @@ public class ProviderSpendEnvelope {
                 .divide(BigDecimal.valueOf(1000000),6,RoundingMode.CEILING).max(new BigDecimal("0.010000"));
     }
 
+    /**
+     * 媒体计价（F19:5）：单位 = 张数，金额 = 张数 × 单张<b>最坏成本上限</b>。
+     *
+     * <p>不把媒体费用塞进 token 账本：本方法与文本 {@link #estimate} 同信封、同 cap，
+     * 但单位独立（1..10 张），且 provider 只认 {@code dashscope}（当前唯一获批图片链）。
+     * 真实单价以 provider 账单为准；这里预占的是上限。
+     */
+    public static BigDecimal estimateMedia(String provider, int images, BigDecimal maxCostPerImageCny) {
+        if(!"dashscope".equals(provider))
+            throw denied();
+        if(images<1 || images>10)
+            throw denied();
+        if(maxCostPerImageCny==null || maxCostPerImageCny.signum()<=0
+                || maxCostPerImageCny.compareTo(new BigDecimal("5.000000"))>0)
+            throw denied();
+        return maxCostPerImageCny.multiply(BigDecimal.valueOf(images))
+                .setScale(6,RoundingMode.CEILING).max(new BigDecimal("0.010000"));
+    }
+
     public String reserve(String provider,String model,long inputBytes,int maxOutputTokens) {
         if(!enabled || !executionId.matches("[a-zA-Z0-9_-]{1,128}") || cap==null || cap.signum()<=0 || cap.compareTo(new BigDecimal("20"))>0)
             throw denied();
         BigDecimal amount=estimate(provider,inputBytes,maxOutputTokens);
+        return reserveAmount(provider,model,amount);
+    }
+
+    /**
+     * 媒体提交前预占（F19:5）。与文本 {@link #reserve} 同执行事实/同 cap，
+     * 支付型调用前调用；预占失败 = 零 provider 调用。
+     */
+    public String reserveMedia(String provider,String model,int images,BigDecimal maxCostPerImageCny) {
+        if(!enabled || !executionId.matches("[a-zA-Z0-9_-]{1,128}") || cap==null || cap.signum()<=0 || cap.compareTo(new BigDecimal("20"))>0)
+            throw denied();
+        BigDecimal amount=estimateMedia(provider,images,maxCostPerImageCny);
+        return reserveAmount(provider,model,amount);
+    }
+
+    private String reserveAmount(String provider,String model,BigDecimal amount) {
         String callId="spend-"+UUID.randomUUID();
         return transaction.execute(status -> {
             jdbc.update("INSERT INTO ai_provider_envelope(execution_id,cap_cny) VALUES (?,?) ON CONFLICT DO NOTHING",executionId,cap);

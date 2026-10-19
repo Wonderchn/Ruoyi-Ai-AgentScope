@@ -1,6 +1,7 @@
 import type { MediaTask } from './types';
 import { computed, readonly, shallowRef, watch } from 'vue';
 import { getMediaContent } from '@/api/media/content';
+import { needsControlledContent } from './server-tasks';
 import { mediaSource } from './utils';
 
 /** Owns the authenticated request and releases its object URL on task change or unmount. */
@@ -14,7 +15,8 @@ export function useMediaPreview(task: () => MediaTask | undefined) {
     const current = task();
     return current?.state === 'success' ? mediaSource(current.result, current.kind) : '';
   });
-  const needsContent = computed(() => Boolean(directSource.value && task()?.provider === 'atlas' && task()?.result?.id));
+  // F19:4: server results carry only a task id; bytes come from the authenticated endpoint.
+  const needsContent = computed(() => needsControlledContent(task()));
   const source = computed(() => needsContent.value ? objectUrl.value : directSource.value);
   const mimeType = computed(() => contentType.value || task()?.result?.mimeType || '');
 
