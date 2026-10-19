@@ -12,14 +12,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { describe, it, test } from 'node:test';
 import vm from 'node:vm';
-import { compileScript, parse } from '@vue/compiler-sfc';
 import { createPlatformClient } from '@ruoyi/platform-client/http';
+import { compileScript, parse } from '@vue/compiler-sfc';
 import ts from 'typescript';
 import * as vue from 'vue';
 import { createAiApi } from '../src/api/ai/index.ts';
 import {
-  KNOWLEDGE_GRAPH_PATH,
   createKnowledgeGraphApi,
+  KNOWLEDGE_GRAPH_PATH,
 } from '../src/api/ai/knowledgeGraph.ts';
 import * as graphAdmin from '../src/pages/ai/knowledge-graph/graphAdmin.ts';
 import { errorMessageOf } from '../src/utils/list.ts';
@@ -79,7 +79,7 @@ describe('R16 API 形状：/api/ai/v1/admin/kg/**（网关白名单逐字）', (
       droppedUnattributed: 0,
       readSource: 'projection',
     };
-    const { calls, graphApi } = harness(call => {
+    const { calls, graphApi } = harness((call) => {
       if (call.url.includes('/status')) {
         return jsonResponse({ code: 200, data: { status: 'UP', projection: { entities: 1 } } });
       }
@@ -99,7 +99,10 @@ describe('R16 API 形状：/api/ai/v1/admin/kg/**（网关白名单逐字）', (
 
     const graph = await graphApi.graph({ entity: '张三', kbId: 'kb 1', depth: 2, limit: 200 });
     const expectedQuery = new URLSearchParams({
-      entity: '张三', kbId: 'kb 1', depth: '2', limit: '200',
+      entity: '张三',
+      kbId: 'kb 1',
+      depth: '2',
+      limit: '200',
     }).toString();
     assert.equal(calls[1].url, `${KNOWLEDGE_GRAPH_PATH}/graph?${expectedQuery}`);
     assert.equal(calls[1].body, undefined, 'GET 不得带 body');
@@ -149,7 +152,11 @@ describe('页面逻辑（graphAdmin 纯函数）', () => {
 
   it('归一化缺字段/非法数值：空图而不是崩溃', () => {
     assert.deepEqual(graphAdmin.normalizeGraph(null), {
-      nodes: [], edges: [], truncated: false, droppedUnattributed: 0, readSource: 'projection',
+      nodes: [],
+      edges: [],
+      truncated: false,
+      droppedUnattributed: 0,
+      readSource: 'projection',
     });
     assert.deepEqual(graphAdmin.normalizeGraph({ nodes: [{ id: 'n1' }], truncated: true, droppedUnattributed: 2 }).truncated, true);
     assert.equal(graphAdmin.normalizeGraph({ nodes: [{ id: 'n1' }] }).nodes[0].degree, 0);
@@ -170,7 +177,12 @@ describe('页面逻辑（graphAdmin 纯函数）', () => {
 
   it('top-45 标签按度数降序；可见边只保留两端都有位置的边', () => {
     const many = Array.from({ length: 60 }, (_, index) => ({
-      id: `n${index}`, name: `N${index}`, type: '', description: '', degree: index, sources: [],
+      id: `n${index}`,
+      name: `N${index}`,
+      type: '',
+      description: '',
+      degree: index,
+      sources: [],
     }));
     const labels = graphAdmin.topLabels(many, 45);
     assert.equal(labels.length, 45);
@@ -208,7 +220,8 @@ describe('页面逻辑（graphAdmin 纯函数）', () => {
 });
 
 const PAGE_SOURCE = fs.readFileSync(
-  new URL('../src/pages/ai/knowledge-graph/index.vue', import.meta.url), 'utf8',
+  new URL('../src/pages/ai/knowledge-graph/index.vue', import.meta.url),
+  'utf8',
 );
 
 describe('R15/R16 SFC 静态绑定（模板 testid 与零依赖）', () => {
@@ -241,7 +254,10 @@ interface Pending { resolve: (value: any) => void; reject: (error: any) => void 
 function deferred(): Pending & { promise: Promise<any> } {
   let resolve!: (value: any) => void;
   let reject!: (error: any) => void;
-  const promise = new Promise<any>((res, rej) => { resolve = res; reject = rej; });
+  const promise = new Promise<any>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
   return { promise, resolve, reject };
 }
 
@@ -256,9 +272,21 @@ function fakeApi() {
     labelCalls,
     rebuildCalls,
     api: {
-      status: () => { const item = deferred(); statusCalls.push(item); return item.promise; },
-      graph: () => { const item = deferred(); graphCalls.push(item); return item.promise; },
-      labels: () => { const item = deferred(); labelCalls.push(item); return item.promise; },
+      status: () => {
+        const item = deferred();
+        statusCalls.push(item);
+        return item.promise;
+      },
+      graph: () => {
+        const item = deferred();
+        graphCalls.push(item);
+        return item.promise;
+      },
+      labels: () => {
+        const item = deferred();
+        labelCalls.push(item);
+        return item.promise;
+      },
       rebuild: (query: { kbId?: string; docId?: string }) => {
         rebuildCalls.push(query);
         return Promise.resolve({ documents: 1, entities: 2, relations: 1, skipped: 0, truncated: false });
@@ -327,7 +355,10 @@ describe('真实 SFC setup：状态卡与图谱加载', () => {
       fake.statusCalls[0].resolve({ status: 'UP', configured: true, reachable: true, projection: { entities: 3 } });
       fake.graphCalls[0].resolve({
         nodes: [{ id: 'n1', name: 'Alice', type: 'PERSON', description: '', degree: 1, sources: [] }],
-        edges: [], truncated: true, droppedUnattributed: 0, readSource: 'projection',
+        edges: [],
+        truncated: true,
+        droppedUnattributed: 0,
+        readSource: 'projection',
       });
       await settle();
       assert.equal(page.status.value.status, 'UP');

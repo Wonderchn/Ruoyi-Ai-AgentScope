@@ -573,3 +573,46 @@ describe('#6/#7 线上字符串边界：410 lastSeq / snapshot.nextSeq', () => {
     assert.equal(last.kind, 'snapshot', '重建次数用尽后如实给出快照');
   });
 });
+
+/**
+ * A 复核 §4-a #5/#6/#7 的线上形状回归：平台 mapper 把装箱 `Long` 序列化为字符串，
+ * 410 信封 `{"lastSeq":"3","snapshot":{"nextSeq":"7",…}}`。修复前：`lastSeq=undefined`
+ * 且**不重建**（`typeof nextSeq === 'number'` 为假 ⇒ 游标重建被静默跳过）。
+ */
+describe('#6/#7 线上字符串边界：410 lastSeq / snapshot.nextSeq', () => {
+  const wireExpired = () => new Response(JSON.stringify({
+    code: 410,
+    msg: 'cursor expired',
+    data: {
+      errorCode: 'CURSOR_EXPIRED',
+      retryable: false,
+      lastSeq: '3',
+      snapshot: { runId: RUN_ID, status: 'RUNNING', nextSeq: '7', terminalResult: null },
+    },
+  }), { status: 410, headers: { 'content-type': 'application/json' } });
+
+  it('`lastSeq:"3"` 归一化为数字透出（诊断信息不丢）', async () => {
+    const h = harness();
+    h.admit(acceptedBody());
+    // 410 一次即触发「按快照重建」再订阅一次，因此需要第二次事件流响应。
+    h.stream(wireExpired);
+    h.stream(wireExpired);
+    const updates = await collect(client(h).run({ text: 'x', idempotencyKey: 'key-wire-last' }));
+    const expired = updates.find(u => u.kind === 'cursor-expired');
+    assert.ok(expired, '必须透出 cursor-expired');
+    assert.equal(expired.lastSeq, 3, '线上字符串 lastSeq 必须归一化为 3，而不是 undefined');
+  });
+
+  it('`snapshot.nextSeq:"7"` 仍从 nextSeq-1 重建一次（不静默降级）', async () => {
+    const h = harness();
+    h.admit(acceptedBody());
+    h.stream(wireExpired);
+    h.stream(wireExpired);
+    const updates = await collect(client(h).run({ text: 'x', idempotencyKey: 'key-wire-next' }));
+
+    assert.equal(updates.filter(u => u.kind === 'cursor-expired').length, 2, '两次 410 都要如实透出');
+    assert.ok(h.streamCalls[1].url.includes('afterSeq=6'), `字符串 nextSeq 必须照常重建：${h.streamCalls[1].url}`);
+    const last = updates.at(-1);
+    assert.equal(last.kind, 'snapshot', '重建次数用尽后如实给出快照');
+  });
+});
