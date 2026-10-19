@@ -24,6 +24,7 @@ import io.agentscope.core.tracing.OtelTracingMiddleware;
 import io.opentelemetry.api.GlobalOpenTelemetry;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -63,9 +64,12 @@ class AgentTracingEmbeddedAssemblyTest {
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withUserConfiguration(AgentTracingConfiguration.class);
 
+    @BeforeEach
     @AfterEach
     void resetGlobalOpenTelemetry() {
         // SDK bean 会把自身装进全局位置；容器 close 不会清它，留给下一条用例会撞"已被占用"。
+        // 同模块其它用例（AgentScope / OTel 取 tracer 路径）可能更早把全局设成 no-op，
+        // 所以进入本类每条用例前也要复位：只靠 @AfterEach 挡不住跨类的全局污染。
         GlobalOpenTelemetry.resetForTest();
     }
 
