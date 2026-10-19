@@ -207,10 +207,11 @@ ai:
     knowledge-admin:
       full: true
     # F19:1/3/4/5 媒体工作台（图片生成 + 服务端任务 + 私有取流 + 媒体计价）。
+    # F19:0/2 追加语音合成与文生视频，复用同一任务/私有取流/预算信封。
     # 装配门 = ai.integration.enabled + transport=local + p2.enabled + 本开关。
     # 凭据只经环境变量注入（DASHSCOPE_API_KEY）；未注入时付费提交 fail-closed，
     # 不发起任何 provider 调用。模型目录（MEDIA_MODEL_CATALOG_DEFERRED）本切片保持延期，
-    # 这里只登记唯一允许的图片模型名，不伪造媒体模型目录。
+    # 这里只登记每类唯一允许的模型名，不伪造媒体模型目录。
     media:
       enabled: true
       image:
@@ -227,6 +228,39 @@ ai:
         # 单张图预占预算上限（CNY），窗口 cap 由协调者注入；UNKNOWN 不退还预占。
         max-cost-per-image-cny: 0.50
         # provider 结果只允许从该 host 后缀下载（https + 无 userinfo）。
+        allowed-result-hosts: aliyuncs.com
+      # F19:0 qwen-tts HTTP 同步协议：按输入字符数计费，预占 = 字符数 × 每千字符上限 / 1000。
+      audio:
+        provider: Tongyiwanx
+        billing-provider: dashscope
+        model-name: ${MEDIA_AUDIO_MODEL:qwen3-tts-flash}
+        api-host: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com}
+        api-key: ${DASHSCOPE_API_KEY:}
+        default-voice: Cherry
+        # qwen-tts HTTP 当前返回 wav；格式仅作为结果 MIME 提示（协议无 format 参数）。
+        default-format: wav
+        max-text-length: 600
+        max-instructions-length: 1600
+        max-bytes: 4194304
+        # 每千字符预占预算上限（CNY）。官方参考价 0.8 元/万字符（0.08 元/千字符），此处取上界。
+        max-cost-per-1k-chars-cny: 0.20
+        allowed-result-hosts: aliyuncs.com
+      # F19:2 wanx2.1-t2v 异步协议：提交 + GET /api/v1/tasks/{id} 轮询。
+      video:
+        provider: Tongyiwanx
+        billing-provider: dashscope
+        model-name: ${MEDIA_VIDEO_MODEL:wanx2.1-t2v-turbo}
+        api-host: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com}
+        api-key: ${DASHSCOPE_API_KEY:}
+        default-size: 1280*720
+        allowed-sizes: 832*480,1280*720
+        default-duration-seconds: 5
+        allowed-durations: 3,4,5
+        max-prompt-length: 2000
+        # 与网关字节分支 4MiB 上限一致；更大的结果在网关会被 fail-closed（见窗口记录）。
+        max-bytes: 4194304
+        # 单次生成预占预算上限（CNY）：按最长允许时长 × 最高允许分辨率取上界。
+        max-cost-per-video-cny: 5.00
         allowed-result-hosts: aliyuncs.com
 
 # P2 正式运行路径（受理/生命周期/上传摄取/私有对象/事件流）——与独立 AI 应用同一开关；

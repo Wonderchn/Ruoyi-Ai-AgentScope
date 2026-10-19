@@ -29,14 +29,14 @@ import java.util.Map;
 /**
  * F19:5 媒体计价/预占：复用 {@link ProviderSpendEnvelope} 的口径，不另起放宽信封。
  *
- * <p>计费单位 = 图片张数（本切片固定 1）。提交前按
- * {@code 张数 × 单张最坏成本上限} 预占；预占失败 = 零 provider 调用。
+ * <p>计费单位按媒体类型独立：图片=张数（本切片固定 1）、语音=输入字符数、
+ * 视频=生成次数。提交前按"单位数 × 该类最坏成本上限"预占；预占失败 = 零 provider 调用。
  * UNKNOWN 结果不退还预占（信封保持 STARTED）；成功只把状态推进到
  * RESPONSE_RECEIVED，真实单价以 provider 账单为准。
  *
- * <p>媒体用量不写 {@code ai_model_call}（该表有 run_id 外键且 kind 仅 CHAT/EMBEDDING/RERANK）；
+ * <p>媒体用量不写 {@code ai_model_call}（该表有 run_id 外键且行契约面向文本调用）；
  * 用量事实落在 {@code ai_media_task.usage_raw/units/reserved_cny/spend_call_id}，
- * 单位是"张"，不与 token 混加。
+ * 单位与 token 账本不混加。
  */
 public class MediaUsageMeter {
 
@@ -48,26 +48,52 @@ public class MediaUsageMeter {
         this.properties = properties;
     }
 
-    /** 一次已预占的付费调用。 */
-    public record Reserved(String callId, BigDecimal reservedCny, int images) {
+    /** 一次已预占的付费调用（{@code units} 按媒体类型：张/字符/次）。 */
+    public record Reserved(String callId, BigDecimal reservedCny, long units) {
     }
 
     /**
-     * 提交前预占预算。
+     * 提交前预占预算（图片兼容入口）。
      *
      * @throws RunApiException BUDGET_EXCEEDED（信封缺失/关闭/超额）；调用方必须零 provider 调用
      */
     public Reserved reserve(String model, int images) {
+        return reserve(model, ProviderSpendEnvelope.MEDIA_TYPE_IMAGE, images);
+    }
+
+    /**
+     * 按媒体类型预占：image=张数、audio=输入字符数、video=生成次数。
+     *
+     * <p>上限来源：图片 {@code max-cost-per-image-cny}、音频
+     * {@code max-cost-per-1k-chars-cny}（每千字符）、视频 {@code max-cost-per-video-cny}；
+     * 三者都是<b>最坏成本上限</b>，真实单价以 provider 账单为准。
+     *
+     * @throws RunApiException BUDGET_EXCEEDED（信封缺失/关闭/超额）；调用方必须零 provider 调用
+     */
+    public Reserved reserve(String model, String mediaType, long units) {
         ProviderSpendEnvelope spend = envelope.getIfAvailable();
         if (spend == null) {
             // 没有信封 = 没有可核对的预算权威：拒绝付费调用，而不是默认放行。
             throw new RunApiException(RunErrorCode.BUDGET_EXCEEDED, "媒体预算信封未装配，拒绝发起付费调用");
         }
-        BigDecimal maxUnit = properties.getImage().getMaxCostPerImageCny();
-        String callId = spend.reserveMedia(properties.getImage().getBillingProvider(), model, images, maxUnit);
-        BigDecimal amount = ProviderSpendEnvelope.estimateMedia(
-                properties.getImage().getBillingProvider(), images, maxUnit);
-        return new Reserved(callId, amount, images);
+        String billingProvider;
+        BigDecimal maxUnit;
+        if (ProviderSpendEnvelope.MEDIA_TYPE_IMAGE.equals(mediaType)) {
+            billingProvider = properties.getImage().getBillingProvider();
+            maxUnit = properties.getImage().getMaxCostPerImageCny();
+        } else if (ProviderSpendEnvelope.MEDIA_TYPE_AUDIO.equals(mediaType)) {
+            billingProvider = properties.getAudio().getBillingProvider();
+            maxUnit = properties.getAudio().getMaxCostPer1kCharsCny();
+        } else if (ProviderSpendEnvelope.MEDIA_TYPE_VIDEO.equals(mediaType)) {
+            billingProvider = properties.getVideo().getBillingProvider();
+            maxUnit = properties.getVideo().getMaxCostPerVideoCny();
+        } else {
+            throw new RunApiException(RunErrorCode.BAD_REQUEST, "未知媒体类型");
+        }
+        String callId = spend.reserveMedia(billingProvider, model, mediaType, units, maxUnit);
+        BigDecimal amount = ProviderSpendEnvelope.estimateMediaUnits(
+                billingProvider, mediaType, units, maxUnit);
+        return new Reserved(callId, amount, units);
     }
 
     /**

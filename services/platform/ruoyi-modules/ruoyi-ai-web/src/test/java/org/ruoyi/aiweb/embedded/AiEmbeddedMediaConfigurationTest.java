@@ -19,9 +19,11 @@ package org.ruoyi.aiweb.embedded;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nageoffer.ai.ragent.ingest.PrivateObjectStore;
+import com.nageoffer.ai.ragent.media.audio.DashScopeAudioGenerationService;
 import com.nageoffer.ai.ragent.media.image.TongYiWanxImageGenerationService;
 import com.nageoffer.ai.ragent.media.task.MediaController;
 import com.nageoffer.ai.ragent.media.task.MediaTaskService;
+import com.nageoffer.ai.ragent.media.video.DashScopeVideoGenerationService;
 import com.nageoffer.ai.ragent.runtime.web.DeliveryPermits;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -55,6 +57,8 @@ class AiEmbeddedMediaConfigurationTest {
                     assertThat(context).hasSingleBean(MediaController.class);
                     assertThat(context).hasSingleBean(MediaTaskService.class);
                     assertThat(context).hasSingleBean(TongYiWanxImageGenerationService.class);
+                    assertThat(context).hasSingleBean(DashScopeAudioGenerationService.class);
+                    assertThat(context).hasSingleBean(DashScopeVideoGenerationService.class);
                     assertThat(context).hasBean("mediaTaskRepository");
                     assertThat(context).hasBean("mediaContentStore");
                     assertThat(context).hasBean("mediaUsageMeter");
@@ -69,6 +73,8 @@ class AiEmbeddedMediaConfigurationTest {
                     assertThat(context).hasNotFailed();
                     assertThat(context).doesNotHaveBean(MediaController.class);
                     assertThat(context).doesNotHaveBean(MediaTaskService.class);
+                    assertThat(context).doesNotHaveBean(DashScopeAudioGenerationService.class);
+                    assertThat(context).doesNotHaveBean(DashScopeVideoGenerationService.class);
                 });
     }
 

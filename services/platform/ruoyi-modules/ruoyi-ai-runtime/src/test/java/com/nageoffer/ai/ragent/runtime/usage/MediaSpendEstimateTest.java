@@ -71,6 +71,57 @@ class MediaSpendEstimateTest {
     }
 
     @Test
+    void audioEstimateUsesCharactersTimesWorstCasePerThousandRate() {
+        assertEquals(new BigDecimal("0.120000"),
+                ProviderSpendEnvelope.estimateMediaUnits("dashscope", "audio", 600,
+                        new BigDecimal("0.20")));
+        assertEquals(new BigDecimal("0.010000"),
+                ProviderSpendEnvelope.estimateMediaUnits("dashscope", "audio", 1,
+                        new BigDecimal("0.20")));
+        assertEquals(new BigDecimal("0.012000"),
+                ProviderSpendEnvelope.estimateMediaUnits("dashscope", "audio", 60,
+                        new BigDecimal("0.20")));
+
+        assertThrows(RuntimeException.class,
+                () -> ProviderSpendEnvelope.estimateMediaUnits("deepseek", "audio", 10,
+                        new BigDecimal("0.20")));
+        assertThrows(RuntimeException.class,
+                () -> ProviderSpendEnvelope.estimateMediaUnits("dashscope", "audio", 0,
+                        new BigDecimal("0.20")));
+        assertThrows(RuntimeException.class,
+                () -> ProviderSpendEnvelope.estimateMediaUnits("dashscope", "audio", 100001,
+                        new BigDecimal("0.20")));
+        assertThrows(RuntimeException.class,
+                () -> ProviderSpendEnvelope.estimateMediaUnits("dashscope", "audio", 10,
+                        new BigDecimal("1.01")));
+        assertThrows(RuntimeException.class,
+                () -> ProviderSpendEnvelope.estimateMediaUnits("dashscope", "audio", 10, BigDecimal.ZERO));
+    }
+
+    @Test
+    void videoEstimateUsesOnePaidGenerationAndKeepsPerVideoCap() {
+        assertEquals(new BigDecimal("5.000000"),
+                ProviderSpendEnvelope.estimateMediaUnits("dashscope", "video", 1,
+                        new BigDecimal("5.00")));
+        assertEquals(new BigDecimal("0.010000"),
+                ProviderSpendEnvelope.estimateMediaUnits("dashscope", "video", 1,
+                        new BigDecimal("0.000001")));
+
+        assertThrows(RuntimeException.class,
+                () -> ProviderSpendEnvelope.estimateMediaUnits("dashscope", "video", 0,
+                        new BigDecimal("5.00")));
+        assertThrows(RuntimeException.class,
+                () -> ProviderSpendEnvelope.estimateMediaUnits("dashscope", "video", 5,
+                        new BigDecimal("5.00")));
+        assertThrows(RuntimeException.class,
+                () -> ProviderSpendEnvelope.estimateMediaUnits("dashscope", "video", 1,
+                        new BigDecimal("10.01")));
+        assertThrows(RuntimeException.class,
+                () -> ProviderSpendEnvelope.estimateMediaUnits("dashscope", "unknown-kind", 1,
+                        new BigDecimal("1.00")));
+    }
+
+    @Test
     void textEstimateContractIsUnchanged() {
         assertEquals(new BigDecimal("0.030340"), ProviderSpendEnvelope.estimate("deepseek", 10, 1000));
         assertEquals(new BigDecimal("0.010000"), ProviderSpendEnvelope.estimate("dashscope", 10, 0));
@@ -83,5 +134,27 @@ class MediaSpendEstimateTest {
         assertNull(UsageLedgerService.mediaUnits(Map.of("total_tokens", 100)));
         assertNull(UsageLedgerService.mediaUnits(Map.of("images", -1)));
         assertNull(UsageLedgerService.mediaUnits(null));
+    }
+
+    @Test
+    void audioUnitsAreCharactersAndVideoUnitsAreGenerationCounts() {
+        assertEquals(12L, UsageLedgerService.audioUnits(Map.of("characters", 12)));
+        assertNull(UsageLedgerService.audioUnits(Map.of("characters", -1)));
+        assertNull(UsageLedgerService.audioUnits(Map.of("characters", 1.5)));
+        assertNull(UsageLedgerService.audioUnits(Map.of("images", 1)));
+        assertNull(UsageLedgerService.audioUnits(null));
+
+        assertEquals(1L, UsageLedgerService.videoUnits(Map.of("video_count", 1)));
+        assertEquals(2L, UsageLedgerService.videoUnits(Map.of("videos", 2)));
+        assertNull(UsageLedgerService.videoUnits(Map.of("video_count", -1)));
+        assertNull(UsageLedgerService.videoUnits(Map.of("characters", 5)));
+        assertNull(UsageLedgerService.videoUnits(null));
+
+        // 混合账本禁止：单位按 media_type 分开取，未知类型不得猜测。
+        assertEquals(12L, UsageLedgerService.mediaUnits(Map.of("characters", 12), "audio"));
+        assertEquals(1L, UsageLedgerService.mediaUnits(Map.of("video_count", 1), "video"));
+        assertEquals(1L, UsageLedgerService.mediaUnits(Map.of("images", 1), "image"));
+        assertNull(UsageLedgerService.mediaUnits(Map.of("characters", 12), "image"));
+        assertNull(UsageLedgerService.mediaUnits(Map.of("characters", 12), "unknown-kind"));
     }
 }

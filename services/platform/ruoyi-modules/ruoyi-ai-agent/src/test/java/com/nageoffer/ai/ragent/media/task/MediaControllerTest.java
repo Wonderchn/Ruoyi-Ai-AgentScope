@@ -118,6 +118,84 @@ class MediaControllerTest {
     }
 
     @Test
+    void submitSpeechAndVideoReturnServerTaskEnvelopesWithoutPermits() throws Exception {
+        when(service.submitAudio(eq(principal), any()))
+                .thenReturn(view("mt-a1", "audio", "pending", null));
+        when(service.submitVideo(eq(principal), any()))
+                .thenReturn(view("mt-v1", "video", "processing", null));
+
+        MvcResult speech = mvc.perform(post("/internal/ai/v1/media/speech")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"model\":\"qwen-test\",\"input\":\"hello\",\"voice\":\"Cherry\","
+                                + "\"responseFormat\":\"wav\",\"requestId\":\"req-a1\"}"))
+                .andReturn();
+        assertThat(speech.getResponse().getStatus()).isEqualTo(200);
+        assertThat(speech.getResponse().getHeader("X-AI-Delivery-Permit")).isNull();
+        assertThat(speech.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                .contains("\"code\":200", "\"id\":\"mt-a1\"", "\"type\":\"audio\"", "\"status\":\"pending\"");
+
+        MvcResult video = mvc.perform(post("/internal/ai/v1/media/video")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"model\":\"wanx-video-test\",\"prompt\":\"a cat\",\"size\":\"1280*720\","
+                                + "\"seconds\":5,\"quality\":\"high\",\"requestId\":\"req-v1\"}"))
+                .andReturn();
+        assertThat(video.getResponse().getStatus()).isEqualTo(200);
+        assertThat(video.getResponse().getHeader("X-AI-Delivery-Permit")).isNull();
+        assertThat(video.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                .contains("\"code\":200", "\"id\":\"mt-v1\"", "\"type\":\"video\"", "\"status\":\"processing\"");
+    }
+
+    @Test
+    void speechAndVideoQueriesCarryDeliveryReceipts() throws Exception {
+        when(service.query(eq(principal), eq("mt-a1")))
+                .thenReturn(view("mt-a1", "audio", "completed", "audio/wav"));
+        when(service.query(eq(principal), eq("mt-v1")))
+                .thenReturn(view("mt-v1", "video", "completed", "video/mp4"));
+
+        MvcResult speech = mvc.perform(get("/internal/ai/v1/media/speech")
+                        .param("model", "qwen-test").param("predictionId", "mt-a1"))
+                .andReturn();
+        assertThat(speech.getResponse().getStatus()).isEqualTo(200);
+        assertThat(speech.getResponse().getHeader("X-AI-Delivery-Permit")).matches("[0-9a-f-]{36}");
+        assertThat(speech.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                .contains("\"code\":200", "\"id\":\"mt-a1\"");
+
+        MvcResult video = mvc.perform(get("/internal/ai/v1/media/video")
+                        .param("model", "wanx-video-test").param("videoId", "mt-v1"))
+                .andReturn();
+        assertThat(video.getResponse().getStatus()).isEqualTo(200);
+        assertThat(video.getResponse().getHeader("X-AI-Delivery-Operation")).matches("[0-9a-f-]{36}");
+        assertThat(video.getResponse().getContentAsString(StandardCharsets.UTF_8))
+                .contains("\"code\":200", "\"id\":\"mt-v1\"");
+    }
+
+    @Test
+    void audioAndVideoContentUseTruthfulMimeAndSafeExtensions() throws Exception {
+        byte[] wav = new byte[]{'R', 'I', 'F', 'F', 36, 0, 0, 0, 'W', 'A', 'V', 'E', 1, 2, 3};
+        when(service.content(eq(principal), eq("mt-a1")))
+                .thenReturn(new MediaTaskService.MediaContent(wav, "audio/wav"));
+        byte[] mp4 = new byte[]{0, 0, 0, 24, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 1, 2, 3};
+        when(service.content(eq(principal), eq("mt-v1")))
+                .thenReturn(new MediaTaskService.MediaContent(mp4, "video/mp4"));
+
+        MvcResult audio = mvc.perform(get("/internal/ai/v1/media/content")
+                        .param("predictionId", "mt-a1"))
+                .andReturn();
+        assertThat(audio.getResponse().getStatus()).isEqualTo(200);
+        assertThat(audio.getResponse().getContentType()).startsWith("audio/wav");
+        assertThat(audio.getResponse().getHeader("Content-Disposition")).contains("mt-a1.wav");
+        assertThat(audio.getResponse().getHeader("Accept-Ranges")).isEqualTo("bytes");
+
+        MvcResult video = mvc.perform(get("/internal/ai/v1/media/content")
+                        .param("predictionId", "mt-v1"))
+                .andReturn();
+        assertThat(video.getResponse().getStatus()).isEqualTo(200);
+        assertThat(video.getResponse().getContentType()).startsWith("video/mp4");
+        assertThat(video.getResponse().getHeader("Content-Disposition")).contains("mt-v1.mp4");
+        assertThat(video.getResponse().getContentAsByteArray()).isEqualTo(mp4);
+    }
+
+    @Test
     void contentStreamsPrivateBytesAndHonoursSingleRange() throws Exception {
         byte[] png = new byte[]{(byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3};
         when(service.content(eq(principal), eq("mt-1")))
@@ -187,7 +265,11 @@ class MediaControllerTest {
     }
 
     private static MediaTaskView view(String id, String status, String mime) {
-        return new MediaTaskView(id, "image", "Tongyiwanx", status, "wanx-test", "a red fox", mime,
+        return view(id, "image", status, mime);
+    }
+
+    private static MediaTaskView view(String id, String type, String status, String mime) {
+        return new MediaTaskView(id, type, "Tongyiwanx", status, "wanx-test", "a red fox", mime,
                 null, null, 1, null, null, "2026-10-19T00:00:00Z", "2026-10-19T00:00:00Z");
     }
 

@@ -14,7 +14,9 @@ import {
   MEDIA_CONTENT_PATH,
   MEDIA_IMAGE_PATH,
   MEDIA_PREDICTION_PATH,
+  MEDIA_SPEECH_PATH,
   MEDIA_TASKS_PATH,
+  MEDIA_VIDEO_PATH,
   mediaContentQuery,
   mediaTaskPath,
   mediaTaskRetryPath,
@@ -27,6 +29,7 @@ import {
   toMediaTask,
   wireStatusToState,
 } from '../src/pages/media/server-tasks.ts';
+import { supportsMedia } from '../src/pages/media/utils.ts';
 
 const BASE_DTO = {
   id: 'mt-1',
@@ -126,9 +129,30 @@ describe('受控取流（按任务 ID，不接受 provider 裸 URL）', () => {
     assert.equal(needsControlledContent({ ...success, result: undefined }), false);
   });
 
+  it('音频/视频任务同样只经受控 content 端点取字节', () => {
+    const audio = toMediaTask({ ...BASE_DTO, id: 'mt-a1', type: 'audio', mimeType: 'audio/wav', prompt: 'hello' });
+    const video = toMediaTask({ ...BASE_DTO, id: 'mt-v1', type: 'video', mimeType: 'video/mp4', prompt: 'a cat' });
+    assert.equal(audio.state, 'success');
+    assert.equal(audio.kind, 'audio');
+    assert.equal(audio.result?.url, undefined);
+    assert.equal(needsControlledContent(audio), true);
+    assert.equal(video.state, 'success');
+    assert.equal(video.kind, 'video');
+    assert.equal(needsControlledContent(video), true);
+  });
+
+  it('DashScope 媒体模型（Tongyiwanx）在图片/语音/视频三种类型均可提交', () => {
+    assert.equal(supportsMedia('Tongyiwanx', 'image'), true);
+    assert.equal(supportsMedia('Tongyiwanx', 'audio'), true);
+    assert.equal(supportsMedia('Tongyiwanx', 'video'), true);
+    assert.equal(supportsMedia('unknown-provider', 'audio'), false);
+  });
+
   it('任务/重试/取流路径形状固定且 task id 被编码', () => {
     assert.equal(MEDIA_IMAGE_PATH, '/media/image');
     assert.equal(MEDIA_PREDICTION_PATH, '/media/prediction');
+    assert.equal(MEDIA_SPEECH_PATH, '/media/speech');
+    assert.equal(MEDIA_VIDEO_PATH, '/media/video');
     assert.equal(MEDIA_TASKS_PATH, '/media/tasks');
     assert.equal(MEDIA_CONTENT_PATH, '/media/content');
     assert.equal(mediaTaskPath('mt-1'), '/media/tasks/mt-1');

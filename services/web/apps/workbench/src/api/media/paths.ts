@@ -1,6 +1,8 @@
 const MEDIA_PREFIX = '/media';
 
 export const MEDIA_IMAGE_PATH = `${MEDIA_PREFIX}/image`;
+export const MEDIA_SPEECH_PATH = `${MEDIA_PREFIX}/speech`;
+export const MEDIA_VIDEO_PATH = `${MEDIA_PREFIX}/video`;
 export const MEDIA_PREDICTION_PATH = `${MEDIA_PREFIX}/prediction`;
 export const MEDIA_TASKS_PATH = `${MEDIA_PREFIX}/tasks`;
 export const MEDIA_CONTENT_PATH = `${MEDIA_PREFIX}/content`;
