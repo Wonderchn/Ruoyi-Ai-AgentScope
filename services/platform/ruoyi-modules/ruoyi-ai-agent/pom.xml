@@ -36,6 +36,15 @@
             <version>${revision}</version>
         </dependency>
 
+        <!-- F19:1 媒体图片适配器实现 org.ruoyi.common.chat.service.image.IImageGenerationService。
+             该接口/上下文（ChatModelVo/ImageContext/MediaGenerationResponse）是公共契约，
+             随 ruoyi-common-chat 提供；本模块只做实现与装配，不改公共接口。 -->
+        <dependency>
+            <groupId>org.ruoyi</groupId>
+            <artifactId>ruoyi-common-chat</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
         <dependency>
             <groupId>io.agentscope</groupId>
             <artifactId>agentscope-core</artifactId>

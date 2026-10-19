@@ -637,7 +637,26 @@ public class AiGatewayController {
             new Route("GET", "/coding/workspace", "coding.use"),
             new Route("GET", "/coding/file", "coding.use"),
             new Route("PUT", "/coding/file", "coding.write"),
-            new Route("POST", "/coding/command", "coding.command"));
+            new Route("POST", "/coding/command", "coding.command"),
+            // F19:1/3/4/5（2026-10-19）：媒体工作台（图片生成 / 服务端任务 / 私有取流）。
+            // 内层 handler = MediaController（类级 /internal/ai/v1，方法级 /media/**），由
+            // AiEmbeddedMediaConfiguration 显式装配（ai.integration.enabled + transport=local
+            // + p2.enabled + ai.embedded.media.enabled）。
+            // 动作**全部复用既有集合**，不新增 canonical 动作/权限行/菜单/迁移：
+            //   提交 / 重试（新的付费 attempt）→ run.submit（ai:run:submit）
+            //   查询 / 列表 / 详情 / 私有取流   → run.get（ai:run:read）
+            // 取流端点与任务端点同动作：媒体结果是"自己任务"的读面，不与文档下载权限混用。
+            // GET 在网关走字节分支：前三类 JSON 查询与二进制取流都必须带交付回执头；
+            // POST 走 JSON 分支、内层不铸回执。
+            // 段数/声明序：2 段 /media/tasks 排在 3 段 /media/tasks/{taskId} 之前；
+            // /media/prediction 与 /media/content 为 2 段字面量，与 /media/image 不同方法，互不遮蔽。
+            new Route("POST", "/media/image", "run.submit"),
+            new Route("GET", "/media/prediction", "run.get"),
+            new Route("GET", "/media/tasks", "run.get"),
+            new Route("GET", "/media/tasks/{taskId}", "run.get"),
+            new Route("POST", "/media/tasks/{taskId}/retry", "run.submit"),
+            new Route("GET", "/media/content", "run.get"));
+
 
     private final CurrentPrincipalResolver principalResolver;
     private final ObjectProvider<PlatformIdentitySource> identitySource;

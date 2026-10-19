@@ -3,17 +3,23 @@ import type { MediaTask } from '../types';
 import type { MediaType } from '@/api/media/types';
 import { Headset, Picture, VideoCamera } from '@element-plus/icons-vue';
 import { computed, shallowRef, watch } from 'vue';
+import { canRetryServerTask } from '../server-tasks';
 import { useMediaPreview } from '../useMediaPreview';
 import { canQueryMedia, mediaLabels, taskLabels } from '../utils';
 
 const props = defineProps<{ kind: MediaType; task?: MediaTask; querying: boolean; busy: boolean }>();
-const emit = defineEmits<{ pause: [key: string]; resume: [key: string] }>();
+const emit = defineEmits<{ pause: [key: string]; resume: [key: string]; retry: [key: string] }>();
 const { source, mimeType, loading, error: contentError, retry } = useMediaPreview(() => props.task);
 const icon = computed(() => ({ image: Picture, audio: Headset, video: VideoCamera })[props.task?.kind || props.kind]);
 const mediaError = shallowRef(false);
 const copied = shallowRef(false);
 const copyError = shallowRef('');
-const canResume = computed(() => Boolean(props.task?.result?.id && props.task.state !== 'success' && canQueryMedia(props.task.provider, props.task.kind)));
+const canResume = computed(() => {
+  const task = props.task;
+  return Boolean(task?.result?.id && task.state !== 'success' && task.state !== 'failed'
+    && !task.terminalUnknown && canQueryMedia(task.provider, task.kind));
+});
+const canRetry = computed(() => canRetryServerTask(props.task) && !props.busy);
 const download = computed(() => /^(?:data|blob):/.test(source.value));
 const filename = computed(() => {
   const mime = mimeType.value || source.value.match(/^data:([^;]+);/i)?.[1];
@@ -107,7 +113,10 @@ async function copyId() {
         </el-button>
         <a v-if="source && download" :href="source" :download="filename" class="resource-link">保存文件</a>
         <a v-else-if="source" :href="source" target="_blank" rel="noopener noreferrer" class="resource-link">打开资源</a>
-        <el-button v-if="task.state === 'waiting'" @click="emit('pause', task.key)">
+        <el-button v-if="canRetry" type="primary" plain @click="emit('retry', task.key)">
+          重试生成
+        </el-button>
+        <el-button v-else-if="task.state === 'waiting'" @click="emit('pause', task.key)">
           暂停查询
         </el-button>
         <el-button v-else-if="canResume" :disabled="busy" @click="emit('resume', task.key)">

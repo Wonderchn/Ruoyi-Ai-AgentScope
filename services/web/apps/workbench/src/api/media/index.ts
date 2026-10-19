@@ -1,14 +1,17 @@
 import type {
   ImageGenerationDTO,
   MediaGenerationResponse,
+  MediaTaskDTO,
+  MediaTaskListDTO,
   SpeechGenerationDTO,
   VideoGenerationDTO,
 } from './types';
 import { get, post } from '@/utils/request';
+import { MEDIA_IMAGE_PATH, MEDIA_PREDICTION_PATH, MEDIA_TASKS_PATH, mediaTaskPath, mediaTaskRetryPath } from './paths';
 import { readMediaApiResult } from './response';
 
 export function generateImage(data: ImageGenerationDTO) {
-  return readMediaApiResult<MediaGenerationResponse>(post<MediaGenerationResponse>('/media/image', data, { timeout: 180000 }).json());
+  return readMediaApiResult<MediaTaskDTO>(post<MediaTaskDTO>(MEDIA_IMAGE_PATH, data, { timeout: 180000 }).json());
 }
 
 export function generateVideo(data: VideoGenerationDTO) {
@@ -20,9 +23,26 @@ export function generateSpeech(data: SpeechGenerationDTO) {
 }
 
 export function getPrediction(params: { model: string; predictionId: string }) {
-  return readMediaApiResult<MediaGenerationResponse>(get<MediaGenerationResponse>('/media/prediction', params, { timeout: 30000 }).json());
+  return readMediaApiResult<MediaGenerationResponse>(get<MediaGenerationResponse>(MEDIA_PREDICTION_PATH, params, { timeout: 30000 }).json());
 }
 
 export function getVideoResult(params: { model: string; videoId: string }) {
   return readMediaApiResult<MediaGenerationResponse>(get<MediaGenerationResponse>('/media/video', params, { timeout: 30000 }).json());
+}
+
+/** F19:3 server task list; the page must not treat page memory as the authority. */
+export function listMediaTasks(limit = 20) {
+  return readMediaApiResult<MediaTaskListDTO>(get<MediaTaskListDTO>(MEDIA_TASKS_PATH, { limit }, { timeout: 30000 }).json());
+}
+
+/** Task detail (poll/refresh path). */
+export function getMediaTask(taskId: string) {
+  return readMediaApiResult<MediaTaskDTO>(get<MediaTaskDTO>(mediaTaskPath(taskId), {}, { timeout: 30000 }).json());
+}
+
+/** Explicit retry: new attempt, linked to the previous task id by the server. */
+export function retryMediaTask(taskId: string, requestId: string) {
+  return readMediaApiResult<MediaTaskDTO>(
+    post<MediaTaskDTO>(mediaTaskRetryPath(taskId), { requestId }, { timeout: 60000 }).json(),
+  );
 }

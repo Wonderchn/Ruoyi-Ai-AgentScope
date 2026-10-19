@@ -19,7 +19,7 @@ export function supportsMedia(provider: string, kind: MediaType): boolean {
 }
 
 export function canQueryMedia(provider: string, kind: MediaType): boolean {
-  return provider === 'atlas' || (kind === 'video' && supportsMedia(provider, kind));
+  return provider === 'atlas' || provider === 'Tongyiwanx' || (kind === 'video' && supportsMedia(provider, kind));
 }
 
 /** Only expose browser-renderable media; never pass arbitrary provider URLs to links. */

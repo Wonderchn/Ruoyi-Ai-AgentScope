@@ -32,3 +32,4 @@ org.ruoyi.aiweb.embedded.AiEmbeddedF22SearchConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedFlowRunConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedCodingConfiguration
 org.ruoyi.aiweb.embedded.AiEmbeddedMultiAgentConfiguration
+org.ruoyi.aiweb.embedded.AiEmbeddedMediaConfiguration
