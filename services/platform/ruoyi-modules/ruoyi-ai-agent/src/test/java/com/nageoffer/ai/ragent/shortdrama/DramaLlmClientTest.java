@@ -114,6 +114,49 @@ class DramaLlmClientTest {
     }
 
     @Test
+    @DisplayName("资产分析负例：重复角色 ID → 整份拒绝")
+    void analysisRejectsDuplicateCharacterId() {
+        String raw = "{\"characters\":[{\"id\":1,\"analysis\":\"甲\"},"
+                + "{\"id\":1,\"analysis\":\"乙\"}],\"locations\":[]}";
+        assertThatThrownBy(() -> clientReturning(raw)
+                .analyzeAssets("项目", "剧本", "大纲",
+                        List.of(DramaTestSupport.characterRow(1, 10)),
+                        List.of()))
+                .isInstanceOf(P04AiException.class)
+                .extracting(e -> ((P04AiException) e).errorCode())
+                .isEqualTo(P04AiErrorCode.INTERNAL_ERROR);
+    }
+
+    @Test
+    @DisplayName("资产分析负例：重复场景 ID → 整份拒绝")
+    void analysisRejectsDuplicateLocationId() {
+        String raw = "{\"characters\":[],\"locations\":[{\"id\":2,\"analysis\":\"甲\"},"
+                + "{\"id\":2,\"analysis\":\"乙\"}]}";
+        assertThatThrownBy(() -> clientReturning(raw)
+                .analyzeAssets("项目", "剧本", "大纲",
+                        List.of(),
+                        List.of(DramaTestSupport.locationRow(2, 10))))
+                .isInstanceOf(P04AiException.class)
+                .extracting(e -> ((P04AiException) e).errorCode())
+                .isEqualTo(P04AiErrorCode.INTERNAL_ERROR);
+    }
+
+    @Test
+    @DisplayName("摄影规则负例：重复 sceneNo → 拒绝")
+    void photographyRejectsDuplicateScene() {
+        String raw = "{\"rules\":["
+                + "{\"sceneNo\":1,\"photographyRules\":{\"shotType\":\"中景\"}},"
+                + "{\"sceneNo\":1,\"photographyRules\":{\"shotType\":\"远景\"}}]}";
+        assertThatThrownBy(() -> clientReturning(raw)
+                .photographyRules("项目", "剧本",
+                        List.of(DramaTestSupport.storyboardRow(1, 10, 20, 1)),
+                        List.of(), List.of()))
+                .isInstanceOf(P04AiException.class)
+                .extracting(e -> ((P04AiException) e).errorCode())
+                .isEqualTo(P04AiErrorCode.INTERNAL_ERROR);
+    }
+
+    @Test
     @DisplayName("摄影规则：必须覆盖全部 sceneNo 且不得新增")
     void photographyRequiresEveryScene() {
         String raw = "{\"rules\":[{\"sceneNo\":1,\"photographyRules\":{\"shotType\":\"中景\"}}]}";

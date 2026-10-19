@@ -19,9 +19,12 @@ package com.nageoffer.ai.ragent.shortdrama;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.nageoffer.ai.ragent.framework.convention.ChatRequest;
 import com.nageoffer.ai.ragent.framework.security.P04AiErrorCode;
 import com.nageoffer.ai.ragent.framework.security.P04AiException;
 import com.nageoffer.ai.ragent.shortdrama.controller.ShortDramaDtos;
+import com.nageoffer.ai.ragent.infra.chat.LLMService;
+import com.nageoffer.ai.ragent.infra.enums.Tier;
 import com.nageoffer.ai.ragent.shortdrama.dao.DramaRows;
 import com.nageoffer.ai.ragent.shortdrama.dao.ShortDramaRepository;
 import com.nageoffer.ai.ragent.shortdrama.llm.DramaLlmClient;
@@ -46,6 +49,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -152,6 +156,45 @@ class ShortDramaAssetServiceTest {
         assertThatThrownBy(() -> service.generatePhotographyRules(actor, 1, 20))
                 .isInstanceOf(P04AiException.class);
         verify(writeService, never()).savePhotographyRules(any(), anyLong(), anyLong(), any(), any());
+    }
+
+    @Test
+    @DisplayName("重复 sceneNo：真实解析器拒绝且不写分镜规则")
+    void duplicateSceneOutputIsRejectedWithoutWrites() {
+        projectAndScript();
+        when(repository.listStoryboards(1, 20, DramaTestSupport.TENANT))
+                .thenReturn(List.of(DramaTestSupport.storyboardRow(50, 1, 20, 1)));
+        LLMService rawLlm = mock(LLMService.class);
+        when(rawLlm.chat(any(ChatRequest.class), eq(Tier.STANDARD))).thenReturn(
+                "{\"rules\":["
+                        + "{\"sceneNo\":1,\"photographyRules\":{\"shotType\":\"中景\"}},"
+                        + "{\"sceneNo\":1,\"photographyRules\":{\"shotType\":\"远景\"}}]}");
+        ShortDramaAssetService realClientService = new ShortDramaAssetService(
+                repository, writeService, new DramaLlmClient(rawLlm, mapper));
+
+        assertThatThrownBy(() -> realClientService.generatePhotographyRules(actor, 1, 20))
+                .isInstanceOf(P04AiException.class);
+        verify(writeService, never()).savePhotographyRules(any(), anyLong(), anyLong(), any(), any());
+    }
+
+    @Test
+    @DisplayName("重复资产 ID：真实解析器拒绝且不触发任何写面")
+    void duplicateAssetIdsAreRejectedWithoutWrites() {
+        projectAndScript();
+        when(repository.listCharacters(1, DramaTestSupport.TENANT))
+                .thenReturn(List.of(DramaTestSupport.characterRow(30, 1)));
+        when(repository.listLocations(1, DramaTestSupport.TENANT))
+                .thenReturn(List.of(DramaTestSupport.locationRow(40, 1)));
+        LLMService rawLlm = mock(LLMService.class);
+        when(rawLlm.chat(any(ChatRequest.class), eq(Tier.STANDARD))).thenReturn(
+                "{\"characters\":[{\"id\":30,\"analysis\":\"甲\"},"
+                        + "{\"id\":30,\"analysis\":\"乙\"}],\"locations\":[]}");
+        ShortDramaAssetService realClientService = new ShortDramaAssetService(
+                repository, writeService, new DramaLlmClient(rawLlm, mapper));
+
+        assertThatThrownBy(() -> realClientService.analyzeAssets(actor, 1, 20))
+                .isInstanceOf(P04AiException.class);
+        verifyNoInteractions(writeService);
     }
 
     @Test
