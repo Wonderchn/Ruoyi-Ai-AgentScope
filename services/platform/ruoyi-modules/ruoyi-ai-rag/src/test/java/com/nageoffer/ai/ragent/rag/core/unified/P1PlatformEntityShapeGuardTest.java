@@ -175,7 +175,8 @@ class P1PlatformEntityShapeGuardTest {
                         "IngestionPipelineDO", "IngestionPipelineNodeDO", "IngestionTaskDO",
                         "IngestionTaskNodeDO", "IntentNodeDO", "KnowledgeBaseDO",
                         "KnowledgeChunkDO", "KnowledgeDocumentChunkLogDO", "KnowledgeDocumentDO",
-                        "KnowledgeDocumentScheduleDO", "KnowledgeDocumentScheduleExecDO", "MessageFeedbackDO",
+                        "KnowledgeDocumentScheduleDO", "KnowledgeDocumentScheduleExecDO",
+                        "McpMarketDO", "McpMarketToolDO", "McpToolDO", "MessageFeedbackDO",
                         "QueryTermMappingDO", "RagTraceNodeDO", "RagTraceRunDO",
                         "SampleQuestionDO", "TraceNode", "TraceRun",
                         "UserDO");
