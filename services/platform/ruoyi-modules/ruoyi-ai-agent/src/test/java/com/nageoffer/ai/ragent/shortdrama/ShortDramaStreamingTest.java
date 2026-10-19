@@ -133,6 +133,23 @@ class ShortDramaStreamingTest {
     }
 
     @Test
+    @DisplayName("流断开：客户端关闭后取消上游并释放幂等，不落库")
+    void closedSinkCancelsWithoutPersist() {
+        FakeLlm llm = new FakeLlm(PAYLOAD, null);
+        RecordingSink sink = new RecordingSink();
+        sink.closeOnPhase = true;
+
+        serviceWith(llm).streamCreateFromIdea(actor,
+                new ShortDramaDtos.CreateFromIdeaRequest("一个创意", null, null, null, "key-1"), sink);
+
+        assertThat(llm.streamCalls.get()).isEqualTo(1);
+        verify(writeService, never()).createProjectWithScript(any(), any(), any());
+        assertThat(idempotency.completed(actor, "key-1")).isEmpty();
+        assertThat(idempotency.size()).isZero();
+        assertThat(sink.events).noneMatch(e -> e.startsWith("complete:"));
+    }
+
+    @Test
     @DisplayName("输入校验：空创意 → 400，不调用模型")
     void blankIdeaIsRejected() {
         FakeLlm llm = new FakeLlm(PAYLOAD, null);
@@ -190,10 +207,15 @@ class ShortDramaStreamingTest {
 
     private static final class RecordingSink implements StreamSink {
         private final List<String> events = new ArrayList<>();
+        private boolean closeOnPhase;
+        private boolean closed;
 
         @Override
         public void phase(String phase, String status, String message) {
             events.add("phase:" + phase + ":" + status);
+            if (closeOnPhase) {
+                closed = true;
+            }
         }
 
         @Override
@@ -213,7 +235,7 @@ class ShortDramaStreamingTest {
 
         @Override
         public boolean isClosed() {
-            return false;
+            return closed;
         }
     }
 }
