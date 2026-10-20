@@ -37,6 +37,9 @@ import java.util.UUID;
 @Service
 public class AiTenantProvisioningServiceImpl implements AiTenantProvisioningService {
 
+    private static final String TEMPLATE_TENANT = "__public_template__";
+    private static final String DEFAULT_AGENT_NAME = "默认助手";
+
     private final JdbcTemplate jdbc;
 
     @Override
@@ -61,5 +64,43 @@ public class AiTenantProvisioningServiceImpl implements AiTenantProvisioningServ
                         + "ORDER BY revision_no DESC LIMIT 1",
                 tenantId, revisionId, String.valueOf(operatorUserId),
                 TenantConstants.DEFAULT_TENANT_ID, tenantId);
+
+        // 3) 默认 Agent：从平台模板域复制“默认助手”及其 Prompt 槽位。
+        //    幂等：同名行已存在则跳过；模板缺失时插入 0 行，不影响租户创建。
+        //    与 TenantWorkspaceProvisioningService 的手动导入保持同一模板源/同名口径。
+        Integer existing = jdbc.queryForObject(
+                "SELECT count(*) FROM ai_agent_profile WHERE tenant_id = ? AND name = ? AND deleted = 0",
+                Integer.class, tenantId, DEFAULT_AGENT_NAME);
+        if (existing == null || existing == 0) {
+            Integer activeCount = jdbc.queryForObject(
+                    "SELECT count(*) FROM ai_agent_profile WHERE tenant_id = ? AND active = 1 AND deleted = 0",
+                    Integer.class, tenantId);
+            int active = (activeCount == null || activeCount == 0) ? 1 : 0;
+            String agentId = "ag" + UUID.randomUUID().toString().replace("-", "").substring(0, 18);
+            int inserted = jdbc.update(
+                    "INSERT INTO ai_agent_profile ("
+                            + "id, name, description, avatar, builtin, active, create_by, create_time, update_time, "
+                            + "deleted, tenant_id, agent_describe, agent_name, agent_show, create_dept, "
+                            + "enable_thinking, knowledge_ids, mcp_tool_ids, model_id, remark, skill_names, "
+                            + "status, system_prompt"
+                            + ") SELECT ?, ?, description, avatar, 0, ?, ?, now(), now(), 0, ?, "
+                            + "agent_describe, agent_name, agent_show, NULL, enable_thinking, knowledge_ids, "
+                            + "mcp_tool_ids, model_id, remark, skill_names, status, system_prompt "
+                            + "FROM ai_agent_profile WHERE tenant_id = ? AND name = ? AND deleted = 0 "
+                            + "ORDER BY create_time LIMIT 1",
+                    agentId, DEFAULT_AGENT_NAME, active, String.valueOf(operatorUserId), tenantId,
+                    TEMPLATE_TENANT, DEFAULT_AGENT_NAME);
+            if (inserted == 1) {
+                jdbc.update(
+                        "INSERT INTO ai_agent_prompt (id, agent_id, slot_key, content, create_by, "
+                                + "create_time, update_time, deleted, tenant_id) "
+                                + "SELECT substr(md5(random()::text), 1, 20), ?, slot_key, content, ?, "
+                                + "now(), now(), 0, ? FROM ai_agent_prompt WHERE tenant_id = ? "
+                                + "AND agent_id = (SELECT id FROM ai_agent_profile WHERE tenant_id = ? "
+                                + "AND name = ? AND deleted = 0 ORDER BY create_time LIMIT 1) AND deleted = 0",
+                        agentId, String.valueOf(operatorUserId), tenantId, TEMPLATE_TENANT,
+                        TEMPLATE_TENANT, DEFAULT_AGENT_NAME);
+            }
+        }
     }
 }

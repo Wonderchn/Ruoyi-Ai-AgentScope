@@ -28,6 +28,7 @@ import com.nageoffer.ai.ragent.rag.controller.vo.AgentProfileListVO;
 import com.nageoffer.ai.ragent.rag.controller.vo.AgentProfileVO;
 import com.nageoffer.ai.ragent.rag.controller.vo.AgentPromptConfigVO;
 import com.nageoffer.ai.ragent.rag.service.AgentProfileAdminService;
+import com.nageoffer.ai.ragent.rag.service.TenantWorkspaceProvisioningService;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -91,6 +92,8 @@ public class AgentProfileController {
     private static final AtomicBoolean PERMIT_HOLDER_MISSING = new AtomicBoolean();
 
     private final AgentProfileAdminService agentProfileAdminService;
+
+    private final TenantWorkspaceProvisioningService workspaceProvisioning;
 
     /**
      * 撤权/租户屏障守卫（W4-9 / task-19）。内嵌形态下它是 bean：
@@ -187,6 +190,25 @@ public class AgentProfileController {
     @PostMapping("/agents")
     public ResponseEntity<ApiEnvelope<String>> create(@RequestBody AgentProfileSaveRequest requestParam) {
         return reply("agent.write", "agent-catalog:create", agentProfileAdminService.create(requestParam));
+    }
+
+    /**
+     * 把平台模板租户的默认 Agent（含 Prompt 槽位）复制到当前租户。
+     *
+     * <p>幂等：同名 “默认助手” 已存在时返回既有 id（created=false），不覆盖租户改动。
+     * 只复制 Agent + Prompt，不复制 binding（平台模板不替租户绑定资源）。
+     */
+    @PostMapping("/agents/import-default")
+    public ResponseEntity<ApiEnvelope<TenantWorkspaceProvisioningService.ImportResult>> importDefaultAgent() {
+        var principal = PrincipalContext.require();
+        try {
+            var result = workspaceProvisioning.importDefaultAgent(principal.tenantId(), principal.userId());
+            return reply("agent.write", "agent-catalog:import-default", result);
+        }
+        catch (RuntimeException e) {
+            log.error("import-default failed tenant={}", principal.tenantId(), e);
+            throw e;
+        }
     }
 
     /**

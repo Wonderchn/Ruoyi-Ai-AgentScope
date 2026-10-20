@@ -15,6 +15,7 @@ import com.nageoffer.ai.ragent.rag.dao.mapper.IntentNodeMapper;
 import com.nageoffer.ai.ragent.rag.service.RuntimeCatalogService;
 import com.nageoffer.ai.ragent.rag.service.impl.AgentOptionReadServiceImpl;
 import com.nageoffer.ai.ragent.rag.service.impl.AgentProfileAdminServiceImpl;
+import com.nageoffer.ai.ragent.rag.service.TenantWorkspaceProvisioningService;
 import com.nageoffer.ai.ragent.template.PublicTemplateRepository;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -70,6 +71,7 @@ import org.springframework.util.StringUtils;
 @ConditionalOnEmbeddedLocal
 @Import({
         AgentProfileController.class,
+        TenantWorkspaceProvisioningService.class,
         AgentOptionController.class,
         AgentOptionReadServiceImpl.class,
         // P3-BIND（2026-10-16，T0 集成）：绑定权威入 embedded 闭包；引用核验适配与
