@@ -25,7 +25,7 @@
 -->
 <script setup lang="ts">
 import type { SysMenuVo } from '@/api';
-import { computed, onMounted, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { cascadeRemoveMenus, createMenu, getMenu, listMenus, MENU_PERMISSIONS, menuTreeSelect, removeMenu, updateMenu } from '@/api';
 import { usePermission } from '@/composables/usePermission';
 import { errorMessageOf } from '@/utils';
@@ -226,10 +226,11 @@ async function removeRow(row: SysMenuVo, cascade = false) {
 
 const hasChildren = computed(() => new Set(rows.value.map(row => String(row.parentId ?? ''))));
 
-onMounted(() => {
-  if (visible())
+const permissionReady = computed(() => visible());
+watch(permissionReady, (ready) => {
+  if (ready)
     void load();
-});
+}, { immediate: true });
 </script>
 
 <template>

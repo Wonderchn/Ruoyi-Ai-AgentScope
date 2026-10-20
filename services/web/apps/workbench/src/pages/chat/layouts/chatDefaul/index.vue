@@ -302,56 +302,70 @@ function login() {
 .home {
   --ground: transparent;
   --surface: var(--apple-surface);
-  --border: var(--apple-separator);
+  --border: var(--apple-hairline);
   --control: var(--apple-control);
   --text: var(--apple-text);
   --muted: var(--apple-secondary);
   --accent: var(--apple-blue);
-  --radius-panel: 18px;
-  --radius-row: 12px;
+  --radius-panel: 24px;
+  --radius-row: 14px;
   --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
 
   display: flex;
   flex-direction: column;
   align-items: center;
-  width: 100%;
-  max-width: 1120px;
-  margin: 0 auto;
-  padding: 56px 32px 64px;
   box-sizing: border-box;
+  width: 100%;
+  max-width: 1160px;
+  padding: 48px 32px 64px;
+  margin: 0 auto;
   font-family: var(--font);
   color: var(--text);
 }
 
 .composer {
+  position: relative;
   width: 100%;
-  max-width: 720px;
-  margin: 26px auto 0;
+  max-width: 760px;
+  margin: 30px auto 0;
+}
+
+.composer::before {
+  position: absolute;
+  inset: -18px -22px auto;
+  z-index: -1;
+  height: 120px;
+  pointer-events: none;
+  content: '';
+  background: radial-gradient(60% 100% at 50% 0%, rgba(0, 113, 227, 0.10), transparent 70%);
+  filter: blur(10px);
 }
 
 .kb-scope {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
-  margin-top: 10px;
-  padding: 0 4px;
+  align-items: center;
+  padding: 0 6px;
+  margin-top: 12px;
 }
 
 .kb-scope-label {
   flex: none;
   font-size: 12px;
-  color: var(--apple-secondary, var(--text-secondary));
+  color: var(--apple-secondary);
 }
 
 .kb-scope-select {
-  flex: 1 1 auto;
+  flex: 1 1 220px;
   min-width: 0;
 }
 
 .kb-scope-link {
   flex: none;
   font-size: 12px;
-  color: var(--apple-blue, var(--primary));
+  font-weight: 500;
+  color: var(--apple-blue);
   text-decoration: none;
 }
 
@@ -360,23 +374,32 @@ function login() {
 }
 
 .kb-scope-alert {
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .home-grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: 16px;
+  gap: 18px;
   width: 100%;
-  margin-top: 56px;
+  margin-top: 48px;
 }
 
 .panel {
   box-sizing: border-box;
-  padding: 22px;
+  padding: 24px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
+  box-shadow: var(--apple-shadow-card);
+  transition:
+    transform 0.2s var(--apple-ease),
+    box-shadow 0.2s var(--apple-ease);
+}
+
+.panel:hover {
+  box-shadow: var(--apple-shadow-float);
+  transform: translateY(-2px);
 }
 
 .panel-prompts { grid-column: span 4; }
@@ -385,70 +408,74 @@ function login() {
 
 .panel-head {
   display: flex;
+  gap: 12px;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 
 .panel-head h2 {
   margin: 0;
-  font-size: 17px;
-  line-height: 1.35;
+  font-size: 19px;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
   color: var(--text);
 }
 
 .panel-link {
   font-size: 12px;
+  font-weight: 500;
   color: var(--accent);
   text-decoration: none;
 }
 
 .prompt-list,
 .recent-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
 }
 
 .prompt-row,
 .recent-row {
   display: flex;
+  gap: 16px;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  width: 100%;
-  min-height: 63px;
-  padding: 12px 16px;
   box-sizing: border-box;
-  background: var(--apple-bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-row);
-  color: var(--text);
+  width: 100%;
+  min-height: 54px;
+  padding: 13px 16px;
   font-family: var(--font);
   font-size: 14px;
+  color: var(--text);
   text-align: left;
   text-decoration: none;
   cursor: pointer;
-  transition: border-color 150ms ease, background-color 150ms ease;
+  background: #fbfbfd;
+  border: 1px solid var(--apple-hairline);
+  border-radius: var(--radius-row);
+  transition:
+    background-color 0.18s var(--apple-ease),
+    border-color 0.18s var(--apple-ease),
+    transform 0.18s var(--apple-ease);
 }
 
 .prompt-row:hover,
 .recent-row:hover {
+  background: var(--apple-surface);
   border-color: var(--apple-separator-strong);
-  background: var(--apple-fill);
+  transform: translateY(-1px);
 }
 
 .prompt-row {
-  min-height: 0;
-  padding: 12px 14px;
-  line-height: 1.5;
   justify-content: flex-start;
+  min-height: 0;
+  line-height: 1.5;
 }
 
 .recent-row {
@@ -471,8 +498,8 @@ function login() {
 .panel-empty {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
   gap: 14px;
+  align-items: flex-start;
   padding: 8px 2px 4px;
 }
 
@@ -491,14 +518,15 @@ function login() {
 .btn-primary {
   height: 38px;
   padding: 0 20px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--apple-blue);
-  color: #ffffff;
   font-family: var(--font);
   font-size: 14px;
   font-weight: 500;
+  color: #fff;
   cursor: pointer;
+  background: var(--apple-blue);
+  border: 0;
+  border-radius: 999px;
+  transition: background-color 0.18s var(--apple-ease);
 }
 
 .btn-primary:hover {
@@ -514,19 +542,19 @@ function login() {
 
 .about-list,
 .recent-facts {
-  margin: 4px 0 0;
   display: flex;
   flex-direction: column;
   width: 100%;
+  margin: 4px 0 0;
 }
 
 .about-list > div,
 .recent-facts > div {
   display: flex;
-  justify-content: space-between;
   gap: 16px;
+  justify-content: space-between;
   padding: 11px 0;
-  border-top: 1px solid var(--apple-separator);
+  border-top: 1px solid var(--apple-hairline);
 }
 
 .about-list > div:first-child,
@@ -549,15 +577,17 @@ function login() {
 
 @media (max-width: 900px) {
   .home {
-    padding: 32px 16px 40px;
+    padding: 36px 16px 48px;
   }
+
   .panel-prompts,
   .panel-recent,
   .panel-about {
     grid-column: span 12;
   }
+
   .home-grid {
-    margin-top: 36px;
+    margin-top: 40px;
   }
 }
 </style>

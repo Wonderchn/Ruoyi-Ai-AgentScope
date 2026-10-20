@@ -38,7 +38,8 @@ async function handleSubmit() {
   try {
     isSubmitting.value = true;
     await formRef.value?.validate();
-    const res = await login({ ...formModel, tenantId: loginFromStore.requireTenant() });
+    const tenantId = loginFromStore.requireTenant();
+    const res = await login({ ...formModel, tenantId });
     const loginData = res?.data ?? res;
     const token = loginData?.access_token || loginData?.token;
     if (!token) {
@@ -48,7 +49,7 @@ async function handleSubmit() {
       throw new Error(backendMessage || '登录失败：后端未返回访问令牌');
     }
     userStore.setToken(token);
-    // res.data.userInfo && userStore.setUserInfo(res.data.userInfo);
+    userStore.setUserInfo(loginData?.userInfo ?? { username: formModel.username, tenantId });
     userStore.resetAuthExpiredHandling();
     ElMessage.success('登录成功');
     userStore.closeLoginDialog();

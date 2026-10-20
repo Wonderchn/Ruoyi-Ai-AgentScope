@@ -18,6 +18,12 @@ onMounted(async () => {
   await modelStore.requestModelList();
 });
 
+// 登录后组件不会重新挂载：authEpoch 变化时补拉一次，避免一直停在“模型加载中”。
+watch(() => userStore.authEpoch, async () => {
+  if (userStore.token)
+    await modelStore.requestModelList();
+});
+
 /**
  * 触发条上的文案。
  *

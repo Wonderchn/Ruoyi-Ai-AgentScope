@@ -28,7 +28,7 @@
 -->
 <script setup lang="ts">
 import type { SysTenantPackageVo, SysTenantVo } from '@/api';
-import { computed, onMounted, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { changeTenantStatus, createTenant, getTenant, listTenants, removeTenants, selectTenantPackages, syncTenantConfig, syncTenantDict, syncTenantPackage, TENANT_PERMISSIONS, updateTenant } from '@/api';
 import { usePermission } from '@/composables/usePermission';
 import { useIdentityStore } from '@/stores/identity';
@@ -82,6 +82,31 @@ async function load(pageNum = state.value.page.pageNum) {
 function reset() {
   epoch.reset();
   state.value = createListState<SysTenantVo>(state.value.page.pageSize);
+}
+
+/** 工具栏“重置”：清空筛选并重新查询（与下方丢弃在途响应的 reset 不同）。 */
+function resetFilters() {
+  filters.value = { companyName: '', contactUserName: '', status: '' };
+  void load(1);
+}
+
+const pageActive = computed(() => state.value.rows.filter(row => String(row.status ?? '0') === '0').length);
+const pageDisabled = computed(() => state.value.rows.length - pageActive.value);
+const pageAccountQuota = computed(() =>
+  state.value.rows.reduce((sum, row) => sum + Number(row.accountCount ?? 0), 0));
+
+/** 行内“更多”菜单：把低频动作收进下拉，主操作只留“编辑”。 */
+function handleMore(command: string, row: SysTenantVo) {
+  if (command === 'status')
+    void toggleStatus(row);
+  else if (command === 'syncPackage')
+    void syncPackage(row);
+  else if (command === 'syncDict')
+    void syncDict(row);
+  else if (command === 'syncConfig')
+    void syncConfigRow(row);
+  else if (command === 'remove')
+    void removeRow(row);
 }
 
 /** 新增/编辑对话框。 */
@@ -331,10 +356,11 @@ async function syncConfigRow(row: SysTenantVo) {
   }
 }
 
-onMounted(() => {
-  if (visible())
+const permissionReady = computed(() => visible());
+watch(permissionReady, (ready) => {
+  if (ready)
     void load(1);
-});
+}, { immediate: true });
 </script>
 
 <template>
@@ -348,13 +374,6 @@ onMounted(() => {
     />
 
     <template v-else>
-      <ElAlert
-        data-testid="tenant-export-gap"
-        type="info"
-        :closable="false"
-        class="mb-4"
-        title="导出缺口：后端 POST /system/tenant/export 是 Excel（POST 写响应流），共享 JSON 客户端不支持 ⇒ 本页不提供导出（RW-15 报告 §NOT_RUN）。另：后端每个方法同时要求超管角色，页面只按 permission 控制显示。"
-      />
       <ElAlert
         v-if="actionError"
         data-testid="tenant-action-error"
@@ -372,33 +391,28 @@ onMounted(() => {
         :title="actionNotice"
       />
 
-      <ElCard class="mb-4">
-        <ElForm :inline="true" @submit.prevent>
-          <ElFormItem label="企业名称">
-            <ElInput v-model="filters.companyName" placeholder="模糊匹配" clearable data-testid="tenant-filter-company" />
-          </ElFormItem>
-          <ElFormItem label="联系人">
-            <ElInput v-model="filters.contactUserName" placeholder="模糊匹配" clearable data-testid="tenant-filter-contact" />
-          </ElFormItem>
-          <ElFormItem label="状态">
-            <ElSelect v-model="filters.status" placeholder="全部" clearable style="width: 120px" data-testid="tenant-filter-status">
-              <ElOption label="正常" value="0" />
-              <ElOption label="停用" value="1" />
-            </ElSelect>
-          </ElFormItem>
-          <ElFormItem>
-            <ElButton type="primary" :loading="state.loading" data-testid="tenant-search" @click="load(1)">
-              查询
-            </ElButton>
-            <ElButton :disabled="state.loading" data-testid="tenant-reload" @click="load(state.page.pageNum)">
-              刷新
-            </ElButton>
-            <ElButton v-if="canAdd" type="primary" data-testid="tenant-create-open" @click="openCreate()">
-              新增租户
-            </ElButton>
-          </ElFormItem>
-        </ElForm>
-      </ElCard>
+      <section class="tenant-summary">
+        <article class="tenant-summary-card">
+          <span>租户总数</span>
+          <strong>{{ state.total }}</strong>
+          <small>当前筛选下</small>
+        </article>
+        <article class="tenant-summary-card">
+          <span>本页正常</span>
+          <strong>{{ pageActive }}</strong>
+          <small>status = 0</small>
+        </article>
+        <article class="tenant-summary-card">
+          <span>本页停用</span>
+          <strong>{{ pageDisabled }}</strong>
+          <small>status = 1</small>
+        </article>
+        <article class="tenant-summary-card">
+          <span>本页账号额度</span>
+          <strong>{{ pageAccountQuota }}</strong>
+          <small>accountCount 合计</small>
+        </article>
+      </section>
 
       <ElCard>
         <template #header>
@@ -408,47 +422,120 @@ onMounted(() => {
           </div>
         </template>
 
+        <div class="tenant-toolbar">
+          <div class="tenant-filters">
+            <ElInput
+              v-model="filters.companyName"
+              placeholder="企业名称"
+              clearable
+              data-testid="tenant-filter-company"
+              @keyup.enter="load(1)"
+            />
+            <ElInput
+              v-model="filters.contactUserName"
+              placeholder="联系人"
+              clearable
+              data-testid="tenant-filter-contact"
+              @keyup.enter="load(1)"
+            />
+            <ElSelect
+              v-model="filters.status"
+              placeholder="全部状态"
+              clearable
+              style="width: 128px"
+              data-testid="tenant-filter-status"
+            >
+              <ElOption label="正常" value="0" />
+              <ElOption label="停用" value="1" />
+            </ElSelect>
+            <ElButton type="primary" :loading="state.loading" data-testid="tenant-search" @click="load(1)">
+              查询
+            </ElButton>
+            <ElButton :disabled="state.loading" @click="resetFilters">
+              重置
+            </ElButton>
+          </div>
+          <div class="tenant-actions">
+            <ElButton :disabled="state.loading" data-testid="tenant-reload" @click="load(state.page.pageNum)">
+              刷新
+            </ElButton>
+            <ElButton v-if="canAdd" type="primary" data-testid="tenant-create-open" @click="openCreate()">
+              新增租户
+            </ElButton>
+          </div>
+        </div>
+
         <ElAlert v-if="state.error" data-testid="tenant-error" :title="state.error" type="error" :closable="false" class="mb-4" />
 
-        <ElTable v-loading="state.loading" data-testid="tenant-rows" :data="state.rows" border size="small">
-          <ElTableColumn prop="tenantId" label="租户 ID" width="110" />
-          <ElTableColumn prop="companyName" label="企业名称" min-width="140" />
-          <ElTableColumn prop="contactUserName" label="联系人" width="90" />
-          <ElTableColumn prop="contactPhone" label="联系电话" width="120" show-overflow-tooltip />
-          <ElTableColumn prop="packageId" label="套餐" width="100" />
-          <ElTableColumn prop="accountCount" label="账号数" width="70" />
-          <ElTableColumn prop="expireTime" label="过期时间" width="120" />
-          <ElTableColumn label="状态" width="70">
+        <ElTable v-loading="state.loading" data-testid="tenant-rows" :data="state.rows" size="small">
+          <ElTableColumn label="企业" min-width="230">
+            <template #default="{ row }">
+              <div class="tenant-name">
+                <strong>{{ row.companyName || '未命名租户' }}</strong>
+                <small>ID {{ row.tenantId ?? row.id ?? '—' }} · {{ row.contactUserName || '无联系人' }}</small>
+              </div>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn prop="contactPhone" label="联系电话" width="130" show-overflow-tooltip />
+          <ElTableColumn label="套餐" width="110">
+            <template #default="{ row }">
+              {{ row.packageId ?? '—' }}
+            </template>
+          </ElTableColumn>
+          <ElTableColumn prop="accountCount" label="账号数" width="80" />
+          <ElTableColumn prop="expireTime" label="过期时间" width="160" />
+          <ElTableColumn label="状态" width="90">
             <template #default="{ row }">
               <ElTag :type="statusTagType(row.status)" size="small">
                 {{ row.status === '0' ? '正常' : row.status === '1' ? '停用' : (row.status ?? '—') }}
               </ElTag>
             </template>
           </ElTableColumn>
-          <ElTableColumn label="操作" width="300">
+          <ElTableColumn label="操作" width="150">
             <template #default="{ row }">
-              <ElButton v-if="canEdit" link size="small" :data-testid="`tenant-edit-${row.tenantId}`" @click="openEdit(row)">
+              <ElButton
+                v-if="canEdit"
+                link
+                size="small"
+                :data-testid="`tenant-edit-${row.tenantId}`"
+                @click="openEdit(row)"
+              >
                 编辑
               </ElButton>
-              <ElButton v-if="canEdit" link size="small" :data-testid="`tenant-status-${row.tenantId}`" @click="toggleStatus(row)">
-                {{ row.status === '0' ? '停用' : '启用' }}
-              </ElButton>
-              <ElButton v-if="canEdit" link size="small" :data-testid="`tenant-sync-package-${row.tenantId}`" @click="syncPackage(row)">
-                套餐同步
-              </ElButton>
-              <ElButton v-if="canEdit" link size="small" :data-testid="`tenant-sync-dict-${row.tenantId}`" @click="syncDict(row)">
-                字典同步
-              </ElButton>
-              <ElButton v-if="canEdit" link size="small" :data-testid="`tenant-sync-config-${row.tenantId}`" @click="syncConfigRow(row)">
-                配置同步
-              </ElButton>
-              <ElButton v-if="canRemove" link size="small" type="danger" :data-testid="`tenant-delete-${row.tenantId}`" @click="removeRow(row)">
-                删除
-              </ElButton>
+              <ElDropdown trigger="click" @command="(command: string) => handleMore(command, row)">
+                <ElButton link size="small">
+                  更多
+                </ElButton>
+                <template #dropdown>
+                  <ElDropdownMenu>
+                    <ElDropdownItem command="status" :disabled="!canEdit">
+                      {{ row.status === '0' ? '停用租户' : '启用租户' }}
+                    </ElDropdownItem>
+                    <ElDropdownItem command="syncPackage" :disabled="!canEdit">
+                      套餐同步
+                    </ElDropdownItem>
+                    <ElDropdownItem command="syncDict" :disabled="!canEdit">
+                      字典同步
+                    </ElDropdownItem>
+                    <ElDropdownItem command="syncConfig" :disabled="!canEdit">
+                      配置同步
+                    </ElDropdownItem>
+                    <ElDropdownItem command="remove" divided :disabled="!canRemove">
+                      删除租户
+                    </ElDropdownItem>
+                  </ElDropdownMenu>
+                </template>
+              </ElDropdown>
             </template>
           </ElTableColumn>
           <template #empty>
-            {{ state.loading ? '加载中…' : '当前页没有可见租户' }}
+            <div class="tenant-empty">
+              <strong>{{ state.loading ? '加载中…' : '没有匹配的租户' }}</strong>
+              <span>{{ state.loading ? '' : '调整筛选条件，或开通一个新租户。' }}</span>
+              <ElButton v-if="canAdd && !state.loading" type="primary" size="small" @click="openCreate()">
+                新增租户
+              </ElButton>
+            </div>
           </template>
         </ElTable>
 
@@ -464,6 +551,15 @@ onMounted(() => {
             下一页
           </ElButton>
         </div>
+
+        <details class="tenant-footnote">
+          <summary>数据口径与已知缺口</summary>
+          <p>
+            列表只展示当前身份可见的存活租户；后端每个方法同时要求超管角色，页面只按 permission 控制显示。
+            导出端点 POST /system/tenant/export 返回 Excel 流，共享 JSON 客户端不支持，本页不提供导出。
+            新增租户在服务端同一事务内完成角色、菜单、部门、管理员、字典/配置复制与 AI 策略初始化。
+          </p>
+        </details>
       </ElCard>
     </template>
 
@@ -575,3 +671,149 @@ onMounted(() => {
     </ElButton>
   </div>
 </template>
+
+<style scoped>
+.tenant-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.tenant-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 18px;
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-hairline);
+  border-radius: 18px;
+  box-shadow: var(--apple-shadow-card);
+}
+
+.tenant-summary-card span {
+  font-size: 12px;
+  color: var(--apple-secondary);
+}
+
+.tenant-summary-card strong {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: var(--apple-text);
+}
+
+.tenant-summary-card small {
+  font-size: 11px;
+  color: var(--apple-tertiary);
+}
+
+.tenant-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 16px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--apple-hairline);
+}
+
+.tenant-filters,
+.tenant-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.tenant-actions {
+  margin-left: auto;
+}
+
+.tenant-filters :deep(.el-input) {
+  width: 180px;
+}
+
+.tenant-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tenant-name strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--apple-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tenant-name small {
+  overflow: hidden;
+  font-family: var(--apple-font-mono);
+  font-size: 10.5px;
+  color: var(--apple-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tenant-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  padding: 24px 0;
+  color: var(--apple-secondary);
+}
+
+.tenant-empty strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--apple-text);
+}
+
+.tenant-empty span {
+  font-size: 12px;
+}
+
+.tenant-footnote {
+  padding-top: 14px;
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--apple-secondary);
+  border-top: 1px solid var(--apple-hairline);
+}
+
+.tenant-footnote summary {
+  cursor: pointer;
+}
+
+.tenant-footnote p {
+  margin: 10px 0 0;
+  line-height: 1.7;
+}
+
+@media (max-width: 1000px) {
+  .tenant-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .tenant-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tenant-filters :deep(.el-input) {
+    width: 100%;
+  }
+
+  .tenant-toolbar {
+    align-items: stretch;
+  }
+}
+</style>
