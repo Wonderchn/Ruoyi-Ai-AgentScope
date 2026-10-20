@@ -1,4 +1,4 @@
-# P2/P3 运行手册（内嵌主线与兼容 dev 交付）
+# P2/P3 运行手册（内嵌主线与 dev 交付）
 
 本手册覆盖 P2（可靠 RAG）与 P3（受控 Agent）核心能力的配置、默认边界、同源 dev 启动、回退与运行故障处理。所有配置通过环境变量或受控 env 文件注入；仓库不保存任何真实密钥。
 
@@ -8,14 +8,14 @@
 
 统一 SQL 位于 `services/platform/docs/script/sql/postgres`，版本以 `scripts/ci/unified-schema-contract.json` 为准（非连续编号）。运行 `bash scripts/ci/verify-unified-migrations.sh` 验证新装和从 platform V6 + AI V12 升级，保留全部冻结迁移。不要把两套 Flyway 历史重放到统一链。
 
-下文 compose 与 V1–V6 / V1–V12 指独立 AI **兼容模式**，不是内嵌部署的一键生产配方。镜像发布与 digest 固定见 [image-release.md](image-release.md)。
+下文 compose 起的就是内嵌形态（`platform` 以 `dev,embedded` 运行，单后端 + web）。仓库已不含独立 AI 服务，也没有对应的 compat profile；冻结的 V1–V12 链留在 `services/platform/docs/script/sql/legacy-ai`，只作为旧库升级验证输入。它不是内嵌部署的一键生产配方。镜像发布与 digest 固定见 [image-release.md](image-release.md)。
 
-## 1. 独立 AI 基础配置：能力默认关闭
+## 1. 内嵌 AI 基础配置：能力默认关闭
 
 - `p2.enabled=false`（缺省等同 false）：不装配 run/Worker/对象存储运行时；`POST /api/ai/v1/runs` 不可用；私有对象读写显式拒绝（`ClosedPrivateObjectStore`），不存在空实现静默成功。
 - `p3.enabled=false`：Agent 运行时不装配。
 - ES / Milvus / 自动记忆 / 模型摘要 / 外网搜索未开放：组件可以部署，但正式产品链路不会调用它们；不存在"装了就自动启用"。
-- AI 服务在默认配置下可零配置启动（仅需数据库/Redis 连接），无需对象根等 P2 专属配置。
+- AI 运行时在默认配置下可零配置启动（仅需数据库/Redis 连接），无需对象根等 P2 专属配置。
 
 ## 2. 专属开启（dev / 专属 profile）
 
@@ -36,13 +36,13 @@ P3_ENABLED=true            # Agent 运行时（独立沙箱服务需另行提供
 
 ## 3. 数据库迁移
 
-- 两侧迁移以仓库内 SQL 为唯一事实：platform V1–V6、AI V1–V12。
+- 两条迁移链都以仓库内 SQL 为唯一事实：platform V1–V6（`docs/script/sql/postgres`）、冻结的 AI V1–V12（`docs/script/sql/legacy-ai`）。
 - 必需验证（CI 中自动执行）：`bash scripts/ci/verify-platform-migrations.sh`、`bash scripts/ci/verify-ai-migrations.sh`。后者在一次性数据库上验证冻结版本清单、结构锚点、角色隔离、漂移拒绝与错 schema 拒绝。
 - 已发布的迁移文件不可修改；产品变更一律走下一增量版本。
 
 ## 4. 同源 dev 启动（单主机）
 
-`infra/dev/compose.yaml` 提供统一启动：pgvector + Redis（digest 锁定）→ bootstrap/迁移一次性任务 → platform/ai 镜像 → web 镜像（静态前端 + 受限反向代理）。
+`infra/dev/compose.yaml` 提供统一启动：pgvector + Redis（digest 锁定）→ bootstrap/迁移一次性任务 → platform 镜像（内嵌形态，AI 运行时在本进程内）→ web 镜像（静态前端 + 受限反向代理）。迁移任务仍会应用冻结的 AI V1–V12 链（`legacy-ai`），以保证旧库升级路径在 dev 栈里同样可验证。
 
 ```bash
 cd infra/dev
@@ -57,7 +57,7 @@ docker compose up -d --build
 ```
 
 - 浏览器只访问 web 暴露的单一端口（默认 8080）。`/api/`、`/auth/`、`/system/`、`/monitor/` 是允许的公开代理前缀；SSE 响应不缓冲；上传上限 50 MiB；其余路径只服务静态资源。
-- 交付镜像：`ghcr.io/wonderchn/ruoyi-ai-agentscope-{platform,ai,web}`，三者共同出现在 release manifest，绑定同一 source commit 与镜像 digest。
+- 交付镜像：`ghcr.io/wonderchn/ruoyi-ai-agentscope-{platform,web}`，两者共同出现在 release manifest，绑定同一 source commit 与镜像 digest。独立 AI 服务已退出仓库，发布链只构建这两个镜像。
 - 所有真实值（数据库口令、服务凭证、外部化 `PROJECT_SERVICES_*` 占位符）通过 env 文件注入；env 文件不进仓库。
 
 ## 5. 回退
@@ -81,6 +81,5 @@ docker compose up -d --build
 | --- | --- |
 | 平台迁移 | `bash scripts/ci/verify-platform-migrations.sh` |
 | 组合迁移（platform 6 + AI 12） | `bash scripts/ci/verify-ai-migrations.sh` |
-| 原生故障矩阵（受理/接管/SSE） | `bash scripts/ci/verify-native-runtime.sh`（需要 docker + 两侧 Boot JAR） |
-| Java 全量回归 | `mvn -B -ntp -f services/ai/pom.xml -Pci clean verify`；platform 用 `-Pdev` |
+| Java 全量回归 | `mvn -B -ntp -f services/platform/pom.xml -Pdev clean verify` |
 | 前端协议测试 | `node --import ./tests/ts-loader.mjs --test ./tests/*.test.ts`（在 `services/web/packages/events`；或在工作区根 `pnpm test`） |

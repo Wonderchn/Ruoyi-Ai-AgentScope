@@ -9,7 +9,10 @@
 # - AI → platform 的三处回调（授权复核、组织事实匹配、许可登记）全部替换为同进程
 #   本地接口（LocalPlatformAuthorizationChecker / LocalPlatformFacts / LocalPlatformPermits）；
 # - /internal/ai/v1/** 对外一律 404（AiInternalAccessBoundaryFilter，C3 负例语义）；
-# - 流式路由（SSE/上传/私有 PDF）在专用本地流传输落地前 fail-closed 503，不静默降级。
+# - 流式路由已由本地装配承载，不再 fail-closed 503：SSE 走 RunEventStreamService /
+#   RunStreamController（AiEmbeddedRunConfiguration），附件上传走 ChatAttachmentController
+#   （AiEmbeddedAttachmentConfiguration），上传意图与私有对象走 UploadIntentService /
+#   PrivateObjectStore（AiEmbeddedDocumentConfiguration）。
 #
 # 数据库：统一主库（platform schema），无 AI 专用数据源；许可表为
 # sys_ai_execution_permit（platform 层）与 ai_execution_permit（AI 运行时层）。

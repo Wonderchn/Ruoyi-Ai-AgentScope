@@ -28,7 +28,9 @@ def main() -> int:
     sources = lock.get("sources")
     expected_paths = {
         "ruoyi-ai": "services/platform",
-        "ragent": "services/ai",
+        # ragent source was relocated into the platform ruoyi-ai-* modules; the original
+        # services/ai tree is no longer in the repository
+        "ragent": "services/platform/ruoyi-modules",
         # the upstream frontend snapshot now lives inside the services/web workspace
         "ruoyi-web": "services/web/apps/workbench",
     }
@@ -43,7 +45,7 @@ def main() -> int:
             for source in sources
         )
     ):
-        print("Expected three named upstream sources with pinned commits", file=sys.stderr)
+        print("Expected the named upstream sources with pinned commits", file=sys.stderr)
         return 1
     bad: list[str] = []
     for path in tracked_files():

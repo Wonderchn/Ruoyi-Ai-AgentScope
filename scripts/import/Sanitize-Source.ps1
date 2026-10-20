@@ -6,9 +6,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path -LiteralPath $RepositoryRoot).Path
 $services = Join-Path $repo 'services'
-if (-not (Test-Path -LiteralPath (Join-Path $services 'platform')) -or
-    -not (Test-Path -LiteralPath (Join-Path $services 'ai'))) {
-    throw 'Expected services/platform and services/ai under RepositoryRoot.'
+if (-not (Test-Path -LiteralPath (Join-Path $services 'platform'))) {
+    throw 'Expected services/platform under RepositoryRoot.'
 }
 
 $sensitiveKey = '(?i)(?:password|passwd|secret|api[-_]?key|access[-_]?key|access[-_]?key[-_]?id|access[-_]?key[-_]?secret|token)$'
@@ -52,15 +51,6 @@ $mainText = [regex]::Replace($mainText, $keyLiteral, 'System.getenv("ALIYUN_DASH
 $testText = [System.IO.File]::ReadAllText($testFile)
 $testText = [regex]::Replace($testText, $keyLiteral, '"test-api-key"')
 [System.IO.File]::WriteAllText($testFile, $testText, [System.Text.UTF8Encoding]::new($false))
-
-$frontendEnv = Join-Path $services 'ai/frontend/.env'
-if (Test-Path -LiteralPath $frontendEnv -PathType Leaf) {
-    $sampleLines = [System.IO.File]::ReadAllLines($frontendEnv) | ForEach-Object {
-        if ($_ -match '^([A-Za-z_][A-Za-z0-9_]*)=') { $Matches[1] + '=' } else { $_ }
-    }
-    [System.IO.File]::WriteAllLines((Join-Path $services 'ai/frontend/.env.example'), $sampleLines, [System.Text.UTF8Encoding]::new($false))
-    Remove-Item -LiteralPath $frontendEnv
-}
 
 $auditPath = Join-Path $repo 'docs/configuration.md'
 $auditDir = Split-Path -Parent $auditPath

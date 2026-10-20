@@ -12,8 +12,9 @@
 #   * this is a dev delivery: it does not deploy production and must not be pointed
 #     at any business database;
 #   * the migration chain applies the repository's own SQL (bootstrap identities,
-#     then platform V1..V6 and AI V1..V12 with native Flyway) before the services
-#     start; platform and ai wait for it (service_completed_successfully).
+#     then platform V1..V6 and the frozen AI V1..V12 archive at
+#     services/platform/docs/script/sql/legacy-ai with native Flyway) before the
+#     services start; platform waits for it (service_completed_successfully).
 name: ruoyi-ai-dev
 
 services:
@@ -46,7 +47,7 @@ services:
       AI_APP_PASSWORD: ${DEV_PG_PASSWORD}
     volumes:
       - ../../services/platform/docs/script/sql/postgres/bootstrap:/sql/platform-bootstrap:ro
-      - ../../services/ai/resources/database/postgres/bootstrap:/sql/ai-bootstrap:ro
+      - ../../services/platform/docs/script/sql/legacy-ai/bootstrap:/sql/ai-bootstrap:ro
       - ./:/bootstrap:ro
     entrypoint: ["sh", "/bootstrap/db-bootstrap.sh"]
 
@@ -60,7 +61,7 @@ services:
       MIGRATE_PASSWORD: ${DEV_PG_PASSWORD}
     volumes:
       - ../../services/platform/docs/script/sql/postgres:/sql/platform:ro
-      - ../../services/ai/resources/database/postgres/migrations:/sql/ai:ro
+      - ../../services/platform/docs/script/sql/legacy-ai/migrations:/sql/ai:ro
     entrypoint: >
       sh -c '
       mkdir -p /tmp/mig/platform /tmp/mig/ai;
@@ -124,9 +125,11 @@ services:
   platform:
     image: ${DEV_PLATFORM_IMAGE:-ghcr.io/wonderchn/ruoyi-ai-agentscope-platform:latest}
     # The shipped image pins --spring.profiles.active=prod on its command line,
-    # which outranks environment variables; a dev delivery must run the dev
-    # profile explicitly.
-    entrypoint: ["java", "-Djava.io.tmpdir=/app/tmp", "-jar", "/app/application.jar", "--spring.profiles.active=dev"]
+    # which outranks environment variables; a dev delivery must name its profiles
+    # explicitly. `dev,embedded` is the shipped form: the AI runtime runs inside this
+    # JVM (ai.integration.transport=local), so this is the only backend service.
+    # The pre-migration separate AI service is no longer in the repository.
+    entrypoint: ["java", "-Djava.io.tmpdir=/app/tmp", "-jar", "/app/application.jar", "--spring.profiles.active=dev,embedded"]
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -135,7 +138,7 @@ services:
       delivery-keys:
         condition: service_completed_successfully
     environment:
-      SPRING_PROFILES_ACTIVE: dev
+      SPRING_PROFILES_ACTIVE: dev,embedded
       PLATFORM_DB_HOST: postgres
       PLATFORM_DB_PORT: "5432"
       PLATFORM_DB_NAME: ruoyi_agent
@@ -145,7 +148,9 @@ services:
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ${DEV_REDIS_PASSWORD}
       AI_INTEGRATION_ENABLED: "true"
-      AI_INTEGRATION_AI_BASE_URL: http://ai:9090/api/ragent
+      # No AI_INTEGRATION_AI_BASE_URL: the embedded profile sets
+      # ai.integration.transport=local, which is what keeps the http-only
+      # AiGatewayClient (and its mandatory ai-base-url) out of the context.
       AI_INTEGRATION_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL:?set DEV_SERVICE_CREDENTIAL in the env file}
       AI_INTEGRATION_AUTHORIZATION_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL}
       AI_INTEGRATION_DELEGATION_PRIVATE_KEY_PATH: /keys/private.pem
@@ -157,87 +162,22 @@ services:
     volumes:
       - dev-delivery-keys:/keys:ro
 
-  ai:
-    image: ${DEV_AI_IMAGE:-ghcr.io/wonderchn/ruoyi-ai-agentscope-ai:latest}
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-      redis:
-        condition: service_healthy
-      delivery-keys:
-        condition: service_completed_successfully
-      delivery-dirs:
-        condition: service_completed_successfully
-    environment:
-      AI_DB_URL: jdbc:postgresql://postgres:5432/ruoyi_agent?client_encoding=UTF8&currentSchema=ai,extensions
-      AI_DB_USER: ai_app
-      AI_DB_PASSWORD: ${DEV_PG_PASSWORD}
-      SPRING_DATA_REDIS_HOST: redis
-      SPRING_DATA_REDIS_PORT: "6379"
-      SPRING_DATA_REDIS_PASSWORD: ${DEV_REDIS_PASSWORD}
-      # Capability flags default to OFF (zero-config start, closed behaviour).
-      P2_ENABLED: ${P2_ENABLED:-false}
-      # Agent runtime (P3): read mode needs p3.enabled + the synthetic model; the
-      # sandbox write tools additionally need the independent ticket provider below.
-      P3_ENABLED: ${P3_ENABLED:-false}
-      P3_SYNTHETIC_MODEL: ${P3_SYNTHETIC_MODEL:-true}
-      P3_SANDBOX_ENABLED: ${P3_SANDBOX_ENABLED:-false}
-      P3_SANDBOX_NAMESPACE: ${DEV_SANDBOX_NAMESPACE:-devdelivery}
-      P3_SANDBOX_CREDENTIAL: ${DEV_SANDBOX_CREDENTIAL:-}
-      P3_APPROVAL_INITIATOR_ENABLED: ${P3_APPROVAL_INITIATOR_ENABLED:-false}
-      # The run worker and outbox relay are separate opt-ins even when p2 is on.
-      P2_WORKER_ENABLED: ${P2_WORKER_ENABLED:-false}
-      P2_OUTBOX_RELAY_ENABLED: ${P2_OUTBOX_RELAY_ENABLED:-false}
-      P2_OBJECT_STORE_TYPE: fs
-      P2_OBJECT_STORE_ROOT: /data/private-objects
-      # Optional local MinerU parser (host service): set MINERU_LOCAL_ENABLED=true in
-      # the env file; the host is reachable through the host-gateway mapping.
-      # Model/embedding egress: explicitly allow only the synthetic provider
-      # (no external call); real providers require their own keys and approval.
-      # Model boundaries: synthetic providers only (never billed calls); switch to
-      # real providers only with their own approved keys and budget.
-      P2_EMBEDDING_MODE: ${P2_EMBEDDING_MODE:-synthetic}
-      P2_CHAT_MODE: ${P2_CHAT_MODE:-synthetic}
-      P2_CHAT_EGRESS_ENABLED: ${P2_CHAT_EGRESS_ENABLED:-false}
-      P2_CHAT_EGRESS_ALLOWED_PROVIDERS: ${P2_CHAT_EGRESS_ALLOWED_PROVIDERS:-synthetic}
-      MINERU_LOCAL_ENABLED: ${MINERU_LOCAL_ENABLED:-false}
-      MINERU_LOCAL_BASE_URL: ${MINERU_LOCAL_BASE_URL:-http://host.docker.internal:18000}
-      MINERU_LOCAL_TOKEN: ${MINERU_LOCAL_TOKEN:-}
-      MINERU_LOCAL_TIER: ${MINERU_LOCAL_TIER:-flash}
-      AI_INTEGRATION_ENABLED: "true"
-      AI_INTEGRATION_PLATFORM_BASE_URL: http://platform:6039
-      # This pair is the approved integration path and also what lets the
-      # production AuthorizationChecker bean exist (delegated identity checks).
-      AI_INTEGRATION_SECURITY_ENABLED: "true"
-      # KB/resource writes go through the high-risk write path (permit + audit);
-      # without this flag the write service refuses with AUTHORIZATION_UNAVAILABLE.
-      AI_INTEGRATION_HIGH_RISK_ENABLED: "true"
-      AI_INTEGRATION_SECURITY_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL}
-      AI_INTEGRATION_PLATFORM_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL}
-      AI_INTEGRATION_SECURITY_PUBLIC_KEY_PATH: /keys/public.pem
-    env_file:
-      - path: ${DEV_ENV_FILE:-/dev/null}
-        required: false
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - dev-private-objects:/data/private-objects
-      - dev-delivery-keys:/keys:ro
-
   # Independent durable sandbox-ticket provider for P3 agent writes. It must share
-  # the AI container's network namespace: the frozen P3 contract hardcodes the
-  # ticket endpoint at http://127.0.0.1:19520 inside the product runtime.
+  # the network namespace of the container running the agent runtime: the frozen P3
+  # contract hardcodes the ticket endpoint at http://127.0.0.1:19520
+  # (SandboxTicketClient.TARGET), so loopback has to resolve inside that container.
+  # That container is `platform`, which hosts the embedded AI runtime.
   sandbox-ticket:
     image: python@sha256:54c85f3c47607a77f32adec749d3c81d1348bf25833671f512b26a9b6d778cb3
     profiles: ["p3"]
-    network_mode: "service:ai"
+    network_mode: "service:platform"
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,size=16m
     mem_limit: 128m
     cpus: 0.5
     depends_on:
-      ai:
+      platform:
         condition: service_started
     environment:
       P3_SANDBOX_DB: /data/sandbox.sqlite

@@ -25,19 +25,12 @@ import io.opentelemetry.sdk.trace.ReadableSpan;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.info.ProjectInfoAutoConfiguration;
-import org.springframework.boot.context.properties.bind.Binder;
-import org.springframework.boot.context.properties.source.ConfigurationPropertySources;
-import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.boot.info.BuildProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
-import org.springframework.core.env.MutablePropertySources;
-import org.springframework.core.env.PropertySource;
-import org.springframework.core.io.FileSystemResource;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.Properties;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -166,47 +159,12 @@ class AgentTracingConfigurationTest {
     }
 
     /**
-     * 独立 AI 应用的 yaml 仍显式开内容采集；F18:4 只把"没有 yaml 时的 Java 缺省"改成纯骨架，
-     * 不改变独立部署的既有取值（yaml 是显式 true）。
-     */
-    @Test
-    void shouldKeepContentCaptureEnabledInBaseConfiguration() {
-        AgentTraceProperties bound = bindBaseConfiguration();
-
-        assertThat(bound.isCaptureContent()).isTrue();
-        assertThat(bound.isEnabled()).isFalse();
-    }
-
-    /**
      * 不经过 yaml 绑定时遵守内嵌默认契约：只开 tracing 得到纯骨架（capture-content=false），
-     * 不把提示词/工具出入参带进链路；独立应用需要内容时在 yaml 显式开启。
+     * 不把提示词/工具出入参带进链路。E8 后仓库随附的配置不再声明 agent.trace，
+     * 所以这个 Java 缺省就是实际随仓库分发的取值；需要内容采集的部署自己显式打开。
      */
     @Test
     void shouldKeepContentCaptureOffInPropertyDefaults() {
         assertThat(new AgentTraceProperties().isCaptureContent()).isFalse();
-    }
-
-    /**
-     * 按 Boot 自己那套加载与绑定，读的是与运行期同一个文件，抄一份到测试资源里就测不到真配置了
-     */
-    private AgentTraceProperties bindBaseConfiguration() {
-        // services/ai 反应堆与 platform 反应堆的模块目录深度不同（E3 搬迁）：
-        // 两个布局解析同一份独立运行基础配置，两个都找不到才判定"文件挪位置"
-        List<Path> candidates = List.of(
-                Path.of("..", "bootstrap", "src", "main", "resources", "application.yaml"),
-                Path.of("..", "..", "..", "ai", "bootstrap", "src", "main", "resources", "application.yaml"));
-        Path yaml = candidates.stream().filter(Files::exists).findFirst().orElse(null);
-        assertThat(yaml).as("基础配置文件已挪位置, 这条用例要跟着改").isNotNull();
-        List<PropertySource<?>> sources;
-        try {
-            sources = new YamlPropertySourceLoader().load("application", new FileSystemResource(yaml));
-        } catch (IOException e) {
-            throw new IllegalStateException("读不到基础配置", e);
-        }
-        MutablePropertySources holder = new MutablePropertySources();
-        sources.forEach(holder::addLast);
-        return new Binder(ConfigurationPropertySources.from(holder))
-                .bind("agent.trace", AgentTraceProperties.class)
-                .orElseThrow(() -> new AssertionError("基础配置里没有 agent.trace 这一段"));
     }
 }

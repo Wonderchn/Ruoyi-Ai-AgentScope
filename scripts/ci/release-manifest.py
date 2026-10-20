@@ -26,7 +26,7 @@ def compatibility(root=REPO_ROOT):
     require(data["schema"]["unifiedPlatform"]["migrations"] == len(contract["platformVersions"]), "Unified migration count drift")
     for name, directory, key in (
         ("unifiedPlatform", "services/platform/docs/script/sql/postgres", "versionList"),
-        ("ai", "services/ai/resources/database/postgres/migrations", "frozenVersionList"),
+        ("ai", "services/platform/docs/script/sql/legacy-ai/migrations", "frozenVersionList"),
     ):
         versions = sorted(int(re.match(r"V(\d+)__", p.name).group(1)) for p in (root / directory).glob("V*__*.sql"))
         require(versions == data["schema"][name][key], f"Shipped migration versions differ: {name}")

@@ -36,49 +36,6 @@ jobs:
       - name: Ensure build left sources unchanged
         run: git diff --exit-code
 
-  ai:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: maven
-          cache-dependency-path: services/ai/pom.xml
-      - name: Build and test AI service
-        working-directory: services/ai
-        run: mvn -B -ntp -Pci clean verify
-      - name: Verify at least one AI test ran
-        run: python3 scripts/ci/check-surefire.py services/ai
-      - name: Ensure build left sources unchanged
-        run: git diff --exit-code
-
-  frontend:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: services/ai/frontend/package-lock.json
-      - name: Install locked dependencies
-        working-directory: services/ai/frontend
-        run: npm ci
-      - name: Lint
-        working-directory: services/ai/frontend
-        run: npm run lint
-      - name: Build
-        working-directory: services/ai/frontend
-        run: npm run build
-
   ruoyi-web:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -166,48 +123,6 @@ jobs:
       - name: Ensure the check left sources unchanged
         run: git diff --exit-code
 
-  native-runtime:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: maven
-          cache-dependency-path: |
-            services/platform/pom.xml
-            services/ai/pom.xml
-      - name: Build both Boot JARs
-        run: |
-          mvn -B -ntp -f services/platform/pom.xml -Pdev -DskipTests package
-          mvn -B -ntp -f services/ai/pom.xml -Pci -DskipTests package
-      # Owner tag is unique per run; the script refuses any resource-name or port
-      # collision instead of reusing or deleting anything.
-      - name: Run the native failure matrix (N1 admission / N2 worker takeover / N3 SSE continuity)
-        env:
-          OWNER: nativerun-${{ github.run_id }}-${{ github.run_attempt }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          AI_JAR: ${{ github.workspace }}/services/ai/bootstrap/target/bootstrap-0.0.1-SNAPSHOT.jar
-          PLATFORM_JAR: ${{ github.workspace }}/services/platform/ruoyi-admin/target/ruoyi-admin.jar
-        run: bash scripts/ci/verify-native-runtime.sh
-      - name: Preserve product hashes and runtime verdicts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-runtime-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          retention-days: 30
-          path: |
-            target/native-runtime-evidence/**/source-revision.txt
-            target/native-runtime-evidence/**/artifacts.sha256
-            target/native-runtime-evidence/**/migrations-applied.txt
-            target/native-runtime-evidence/**/results.jsonl
-      - name: Ensure the checks left the sources unchanged
-        run: git diff --exit-code
-
   policy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -221,27 +136,23 @@ jobs:
         run: |
           python3 scripts/ci/check-unified-contract.py
           python3 scripts/ci/test-unified-contract.py
-          python3 scripts/ci/test-native-runtime-results.py
 
   ci-required:
     if: always()
-    needs: [platform, ai, frontend, ruoyi-web, policy, db, db-ai, db-unified, native-runtime]
+    needs: [platform, ruoyi-web, policy, db, db-ai, db-unified]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: Require every check
         env:
           PLATFORM: ${{ needs.platform.result }}
-          AI: ${{ needs.ai.result }}
-          FRONTEND: ${{ needs.frontend.result }}
           RUOYI_WEB: ${{ needs.ruoyi-web.result }}
           POLICY: ${{ needs.policy.result }}
           DB: ${{ needs.db.result }}
           DB_AI: ${{ needs.db-ai.result }}
           DB_UNIFIED: ${{ needs.db-unified.result }}
-          NATIVE: ${{ needs.native-runtime.result }}
         run: |
-          for result in "$PLATFORM" "$AI" "$FRONTEND" "$RUOYI_WEB" "$POLICY" "$DB" "$DB_AI" "$DB_UNIFIED" "$NATIVE"; do
+          for result in "$PLATFORM" "$RUOYI_WEB" "$POLICY" "$DB" "$DB_AI" "$DB_UNIFIED"; do
             if [ "$result" != success ]; then
               echo "A required job did not succeed: $result" >&2
               exit 1

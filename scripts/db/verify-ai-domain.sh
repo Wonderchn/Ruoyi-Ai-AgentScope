@@ -23,10 +23,10 @@ reject() {
 }
 for tool in docker openssl sha256sum; do command -v "$tool" >/dev/null; done
 mkdir -p "$WORK"/{ai,platform,bootstrap,empty}
-cp "$ROOT"/services/ai/resources/database/postgres/migrations/V*.sql "$WORK/ai/"
+cp "$ROOT"/services/platform/docs/script/sql/legacy-ai/migrations/V*.sql "$WORK/ai/"
 cp "$ROOT"/services/platform/docs/script/sql/postgres/V*.sql "$WORK/platform/"
 cp "$ROOT"/services/platform/docs/script/sql/postgres/bootstrap/*.sql "$WORK/bootstrap/"
-cp "$ROOT"/services/ai/resources/database/postgres/bootstrap/*.sql "$WORK/bootstrap/"
+cp "$ROOT"/services/platform/docs/script/sql/legacy-ai/bootstrap/*.sql "$WORK/bootstrap/"
 # No credential file, no password argv, no shell tracing. Export names to Docker only.
 export POSTGRES_PASSWORD=$(openssl rand -hex 20) POSTGRES_DB=$DB_NAME
 export PLATFORM_MIGRATE_PASSWORD=$(openssl rand -hex 20) PLATFORM_APP_PASSWORD=$(openssl rand -hex 20)

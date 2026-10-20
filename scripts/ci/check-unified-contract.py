@@ -29,7 +29,7 @@ def main():
     platform = contract["platformVersions"]
     ai = contract["aiVersions"]
     check_versions(args.repo / "services/platform/docs/script/sql/postgres", platform)
-    check_versions(args.repo / "services/ai/resources/database/postgres/migrations", ai)
+    check_versions(args.repo / "services/platform/docs/script/sql/legacy-ai/migrations", ai)
     tables = contract["expectedAiTables"]
     if not tables or tables != sorted(set(tables)) or any(not re.fullmatch(r"(?:ai_[a-z0-9_]+|outbox_event)", t) for t in tables):
         raise ValueError("invalid or empty reviewed table coverage")

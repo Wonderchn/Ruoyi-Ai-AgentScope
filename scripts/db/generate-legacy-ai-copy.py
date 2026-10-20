@@ -125,8 +125,14 @@ ENUM_MAPS = [
         "unified_column": "status",
         "legacy_enum": ("services/platform/ruoyi-modules/ruoyi-chat/src/main/java/"
                         "org/ruoyi/enums/KnowledgeAttachStatus.java"),
+        # `unified_enum` is the path recorded in the generated V11 comment. V11 is frozen and
+        # must not change, so the comment keeps the pre-E8 location even though the AI service
+        # left the repository; `unified_enum_file` is where the enum actually lives now (E3
+        # relocation into platform) and is what the drift check reads.
         "unified_enum": ("services/ai/rag/src/main/java/com/nageoffer/ai/ragent/"
                          "knowledge/enums/DocumentStatus.java"),
+        "unified_enum_file": ("services/platform/ruoyi-modules/ruoyi-ai-rag/src/main/java/"
+                              "com/nageoffer/ai/ragent/knowledge/enums/DocumentStatus.java"),
         "values": [
             ("0", "pending", "KnowledgeAttachStatus.WAITING(0) 待解析 → DocumentStatus.PENDING"),
             ("1", "running", "KnowledgeAttachStatus.PARSING(1) 解析中 → DocumentStatus.RUNNING"),
@@ -1271,7 +1277,8 @@ def main():
 
     for em in ENUM_MAPS:
         for path, markers in ((em["legacy_enum"], em["legacy_markers"]),
-                              (em["unified_enum"], em["unified_markers"])):
+                              (em.get("unified_enum_file", em["unified_enum"]),
+                               em["unified_markers"])):
             full = path if os.path.isabs(path) else os.path.join(REPO_ROOT, path)
             text = open(full, encoding="utf-8").read()
             for marker in markers:

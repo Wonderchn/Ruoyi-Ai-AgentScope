@@ -30,7 +30,7 @@ PG_OWNER=${PG_OWNER:-unified-$$}
 [[ "$PG_CONTAINER" =~ ^[a-z0-9-]+$ && "$PG_OWNER" =~ ^[a-z0-9-]+$ ]] || { echo 'invalid owned container identity'; exit 2; }
 REPO_ROOT=${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 PLATFORM_SQL=$REPO_ROOT/services/platform/docs/script/sql/postgres
-AI_SQL=$REPO_ROOT/services/ai/resources/database/postgres/migrations
+AI_SQL=$REPO_ROOT/services/platform/docs/script/sql/legacy-ai/migrations
 
 FAILS=0
 ok()  { echo "  [ok]   $1"; }

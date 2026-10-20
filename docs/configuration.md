@@ -6,41 +6,6 @@
 
 | 来源位置 | 环境变量 |
 |---|---|
-| `services/ai/bootstrap/src/main/resources/application.yaml:19` | `PROJECT_SERVICES_AI_BOOTSTRAP_SRC_MAIN_RESOURCES_APPLICATION_YAML_PASSWORD_19` |
-| `services/ai/bootstrap/src/main/resources/application.yaml:33` | `PROJECT_SERVICES_AI_BOOTSTRAP_SRC_MAIN_RESOURCES_APPLICATION_YAML_PASSWORD_33` |
-| `services/ai/bootstrap/src/main/resources/application.yaml:77` | `PROJECT_SERVICES_AI_BOOTSTRAP_SRC_MAIN_RESOURCES_APPLICATION_YAML_ACCESS_KEY_77` |
-| `services/ai/bootstrap/src/main/resources/application.yaml:84` | `PROJECT_SERVICES_AI_BOOTSTRAP_SRC_MAIN_RESOURCES_APPLICATION_YAML_ACCESS_KEY_84` |
-| `services/ai/bootstrap/src/main/resources/application.yaml:173` | `PROJECT_SERVICES_AI_BOOTSTRAP_SRC_MAIN_RESOURCES_APPLICATION_YAML_API_KEY_173` |
-| `services/ai/bootstrap/src/main/resources/application.yaml:212` | `PROJECT_SERVICES_AI_BOOTSTRAP_SRC_MAIN_RESOURCES_APPLICATION_YAML_API_KEY_212` |
-| `services/ai/bootstrap/src/main/resources/application.yaml:219` | `PROJECT_SERVICES_AI_BOOTSTRAP_SRC_MAIN_RESOURCES_APPLICATION_YAML_API_KEY_219` |
-| `services/ai/bootstrap/src/main/resources/application.yaml:225` | `PROJECT_SERVICES_AI_BOOTSTRAP_SRC_MAIN_RESOURCES_APPLICATION_YAML_API_KEY_225` |
-| `services/ai/bootstrap/src/main/resources/application.yaml:314` | `PROJECT_SERVICES_AI_BOOTSTRAP_SRC_MAIN_RESOURCES_APPLICATION_YAML_API_KEY_314` |
-| `services/ai/mcp-server/src/main/resources/application.yml:14` | `PROJECT_SERVICES_AI_MCP_SERVER_SRC_MAIN_RESOURCES_APPLICATION_YML_PASSWORD_14` |
-| `services/ai/resources/docker/milvus-stack-2.6.6.compose.yaml:17` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_MILVUS_STACK_2_6_6_COMPOSE_YAML_RUSTFS_ACCESS_KEY_17` |
-| `services/ai/resources/docker/milvus-stack-2.6.6.compose.yaml:63` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_MILVUS_STACK_2_6_6_COMPOSE_YAML_MINIO_ACCESS_KEY_ID_63` |
-| `services/ai/resources/docker/milvus-stack-2.6.6.compose.yaml:64` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_MILVUS_STACK_2_6_6_COMPOSE_YAML_MINIO_SECRET_ACCESS_KEY_64` |
-| `services/ai/resources/docker/graphrag/lightrag-neo4j-stack.compose.yaml:65` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_GRAPHRAG_LIGHTRAG_NEO4J_STACK_COMPOSE_YAML_LLM_BINDING_API_KEY_65` |
-| `services/ai/resources/docker/graphrag/lightrag-neo4j-stack.compose.yaml:72` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_GRAPHRAG_LIGHTRAG_NEO4J_STACK_COMPOSE_YAML_EMBEDDING_BINDING_API_KEY_72` |
-| `services/ai/resources/docker/graphrag/lightrag-neo4j-stack.compose.yaml:83` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_GRAPHRAG_LIGHTRAG_NEO4J_STACK_COMPOSE_YAML_NEO4J_PASSWORD_83` |
-| `services/ai/resources/docker/graphrag/lightrag-neo4j-stack.compose.yaml:88` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_GRAPHRAG_LIGHTRAG_NEO4J_STACK_COMPOSE_YAML_POSTGRES_PASSWORD_88` |
-| `services/ai/resources/docker/langfuse/langfuse-stack-v4.compose.yaml:32` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_LANGFUSE_LANGFUSE_STACK_V4_COMPOSE_YAML_CLICKHOUSE_PASSWORD_32` |
-| `services/ai/resources/docker/langfuse/langfuse-stack-v4.compose.yaml:37` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_LANGFUSE_LANGFUSE_STACK_V4_COMPOSE_YAML_LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID_37` |
-| `services/ai/resources/docker/langfuse/langfuse-stack-v4.compose.yaml:38` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_LANGFUSE_LANGFUSE_STACK_V4_COMPOSE_YAML_LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY_38` |
-| `services/ai/resources/docker/langfuse/langfuse-stack-v4.compose.yaml:45` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_LANGFUSE_LANGFUSE_STACK_V4_COMPOSE_YAML_LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID_45` |
-| `services/ai/resources/docker/langfuse/langfuse-stack-v4.compose.yaml:46` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_LANGFUSE_LANGFUSE_STACK_V4_COMPOSE_YAML_LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY_46` |
-| `services/ai/resources/docker/langfuse/langfuse-stack-v4.compose.yaml:67` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_LANGFUSE_LANGFUSE_STACK_V4_COMPOSE_YAML_NEXTAUTH_SECRET_67` |
-| `services/ai/resources/docker/langfuse/langfuse-stack-v4.compose.yaml:77` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_LANGFUSE_LANGFUSE_STACK_V4_COMPOSE_YAML_LANGFUSE_INIT_USER_PASSWORD_77` |
-| `services/ai/resources/docker/langfuse/langfuse-stack-v4.compose.yaml:93` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_LANGFUSE_LANGFUSE_STACK_V4_COMPOSE_YAML_CLICKHOUSE_PASSWORD_93` |
-| `services/ai/resources/docker/langfuse/langfuse-stack-v4.compose.yaml:118` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_LANGFUSE_LANGFUSE_STACK_V4_COMPOSE_YAML_MINIO_ROOT_PASSWORD_118` |
-| `services/ai/resources/docker/langfuse/langfuse-stack-v4.compose.yaml:159` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_LANGFUSE_LANGFUSE_STACK_V4_COMPOSE_YAML_POSTGRES_PASSWORD_159` |
-| `services/ai/resources/docker/lightweight/milvus-stack-2.5.8.compose.yaml:52` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_LIGHTWEIGHT_MILVUS_STACK_2_5_8_COMPOSE_YAML_MINIO_ACCESS_KEY_ID_52` |
-| `services/ai/resources/docker/lightweight/milvus-stack-2.5.8.compose.yaml:53` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_LIGHTWEIGHT_MILVUS_STACK_2_5_8_COMPOSE_YAML_MINIO_SECRET_ACCESS_KEY_53` |
-| `services/ai/resources/docker/lightweight/milvus-stack-2.6.6.compose.yaml:52` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_LIGHTWEIGHT_MILVUS_STACK_2_6_6_COMPOSE_YAML_MINIO_ACCESS_KEY_ID_52` |
-| `services/ai/resources/docker/lightweight/milvus-stack-2.6.6.compose.yaml:53` | `PROJECT_SERVICES_AI_RESOURCES_DOCKER_LIGHTWEIGHT_MILVUS_STACK_2_6_6_COMPOSE_YAML_MINIO_SECRET_ACCESS_KEY_53` |
-| `services/ai/resources/initializer/bit-selection/initializer.properties:10` | `PROJECT_SERVICES_AI_RESOURCES_INITIALIZER_BIT_SELECTION_INITIALIZER_PROPERTIES_AUTH_PASSWORD_10` |
-| `services/ai/resources/initializer/enterprise-knowledge-base/initializer.properties:6` | `PROJECT_SERVICES_AI_RESOURCES_INITIALIZER_ENTERPRISE_KNOWLEDGE_BASE_INITIALIZER_PROPERTIES_AUTH_PASSWORD_6` |
-| `services/ai/resources/regression/agent-memory/regression.properties:7` | `PROJECT_SERVICES_AI_RESOURCES_REGRESSION_AGENT_MEMORY_REGRESSION_PROPERTIES_AUTH_PASSWORD_7` |
-| `services/ai/resources/regression/agent-memory-evaluation/regression.properties:4` | `PROJECT_SERVICES_AI_RESOURCES_REGRESSION_AGENT_MEMORY_EVALUATION_REGRESSION_PROPERTIES_AUTH_PASSWORD_4` |
 | `services/platform/docs/docker/ minio/ docker-compose.yml:12` | `PROJECT_SERVICES_PLATFORM_DOCS_DOCKER__MINIO__DOCKER_COMPOSE_YML_MINIO_ACCESS_KEY_12` |
 | `services/platform/docs/docker/milvus/docker-compose.yml:23` | `PROJECT_SERVICES_PLATFORM_DOCS_DOCKER_MILVUS_DOCKER_COMPOSE_YML_MINIO_ACCESS_KEY_23` |
 | `services/platform/docs/docker/ruoyi-ai/docker-compose-all.yaml:25` | `PROJECT_SERVICES_PLATFORM_DOCS_DOCKER_RUOYI_AI_DOCKER_COMPOSE_ALL_YAML_MYSQL_ROOT_PASSWORD_25` |
