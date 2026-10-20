@@ -57,7 +57,7 @@ docker compose up -d --build
 ```
 
 - 浏览器只访问 web 暴露的单一端口（默认 8080）。`/api/`、`/auth/`、`/system/`、`/monitor/` 是允许的公开代理前缀；SSE 响应不缓冲；上传上限 50 MiB；其余路径只服务静态资源。
-- 交付镜像：`ghcr.io/wonderchn/ruoyi-ai-agentscope-{platform,ai,web}`，三者共同出现在 release manifest，绑定同一 source commit 与镜像 digest。
+- 交付镜像：`ghcr.io/wonderchn/ruoyi-ai-agentscope-{platform,web}`，两者共同出现在 release manifest，绑定同一 source commit 与镜像 digest。独立 AI 兼容服务的镜像不在发布链，走兼容模式时需自备并经 `DEV_AI_IMAGE` 注入。
 - 所有真实值（数据库口令、服务凭证、外部化 `PROJECT_SERVICES_*` 占位符）通过 env 文件注入；env 文件不进仓库。
 
 ## 5. 回退
