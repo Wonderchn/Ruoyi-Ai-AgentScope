@@ -587,13 +587,13 @@ async function batchLoadMarketTools() {
                 <ElInput v-model="toolFilters.keyword" clearable data-testid="mcp-tool-filter-keyword" />
               </ElFormItem>
               <ElFormItem label="状态">
-                <ElSelect v-model="toolFilters.status" clearable style="width: 140px" data-testid="mcp-tool-filter-status">
+                <ElSelect v-model="toolFilters.status" clearable placeholder="全部状态" style="width: 140px" data-testid="mcp-tool-filter-status">
                   <ElOption label="ENABLED" value="ENABLED" />
                   <ElOption label="DISABLED" value="DISABLED" />
                 </ElSelect>
               </ElFormItem>
               <ElFormItem label="类型">
-                <ElSelect v-model="toolFilters.type" clearable style="width: 140px" data-testid="mcp-tool-filter-type">
+                <ElSelect v-model="toolFilters.type" clearable placeholder="全部类型" style="width: 140px" data-testid="mcp-tool-filter-type">
                   <ElOption label="LOCAL" value="LOCAL" />
                   <ElOption label="REMOTE" value="REMOTE" />
                   <ElOption label="BUILTIN" value="BUILTIN" />
@@ -743,7 +743,7 @@ async function batchLoadMarketTools() {
                 <ElInput v-model="marketFilters.keyword" clearable data-testid="mcp-market-filter-keyword" />
               </ElFormItem>
               <ElFormItem label="状态">
-                <ElSelect v-model="marketFilters.status" clearable style="width: 140px" data-testid="mcp-market-filter-status">
+                <ElSelect v-model="marketFilters.status" clearable placeholder="全部状态" style="width: 140px" data-testid="mcp-market-filter-status">
                   <ElOption label="ENABLED" value="ENABLED" />
                   <ElOption label="DISABLED" value="DISABLED" />
                 </ElSelect>
@@ -1022,26 +1022,7 @@ async function batchLoadMarketTools() {
 
 <style scoped>
 .toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
   margin-bottom: 12px;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-
-.pager {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: flex-end;
-  margin-top: 12px;
-  color: var(--el-text-color-regular);
 }
 
 .code {

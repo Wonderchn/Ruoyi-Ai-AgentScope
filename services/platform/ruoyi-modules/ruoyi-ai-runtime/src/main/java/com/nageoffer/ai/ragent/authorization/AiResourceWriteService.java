@@ -144,15 +144,50 @@ public class AiResourceWriteService {
     }
 
     /**
+     * 写操作分类（租户屏障写操作分类，2026-10-20 Spec §3 Option B / §4.2）：决定一次写是否
+     * 执行<b>撤权屏障协议</b>（PENDING → drain → CLOSE → OPEN）。
+     *
+     * <p><b>背景（为什么需要分类）。</b>租户屏障 {@code ai_tenant_barrier} 是<b>撤权</b>机制：
+     * 撤权/降权前先置 PENDING、排空所有在飞 permit，再把 ACL epoch 前进，保证没有请求继续使用
+     * 旧授权快照——这是 fail-closed 的安全设计，不是写入限流。分类引入前所有写共用同一条
+     * {@code writeInternal}，于是"会话改名"这种纯元数据写也置屏障并等待所有 read permit：
+     * 一个租约 300s 的 {@code kb.read} permit 就能让 drain 30s 超时、屏障滞留 PENDING，
+     * 该租户后续所有 AI 请求 503 直到租约到期（2026-10-19 现场：rename 置屏障 → 创建会话 503）。
+     *
+     * <p><b>ADDITIVE 为什么不置屏障、不排空。</b>增量写只做三件事：新增资源（创建 KB / 会话）、
+     * 新增授权（grant）、修改非授权元数据（会话改名）。它们<b>不删除资源、不撤销/降权任何既有授权、
+     * 不 bump ACL epoch</b>（改名不 bump epoch 的理由见 {@link #renameConversation}）：
+     * 新资源在创建前不存在（没有"旧授权快照"会被它放大），grant 只会让更多主体获得访问，
+     * 改名不触碰 ACL。也就是说，ADDITIVE 写之后不存在"必须立即失效的旧授权事实"，
+     * 排空在飞 permit 没有任何安全收益，只有"把可用性打成 503"的代价。
+     * 因此 ADDITIVE 仍必须先过 {@code revocations.enter}：屏障 PENDING 时 acquire 门直接拒绝
+     * （fail-closed：撤权期间不受理新写，与既有语义一致），但不写 PENDING、不 drain、不写 CLOSED、
+     * 不做 finally 对账——这些协议只属于真正的撤权路径。
+     *
+     * <p><b>REVOCATION 保持不变。</b>tombstone / delete / revoke 继续走
+     * {@link #executeWithRevocationBarrier}，屏障协议逐字不变。
+     */
+    public enum MutationKind {
+        /** 撤权/降权写：改变授权集合或资源可见性，必须置租户屏障并排空在飞 permit。 */
+        REVOCATION,
+        /** 增量/元数据写：只新增资源、新增授权或改非授权元数据，不置屏障、不排空。 */
+        ADDITIVE
+    }
+
+    /**
      * 严格入口：**资源必须已存在且已授权**（改名 / 删除 / ACL 授予与撤销等既有路径都走这里）。
      *
      * <p>这条路径的资源级判定（{@code authorization.check}）是"改名类"操作的授权核心：
      * 它要求被操作资源在 {@code ai_resource} 里是 ACTIVE 且主体已获授权，否则一律 404
      * （不泄露存在性）。
+     *
+     * <p>屏障协议由 {@code mutationKind} 声明：REVOCATION 置屏障并 drain，ADDITIVE 只过
+     * {@code revocations.enter} 的 permit 门（分类理由见 {@link MutationKind}）。
      */
     private <T> T write(ExecutionPrincipal principal, String action, String ref,
+                       MutationKind mutationKind,
                        org.springframework.transaction.support.TransactionCallback<T> work) {
-        return writeInternal(principal, action, ref, true, work);
+        return writeInternal(principal, action, ref, true, mutationKind, work);
     }
 
     /**
@@ -171,16 +206,20 @@ public class AiResourceWriteService {
      *   <li><b>保留</b>：装配完整性四条件（未开 high-risk / 守卫或授权服务未装配 ⇒ 503）、
      *       {@code principal.hasScope(action)}（功能级 ⇒ 403）、
      *       {@code platform.check(...)}（平台侧功能/租户级判定）、
-     *       {@code ai_acl_epoch} 版本复核、{@code ai_tenant_barrier} 屏障与
-     *       {@code ai_execution_permit} 排空、以及"业务行 + registry + owner ACL + epoch bump 同事务"。</li>
+     *       {@code revocations.enter}（屏障 PENDING 时 fail-closed 拒绝新 permit）、
+     *       {@code ai_acl_epoch} 版本复核、以及"业务行 + registry + owner ACL + epoch bump 同事务"。</li>
      * </ul>
      * 换句话说：**创建不是"多了一条可以绕过的动作"，而是"创建语义下资源级判定不适用"** ——
      * 新资源的归属由 {@code platform.check} 与执行主体决定，owner ACL 由本入口的写回调落盘。
      * <b>不要**为了省事把其它动作也接到本入口上。</b>
+     *
+     * <p><b>分类。</b>创建属于 {@link MutationKind#ADDITIVE}：它不撤权、不降权，因此不置租户屏障、
+     * 不 drain（见 {@link MutationKind}）；但仍必须经过 {@code revocations.enter} 的 permit 门。
      */
     private <T> T writeCreating(ExecutionPrincipal principal, String action, String ref,
+                       MutationKind mutationKind,
                        org.springframework.transaction.support.TransactionCallback<T> work) {
-        return writeInternal(principal, action, ref, false, work);
+        return writeInternal(principal, action, ref, false, mutationKind, work);
     }
 
     /**
@@ -188,9 +227,10 @@ public class AiResourceWriteService {
      *
      * @param requireExistingGrant {@code true} = 严格路径（资源必须已授权）；
      *                             {@code false} = 创建路径（被创建的资源尚不存在，见 {@link #writeCreating}）。
+     * @param mutationKind         写操作分类：决定屏障协议是否生效（见 {@link MutationKind}）。
      */
     private <T> T writeInternal(ExecutionPrincipal principal, String action, String ref,
-                       boolean requireExistingGrant,
+                       boolean requireExistingGrant, MutationKind mutationKind,
                        org.springframework.transaction.support.TransactionCallback<T> work) {
         if (!highRiskEnabled || revocations == null || authorization == null || platform == null) {
             // 这个 503 有**四种互不相同的成因**，而客户端看到的文案**完全相同**：
@@ -238,6 +278,23 @@ public class AiResourceWriteService {
             permitId = operation.permitId();
             Map<String, Object> parameters = Map.of("tenant", principal.tenantId(), "permit", operation.permitId(),
                     "barrier", operation.operationId());
+            if (mutationKind == MutationKind.ADDITIVE) {
+                // ------------------------------------------------------------------ ADDITIVE
+                // 不置租户屏障、不 drain、不写 CLOSED（理由见 MutationKind javadoc）。
+                // 但仍停在 `revocations.enter` 之内：屏障若已 PENDING，acquire 门会 fail-closed 拒绝，
+                // 所以"增量写"不会成为绕过撤权屏障的旁路。
+                // epoch 版本复核保留：业务写之前必须确认 ACL 没有在我进入之后前进。
+                T additiveResult = transactionOperations.execute(status -> {
+                    var versions = jdbc.query("SELECT version FROM ai_acl_epoch WHERE tenant_id=:tenant FOR UPDATE",
+                            parameters, (rs, n) -> rs.getInt(1));
+                    if (versions.isEmpty() || versions.get(0) != principal.aclVersion()) {
+                        throw new com.nageoffer.ai.ragent.framework.security.StaleVersionException("aclVersion changed");
+                    }
+                    return work.doInTransaction(status);
+                });
+                operation.close();
+                return additiveResult;
+            }
             transactionOperations.executeWithoutResult(status -> {
                 var versions = jdbc.query("SELECT version FROM ai_acl_epoch WHERE tenant_id=:tenant FOR UPDATE",
                         parameters, (rs, n) -> rs.getInt(1));
@@ -313,7 +370,9 @@ public class AiResourceWriteService {
             //     CLOSED 仍只由上面业务事务内那条 UPDATE 写出（回滚的业务写不得被记成成功）。
             // 另：`operation.close()` 不在这里重复调用 —— 它由 try-with-resources 在本块之后自动执行。
             try {
-                if (barrierId == null) {
+                if (mutationKind == MutationKind.ADDITIVE) {
+                    // ADDITIVE 从未准备屏障：没有 PENDING 需要收回，对账不适用（不是"对账失败"）。
+                } else if (barrierId == null) {
                     // enter 失败：本操作没有准备过屏障，无对账对象（不是"对账失败"）。
                     log.warn("屏障对账跳过：本操作未登记 permit（enter 阶段即失败）tenant={}", principal.tenantId());
                 } else if (barrierReconciler == null) {
@@ -379,7 +438,7 @@ public class AiResourceWriteService {
         String kbId = IdUtil.getSnowflakeNextIdStr();
         String ownerDept=authorization instanceof AiResourceAuthorizationService live?live.currentOwnerDept(principal,"kb.write"):null;
 
-        return write(principal, "kb.write", "kb:" + kbId, status -> {
+        return write(principal, "kb.write", "kb:" + kbId, MutationKind.ADDITIVE, status -> {
             // 元数据行：tenant_id / owner_member_id 只取自主体；owner_dept_id 等部门事实
             // 由 platform 组织匹配接线后补充（ExecutionPrincipal 当前不携带部门）。
             Map<String, Object> kb = new HashMap<>();
@@ -462,7 +521,7 @@ public class AiResourceWriteService {
         // 创建走 writeCreating（**只**跳过"资源已存在且已授权"那一步，其余守卫全保留）：
         // 新会话此刻还没有 registry 行，走严格入口必然在写事务之前 404（G-52c 实测）。
         // 注意与下面的改名路径（严格 write）的区别：改名要求"该资源已授权"，创建不适用。
-        return writeCreating(principal, "conversation.rename", "conv:" + conversationId, status -> {
+        return writeCreating(principal, "conversation.rename", "conv:" + conversationId, MutationKind.ADDITIVE, status -> {
             // 业务行：tenant_id / member_id / user_id 只取自主体（不接受 body 提供）。
             Map<String, Object> conversation = new HashMap<>();
             conversation.put("id", conversationId);
@@ -510,7 +569,7 @@ public class AiResourceWriteService {
     public void tombstoneKnowledgeBase(String kbId) {
         ExecutionPrincipal principal = PrincipalContext.require();
         String tenantId = principal.tenantId();
-        write(principal, "kb.delete", "kb:" + kbId, status -> {
+        write(principal, "kb.delete", "kb:" + kbId, MutationKind.REVOCATION, status -> {
             int rows = resourceMapper.tombstone(tenantId, AiResourceMapper.TYPE_KB, kbId);
             if (rows == 0) {
                 throw new P04AiException(P04AiErrorCode.RESOURCE_NOT_FOUND_OR_FORBIDDEN);
@@ -629,7 +688,7 @@ public class AiResourceWriteService {
         ExecutionPrincipal principal = PrincipalContext.require();
         String tenantId = principal.tenantId();
         String memberId = principal.membershipId();
-        return write(principal, "conversation.rename", "conv:" + conversationId, status -> {
+        return write(principal, "conversation.rename", "conv:" + conversationId, MutationKind.ADDITIVE, status -> {
             int rows = jdbc.update(SQL_RENAME_CONVERSATION, conversationParams(title, tenantId, memberId,
                     conversationId, expectedVersion));
             if (rows > 0) {
@@ -689,7 +748,7 @@ public class AiResourceWriteService {
         ExecutionPrincipal principal = PrincipalContext.require();
         String tenantId = principal.tenantId();
         String memberId = principal.membershipId();
-        write(principal, "conversation.delete", "conv:" + conversationId, status -> {
+        write(principal, "conversation.delete", "conv:" + conversationId, MutationKind.REVOCATION, status -> {
             int rows = jdbc.update(SQL_SOFT_DELETE_CONVERSATION, Map.of(
                     "tenant", tenantId, "member", memberId, "conversation", conversationId));
             if (rows == 0) {
@@ -711,7 +770,8 @@ public class AiResourceWriteService {
             live.requireCurrentSubject(principal,AiResourceAuthorizationService.subjectRef(row.subjectType(),row.subjectId(),tenantId));
         }
 
-        write(principal, ACTION_ACL_MANAGE, "kb:" + kbId, status -> {
+        // 授予是纯增量：不缩任何人的可见集合，因此 ADDITIVE（不置租户屏障、不 drain）。
+        write(principal, ACTION_ACL_MANAGE, "kb:" + kbId, MutationKind.ADDITIVE, status -> {
             try {
                 aclMapper.insert(row);
             } catch (DuplicateKeyException e) {
@@ -730,7 +790,8 @@ public class AiResourceWriteService {
         String tenantId = principal.tenantId();
         AclRow row = validatedRow(kbId, tenantId, principal, grant);
 
-        write(principal, ACTION_ACL_MANAGE, "kb:" + kbId, status -> {
+        // 撤销是真撤权：必须置租户屏障并排空在飞 permit，REVOCATION 语义逐字不变。
+        write(principal, ACTION_ACL_MANAGE, "kb:" + kbId, MutationKind.REVOCATION, status -> {
             int rows = aclMapper.deleteRule(tenantId, AiResourceMapper.TYPE_KB, kbId,
                     row.subjectType(), row.subjectId(), row.action());
             if (rows > 0) {

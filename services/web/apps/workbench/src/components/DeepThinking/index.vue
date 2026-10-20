@@ -13,22 +13,46 @@ function setIsDeepThinking() {
 </script>
 
 <template>
-  <div
+  <button
+    type="button"
     :class="{ 'is-select': isDeepThinking }"
-    class="deep-thinking-btn flex items-center p-10px rounded-10px rounded-15px cursor-pointer font-size-12px border-1px border-[rgba(0,0,0,0.08)] border-solid hover:bg-[rgba(0,0,0,.04)]"
+    class="deep-thinking-btn"
+    :aria-pressed="isDeepThinking"
     @click="setIsDeepThinking"
   >
-    <el-icon>
+    <el-icon :size="15">
       <ElementPlus />
     </el-icon>
     <span>深度思考</span>
-  </div>
+  </button>
 </template>
 
 <style scoped lang="scss">
+.deep-thinking-btn {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  height: 36px;
+  padding: 0 13px;
+  font-family: var(--apple-font);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--apple-secondary);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--apple-separator-strong);
+  border-radius: 980px;
+  transition: color 0.18s ease, background-color 0.18s ease, border-color 0.18s ease;
+}
+
+.deep-thinking-btn:hover {
+  color: var(--apple-text);
+  background: var(--apple-bg);
+}
+
 .deep-thinking-btn.is-select {
-  color: var(--el-color-primary, #409eff);
-  border: 1px solid var(--el-color-primary, #409eff);
-  border-radius: 15px;
+  color: var(--apple-blue);
+  background: var(--apple-blue-soft);
+  border-color: var(--apple-blue);
 }
 </style>

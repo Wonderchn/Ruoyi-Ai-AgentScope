@@ -7,10 +7,12 @@ import App from './App.vue';
 import router from './routers';
 import store from './stores';
 import './styles/index.scss';
-import 'virtual:uno.css';
 import 'element-plus/dist/index.css';
+import 'virtual:uno.css';
 // SVG插件配置
 import 'virtual:svg-icons-register';
+// Theme must come last so its Element Plus overrides win the cascade.
+import './styles/apple-theme.scss';
 
 const app = createApp(App);
 

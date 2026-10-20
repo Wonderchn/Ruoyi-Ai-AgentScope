@@ -17,6 +17,7 @@ import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import ts from 'typescript';
 import * as vue from 'vue';
+import { userFacingErrorMessage } from '../src/utils/user-facing-error.ts';
 
 const require = createRequire(import.meta.url);
 const vueDir = dirname(require.resolve('vue/package.json'));
@@ -151,6 +152,8 @@ function mountPage(options: MountOptions = {}) {
     },
     '@/stores/modules/user': { useUserStore: () => user },
     '@/utils/markdownRenderers': { codeXRender: () => '' },
+    // 页面把服务端符号码翻译成用户文案；测试用同一实现，避免两套口径漂移。
+    '@/utils/user-facing-error': { userFacingErrorMessage },
     './useChatRun': {
       useChatRun: () => ({
         running: vue.ref(false),

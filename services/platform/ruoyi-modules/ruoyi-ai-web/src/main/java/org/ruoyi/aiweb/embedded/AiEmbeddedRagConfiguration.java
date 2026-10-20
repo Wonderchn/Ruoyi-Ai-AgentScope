@@ -268,6 +268,13 @@ public class AiEmbeddedRagConfiguration {
             return new RuntimeCatalogController(authorization, runtimeCatalogService, environment);
         }
 
+        /**
+         * 花费信封余额改为挂在既有 {@code RuntimeCatalogController}（{@code /runtime-config/spend}），
+         * 该路由走已跑通的 JSON 转发分支。此处不再单独注册控制器：
+         * 单开字节分支路由会被要求交付 permit 头，实测 503 "delivery receipt missing"。
+         */
+
+
         // ------------------------------------------------------------------ 本地端口（HTTP → 本地接口替换点）
 
         @Bean

@@ -1,6 +1,7 @@
 <!-- Header 头部 -->
 <script setup lang="ts">
 import { onKeyStroke } from '@vueuse/core';
+import { inject, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { SIDE_BAR_WIDTH } from '@/config/index';
 import { useDesignStore, useUserStore } from '@/stores';
@@ -16,11 +17,18 @@ const designStore = useDesignStore();
 const sessionStore = useSessionStore();
 const route = useRoute();
 
-const currentSession = computed(() => sessionStore.currentSession);
+const mobileNav = inject<{ isMobile: import('vue').Ref<boolean>; open: () => void }>(
+  'workbenchMobileNav',
+{ isMobile: ref(false), open: () => {} },
+);
+
+const isMobile = computed(() => mobileNav.isMobile.value);
+const isChatRoute = computed(() => route.name === 'chat' || route.name === 'chatWithId');
+const pageTitle = computed(() => String(route.meta.title || ''));
 
 onMounted(() => {
   // 侧栏随窗口收窄，主内容与顶部导航共享同一个宽度。
-  document.documentElement.style.setProperty(`--sidebar-default-width`, `clamp(220px, 18vw, ${SIDE_BAR_WIDTH}px)`);
+  document.documentElement.style.setProperty(`--sidebar-default-width`, `clamp(240px, 18vw, ${SIDE_BAR_WIDTH}px)`);
   if (designStore.isCollapse) {
     document.documentElement.style.setProperty(`--sidebar-left-container-default-width`, ``);
   }
@@ -46,35 +54,33 @@ onKeyStroke(event => event.ctrlKey && event.key.toLowerCase() === 'k', handleCtr
 
 <template>
   <div class="header-container">
-    <div class="header-box relative z-10 top-0 left-0 right-0">
-      <div class="absolute left-0 right-0 top-0 bottom-0 flex items-center flex-row">
-        <div
-          class="overflow-hidden flex h-full items-center flex-row flex-1 w-fit flex-shrink-0 min-w-0"
+    <div class="header-inner">
+      <div class="header-left">
+        <button
+          v-if="isMobile"
+          type="button"
+          class="header-icon-button"
+          aria-label="打开导航"
+          @click="mobileNav.open()"
         >
-          <div class="w-full flex items-center flex-row">
-            <!-- 左边 -->
-            <div
-              v-if="designStore.isCollapse"
-              class="left-box flex h-full items-center pl-20px gap-12px flex-shrink-0 flex-row"
-            >
-              <Collapse />
-              <CreateChat />
-              <div v-if="currentSession" class="w-0.5px h-30px bg-[rgba(217,217,217)]" />
-            </div>
+          <el-icon :size="20">
+            <Menu />
+          </el-icon>
+        </button>
+        <Collapse v-else-if="designStore.isCollapse" />
 
-            <!-- 中间 -->
-            <div class="middle-box flex-1 min-w-0 ml-12px">
-              <span v-if="route.name === 'mediaWorkbench'" class="font-size-14px">媒体工作台</span>
-              <TitleEditing v-else />
-            </div>
-          </div>
+        <div v-if="isChatRoute" class="header-title">
+          <TitleEditing />
         </div>
+        <div v-else class="header-page-title">
+          {{ pageTitle }}
+        </div>
+      </div>
 
-        <!-- 右边 -->
-        <div class="right-box flex h-full items-center pr-20px flex-shrink-0 mr-auto flex-row">
-          <Avatar v-show="userStore.token" />
-          <LoginBtn v-show="!userStore.token" />
-        </div>
+      <div class="header-right">
+        <CreateChat v-if="isMobile" compact />
+        <Avatar v-show="userStore.token" />
+        <LoginBtn v-show="!userStore.token" />
       </div>
     </div>
   </div>
@@ -82,22 +88,80 @@ onKeyStroke(event => event.ctrlKey && event.key.toLowerCase() === 'k', handleCtr
 
 <style scoped lang="scss">
 .header-container {
+  width: 100%;
+  height: var(--header-container-default-heigth);
+  background: rgba(255, 255, 255, 0.74);
+  border-bottom: 1px solid var(--apple-separator);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+
+.header-inner {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: calc(100% - var(--sidebar-left-container-default-width, 0px));
+  height: 100%;
+  margin-left: var(--sidebar-left-container-default-width, 0);
+  padding: 0 20px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.header-right {
   display: flex;
   flex-shrink: 0;
-  flex-direction: column;
-  width: 100%;
-  height: fit-content;
-  .header-box {
-    width: 100%;
-    width: calc(
-      100% - var(--sidebar-left-container-default-width, 0px) - var(
-          --sidebar-right-container-default-width,
-          0px
-        )
-    );
-    height: var(--header-container-default-heigth);
-    margin: 0 var(--sidebar-right-container-default-width, 0) 0
-      var(--sidebar-left-container-default-width, 0);
+  gap: 12px;
+  align-items: center;
+}
+
+.header-title {
+  min-width: 0;
+}
+
+.header-page-title {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--apple-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  color: var(--apple-text);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+}
+
+.header-icon-button:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+@media (max-width: 767px) {
+  .header-inner {
+    margin-left: 0;
+    padding: 0 12px;
+  }
+
+  .header-right {
+    gap: 8px;
   }
 }
 </style>

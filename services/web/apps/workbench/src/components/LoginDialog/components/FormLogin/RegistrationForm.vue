@@ -6,6 +6,7 @@ import { useCountdown } from '@vueuse/core';
 import { reactive, ref } from 'vue';
 import { emailCode, register } from '@/api';
 import { useLoginFormStore } from '@/stores/modules/loginForm';
+import { userFacingErrorMessage } from '@/utils/user-facing-error';
 
 const loginFromStore = useLoginFormStore();
 onMounted(() => loginFromStore.loadTenants());
@@ -80,7 +81,7 @@ async function handleSubmit() {
   }
   catch (error) {
     console.error('请求错误:', error);
-    ElMessage.error(error instanceof Error ? error.message : '注册失败，请稍后重试');
+    ElMessage.error(userFacingErrorMessage(error, '注册失败，请稍后重试'));
   }
 }
 
@@ -116,6 +117,7 @@ async function getEmailCode() {
       :model="formModel"
       :rules="rules"
       class="register-form"
+      label-position="top"
       @submit.prevent="handleSubmit"
     >
       <el-form-item v-if="loginFromStore.tenantEnabled" label="所属租户">
@@ -128,8 +130,8 @@ async function getEmailCode() {
           重新加载
         </el-button>
       </el-alert>
-      <el-form-item prop="username">
-        <el-input v-model="formModel.username" placeholder="请输入邮箱" autocomplete="off">
+      <el-form-item prop="username" label="邮箱">
+        <el-input v-model="formModel.username" placeholder="请输入邮箱" autocomplete="email" inputmode="email">
           <template #prefix>
             <el-icon>
               <Message />
@@ -138,8 +140,8 @@ async function getEmailCode() {
         </el-input>
       </el-form-item>
 
-      <el-form-item prop="code">
-        <el-input v-model="formModel.code" placeholder="请输入验证码" autocomplete="off">
+      <el-form-item prop="code" label="验证码">
+        <el-input v-model="formModel.code" placeholder="请输入验证码" autocomplete="one-time-code" inputmode="numeric">
           <template #prefix>
             <el-icon>
               <Bell />
@@ -154,8 +156,8 @@ async function getEmailCode() {
         </el-input>
       </el-form-item>
 
-      <el-form-item prop="password">
-        <el-input v-model="formModel.password" placeholder="请输入密码" autocomplete="off">
+      <el-form-item prop="password" label="密码">
+        <el-input v-model="formModel.password" placeholder="请输入密码" autocomplete="new-password" show-password>
           <template #prefix>
             <el-icon>
               <Unlock />
@@ -164,8 +166,8 @@ async function getEmailCode() {
         </el-input>
       </el-form-item>
 
-      <el-form-item prop="confirmPassword">
-        <el-input v-model="formModel.confirmPassword" placeholder="请确认密码" autocomplete="off">
+      <el-form-item prop="confirmPassword" label="确认密码">
+        <el-input v-model="formModel.confirmPassword" placeholder="请确认密码" autocomplete="new-password" show-password>
           <template #prefix>
             <el-icon>
               <Lock />
@@ -200,60 +202,78 @@ async function getEmailCode() {
 .custom-form {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 .register-form {
   width: 100%;
 }
 
+.form-tip {
+  color: var(--apple-secondary);
+}
+
 .submit-btn {
   width: 100%;
-  height: 40px;
+  height: 44px;
+  font-family: var(--apple-font);
   font-size: 14px;
-  font-weight: 600;
-  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  font-weight: 500;
+  background: var(--apple-blue);
   border: none;
-  border-radius: 10px;
-  box-shadow: 0 10px 20px rgb(37 99 235 / 18%);
+  border-radius: 999px;
+  box-shadow: none;
+}
+
+.submit-btn:hover {
+  background: var(--apple-blue-hover);
 }
 
 .code-trigger {
   font-size: 12px;
   font-weight: 600;
-  color: #2563eb;
+  color: var(--apple-blue);
   cursor: pointer;
 }
 
 .link-action {
-  color: #2563eb;
+  color: var(--apple-blue);
   cursor: pointer;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .security-tip {
   margin: 0;
-  color: #94a3b8;
-  font-size: 11px;
+  color: var(--apple-secondary);
+  font-size: 12px;
   line-height: 1.6;
 }
 
-:deep(.el-input__wrapper) {
-  min-height: 42px;
-  border-radius: 10px;
-  box-shadow: 0 0 0 1px rgb(148 163 184 / 18%);
+:deep(.el-input__wrapper),
+:deep(.el-select__wrapper) {
+  min-height: 44px;
+  border-radius: 12px;
+  box-shadow: 0 0 0 1px var(--apple-separator-strong);
 }
 
 :deep(.el-input__inner) {
-  font-size: 13px;
+  font-size: 14px;
 }
 
-:deep(.el-input__wrapper.is-focus) {
-  box-shadow: 0 0 0 1px rgb(37 99 235 / 48%);
+:deep(.el-input__wrapper.is-focus),
+:deep(.el-select__wrapper.is-focused) {
+  box-shadow: 0 0 0 1px var(--apple-blue), var(--apple-focus-ring);
+}
+
+:deep(.el-form-item__label) {
+  padding-bottom: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--apple-secondary);
 }
 
 :deep(.el-form-item) {
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 
 :deep(.el-form-item:last-child) {

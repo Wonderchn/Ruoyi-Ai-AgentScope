@@ -318,13 +318,13 @@ onMounted(() => {
     <ElDialog v-model="dialogVisible" :title="editingId ? '编辑菜单' : '新增菜单'" width="620px">
       <ElForm label-width="100px" @submit.prevent>
         <ElFormItem label="上级菜单">
-          <ElSelect v-model="form.parentId" filterable style="width: 100%" data-testid="menu-form-parent">
+          <ElSelect v-model="form.parentId" filterable placeholder="请选择上级菜单" style="width: 100%" data-testid="menu-form-parent">
             <ElOption label="主类目（0）" value="0" />
             <ElOption v-for="item in parentOptions" :key="item.menuId" :label="item.label" :value="item.menuId" />
           </ElSelect>
         </ElFormItem>
         <ElFormItem label="类型">
-          <ElSelect v-model="form.menuType" style="width: 160px" data-testid="menu-form-type">
+          <ElSelect v-model="form.menuType" placeholder="请选择类型" style="width: 160px" data-testid="menu-form-type">
             <ElOption label="目录" value="M" />
             <ElOption label="菜单" value="C" />
             <ElOption label="按钮" value="F" />
@@ -346,7 +346,7 @@ onMounted(() => {
           <ElInput v-model="form.perms" data-testid="menu-form-perms" />
         </ElFormItem>
         <ElFormItem label="状态">
-          <ElSelect v-model="form.status" style="width: 140px" data-testid="menu-form-status">
+          <ElSelect v-model="form.status" placeholder="请选择状态" style="width: 140px" data-testid="menu-form-status">
             <ElOption label="正常" value="0" />
             <ElOption label="停用" value="1" />
           </ElSelect>
@@ -365,20 +365,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
 .header-actions {
   display: flex;
   gap: 8px;
   align-items: center;
-}
-
-.card-header-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
 }
 </style>

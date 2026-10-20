@@ -34,7 +34,7 @@ export const useAgentStore = defineStore('agent', () => {
       const res = await getAgentList();
       if (epoch !== userStore.authEpoch)
         return;
-      agentList.value = res.data;
+      agentList.value = Array.isArray(res?.data) ? res.data : [];
       agentListError.value = '';
     }
     catch (error) {

@@ -270,6 +270,10 @@ public class RagChatExecutor implements RunExecutor {
                 embedded = embeddingGateway.embedBatchWithUsage(List.of(question));
             } catch (RuntimeException e) {
                 guard.commitAtomic(()->{usageLedger.markUnknown(execution.tenantId(),callId);return null;});
+                // 失败路径必须释放 provider 边界 permit：否则 ACTIVE 会挂满 300s 租约，
+                // 期间任何 REVOCATION 写的 drain 都排不空 ⇒ 屏障 PENDING ⇒ 全租户 503
+                // （2026-10-20 实测：一次 BUDGET_EXCEEDED 造成约 7 分钟不可用）。
+                releaseAfterFailure(operation, execution, "retrieve");
                 throw e;
             }
             operation.close();
@@ -393,6 +397,8 @@ public class RagChatExecutor implements RunExecutor {
                                                     return c.substring(c.lastIndexOf('.') + 1) + ":" + f.getLineNumber(); })
                                         .collect(java.util.stream.Collectors.joining(" <- ")));
                 guard.commitAtomic(()->{usageLedger.markUnknown(execution.tenantId(),callId);return null;});
+                // 同 retrieve 步：失败与取消路径都要释放 permit（本次事故的泄漏点就在这里）
+                releaseAfterFailure(operation, execution, "model");
                 if(cancelled[0]) return new Outcome("CANCELLED",Map.of("usage","PENDING_RECONCILIATION"),null);
                 throw e;
             }
@@ -574,6 +580,29 @@ public class RagChatExecutor implements RunExecutor {
 
     /** 引用复核：KB 当前授权 + 版本仍为 published + 未 tombstone；不通过即剔除。 */
     /** 引用复核时授权/依赖服务瞬时不可用：fail-closed，但不得与真实来源变化混淆成 SOURCE_CHANGED。 */
+    /**
+     * 失败/取消路径释放 provider 边界 permit。
+     *
+     * <p>为什么必须有：`providerBoundary.enter(...)` 在库里登记一条 ACTIVE permit（租约 300s），
+     * 只有成功路径会关它。失败/取消时若不关，这条孤儿 permit 会让后续任何 REVOCATION 写的
+     * drain 永久排不空 → 屏障滞留 PENDING → 全租户 AI 接口 503 直到租约过期。
+     * 2026-10-20 实测：一次 `BUDGET_EXCEEDED` 造成约 7 分钟不可用，泄漏点就是 model 步的 catch。
+     *
+     * <p>关闭失败只记日志、**不**掩盖原始业务异常：调用方此刻正在抛原异常。
+     */
+    private void releaseAfterFailure(com.nageoffer.ai.ragent.framework.security.RevocationGuard.Operation operation,
+                                     RunExecution execution, String step) {
+        if (operation == null) {
+            return;
+        }
+        try {
+            operation.close();
+        } catch (RuntimeException closeFailure) {
+            log.warn("provider 边界 permit 释放失败 runId={} step={} cause={}",
+                    execution.runId(), step, closeFailure.toString());
+        }
+    }
+
     static final class SourceCheckUnavailableException extends RuntimeException {
         SourceCheckUnavailableException(String message, Throwable cause) {
             super(message, cause);

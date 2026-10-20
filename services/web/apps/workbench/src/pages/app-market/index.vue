@@ -70,24 +70,24 @@ function openApplication(app: { type: string; data: any }) {
 </template>
 
 <style scoped lang="scss">
-.app-market { box-sizing: border-box; width: 100%; min-height: 100%; color: var(--el-text-color-primary); background: var(--el-bg-color); }
-.market-content { box-sizing: border-box; width: 100%; padding: var(--workspace-top-gap) var(--workspace-padding) 28px; }
+.app-market { box-sizing: border-box; width: 100%; min-height: 100%; color: var(--apple-text); background: transparent; }
+.market-content { box-sizing: border-box; width: 100%; max-width: 1280px; margin: 0 auto; padding: var(--workspace-top-gap) var(--workspace-padding) 40px; }
 .market-header { margin-bottom: var(--workspace-section-gap); }
-.market-eyebrow { color: var(--el-text-color-secondary); font-size: 11px; letter-spacing: .12em; }
-.market-header h1 { margin: 10px 0 8px; font-size: clamp(22px, 2vw, 28px); font-weight: 550; letter-spacing: -.04em; line-height: 1.4; }
-.market-header p { margin: 0; color: var(--el-text-color-secondary); font-size: 14px; line-height: 1.8; }
-.market-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 16px; }
-.market-filters { display: flex; flex-wrap: wrap; gap: 4px; }
-.market-filters button { display: flex; align-items: center; gap: 8px; padding: 9px 13px; white-space: nowrap; font: inherit; font-size: 12px; color: var(--el-text-color-secondary); border: 0; border-radius: 7px; background: transparent; cursor: pointer; }
-.market-filters button.active { color: var(--el-text-color-primary); background: var(--el-fill-color); font-weight: 600; }
-.market-filters button:focus-visible { outline: 2px solid var(--el-color-primary); }
-.market-filters span { font-size: 10px; opacity: .7; }
-.market-search { width: clamp(200px, 24%, 320px); max-width: 100%; }
-.market-search :deep(.el-input__wrapper) { border-radius: 8px; box-shadow: 0 0 0 1px var(--el-border-color-lighter) inset; }
-.market-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: 16px; }
+.market-eyebrow { color: var(--apple-secondary); font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.market-header h1 { margin: 10px 0 10px; font-size: 34px; font-weight: 600; letter-spacing: -.015em; line-height: 1.2; text-wrap: balance; }
+.market-header p { max-width: 60ch; margin: 0; color: var(--apple-secondary); font-size: 15px; line-height: 1.6; }
+.market-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 22px; }
+.market-filters { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px; background: var(--apple-fill); border-radius: 12px; }
+.market-filters button { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px; white-space: nowrap; font-family: var(--apple-font); font-size: 13px; font-weight: 500; color: var(--apple-secondary); background: transparent; border: 0; border-radius: 9px; cursor: pointer; transition: background-color .16s ease, color .16s ease; }
+.market-filters button.active { color: var(--apple-text); background: var(--apple-surface); box-shadow: 0 1px 3px rgba(0, 0, 0, .08); }
+.market-filters button:focus-visible { outline: 2px solid var(--apple-blue); outline-offset: 2px; }
+.market-filters span { font-size: 11px; opacity: .7; }
+.market-search { width: clamp(220px, 26%, 320px); max-width: 100%; }
+.market-search :deep(.el-input__wrapper) { min-height: 40px; background: var(--apple-surface); border-radius: 12px; box-shadow: 0 0 0 1px var(--apple-separator) inset; }
+.market-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 16px; }
 .market-empty { grid-column: 1 / -1; }
 .market-pagination { justify-content: flex-end; margin-top: 24px; }
-.load-error { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; font-size: 13px; color: var(--el-color-danger); }
-@container workspace (max-width: 620px) { .market-toolbar { align-items: stretch; flex-direction: column; } .market-search { width: 100%; } }
+.load-error { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 16px; margin-bottom: 16px; font-size: 13px; color: var(--apple-danger); background: var(--apple-danger-surface); border-radius: 14px; }
+@container workspace (max-width: 620px) { .market-toolbar { align-items: stretch; flex-direction: column; } .market-search { width: 100%; } .market-header h1 { font-size: 30px; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>

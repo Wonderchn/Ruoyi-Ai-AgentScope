@@ -64,107 +64,246 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="app-container" data-testid="server-monitor">
-    <div class="server-head">
-      <h3>服务监控</h3>
-      <button data-testid="server-refresh" :disabled="loading" @click="load">
-        {{ loading ? '刷新中…' : '刷新' }}
-      </button>
-    </div>
-    <p v-if="error" class="server-error" data-testid="server-error">
-      {{ error }}
-    </p>
-    <template v-if="info">
-      <section data-testid="server-cpu">
-        <h4>CPU</h4>
-        <table class="server-table">
-          <tbody>
-            <tr>
-              <td>核心数</td>
-              <td data-testid="server-cpu-cores">
+  <div class="server-monitor" data-testid="server-monitor">
+    <ElAlert
+      v-if="error"
+      class="mb-4"
+      data-testid="server-error"
+      :title="error"
+      type="error"
+      :closable="false"
+    />
+
+    <ElCard>
+      <template #header>
+        <div class="toolbar">
+          <div>
+            <span class="section-title">服务监控</span>
+            <p class="card-header-meta">
+              GET /monitor/server · 只读快照
+            </p>
+          </div>
+          <ElButton data-testid="server-refresh" :loading="loading" @click="load">
+            刷新
+          </ElButton>
+        </div>
+      </template>
+
+      <div v-if="!info && !error" class="state-block" data-testid="server-loading">
+        正在加载服务信息…
+      </div>
+
+      <div v-else-if="info" class="server-grid">
+        <section class="server-section" data-testid="server-cpu">
+          <h3 class="server-section-title">
+            CPU
+          </h3>
+          <dl class="server-facts">
+            <div class="server-fact">
+              <dt>核心数</dt>
+              <dd data-testid="server-cpu-cores">
                 {{ info.cpu.cores }}
-              </td>
-            </tr>
-            <tr><td>系统平均负载</td><td>{{ fmtLoad(info.cpu.systemLoadAverage) }}</td></tr>
-            <tr><td>系统 CPU 负载</td><td>{{ fmtLoad(info.cpu.systemCpuLoad) }}</td></tr>
-            <tr><td>进程 CPU 负载</td><td>{{ fmtLoad(info.cpu.processCpuLoad) }}</td></tr>
-          </tbody>
-        </table>
-      </section>
-      <section data-testid="server-mem">
-        <h4>物理内存</h4>
-        <table class="server-table">
-          <tbody>
-            <tr><td>总量</td><td>{{ fmtBytes(info.mem.total) }}</td></tr>
-            <tr><td>已用</td><td>{{ fmtBytes(info.mem.used) }}（{{ fmtPct(info.mem.usage) }}）</td></tr>
-            <tr><td>空闲</td><td>{{ fmtBytes(info.mem.free) }}</td></tr>
-          </tbody>
-        </table>
-      </section>
-      <section data-testid="server-jvm">
-        <h4>JVM</h4>
-        <table class="server-table">
-          <tbody>
-            <tr><td>堆总量 / 最大</td><td>{{ fmtBytes(info.jvm.total) }} / {{ fmtBytes(info.jvm.max) }}</td></tr>
-            <tr><td>堆已用</td><td>{{ fmtBytes(info.jvm.used) }}（{{ fmtPct(info.jvm.usage) }}）</td></tr>
-            <tr><td>堆空闲</td><td>{{ fmtBytes(info.jvm.free) }}</td></tr>
-            <tr>
-              <td>Java 版本</td>
-              <td data-testid="server-jvm-version">
+              </dd>
+            </div>
+            <div class="server-fact">
+              <dt>系统平均负载</dt>
+              <dd>{{ fmtLoad(info.cpu.systemLoadAverage) }}</dd>
+            </div>
+            <div class="server-fact">
+              <dt>系统 CPU 负载</dt>
+              <dd>{{ fmtLoad(info.cpu.systemCpuLoad) }}</dd>
+            </div>
+            <div class="server-fact">
+              <dt>进程 CPU 负载</dt>
+              <dd>{{ fmtLoad(info.cpu.processCpuLoad) }}</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="server-section" data-testid="server-mem">
+          <h3 class="server-section-title">
+            物理内存
+          </h3>
+          <dl class="server-facts">
+            <div class="server-fact">
+              <dt>总量</dt>
+              <dd>{{ fmtBytes(info.mem.total) }}</dd>
+            </div>
+            <div class="server-fact">
+              <dt>已用</dt>
+              <dd>{{ fmtBytes(info.mem.used) }}（{{ fmtPct(info.mem.usage) }}）</dd>
+            </div>
+            <div class="server-fact">
+              <dt>空闲</dt>
+              <dd>{{ fmtBytes(info.mem.free) }}</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="server-section" data-testid="server-jvm">
+          <h3 class="server-section-title">
+            JVM
+          </h3>
+          <dl class="server-facts">
+            <div class="server-fact">
+              <dt>堆总量 / 最大</dt>
+              <dd>{{ fmtBytes(info.jvm.total) }} / {{ fmtBytes(info.jvm.max) }}</dd>
+            </div>
+            <div class="server-fact">
+              <dt>堆已用</dt>
+              <dd>{{ fmtBytes(info.jvm.used) }}（{{ fmtPct(info.jvm.usage) }}）</dd>
+            </div>
+            <div class="server-fact">
+              <dt>堆空闲</dt>
+              <dd>{{ fmtBytes(info.jvm.free) }}</dd>
+            </div>
+            <div class="server-fact">
+              <dt>Java 版本</dt>
+              <dd data-testid="server-jvm-version">
                 {{ info.jvm.version }}
-              </td>
-            </tr>
-            <tr><td>运行时长</td><td>{{ fmtUptime(info.jvm.uptimeSeconds) }}</td></tr>
-          </tbody>
-        </table>
-      </section>
-      <section data-testid="server-sys">
-        <h4>主机</h4>
-        <table class="server-table">
-          <tbody>
-            <tr><td>主机名</td><td>{{ info.sys.hostName }}</td></tr>
-            <tr><td>操作系统</td><td>{{ info.sys.osName }}（{{ info.sys.osArch }}）</td></tr>
-            <tr><td>运行目录</td><td>{{ info.sys.userDir }}</td></tr>
-          </tbody>
-        </table>
-      </section>
-      <section data-testid="server-disk">
-        <h4>磁盘</h4>
-        <table class="server-table">
-          <tbody>
-            <tr><td>路径</td><td>{{ info.disk.path }}</td></tr>
-            <tr><td>总量</td><td>{{ fmtBytes(info.disk.total) }}</td></tr>
-            <tr><td>已用</td><td>{{ fmtBytes(info.disk.used) }}（{{ fmtPct(info.disk.usage) }}）</td></tr>
-            <tr><td>空闲 / 可用</td><td>{{ fmtBytes(info.disk.free) }} / {{ fmtBytes(info.disk.usable) }}</td></tr>
-          </tbody>
-        </table>
-      </section>
-    </template>
-    <p v-else-if="!error" data-testid="server-loading">
-      加载中…
-    </p>
+              </dd>
+            </div>
+            <div class="server-fact">
+              <dt>运行时长</dt>
+              <dd>{{ fmtUptime(info.jvm.uptimeSeconds) }}</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="server-section" data-testid="server-sys">
+          <h3 class="server-section-title">
+            主机
+          </h3>
+          <dl class="server-facts">
+            <div class="server-fact">
+              <dt>主机名</dt>
+              <dd>{{ info.sys.hostName }}</dd>
+            </div>
+            <div class="server-fact">
+              <dt>操作系统</dt>
+              <dd>{{ info.sys.osName }}（{{ info.sys.osArch }}）</dd>
+            </div>
+            <div class="server-fact">
+              <dt>运行目录</dt>
+              <dd>{{ info.sys.userDir }}</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="server-section" data-testid="server-disk">
+          <h3 class="server-section-title">
+            磁盘
+          </h3>
+          <dl class="server-facts">
+            <div class="server-fact">
+              <dt>路径</dt>
+              <dd>{{ info.disk.path }}</dd>
+            </div>
+            <div class="server-fact">
+              <dt>总量</dt>
+              <dd>{{ fmtBytes(info.disk.total) }}</dd>
+            </div>
+            <div class="server-fact">
+              <dt>已用</dt>
+              <dd>{{ fmtBytes(info.disk.used) }}（{{ fmtPct(info.disk.usage) }}）</dd>
+            </div>
+            <div class="server-fact">
+              <dt>空闲 / 可用</dt>
+              <dd>{{ fmtBytes(info.disk.free) }} / {{ fmtBytes(info.disk.usable) }}</dd>
+            </div>
+          </dl>
+        </section>
+      </div>
+    </ElCard>
   </div>
 </template>
 
 <style scoped>
-.server-head {
+.toolbar {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
 }
-.server-error {
-  color: #c45656;
+
+.section-title {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--apple-text);
 }
-.server-table {
-  border-collapse: collapse;
-  margin-bottom: 16px;
+
+.card-header-meta {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--apple-secondary);
 }
-.server-table td {
-  border: 1px solid #dcdfe6;
-  padding: 4px 12px;
+
+.server-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
 }
-.server-table td:first-child {
-  color: #606266;
-  width: 140px;
+
+.server-section {
+  padding: 20px;
+  background: var(--apple-surface-secondary);
+  border: 1px solid var(--apple-separator);
+  border-radius: 16px;
+}
+
+.server-section-title {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--apple-text);
+}
+
+.server-facts {
+  margin: 0;
+}
+
+.server-fact {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--apple-separator);
+}
+
+.server-fact:first-child {
+  border-top: 0;
+}
+
+.server-fact dt {
+  font-size: 12px;
+  color: var(--apple-secondary);
+}
+
+.server-fact dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  color: var(--apple-text);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 900px) {
+  .server-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .server-section {
+    padding: 16px;
+  }
+
+  .server-fact {
+    grid-template-columns: 108px minmax(0, 1fr);
+    gap: 10px;
+  }
 }
 </style>

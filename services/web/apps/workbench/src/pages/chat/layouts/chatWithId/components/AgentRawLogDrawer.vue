@@ -91,73 +91,82 @@ function close() {
   flex-direction: column;
   max-height: 320px;
   margin: 8px 12px 0;
-  border: 1px solid #e4e7ed;
-  border-radius: 8px;
-  background: #1f2430;
-  color: #d5dae5;
-  font-size: 12px;
   overflow: hidden;
+  font-size: 12px;
+  color: #f5f5f7;
+  background: #1d1d1f;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
 
   .agent-rawlog-head {
     display: flex;
-    align-items: center;
     gap: 8px;
-    padding: 6px 10px;
-    border-bottom: 1px solid #2c3242;
-    background: #262c3a;
+    align-items: center;
+    padding: 10px 14px;
+    background: #2c2c2e;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 
     .agent-rawlog-title {
       font-weight: 600;
     }
 
     .agent-rawlog-context {
-      color: #8b93a7;
       font-size: 11px;
+      color: #a1a1a6;
     }
 
     .agent-rawlog-close {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
       margin-left: auto;
-      border: none;
-      background: transparent;
-      color: #8b93a7;
+      color: #a1a1a6;
       cursor: pointer;
+      background: transparent;
+      border: none;
+      border-radius: 8px;
 
       &:hover {
         color: #ffffff;
+        background: rgba(255, 255, 255, 0.1);
       }
     }
   }
 
   .agent-rawlog-body {
     flex: 1;
-    padding: 6px 10px 10px;
+    padding: 10px 14px 14px;
     overflow: auto;
 
     .agent-rawlog-empty {
       padding: 12px 0;
-      color: #8b93a7;
+      color: #a1a1a6;
     }
 
     .agent-frame {
-      padding: 4px 0;
+      padding: 6px 0;
 
       .agent-frame-head {
         display: flex;
         gap: 8px;
 
         .agent-frame-ts {
-          color: #7f8aa3;
+          font-variant-numeric: tabular-nums;
+          color: #86868b;
         }
 
         .agent-frame-name {
-          color: #7ec8e3;
+          color: #6fb6ff;
           word-break: break-all;
         }
       }
 
       .agent-frame-pre {
-        margin: 2px 0 0;
-        font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+        margin: 4px 0 0;
+        font-family: var(--apple-font-mono);
+        line-height: 1.6;
         white-space: pre-wrap;
         word-break: break-word;
       }

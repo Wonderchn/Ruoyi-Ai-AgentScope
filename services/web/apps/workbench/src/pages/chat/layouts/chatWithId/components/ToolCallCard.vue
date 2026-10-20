@@ -13,29 +13,29 @@ const statusConfig = computed(() => {
     case 'pending':
       return {
         icon: 'Loading',
-        color: '#E6A23C',
-        bgColor: 'rgba(230, 162, 60, 0.1)',
+        color: 'var(--apple-warning)',
+        bgColor: 'var(--apple-warning-soft)',
         text: '调用中',
       };
     case 'success':
       return {
         icon: 'CircleCheckFilled',
-        color: '#67C23A',
-        bgColor: 'rgba(103, 194, 58, 0.1)',
+        color: 'var(--apple-success)',
+        bgColor: 'var(--apple-success-soft)',
         text: '成功',
       };
     case 'error':
       return {
         icon: 'CircleCloseFilled',
-        color: '#F56C6C',
-        bgColor: 'rgba(245, 108, 108, 0.1)',
+        color: 'var(--apple-danger)',
+        bgColor: 'var(--apple-danger-soft)',
         text: '失败',
       };
     default:
       return {
         icon: 'QuestionFilled',
-        color: '#909399',
-        bgColor: 'rgba(144, 147, 153, 0.1)',
+        color: 'var(--apple-secondary)',
+        bgColor: 'var(--apple-info-soft)',
         text: '未知',
       };
   }
@@ -141,71 +141,67 @@ const formattedResult = computed(() => {
 
 <style scoped lang="scss">
 .tool-call-card {
-  background-color: #ffffff;
-  border: 1px solid #e4e7ed;
-  border-radius: 8px;
-  overflow: hidden;
   margin: 8px 0;
+  overflow: hidden;
   font-size: 13px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-  transition: all 0.3s ease;
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator);
+  border-radius: 14px;
+  transition: border-color 0.18s ease;
 
   &:hover {
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
-  }
-
-  &.expanded {
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    border-color: var(--apple-separator-strong);
   }
 
   .card-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 10px 12px;
+    padding: 11px 14px;
     cursor: pointer;
     user-select: none;
-    transition: background-color 0.2s ease;
+    transition: background-color 0.18s ease;
 
     &:hover {
-      background-color: #f5f7fa;
+      background: var(--apple-bg);
     }
 
     .header-left {
       display: flex;
-      align-items: center;
-      gap: 8px;
       flex: 1;
+      gap: 9px;
+      align-items: center;
       min-width: 0;
 
       .tool-icon {
         display: flex;
+        flex-shrink: 0;
         align-items: center;
         justify-content: center;
-        width: 24px;
-        height: 24px;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border-radius: 6px;
-        color: #ffffff;
-        flex-shrink: 0;
+        width: 28px;
+        height: 28px;
+        color: var(--apple-blue);
+        background: var(--apple-blue-soft);
+        border-radius: 8px;
       }
 
       .tool-name {
-        font-weight: 500;
-        color: #303133;
-        white-space: nowrap;
         overflow: hidden;
+        font-weight: 500;
+        color: var(--apple-text);
         text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .status-tag {
         display: flex;
-        align-items: center;
-        gap: 4px;
-        border-radius: 4px;
-        padding: 2px 8px;
-        font-size: 12px;
         flex-shrink: 0;
+        gap: 4px;
+        align-items: center;
+        padding: 2px 9px;
+        font-size: 12px;
+        border: 0;
+        border-radius: 999px;
 
         .status-text {
           line-height: 1;
@@ -215,18 +211,19 @@ const formattedResult = computed(() => {
 
     .header-right {
       display: flex;
-      align-items: center;
-      gap: 8px;
       flex-shrink: 0;
+      gap: 8px;
+      align-items: center;
 
       .call-time {
         font-size: 12px;
-        color: #909399;
+        font-variant-numeric: tabular-nums;
+        color: var(--apple-tertiary);
       }
 
       .expand-icon {
-        color: #909399;
-        transition: transform 0.3s ease;
+        color: var(--apple-tertiary);
+        transition: transform 0.2s ease;
 
         &.rotated {
           transform: rotate(180deg);
@@ -236,32 +233,32 @@ const formattedResult = computed(() => {
   }
 
   .card-content {
-    padding: 0 12px 12px;
-    border-top: 1px solid #ebeef5;
+    padding: 0 14px 14px;
+    border-top: 1px solid var(--apple-separator);
 
     .result-section {
       margin-top: 12px;
 
       .section-label {
-        font-size: 12px;
-        color: #909399;
         margin-bottom: 8px;
+        font-size: 12px;
         font-weight: 500;
+        color: var(--apple-secondary);
       }
 
       .result-content {
-        background-color: #f5f7fa;
-        border-radius: 6px;
-        padding: 10px 12px;
         max-height: 300px;
+        padding: 12px 14px;
         overflow: auto;
+        background: var(--apple-bg);
+        border-radius: 12px;
 
         pre {
           margin: 0;
-          font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+          font-family: var(--apple-font-mono);
           font-size: 12px;
-          line-height: 1.5;
-          color: #303133;
+          line-height: 1.6;
+          color: var(--apple-text);
           white-space: pre-wrap;
           word-break: break-word;
         }
@@ -270,11 +267,11 @@ const formattedResult = computed(() => {
 
     .pending-hint {
       display: flex;
+      gap: 8px;
       align-items: center;
       justify-content: center;
-      gap: 8px;
       padding: 16px;
-      color: #E6A23C;
+      color: var(--apple-warning);
 
       .is-loading {
         animation: rotate 1s linear infinite;
@@ -282,10 +279,10 @@ const formattedResult = computed(() => {
     }
 
     .no-result {
-      text-align: center;
       padding: 16px;
-      color: #909399;
       font-size: 12px;
+      color: var(--apple-secondary);
+      text-align: center;
     }
   }
 }
@@ -296,6 +293,18 @@ const formattedResult = computed(() => {
   }
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-call-card,
+  .tool-call-card .card-header,
+  .tool-call-card .expand-icon {
+    transition: none;
+  }
+
+  .tool-call-card .pending-hint .is-loading {
+    animation: none;
   }
 }
 </style>

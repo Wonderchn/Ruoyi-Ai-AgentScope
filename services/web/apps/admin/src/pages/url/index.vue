@@ -133,22 +133,6 @@ void loadShortcuts();
 
 <template>
   <div>
-    <ElCard class="mb-4">
-      <div class="toolbar">
-        <span data-testid="url-contract" class="card-header-meta">
-          GET /system/url/list（system:url:list）· 共 {{ state.total }} 条
-        </span>
-        <div class="toolbar-actions">
-          <ElButton v-if="canAdd" type="primary" data-testid="url-create-open" @click="openCreate()">
-            新建短链
-          </ElButton>
-          <ElButton data-testid="url-reload" :loading="state.loading" @click="load(1)">
-            刷新
-          </ElButton>
-        </div>
-      </div>
-    </ElCard>
-
     <ElAlert
       v-if="!permitted"
       data-testid="url-no-permission"
@@ -159,6 +143,24 @@ void loadShortcuts();
     />
 
     <ElCard v-else class="mb-4">
+      <template #header>
+        <div class="card-header">
+          <div>
+            <span class="section-title">短链列表</span>
+            <p data-testid="url-contract" class="card-header-meta">
+              GET /system/url/list（system:url:list）· 共 {{ state.total }} 条
+            </p>
+          </div>
+          <div class="toolbar-actions">
+            <ElButton v-if="canAdd" type="primary" data-testid="url-create-open" @click="openCreate()">
+              新建短链
+            </ElButton>
+            <ElButton data-testid="url-reload" :loading="state.loading" @click="load(1)">
+              刷新
+            </ElButton>
+          </div>
+        </div>
+      </template>
       <ElForm :inline="true" @submit.prevent>
         <ElFormItem label="原始 URL">
           <ElInput v-model="filters.url" clearable data-testid="url-filter-url" />
@@ -285,32 +287,3 @@ void loadShortcuts();
     </ElDialog>
   </div>
 </template>
-
-<style scoped>
-.toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.toolbar-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.card-header-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-
-.mt-4 {
-  margin-top: 16px;
-}
-</style>

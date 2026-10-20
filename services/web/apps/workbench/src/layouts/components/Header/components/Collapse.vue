@@ -26,13 +26,35 @@ function handleChangeCollapse() {
 </script>
 
 <template>
-  <div class="collapse-container btn-icon-btn" @click="handleChangeCollapse">
-    <SvgIcon v-if="!designStore.isCollapse" name="ms-left-panel-close-outline" size="24" />
-    <SvgIcon v-if="designStore.isCollapse" name="ms-left-panel-open-outline" size="24" />
-  </div>
+  <button
+    type="button"
+    class="collapse-container"
+    aria-label="切换侧栏"
+    @click="handleChangeCollapse"
+  >
+    <SvgIcon v-if="!designStore.isCollapse" name="ms-left-panel-close-outline" size="20" />
+    <SvgIcon v-if="designStore.isCollapse" name="ms-left-panel-open-outline" size="20" />
+  </button>
 </template>
 
 <style lang="scss" scoped>
-// .collapse-container {
-// }
+.collapse-container {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  color: var(--apple-secondary);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+.collapse-container:hover {
+  color: var(--apple-text);
+  background: rgba(0, 0, 0, 0.05);
+}
 </style>

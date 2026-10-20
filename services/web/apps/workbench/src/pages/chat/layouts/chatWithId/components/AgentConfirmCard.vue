@@ -143,38 +143,38 @@ defineExpose({ stateMeta, summaryText, calls, raw, actionable });
 
 <style scoped lang="scss">
 .agent-confirm {
+  padding: 14px 16px;
   margin: 6px 0;
-  padding: 10px 12px;
-  border: 1px solid #e4e7ed;
-  border-left: 3px solid #e6a23c;
-  border-radius: 8px;
-  background: #fdfaf4;
   font-size: 13px;
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator);
+  border-left: 3px solid var(--apple-warning);
+  border-radius: 14px;
 
   &[data-status='approved'] {
-    border-left-color: #67c23a;
-    background: #f5fbf2;
+    background: var(--apple-success-soft);
+    border-left-color: var(--apple-success);
   }
 
   &[data-status='denied'],
   &[data-status='expired'] {
-    border-left-color: #909399;
-    background: #f7f7f7;
+    background: var(--apple-bg);
+    border-left-color: var(--apple-separator-strong);
   }
 
   .agent-confirm-lead {
     margin: 0 0 8px;
-    color: #303133;
+    color: var(--apple-text);
 
     .agent-confirm-summary {
-      color: #909399;
+      color: var(--apple-secondary);
     }
   }
 
   .agent-confirm-title {
     margin-bottom: 6px;
-    color: #606266;
     font-size: 12px;
+    color: var(--apple-secondary);
   }
 
   .agent-confirm-head {
@@ -183,114 +183,133 @@ defineExpose({ stateMeta, summaryText, calls, raw, actionable });
 
   .agent-confirm-name {
     display: flex;
-    align-items: center;
     gap: 6px;
+    align-items: center;
     font-weight: 500;
-    color: #303133;
+    color: var(--apple-text);
 
     .agent-confirm-count,
     .agent-confirm-no {
-      color: #909399;
       font-size: 12px;
       font-weight: 400;
+      color: var(--apple-tertiary);
     }
 
     .agent-chip {
-      padding: 1px 8px;
-      border-radius: 10px;
-      background: rgba(144, 147, 153, 0.12);
-      color: #909399;
+      padding: 1px 9px;
       font-size: 12px;
       font-weight: 400;
+      color: var(--apple-secondary);
+      background: var(--apple-info-soft);
+      border-radius: 999px;
     }
   }
 
   .agent-confirm-fields {
     display: grid;
     grid-template-columns: max-content 1fr;
-    gap: 2px 10px;
-    margin: 4px 0 0;
+    gap: 3px 12px;
+    margin: 6px 0 0;
 
     dt {
-      color: #909399;
       font-size: 12px;
+      color: var(--apple-secondary);
     }
 
     dd {
       margin: 0;
-      color: #303133;
+      color: var(--apple-text);
       word-break: break-word;
     }
   }
 
   .agent-confirm-list {
-    margin: 0;
     padding: 0;
+    margin: 0;
     list-style: none;
 
     > li + li {
-      margin-top: 8px;
-      padding-top: 8px;
-      border-top: 1px dashed #ebeef5;
+      padding-top: 10px;
+      margin-top: 10px;
+      border-top: 1px solid var(--apple-separator);
     }
   }
 
   .agent-confirm-raw {
-    margin-top: 8px;
+    margin-top: 10px;
 
     .agent-tool-summary {
       display: inline-flex;
+      gap: 5px;
       align-items: center;
-      gap: 4px;
-      padding: 0;
-      border: none;
-      background: transparent;
-      color: #606266;
+      padding: 2px 0;
+      font-family: var(--apple-font);
       font-size: 12px;
+      color: var(--apple-secondary);
       cursor: pointer;
+      background: transparent;
+      border: none;
+
+      &:hover {
+        color: var(--apple-text);
+      }
     }
   }
 
   .agent-pre {
-    margin: 4px 0 0;
-    padding: 8px 10px;
-    border-radius: 6px;
-    background: #f5f7fa;
-    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    max-height: 300px;
+    padding: 12px 14px;
+    margin: 6px 0 0;
+    overflow: auto;
+    font-family: var(--apple-font-mono);
     font-size: 12px;
-    line-height: 1.5;
+    line-height: 1.6;
+    color: var(--apple-text);
     white-space: pre-wrap;
     word-break: break-word;
-    max-height: 300px;
-    overflow: auto;
+    background: var(--apple-bg);
+    border-radius: 12px;
   }
 
   .agent-confirm-actions {
     display: flex;
     gap: 8px;
-    margin-top: 10px;
+    margin-top: 12px;
 
     .agent-confirm-btn {
-      padding: 4px 14px;
-      border: 1px solid #dcdfe6;
-      border-radius: 6px;
-      background: #ffffff;
-      color: #606266;
+      height: 36px;
+      padding: 0 16px;
+      font-family: var(--apple-font);
       font-size: 13px;
+      font-weight: 500;
+      color: var(--apple-text);
       cursor: pointer;
+      background: var(--apple-surface);
+      border: 1px solid var(--apple-separator-strong);
+      border-radius: 980px;
+      transition: background-color 0.18s ease, border-color 0.18s ease;
+
+      &:hover {
+        background: var(--apple-bg);
+      }
 
       &--primary {
-        border-color: #e6a23c;
-        background: #e6a23c;
-        color: #ffffff;
+        color: #fff;
+        background: var(--apple-blue);
+        border-color: var(--apple-blue);
+
+        &:hover {
+          background: var(--apple-blue-hover);
+          border-color: var(--apple-blue-hover);
+        }
       }
     }
   }
 
   .agent-confirm-wait {
     margin-top: 8px;
-    color: #909399;
     font-size: 12px;
+    color: var(--apple-secondary);
   }
 }
 </style>

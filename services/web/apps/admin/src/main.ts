@@ -6,6 +6,7 @@ import router from './routers';
 import store from './stores';
 import 'element-plus/dist/index.css';
 import './styles/index.css';
+import './styles/apple-theme.css';
 
 const app = createApp(App);
 

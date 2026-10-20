@@ -21,18 +21,27 @@ import com.nageoffer.ai.ragent.agent.config.AgentProperties;
 import com.nageoffer.ai.ragent.agent.config.ConditionalOnAgentEngine;
 import com.nageoffer.ai.ragent.agent.controller.vo.AgentMetaVO;
 import com.nageoffer.ai.ragent.agent.tool.AgentToolCatalog;
+import com.nageoffer.ai.ragent.authorization.AiDeliveryPermitConfiguration;
+import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
+import com.nageoffer.ai.ragent.framework.exception.ServiceException;
 import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
 import com.nageoffer.ai.ragent.framework.security.P04AiErrorCode;
 import com.nageoffer.ai.ragent.framework.security.P04AiException;
+import com.nageoffer.ai.ragent.framework.security.RevocationGuard;
 import com.nageoffer.ai.ragent.runtime.config.ConfigAuthorityUnavailable;
 import com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Agent 引擎探活与身份，前端进入聊天页先拉一次点亮徽标，绝不带密钥
@@ -80,12 +89,45 @@ import java.util.List;
 @RequiredArgsConstructor
 public class AgentMetaController {
 
+    private static final Logger log = LoggerFactory.getLogger(AgentMetaController.class);
+
+    /** 交付 permit 持有者缺席时只打一次 error，避免每个探活请求刷屏。 */
+    private static final AtomicBoolean PERMIT_HOLDER_MISSING = new AtomicBoolean();
+
     private final AgentProperties agentProperties;
     private final AgentToolCatalog toolCatalog;
     private final EngineModelAuthority modelAuthority;
 
+    /**
+     * 撤权/租户屏障守卫。内嵌形态下它是 bean；用 setter 软取，
+     * 与 {@code AgentOptionController} 同一口径：缺席时显式拒绝，不返回"看起来成功"的 200。
+     */
+    private RevocationGuard revocations;
+
+    /** 交付 permit 请求级持有者：成功路径的 permit 交给它在 afterCompletion 单点释放。 */
+    private AiDeliveryPermitConfiguration.DeliveryPermitHolder deliveryPermits;
+
+    @Autowired(required = false)
+    public void setRevocations(RevocationGuard revocations) {
+        this.revocations = revocations;
+    }
+
+    @Autowired(required = false)
+    public void setDeliveryPermits(AiDeliveryPermitConfiguration.DeliveryPermitHolder deliveryPermits) {
+        this.deliveryPermits = deliveryPermits;
+    }
+
+    /**
+     * 引擎探活/身份。
+     *
+     * <p><b>交付回执必须回填</b>：网关的 GET 字节分支（{@code LocalAiGatewayClient:163-170}）
+     * 在 200/206 时强制校验 {@code X-AI-Delivery-Permit} / {@code X-AI-Delivery-Operation}
+     * 两个 UUID 头，缺失即 {@code delivery receipt missing} ⇒ 503。原先本方法直接返回
+     * {@link ApiEnvelope}，网关因此把成功的探活收敛成 503（2026-10-19 VM 实测）。
+     * 修法与同族 {@code AgentOptionController.reply} 逐句一致。
+     */
     @GetMapping("/agent/v1/meta")
-    public ApiEnvelope<AgentMetaVO> meta() {
+    public ApiEnvelope<AgentMetaVO> meta(HttpServletResponse response) {
         AgentEngineSurface.requireScope("agent.execute");
         boolean mcpConfigured = toolCatalog.mcpToolCount() > 0;
         // 能力清单随实况增删，否则会与 mcpConfigured 各说各话，前端只能自己对齐
@@ -94,13 +136,44 @@ public class AgentMetaController {
             capabilities.add("mcp-tools");
         }
         String model = publishedModel();
-        return ApiEnvelope.ok(new AgentMetaVO(
+        return reply("agent.execute", "tenant:agent-meta", new AgentMetaVO(
                 "AgentScope ReAct",
                 model,
                 agentProperties.getMaxIters(),
                 List.copyOf(capabilities),
                 mcpConfigured ? "native + mcp" : "native",
-                mcpConfigured));
+                mcpConfigured), response);
+    }
+
+    /**
+     * 交付 permit 协议入口：登记 permit 并把两个回执头写进响应。
+     *
+     * <p>逐句照 {@code AgentOptionController.reply}（含持有者缺席时的一次性 error 日志）：
+     * 守卫缺席 ⇒ fail-closed 显式拒绝；持有者缺席 ⇒ 回执仍回填，交付不因释放件缺席而失效。
+     */
+    private <T> ApiEnvelope<T> reply(String action, String ref, T data, HttpServletResponse response) {
+        if (revocations == null) {
+            throw new ServiceException("delivery permit unavailable");
+        }
+        var operation = revocations.enter(PrincipalContext.require(), action, ref);
+        if (deliveryPermits == null) {
+            if (PERMIT_HOLDER_MISSING.compareAndSet(false, true)) {
+                log.error("交付 permit 持有者未装配：成功路径的 permit 不会被释放"
+                        + "（检查 ruoyi-ai-web 的 AutoConfiguration.imports 是否仍登记 "
+                        + "AiDeliveryPermitConfiguration）action={} ref={}", action, ref);
+            }
+        } else {
+            deliveryPermits.register(operation, operation.permitId(), operation.operationId());
+        }
+        try {
+            response.setHeader("Cache-Control", "no-store");
+            response.setHeader("X-AI-Delivery-Permit", operation.permitId());
+            response.setHeader("X-AI-Delivery-Operation", operation.operationId());
+            return ApiEnvelope.ok(data);
+        } catch (RuntimeException e) {
+            operation.close();
+            throw e;
+        }
     }
 
     /**

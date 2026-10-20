@@ -20,6 +20,7 @@ import { useChatStore } from '@/stores/modules/chat';
 import { useSessionStore } from '@/stores/modules/session';
 import { useUserStore } from '@/stores/modules/user';
 import { codeXRender } from '@/utils/markdownRenderers';
+import { userFacingErrorMessage } from '@/utils/user-facing-error';
 import { createAttachmentClient } from '../../../../api/ai/attachments';
 import { createFlowRunClient } from '../../../../api/chat/flow-run';
 import ChatAttachments from '../../../../components/rag/ChatAttachments.vue';
@@ -29,7 +30,7 @@ import MessageDetails from './components/MessageDetails.vue';
 import ToolCallCard from './components/ToolCallCard.vue';
 import WorkflowRunStatus from './components/WorkflowRunStatus.vue';
 import { useAgentChat } from './useAgentChat';
-import { useChatRun } from './useChatRun';
+import { terminalFailureHint, useChatRun } from './useChatRun';
 
 // Agent 编排的测试缝：页面级测试经 props 注入整份编排（生产恒为空 ⇒ 走真实客户端）。
 // 与 `useAgentChat` 的 `factory` 选项同一机制，只是入口在组件签名上，便于 vm 沙箱直接驱动。
@@ -110,6 +111,8 @@ const avatar = computed(() => {
 const inputValue = ref('');
 const chatSenderRef = ref<InstanceType<typeof ChatSender> | null>(null);
 const bubbleItems = ref<MessageItem[]>([]);
+/** 会话历史是否已解析完（用于区分“加载中”和“确实没有消息”）。 */
+const historyResolved = ref(false);
 const bubbleListRef = ref<BubbleListInstance | null>(null);
 
 // 独立的工具调用事件列表
@@ -172,9 +175,7 @@ async function loadKnowledgeBases() {
       return;
     kbList.value = [];
     selectedKbIds.value = [];
-    kbError.value = error instanceof Error
-      ? `知识库列表不可用：${error.message}`
-      : '知识库列表不可用：无法确认可用授权范围';
+    kbError.value = `知识库列表不可用：${userFacingErrorMessage(error, '无法确认可用授权范围')}`;
   }
 }
 
@@ -192,16 +193,38 @@ const chatRun = useChatRun({
   hooks: {
     onStep: (update) => {
       // 工具/步骤过程**保留**（F03 不变量：历史与过程不能被压平成 role/content）。
-      toolCallEvents.value = [
-        ...toolCallEvents.value,
-        {
-          key: ++toolCallKeyCounter,
-          name: update.stepName || update.stepId || 'step',
-          status: update.event === 'run.step_completed' ? 'success' : 'pending',
-          result: update.payload,
-          timestamp: Date.now(),
-        } as ToolCallInfo,
-      ];
+      //
+      // 一个步骤会先后收到 `run.step_started` 与 `run.step_completed` 两条事件，
+      // 二者是**同一个步骤的两条状态**，必须原地更新同一张卡。此前每条事件都 push
+      // 一张新卡，导致 authorize/retrieve/model 三个阶段渲染成 6 张（每阶段「调用中」
+      // 「成功」各一行）重复卡；这里改为按 stepId upsert，与下方工作流分支一致。
+      const stepId = update.stepId || update.stepName || 'step';
+      const completed = update.event === 'run.step_completed';
+      const existing = toolCallEvents.value.find(tool => tool.stepId === stepId);
+      if (existing) {
+        existing.status = completed ? 'success' : 'pending';
+        // completed 事件的 payload 不含 stepName，只有 started 事件带名字：沿用已有名字。
+        if (update.stepName)
+          existing.name = update.stepName;
+        // started 的 payload 只是 `{stepId, stepName, attemptId}`，不是执行结果，
+        // 不能当作「执行结果」展示；只有 completed 的 payload 才是真结果。
+        if (completed)
+          existing.result = update.payload;
+        toolCallEvents.value = [...toolCallEvents.value];
+      }
+      else {
+        toolCallEvents.value = [
+          ...toolCallEvents.value,
+          {
+            key: ++toolCallKeyCounter,
+            stepId,
+            name: update.stepName || update.stepId || 'step',
+            status: completed ? 'success' : 'pending',
+            result: completed ? update.payload : null,
+            timestamp: Date.now(),
+          } as ToolCallInfo,
+        ];
+      }
     },
     onUsage: (payload) => {
       const total = (payload as AnyObject | null)?.totalTokens;
@@ -238,7 +261,7 @@ const chatRun = useChatRun({
       if (update.status === 'FAILED' || update.status === 'CANCELLED') {
         // **如实显示失败**：不把 NO_AUTHORIZED_SCOPE 当成一次普通回答。
         lastMessage.content = lastMessage.content
-          || `> 本次运行未完成（${update.status}${update.errorCode ? ` / ${update.errorCode}` : ''}）。`;
+          || `> 本次运行未完成（${update.status}${update.errorCode ? ` / ${update.errorCode}` : ''}）。${update.errorCode ? terminalFailureHint(update.errorCode) : ''}`;
       }
     },
   },
@@ -460,6 +483,7 @@ watch(
   () => route.params?.id,
   async (_id_) => {
     const epoch = userStore.authEpoch;
+    historyResolved.value = false;
     bubbleItems.value = [];
     if (_id_) {
       // 切换会话时清空工具调用事件与工作流运行状态
@@ -484,6 +508,7 @@ watch(
           setTimeout(() => {
             bubbleListRef.value?.scrollToBottom();
           }, 350);
+          historyResolved.value = true;
           return;
         }
 
@@ -493,6 +518,7 @@ watch(
           return;
         // 请求聊天记录后，赋值回显，并滚动到底部
         bubbleItems.value = (chatStore.chatMap[`${_id_}`] ?? []) as MessageItem[];
+        historyResolved.value = true;
 
         // 滚动到底部
         setTimeout(() => {
@@ -503,6 +529,10 @@ watch(
       // 新建会话后带过来的第一句话：**一次性**状态（不再放 localStorage —— 创建失败时
       // 旧实现会把那句话留在本地，用户下次进任意会话都会被发出去）。
       const pending = sessionStore.takePendingFirstMessage();
+      // 首页选择的问答范围与第一句话同批消费；聊天页自己的选择在之后仍可修改。
+      const pendingKbIds = sessionStore.takePendingFirstKbIds?.() ?? [];
+      if (pendingKbIds.length)
+        selectedKbIds.value = pendingKbIds;
       if (pending) {
         setTimeout(() => {
           if (epoch === userStore.authEpoch && _id_ === route.params?.id)
@@ -510,6 +540,7 @@ watch(
         }, 350);
       }
     }
+    historyResolved.value = true;
   },
   { immediate: true, deep: true },
 );
@@ -573,7 +604,7 @@ async function submitMessage(content: string) {
         sessionStore.setCurrentSession({ id: flowConversationId, sessionTitle: text.slice(0, 30), createTime: new Date() });
       }
       catch (error) {
-        runError.value = error instanceof Error ? error.message : '创建会话失败，未发起工作流运行';
+        runError.value = userFacingErrorMessage(error, '创建会话失败，未发起工作流运行');
         return;
       }
     }
@@ -629,6 +660,17 @@ async function submitMessage(content: string) {
   }
 
   const epoch = userStore.authEpoch;
+  // `rag.chat` 没有“无检索闲聊”分支：未选知识库时服务端必然以
+  // NO_AUTHORIZED_SCOPE 终止。这里先给出可操作的提示并阻止空跑，
+  // 不悄悄扩到全库、也不把失败画成回答。
+  if (selectedKbIds.value.length === 0) {
+    if (kbList.value.length === 0)
+      runError.value = '当前账号还没有可用知识库。请先到“知识库问答”创建知识库并上传 PDF。';
+    else
+      runError.value = '请先在输入框上方选择本次问答使用的知识库。';
+    // 错误位（data-testid="chat-run-error"）已经可见，这里不依赖全局 ElMessage。
+    return;
+  }
   // 清空上一次的工具调用事件
   toolCallEvents.value = [];
   toolCallKeyCounter = 0;
@@ -847,8 +889,8 @@ function sendMessageByKey(key: number) {
 
       <!--
         知识库选择（`rag.chat` 的 resourceRefs）。
-        一个都没选时**照常提交**：服务端会以 FAILED/NO_AUTHORIZED_SCOPE 终止，
-        前端如实显示，不扩到全库、也不悄悄换成无检索闲聊。
+        未选择时前端先给出可操作提示并阻止空跑（服务端仍以 NO_AUTHORIZED_SCOPE
+        fail-closed）；不扩到全库、也不悄悄换成无检索闲聊。
       -->
       <div class="kb-picker">
         <el-select
@@ -857,7 +899,7 @@ function sendMessageByKey(key: number) {
           collapse-tags
           collapse-tags-tooltip
           :disabled="runRunning || !kbList.length"
-          :placeholder="kbList.length ? '选择知识库（不选则服务端将以 NO_AUTHORIZED_SCOPE 终止）' : '没有可用知识库'"
+          :placeholder="kbList.length ? '选择知识库' : '没有可用知识库'"
           data-testid="chat-kb-select"
         >
           <el-option
@@ -868,6 +910,14 @@ function sendMessageByKey(key: number) {
           />
         </el-select>
         <span v-if="kbError" class="kb-error" data-testid="chat-kb-error">{{ kbError }}</span>
+        <RouterLink
+          v-else-if="!kbList.length"
+          to="/rag"
+          class="kb-empty-link"
+          data-testid="chat-kb-empty"
+        >
+          还没有可用知识库：去创建并上传 PDF
+        </RouterLink>
         <span v-if="runStatus" class="run-status" data-testid="chat-run-status">运行状态：{{ runStatus }}</span>
       </div>
 
@@ -1048,17 +1098,45 @@ function sendMessageByKey(key: number) {
         </template>
       </BubbleList>
 
+      <div
+        v-if="historyResolved && !bubbleItems.length && !isThinking"
+        class="chat-empty"
+        data-testid="chat-empty"
+      >
+        <div class="chat-empty-icon">
+          <el-icon :size="22">
+            <ChatDotRound />
+          </el-icon>
+        </div>
+        <p class="chat-empty-title">
+          这个会话还没有消息
+        </p>
+        <p class="chat-empty-desc">
+          在下方输入框开始第一轮对话，或新建一个对话。
+        </p>
+      </div>
+
       <div class="sender-wrapper">
         <div v-if="!agentMode" class="attachment-picker">
-          <input type="file" multiple accept="image/png,image/jpeg,application/pdf,text/plain" :disabled="senderBusy" aria-label="添加附件" @change="selectAttachments">
-          <div v-for="(row, index) in pendingAttachments" :key="`${row.file.name}-${index}`">
-            {{ row.file.name }} · {{ row.status === 'ready' ? '已上传' : `${row.progress}%` }} {{ row.error }}
-            <el-button v-if="row.status === 'failed'" size="small" @click="retryAttachment(row)">
-              重试
-            </el-button>
-            <el-button :disabled="row.status === 'uploading'" size="small" @click="pendingAttachments.splice(index, 1)">
-              移除
-            </el-button>
+          <label class="attachment-trigger">
+            <input class="attachment-input" type="file" multiple accept="image/png,image/jpeg,application/pdf,text/plain" :disabled="senderBusy" aria-label="添加附件" @change="selectAttachments">
+            <span>添加附件</span>
+          </label>
+          <div v-if="pendingAttachments.length" class="attachment-list">
+            <span
+              v-for="(row, index) in pendingAttachments"
+              :key="`${row.file.name}-${index}`"
+              class="attachment-chip"
+              :data-state="row.status"
+            >
+              <span class="attachment-name">{{ row.file.name }}</span>
+              <span class="attachment-state">{{ row.status === 'ready' ? '已上传' : `${row.progress}%` }}</span>
+              <span v-if="row.error" class="attachment-error">{{ row.error }}</span>
+              <button v-if="row.status === 'failed'" type="button" class="attachment-action" @click="retryAttachment(row)">
+                重试
+              </button>
+              <button type="button" class="attachment-remove" aria-label="移除附件" @click="pendingAttachments.splice(index, 1)">×</button>
+            </span>
           </div>
           <small>PNG / JPEG / PDF / UTF-8 文本，单个 5 MiB，最多四个。图片支持由所选模型决定。</small>
         </div>
@@ -1081,22 +1159,46 @@ function sendMessageByKey(key: number) {
 }
 
 .run-alert {
-  margin: 8px 12px 0;
+  margin: 8px 16px 0;
 }
 
 .kb-picker {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px 0;
+  gap: 12px;
+  padding: 12px 16px 0;
+
+  :deep(.el-select) {
+    flex: 0 1 420px;
+  }
+
+  :deep(.el-select__wrapper) {
+    min-height: 38px;
+    background: var(--apple-surface);
+    border-radius: 12px;
+    box-shadow: 0 0 0 1px var(--apple-separator) inset;
+  }
 
   .kb-error {
-    color: var(--el-color-danger, #f56c6c);
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--apple-danger);
     font-size: 12px;
   }
 
+  .kb-empty-link {
+    color: var(--apple-blue);
+    font-size: 12px;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .kb-empty-link:hover {
+    text-decoration: underline;
+  }
+
   .run-status {
-    color: var(--el-text-color-secondary, #909399);
+    color: var(--apple-secondary);
     font-size: 12px;
   }
 }
@@ -1105,29 +1207,31 @@ function sendMessageByKey(key: number) {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin: 8px 12px 0;
-  padding: 10px 12px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary, #909399);
-  border: 1px solid var(--el-border-color-lighter, #ebeef5);
-  border-radius: 8px;
+  margin: 12px 16px 0;
+  padding: 14px 16px;
+  font-size: 13px;
+  color: var(--apple-secondary);
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator);
+  border-radius: 14px;
 }
 
 .flow-panel-head {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  color: var(--el-text-color-primary, #303133);
+  font-weight: 500;
+  color: var(--apple-text);
 }
 
 .flow-step[data-status='success'] {
-  color: var(--el-color-success, #67c23a);
+  color: var(--apple-success);
 }
 
 .flow-output {
   margin: 0;
-  font-family: inherit;
-  color: var(--el-text-color-primary, #303133);
+  font-family: var(--apple-font);
+  color: var(--apple-text);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -1145,58 +1249,61 @@ function sendMessageByKey(key: number) {
 }
 
 .edit-card {
-  width: 500px;
   box-sizing: border-box;
-  border: 1px solid #dcdfe6;
+  width: 100%;
+  max-width: 560px;
+  padding: 14px;
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator-strong);
   border-radius: 16px;
-  padding: 12px;
-  background: #ffffff;
-  transition: all 0.2s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .edit-input :deep(.el-textarea__inner) {
+  padding: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  background: transparent !important;
   border: none !important;
   box-shadow: none !important;
-  background: transparent !important;
   resize: none;
-  padding: 0;
-  font-size: 14px;
 }
 
 .edit-actions {
-  margin-top: 12px;
   display: flex;
   justify-content: flex-end;
   gap: 4px;
+  margin-top: 12px;
 }
 
 .copy-button-container {
   position: absolute;
-  bottom: -28px;
   right: -10px;
-  transform: translateY(10px);
-  transition: all 0.3s ease;
-  pointer-events: none;
+  bottom: -28px;
   display: flex;
   justify-content: flex-end;
+  pointer-events: none;
+  transform: translateY(10px);
+  transition: all 0.3s ease;
 
   .copy-btn {
-    width: 24px;
-    height: 24px;
+    width: 26px;
+    height: 26px;
     padding: 0;
-    font-size: 16px;
-    cursor: pointer;
+    font-size: 15px;
+    color: var(--apple-tertiary);
     pointer-events: auto;
+    cursor: pointer;
     border: none !important;
-    color: #91949a;
+
     :deep(svg) {
-      stroke-width: 3 !important;
+      stroke-width: 2.4 !important;
     }
 
     &:hover {
-      border-radius: 50%;
+      background-color: var(--apple-fill);
+      border-radius: 8px;
       transition: background-color 0.2s;
-      background-color: #f1efef;
     }
   }
 }
@@ -1205,24 +1312,25 @@ function sendMessageByKey(key: number) {
 .assistant-copy-row {
   display: flex;
   justify-content: flex-start;
-  margin-top: 4px;
+  margin-top: 6px;
 
   .copy-btn {
-    width: 24px;
-    height: 24px;
+    width: 26px;
+    height: 26px;
     padding: 0;
-    font-size: 16px;
+    font-size: 15px;
+    color: var(--apple-tertiary);
     cursor: pointer;
     border: none !important;
-    color: #91949a;
+
     :deep(svg) {
-      stroke-width: 3 !important;
+      stroke-width: 2.4 !important;
     }
 
     &:hover {
-      border-radius: 50%;
+      background-color: var(--apple-fill);
+      border-radius: 8px;
       transition: background-color 0.2s;
-      background-color: #f1efef;
     }
   }
 }
@@ -1233,58 +1341,67 @@ function sendMessageByKey(key: number) {
   flex-direction: column;
   align-items: center;
   width: 100%;
-  max-width: 800px;
+  max-width: 860px;
   height: 100%;
+  margin: 0 auto;
+  padding: 0 8px;
 
   .chat-warp {
     display: flex;
     flex-direction: column;
     justify-content: space-between;
     width: 100%;
-    height: calc(100vh - 60px);
+    height: calc(100dvh - var(--header-container-default-heigth));
+    min-height: 0;
 
     .thinking-chain-warp {
       margin-bottom: 12px;
     }
 
     .tool-events-wrapper {
-      padding: 12px;
+      padding: 12px 16px;
     }
 
     .agent-panel {
-      padding: 0 12px;
+      margin: 8px 16px 0;
+      padding: 4px 14px 8px;
+      background: var(--apple-surface);
+      border: 1px solid var(--apple-separator);
+      border-radius: 16px;
 
       .agent-panel-head {
         display: flex;
         align-items: center;
         gap: 10px;
-        padding: 8px 0 4px;
+        padding: 10px 0 6px;
 
         .agent-panel-toggle {
-          border: 1px solid #dcdfe6;
-          border-radius: 6px;
-          background: #ffffff;
-          color: #606266;
-          font-size: 12px;
-          padding: 2px 10px;
+          padding: 5px 12px;
+          font-family: var(--apple-font);
+          font-size: 13px;
+          font-weight: 500;
+          color: var(--apple-text);
           cursor: pointer;
+          background: var(--apple-bg);
+          border: 0;
+          border-radius: 999px;
         }
 
         .agent-panel-live {
-          color: #b88230;
           font-size: 12px;
+          color: var(--apple-blue);
         }
 
         .agent-panel-await {
-          color: #e6a23c;
           font-size: 12px;
+          color: var(--apple-warning);
         }
       }
 
       .agent-panel-body {
         max-height: 320px;
-        overflow: auto;
         padding-bottom: 8px;
+        overflow: auto;
       }
     }
 
@@ -1302,39 +1419,254 @@ function sendMessageByKey(key: number) {
     .sender-wrapper {
       position: relative;
       width: 100%;
-      margin-bottom: 22px;
+      padding: 8px 16px 20px;
+      margin-bottom: 0;
+    }
+
+    .chat-empty {
+      display: flex;
+      flex: 1;
+      flex-direction: column;
+      gap: 6px;
+      align-items: center;
+      justify-content: center;
+      min-height: 0;
+      padding: 32px 24px;
+      text-align: center;
+    }
+
+    .chat-empty-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 48px;
+      height: 48px;
+      margin-bottom: 8px;
+      color: var(--apple-secondary);
+      background: var(--apple-fill);
+      border-radius: 50%;
+    }
+
+    .chat-empty-title {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--apple-text);
+    }
+
+    .chat-empty-desc {
+      max-width: 36ch;
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--apple-secondary);
     }
   }
 
   :deep() {
     .el-bubble-list {
-      padding-top: 24px;
+      padding-top: 16px;
     }
+
     .el-bubble {
-      padding: 0 12px;
-      padding-bottom: 24px;
+      padding: 0 16px 24px;
     }
+
+    .el-bubble-start .el-bubble-content,
+    .el-bubble-end .el-bubble-content {
+      max-width: 100%;
+      padding: 0;
+      background: transparent;
+      border-radius: 0;
+    }
+
+    .el-bubble-content-wrapper {
+      max-width: 100%;
+    }
+
     .el-typewriter {
       overflow: hidden;
       border-radius: 12px;
     }
+
     .user-content {
       white-space: pre-wrap;
     }
+
     .markdown-body {
-      background-color: transparent;
       width: auto;
       max-width: none;
       overflow: visible;
+      font-size: 15px;
+      line-height: 1.7;
+      color: var(--apple-text);
+      background-color: transparent;
     }
+
     .markdown-elxLanguage-header-div {
       top: -25px !important;
     }
+
     .elx-xmarkdown-container {
-      padding: 8px 4px;
       width: 100%;
+      padding: 8px 4px;
       overflow: visible;
     }
+  }
+}
+
+.userContent {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  width: 100%;
+}
+
+.user-bubble {
+  box-sizing: border-box;
+  max-width: min(78%, 620px);
+  padding: 12px 16px;
+  font-family: var(--apple-font);
+  font-size: 15px;
+  line-height: 1.55;
+  color: #fff;
+  word-break: break-word;
+  background: var(--apple-blue);
+  border-radius: 18px 18px 6px 18px;
+}
+
+.attachment-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px 10px;
+
+  small {
+    flex-basis: 100%;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--apple-secondary);
+  }
+}
+
+.attachment-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--apple-text);
+  cursor: pointer;
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator-strong);
+  border-radius: 999px;
+}
+
+.attachment-trigger:hover {
+  background: var(--apple-bg);
+}
+
+.attachment-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  height: 30px;
+  padding: 0 4px 0 12px;
+  font-size: 12px;
+  color: var(--apple-text);
+  background: var(--apple-bg);
+  border-radius: 999px;
+}
+
+.attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-state {
+  flex: none;
+  color: var(--apple-secondary);
+}
+
+.attachment-error {
+  flex: none;
+  color: var(--apple-danger);
+}
+
+.attachment-action,
+.attachment-remove {
+  flex: none;
+  height: 24px;
+  padding: 0 8px;
+  font-family: var(--apple-font);
+  font-size: 12px;
+  color: var(--apple-blue);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+}
+
+.attachment-remove {
+  width: 24px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--apple-secondary);
+}
+
+.attachment-action:hover,
+.attachment-remove:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+@media (max-width: 767px) {
+  .chat-with-id-container {
+    padding: 0;
+
+    .chat-warp {
+      .kb-picker {
+        flex-wrap: wrap;
+        padding: 10px 12px 0;
+
+        :deep(.el-select) {
+          flex: 1 1 100%;
+        }
+      }
+
+      .sender-wrapper {
+        padding: 8px 10px 12px;
+      }
+    }
+
+    :deep(.el-bubble) {
+      padding: 0 12px 20px;
+    }
+  }
+
+  .user-bubble {
+    max-width: 88%;
   }
 }
 </style>

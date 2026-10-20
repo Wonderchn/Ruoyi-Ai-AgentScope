@@ -140,29 +140,33 @@ async function handleUseModel() {
 
 <style scoped lang="scss">
 .agent-select-box {
-  background-color: #fff;
-  border: 1px solid rgb(0 0 0 / 10%);
-  color: rgb(0 0 0 / 85%);
+  color: var(--apple-text);
   font-weight: 500;
-  transition: all 0.2s ease;
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator-strong);
+  transition: background-color 0.18s ease, border-color 0.18s ease;
 
   &:hover {
-    background-color: rgb(0 0 0 / 4%);
-    border-color: rgb(0 0 0 / 15%);
+    background: var(--apple-bg);
+    border-color: var(--apple-secondary);
   }
-
-  background: var(--el-bg-color);
-  border-color: var(--el-border-color);
-  color: var(--el-text-color-primary);
-  font-weight: 500;
 }
 
-.workflow-icon { display: block; font-size: 16px; color: #387665; }
-.workflow-label { color: var(--el-text-color-secondary); }
+.workflow-icon { display: block; font-size: 16px; color: var(--apple-success); }
+.workflow-label { color: var(--apple-secondary); }
 
 .popover-content-box-item.is-select {
-  font-weight: 700;
-  color: var(--el-color-primary, #409eff);
+  font-weight: 600;
+  color: var(--apple-blue);
+}
+
+.popover-content-box-items.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.popover-content-box-items.is-disabled .popover-content-box-item {
+  cursor: not-allowed;
 }
 
 .popover-content-box-items.is-disabled {
@@ -186,11 +190,11 @@ async function handleUseModel() {
   }
 
   &::-webkit-scrollbar-track {
-    background: #f5f5f5;
+    background: var(--apple-bg);
   }
 
   &::-webkit-scrollbar-thumb {
-    background: #cccccc;
+    background: var(--apple-separator-strong);
     border-radius: 4px;
   }
 }

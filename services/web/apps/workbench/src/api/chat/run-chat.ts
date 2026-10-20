@@ -365,6 +365,12 @@ export function runFailureMessage(failure: RunFailure): string {
     case 'budget-exceeded':
       return '超出额度限制（BUDGET_EXCEEDED），请稍后重试或联系管理员。';
     case 'unavailable':
+      // 503 的两种事实必须分开：一种是依赖暂不可用（重试即可），另一种是
+      // 当前租户根本没有已发布的运行配置（重试永远不会成功，需要管理员发布）。
+      // 服务端原文含 "published config revision"，这里只在文案层做可操作化，
+      // 不改写 errorCode / 终态事实。
+      if (/published config revision|config authority unavailable/i.test(failure.message ?? ''))
+        return '当前租户还没有已发布的模型运行配置，知识问答与 Agent 任务无法执行。请平台管理员在「管理端 → AI → 模型与提供方」发布运行配置后再试。';
       return '授权/依赖服务暂不可用（503），本次未执行，请稍后重试。';
     case 'cursor-expired':
       return '事件游标已过期（410 CURSOR_EXPIRED），已按快照重建；更早的增量不可回放。';

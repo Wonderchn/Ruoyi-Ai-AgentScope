@@ -99,12 +99,16 @@ const popoverStyle = ref({
       <!-- 触发元素插槽 -->
       <template #trigger>
         <div
-          class="model-select-box select-none flex items-center gap-4px p-10px rounded-10px cursor-pointer font-size-12px"
+          class="model-select-box select-none cursor-pointer font-size-12px"
         >
           <div class="model-select-box-icon">
             <SvgIcon name="models" size="12" />
           </div>
-          <div class="model-select-box-text font-size-12px">
+          <!-- 明确标出这是“模型”这一项事实，避免被读成调试残留的小标签 -->
+          <div class="model-select-box-caption">
+            模型
+          </div>
+          <div class="model-select-box-text">
             {{ currentModelName }}
           </div>
         </div>
@@ -163,23 +167,51 @@ const popoverStyle = ref({
 </template>
 
 <style scoped lang="scss">
+/*
+ * 位置说明（本次缺陷修复）：
+ * 该触发条由 `ChatSender` 放进 `Sender` 的 `#prefix` 插槽，在 `variant="updown"` 下落到输入框
+ * 底部的按钮行左侧，紧挨附件按钮。原来的样式是一个 `border-radius: 999px` 的实心白底描边胶囊，
+ * 在深色文字区里明显比同一行的其它控件（圆形图标按钮）更抢眼，看起来像调试残留的小标签。
+ * 这里改成与同排控件一致的“弱化文本按钮”：无边框、次要色、hover 才出现底色，
+ * 并显式加一个“模型”前缀说明它是什么。**只改呈现，不改数据与交互契约（RW-06 只读投影）。**
+ */
 .model-select-box {
-  background-color: #fff;
-  border: 1px solid rgb(0 0 0 / 10%);
-  color: rgb(0 0 0 / 85%);
-  font-weight: 500;
-  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px;
+  color: var(--apple-secondary);
+  font-weight: 400;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  transition: border-color 0.18s ease, background-color 0.18s ease, color 0.18s ease;
 
   &:hover {
-    background-color: rgb(0 0 0 / 4%);
-    border-color: rgb(0 0 0 / 15%);
+    color: var(--apple-text);
+    background: var(--apple-bg);
+    border-color: var(--apple-separator);
   }
+}
 
-  // 选中状态（模型始终选中，显示蓝色）
-  background: var(--el-color-primary-light-9, rgb(235.9 245.3 255));
-  border-color: var(--el-color-primary, #409eff);
-  color: var(--el-color-primary, #409eff);
-  font-weight: 600;
+.model-select-box-icon {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
+.model-select-box-caption {
+  flex: none;
+  color: var(--apple-tertiary);
+  font-size: 12px;
+}
+
+.model-select-box-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .popover-content-box-item.is-select {

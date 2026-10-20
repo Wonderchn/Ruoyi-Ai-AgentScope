@@ -4,7 +4,7 @@
  * ## 路径来源（不要改路径前先读这段）
  *
  * 每一条路径都来自**实测扫描**，不是抄 `04-page-map.json`：
- * 工具 `D:/AI-project/.scratch/platform-embedded-impl/T7/tools/scan_admin_routes.py`
+ * 工具 `scan_admin_routes.py`（私有任务工具，不随公开仓库分发）
  * 只扫 `services/platform`（避开旧 `services/ai` 同名类），产出
  * `admin-controller-inventory.json`（**589 个 mapping 注解 → 593 条路由**，锚点 4 条）。
  * 已登记的路径错误反例：`/system/ossconfig/list` → `code=404`，真实前缀是 `/resource/oss/**`。
@@ -90,6 +90,19 @@ export interface SysRoleDataScopeBody {
   dataScope: string;
   deptIds?: string[];
   deptCheckStrictly?: boolean;
+}
+
+/** `GET /system/menu/roleMenuTreeselect/{roleId}` 的菜单树节点。 */
+export interface RoleMenuTreeNode {
+  id: string | number;
+  label: string;
+  children?: RoleMenuTreeNode[];
+}
+
+/** `GET /system/menu/roleMenuTreeselect/{roleId}` 的响应（后端 `MenuTreeSelectVo`）。 */
+export interface RoleMenuTreeSelectVo {
+  checkedKeys?: Array<string | number>;
+  menus?: RoleMenuTreeNode[];
 }
 
 // ---------------------------------------------------------------------------
@@ -463,7 +476,7 @@ export function createSystemApi(client: PlatformClient) {
       /** 导出返回 xlsx 二进制；**不要**走 getRows。 */
       exportUrl: () => '/system/role/export',
       menuTreeSelect: (roleId: string) =>
-        client.get<unknown>(`/system/menu/roleMenuTreeselect/${encodeURIComponent(roleId)}`),
+        client.get<RoleMenuTreeSelectVo>(`/system/menu/roleMenuTreeselect/${encodeURIComponent(roleId)}`),
       authorizedUsers: (query: PageParams & { roleId: string; userName?: string; phonenumber?: string }) =>
         client.getRows<unknown>('/system/role/authUser/allocatedList', { query: { ...query } }),
       unauthorizedUsers: (query: PageParams & { roleId: string; userName?: string; phonenumber?: string }) =>

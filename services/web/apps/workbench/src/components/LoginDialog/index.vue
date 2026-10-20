@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import loginEnterpriseHero from '@/assets/images/login-enterprise-hero.png';
 import logoPng from '@/assets/images/logo.png';
 import SvgIcon from '@/components/SvgIcon/index.vue';
@@ -44,6 +44,14 @@ function handleMaskClick() {
   userStore.closeLoginDialog();
 }
 
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && visible.value)
+    userStore.closeLoginDialog();
+}
+
+onMounted(() => window.addEventListener('keydown', handleKeydown));
+onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown));
+
 // 过渡动画结束回调
 function onAfterLeave() {
   if (!visible.value) {
@@ -62,6 +70,9 @@ function onAfterLeave() {
           v-show="visible"
           class="glass-dialog"
           :class="{ 'register-dialog': loginFormType === 'RegistrationForm' }"
+          role="dialog"
+          aria-modal="true"
+          aria-label="登录或注册"
         >
           <section class="login-section">
             <div class="login-header">
@@ -70,15 +81,25 @@ function onAfterLeave() {
                 <span class="logo-text">RuoYi-AI</span>
               </div>
 
-              <button
-                class="mode-toggle"
-                type="button"
-                :title="isQrMode ? '切换到账号登录' : '切换到扫码登录'"
-                :aria-label="isQrMode ? '切换到账号登录' : '切换到扫码登录'"
-                @click.stop="toggleLoginMode"
-              >
-                <SvgIcon :name="isQrMode ? 'zhanghaodenglu' : 'erweimadenglu'" />
-              </button>
+              <div class="login-header-actions">
+                <button
+                  class="mode-toggle"
+                  type="button"
+                  :title="isQrMode ? '切换到账号登录' : '切换到扫码登录'"
+                  :aria-label="isQrMode ? '切换到账号登录' : '切换到扫码登录'"
+                  @click.stop="toggleLoginMode"
+                >
+                  <SvgIcon :name="isQrMode ? 'zhanghaodenglu' : 'erweimadenglu'" />
+                </button>
+                <button
+                  class="dialog-close"
+                  type="button"
+                  aria-label="关闭登录对话框"
+                  @click.stop="handleMaskClick"
+                >
+                  ×
+                </button>
+              </div>
             </div>
 
             <div class="login-content" :class="{ 'register-content': loginFormType === 'RegistrationForm' }">
@@ -148,13 +169,12 @@ function onAfterLeave() {
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 24px;
   overflow: hidden;
   user-select: none;
-  background:
-    radial-gradient(circle at 18% 18%, rgb(37 99 235 / 14%), transparent 30%),
-    rgb(15 23 42 / 62%);
-  opacity: 1;
+  background: rgba(0, 0, 0, 0.42);
   backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   transition: opacity 0.24s;
 }
 
@@ -165,14 +185,15 @@ function onAfterLeave() {
 .glass-dialog {
   z-index: 1000;
   display: flex;
-  width: min(840px, calc(100vw - 48px));
-  height: min(530px, calc(100vh - 48px));
-  min-height: 0;
+  width: min(860px, calc(100vw - 48px));
+  height: auto;
+  min-height: 560px;
+  max-height: min(780px, calc(100vh - 48px));
   overflow: hidden;
-  background: #fff;
-  border: 1px solid rgb(226 232 240 / 86%);
-  border-radius: 18px;
-  box-shadow: 0 22px 56px rgb(15 23 42 / 22%);
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator);
+  border-radius: 24px;
+  box-shadow: var(--apple-shadow-overlay);
 }
 
 .login-section {
@@ -180,8 +201,9 @@ function onAfterLeave() {
   flex: 0 0 46%;
   flex-direction: column;
   min-width: 0;
-  padding: 28px 34px 30px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  padding: 32px 40px 34px;
+  overflow-y: auto;
+  background: var(--apple-surface);
 }
 
 .login-header {
@@ -201,16 +223,17 @@ function onAfterLeave() {
 .logo-img {
   width: 32px;
   height: 32px;
-  padding: 5px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  padding: 4px;
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator);
+  border-radius: 9px;
 }
 
 .logo-text {
-  color: #111827;
-  font-size: 16px;
-  font-weight: 700;
+  color: var(--apple-text);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   white-space: nowrap;
 }
 
@@ -218,25 +241,54 @@ function onAfterLeave() {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   padding: 0;
-  color: #2563eb;
+  color: var(--apple-secondary);
   cursor: pointer;
-  background: #eff6ff;
-  border: 1px solid rgb(37 99 235 / 14%);
+  background: var(--apple-bg);
+  border: 0;
   border-radius: 10px;
-  transition: background 0.2s ease, transform 0.2s ease;
+  transition: background 0.18s ease, color 0.18s ease;
 }
 
 .mode-toggle:hover {
-  background: #dbeafe;
-  transform: translateY(-1px);
+  color: var(--apple-text);
+  background: var(--apple-fill);
 }
 
 .mode-toggle :deep(svg) {
   width: 18px;
   height: 18px;
+}
+
+.login-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.dialog-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  font-family: var(--apple-font);
+  font-size: 18px;
+  line-height: 1;
+  color: var(--apple-secondary);
+  cursor: pointer;
+  background: var(--apple-bg);
+  border: 0;
+  border-radius: 10px;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.dialog-close:hover {
+  color: var(--apple-text);
+  background: var(--apple-fill);
 }
 
 .login-content {
@@ -246,11 +298,11 @@ function onAfterLeave() {
   justify-content: flex-start;
   width: 100%;
   margin: 0 auto;
-  padding-top: 30px;
+  padding-top: 34px;
 }
 
 .welcome-block {
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 .register-content {
@@ -258,34 +310,35 @@ function onAfterLeave() {
 }
 
 .register-content .welcome-block {
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 
 .register-content .welcome-title {
-  font-size: 22px;
+  font-size: 24px;
   line-height: 1.2;
 }
 
 .welcome-eyebrow {
-  margin: 0 0 7px;
-  color: #2563eb;
+  margin: 0 0 8px;
+  color: var(--apple-secondary);
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font-weight: 600;
+  letter-spacing: 0.06em;
 }
 
 .welcome-title {
   margin: 0;
-  color: #111827;
-  font-size: 26px;
-  font-weight: 700;
-  line-height: 1.25;
+  color: var(--apple-text);
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
 }
 
 .welcome-desc {
-  margin: 8px 0 0;
-  color: #64748b;
-  font-size: 13px;
+  margin: 10px 0 0;
+  color: var(--apple-secondary);
+  font-size: 14px;
   line-height: 1.6;
 }
 
@@ -303,9 +356,9 @@ function onAfterLeave() {
 
 .content-title {
   margin-bottom: 14px;
-  color: #111827;
+  color: var(--apple-text);
   font-size: 17px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .qr-container {
@@ -322,7 +375,8 @@ function onAfterLeave() {
   justify-content: center;
   min-width: 0;
   overflow: hidden;
-  background: #e8f1ff;
+  background: var(--apple-bg);
+  border-left: 1px solid var(--apple-separator);
 }
 
 .visual-section::after {
@@ -331,9 +385,7 @@ function onAfterLeave() {
   z-index: 1;
   pointer-events: none;
   content: "";
-  background:
-    linear-gradient(90deg, rgb(255 255 255 / 10%) 0%, transparent 28%),
-    linear-gradient(180deg, transparent 62%, rgb(15 23 42 / 12%) 100%);
+  background: linear-gradient(180deg, transparent 55%, rgba(0, 0, 0, 0.08) 100%);
 }
 
 .visual-image {
@@ -342,22 +394,17 @@ function onAfterLeave() {
   height: 100%;
   object-fit: cover;
   object-position: center;
-  transform: scale(1.08) translate3d(0, 0, 0);
-  animation: hero-float 7s ease-in-out infinite;
-  will-change: transform;
 }
 
 @media (width <= 860px) {
   .glass-dialog {
-    width: min(380px, calc(100vw - 24px));
+    width: min(520px, calc(100vw - 32px));
     height: auto;
-    min-height: auto;
+    max-height: calc(100vh - 32px);
   }
 
   .login-section {
-    flex-basis: 100%;
-    min-width: 0;
-    padding: 24px 20px 26px;
+    flex: 1 1 100%;
   }
 
   .visual-section {
@@ -365,42 +412,39 @@ function onAfterLeave() {
   }
 
   .login-content {
-    max-width: 100%;
-    padding-top: 26px;
+    padding-top: 24px;
   }
 
   .register-content {
-    padding-top: 20px;
+    padding-top: 16px;
   }
 
   .welcome-title {
-    font-size: 22px;
+    font-size: 26px;
   }
 }
 
 @media (width <= 420px) {
   .mask {
-    align-items: flex-end;
+    padding: 16px;
   }
 
   .glass-dialog {
     width: 100%;
-    border-radius: 18px 18px 0 0;
+    border-radius: 20px;
+  }
+
+  .glass-dialog.register-dialog {
+    height: calc(100dvh - 32px);
+    max-height: calc(100dvh - 32px);
   }
 
   .login-section {
-    padding: 22px 18px 24px;
-  }
-}
-
-@keyframes hero-float {
-  0%,
-  100% {
-    transform: scale(1.08) translate3d(0, 0, 0);
+    padding: 24px 20px 20px;
   }
 
-  50% {
-    transform: scale(1.08) translate3d(0, -10px, 0);
+  .welcome-title {
+    font-size: 24px;
   }
 }
 </style>

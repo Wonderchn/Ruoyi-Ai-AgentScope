@@ -240,7 +240,7 @@ async function removeNotice(row: SysNoticeVo) {
           <ElInput v-model="form.noticeTitle" data-testid="notice-form-noticeTitle" />
         </ElFormItem>
         <ElFormItem label="类型">
-          <ElSelect v-model="form.noticeType" style="width: 100%" data-testid="notice-form-noticeType">
+          <ElSelect v-model="form.noticeType" placeholder="请选择类型" style="width: 100%" data-testid="notice-form-noticeType">
             <ElOption label="通知" value="1" />
             <ElOption label="公告" value="2" />
           </ElSelect>
@@ -260,36 +260,3 @@ async function removeNotice(row: SysNoticeVo) {
     </ElDialog>
   </div>
 </template>
-
-<style scoped>
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.card-header-meta,
-.hint {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.hint {
-  margin-top: 8px;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-
-.pager {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: flex-end;
-  margin-top: 12px;
-  color: var(--el-text-color-regular);
-}
-</style>

@@ -108,7 +108,9 @@ class BarrierSqlConvergenceTest {
         when(aclMapper.findByResource(TENANT, "KB", "kb-1")).thenReturn(List.of());
         AiResourceWriteService writeService = writeService();
 
-        writeService.grantAclRule("kb-1", new AiResourceWriteService.AclGrant("member", MEMBER, "kb.read", null));
+        // 撤销 ACL 是 REVOCATION：仍必须走屏障 drain。
+        // grant 已改为 ADDITIVE（纯增量、不撤权），不再置屏障 ⇒ 不能再用它触发 drain。
+        writeService.revokeAclRule("kb-1", new AiResourceWriteService.AclGrant("member", MEMBER, "kb.read", null));
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
         org.mockito.Mockito.verify(jdbc, org.mockito.Mockito.times(2))

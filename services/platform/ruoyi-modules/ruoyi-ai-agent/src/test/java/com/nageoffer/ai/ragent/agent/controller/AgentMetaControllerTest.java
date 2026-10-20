@@ -20,12 +20,15 @@ package com.nageoffer.ai.ragent.agent.controller;
 import com.nageoffer.ai.ragent.agent.config.AgentProperties;
 import com.nageoffer.ai.ragent.agent.controller.vo.AgentMetaVO;
 import com.nageoffer.ai.ragent.agent.tool.AgentToolCatalog;
+import com.nageoffer.ai.ragent.authorization.AiDeliveryPermitConfiguration;
 import com.nageoffer.ai.ragent.framework.context.ExecutionPrincipal;
 import com.nageoffer.ai.ragent.framework.context.PrincipalContext;
 import com.nageoffer.ai.ragent.framework.security.P04AiErrorCode;
 import com.nageoffer.ai.ragent.framework.security.P04AiException;
+import com.nageoffer.ai.ragent.framework.security.RevocationGuard;
 import com.nageoffer.ai.ragent.runtime.config.ConfigAuthorityUnavailable;
 import com.nageoffer.ai.ragent.runtime.config.EngineModelAuthority;
+import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -37,7 +40,10 @@ import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -53,9 +59,15 @@ import static org.mockito.Mockito.when;
 @Tag("dev")
 class AgentMetaControllerTest {
 
+    private static final String PERMIT_ID = "33333333-3333-3333-3333-333333333333";
+    private static final String OPERATION_ID = "44444444-4444-4444-4444-444444444444";
+
     private AgentToolCatalog toolCatalog;
     private EngineModelAuthority modelAuthority;
     private AgentProperties properties;
+    private RevocationGuard revocations;
+    private AiDeliveryPermitConfiguration.DeliveryPermitHolder deliveryPermits;
+    private HttpServletResponse response;
     private AgentMetaController controller;
     private ExecutionPrincipal previousPrincipal;
 
@@ -63,11 +75,18 @@ class AgentMetaControllerTest {
     void setUp() {
         toolCatalog = mock(AgentToolCatalog.class);
         modelAuthority = mock(EngineModelAuthority.class);
+        revocations = mock(RevocationGuard.class);
+        deliveryPermits = mock(AiDeliveryPermitConfiguration.DeliveryPermitHolder.class);
+        response = mock(HttpServletResponse.class);
         properties = new AgentProperties();
         // 刻意在 YAML 侧写一个**不同**的模型名：如果实现回退 YAML，下面的判据立刻失败。
         properties.getChat().setProvider("deepseek");
         properties.getChat().setModel("yaml-should-not-be-used");
         controller = new AgentMetaController(properties, toolCatalog, modelAuthority);
+        controller.setRevocations(revocations);
+        controller.setDeliveryPermits(deliveryPermits);
+        when(revocations.enter(any(), eq("agent.execute"), eq("tenant:agent-meta")))
+                .thenReturn(new RevocationGuard.Operation(revocations, PERMIT_ID, OPERATION_ID));
         previousPrincipal = PrincipalContext.get();
     }
 
@@ -95,7 +114,7 @@ class AgentMetaControllerTest {
         publishedModel("qwen-max");
         when(toolCatalog.mcpToolCount()).thenReturn(0);
 
-        AgentMetaVO meta = controller.meta().data();
+        AgentMetaVO meta = controller.meta(response).data();
 
         assertThat(meta.capabilities()).containsExactly("react", "knowledge-base");
         assertThat(meta.mcpConfigured()).isFalse();
@@ -107,10 +126,28 @@ class AgentMetaControllerTest {
         publishedModel("qwen-max");
         when(toolCatalog.mcpToolCount()).thenReturn(2);
 
-        AgentMetaVO meta = controller.meta().data();
+        AgentMetaVO meta = controller.meta(response).data();
 
         assertThat(meta.capabilities()).containsExactly("react", "knowledge-base", "mcp-tools");
         assertThat(meta.mcpConfigured()).isTrue();
+    }
+
+    @Test
+    @DisplayName("交付回执：成功路径必须登记 permit 并回填两个 UUID 头（否则网关 GET 收敛为 503）")
+    void successCarriesDeliveryReceiptsAndRegistersPermit() {
+        authenticate(Set.of("agent.execute"));
+        publishedModel("qwen-max");
+        when(toolCatalog.mcpToolCount()).thenReturn(0);
+
+        AgentMetaVO meta = controller.meta(response).data();
+
+        assertThat(meta.model()).isEqualTo("qwen-max");
+        verify(response).setHeader("Cache-Control", "no-store");
+        verify(response).setHeader("X-AI-Delivery-Permit", PERMIT_ID);
+        verify(response).setHeader("X-AI-Delivery-Operation", OPERATION_ID);
+        // permit 交给持有者登记，才能在请求收尾单点释放
+        verify(deliveryPermits).register(any(), eq(PERMIT_ID), eq(OPERATION_ID));
+        verify(revocations).enter(any(), eq("agent.execute"), eq("tenant:agent-meta"));
     }
 
     @Test
@@ -120,7 +157,7 @@ class AgentMetaControllerTest {
         publishedModel("db-authoritative-model");
         when(toolCatalog.mcpToolCount()).thenReturn(0);
 
-        AgentMetaVO meta = controller.meta().data();
+        AgentMetaVO meta = controller.meta(response).data();
 
         assertThat(meta.model())
                 .as("YAML 的 agent.chat.model=%s 是第二权威，绝不能压过数据库发布版本",
@@ -136,7 +173,7 @@ class AgentMetaControllerTest {
         when(modelAuthority.requirePublished("agent.execute"))
                 .thenThrow(new ConfigAuthorityUnavailable("no published config revision"));
 
-        assertThatThrownBy(() -> controller.meta())
+        assertThatThrownBy(() -> controller.meta(response))
                 .isInstanceOf(P04AiException.class)
                 .extracting(thrown -> ((P04AiException) thrown).errorCode())
                 .as("权威不可得是依赖失败（503），不是 500，也不是 YAML 成功路径")
@@ -148,7 +185,7 @@ class AgentMetaControllerTest {
     void missingPrincipalIsRejected() {
         principalCleared();
 
-        assertThatThrownBy(() -> controller.meta())
+        assertThatThrownBy(() -> controller.meta(response))
                 .isInstanceOf(P04AiException.class)
                 .extracting(thrown -> ((P04AiException) thrown).errorCode())
                 .isEqualTo(P04AiErrorCode.AUTH_REQUIRED);
@@ -159,7 +196,7 @@ class AgentMetaControllerTest {
     void missingScopeIsRejected() {
         authenticate(Set.of("run.stream"));
 
-        assertThatThrownBy(() -> controller.meta())
+        assertThatThrownBy(() -> controller.meta(response))
                 .isInstanceOf(P04AiException.class)
                 .extracting(thrown -> ((P04AiException) thrown).errorCode())
                 .isEqualTo(P04AiErrorCode.FORBIDDEN);

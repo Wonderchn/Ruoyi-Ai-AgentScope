@@ -65,6 +65,21 @@ export interface UserInfoVo {
   roles?: string[];
 }
 
+export interface LoginTenant {
+  tenantId: string;
+  companyName: string;
+}
+
+export interface LoginTenantsVo {
+  tenantEnabled?: boolean;
+  voList?: LoginTenant[];
+}
+
+/** 公开租户列表（无需登录），用于登录页选择租户而不是手填租户 ID。 */
+export function getLoginTenants() {
+  return platformClient.get<LoginTenantsVo>('/auth/tenant/list');
+}
+
 export function login(data: LoginDTO) {
   return platformClient.post<LoginVo>('/auth/login', { body: data });
 }

@@ -200,24 +200,30 @@ function openKnowledgeGraph() {
         </ElButton>
       </ElAlert>
 
-      <ElCard class="mb-4">
-        <div class="toolbar">
-          <span class="card-header-meta">GET /api/ai/v1/knowledge-bases · 共 {{ rows.length }} 条</span>
-          <ElButton
-            v-if="can(PERMISSION_WRITE)"
-            type="primary"
-            data-testid="kb-create-open"
-            @click="createVisible = true"
-          >
-            新建知识库
-          </ElButton>
-          <ElButton data-testid="kb-reload" :loading="loading" @click="load()">
-            刷新
-          </ElButton>
-        </div>
-      </ElCard>
-
       <ElCard>
+        <template #header>
+          <div class="card-header">
+            <div>
+              <span class="section-title">知识库列表</span>
+              <p class="card-header-meta">
+                GET /api/ai/v1/knowledge-bases · 共 {{ rows.length }} 条
+              </p>
+            </div>
+            <div class="toolbar-actions">
+              <ElButton
+                v-if="can(PERMISSION_WRITE)"
+                type="primary"
+                data-testid="kb-create-open"
+                @click="createVisible = true"
+              >
+                新建知识库
+              </ElButton>
+              <ElButton data-testid="kb-reload" :loading="loading" @click="load()">
+                刷新
+              </ElButton>
+            </div>
+          </div>
+        </template>
         <ElAlert
           v-if="phase === 'error'"
           :data-testid="testId('error')"
@@ -293,23 +299,3 @@ function openKnowledgeGraph() {
     </template>
   </div>
 </template>
-
-<style scoped>
-.toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.card-header-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-</style>

@@ -50,10 +50,10 @@ function submit() {
 
 <style scoped>
 .input-intro { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
-.input-intro > svg { font-size: 26px; color: #387665; }
-.input-intro strong { color: var(--el-text-color-primary); font-weight: 500; }
-.input-intro p { margin: 6px 0 0; font-size: 12px; color: var(--el-text-color-secondary); }
-.question-hint { padding: 12px 14px; margin-bottom: 20px; border-radius: 8px; background: var(--el-fill-color-light); font-size: 12px; line-height: 1.7; }
+.input-intro > svg { font-size: 26px; color: var(--apple-blue); }
+.input-intro strong { color: var(--apple-text); font-weight: 500; }
+.input-intro p { margin: 6px 0 0; font-size: 12px; color: var(--apple-secondary); }
+.question-hint { padding: 14px 16px; margin-bottom: 20px; border-radius: 14px; background: var(--apple-bg); font-size: 12px; line-height: 1.7; }
 .number-input { width: 100%; }
-.continue-button { --el-button-bg-color: var(--el-text-color-primary); --el-button-border-color: var(--el-text-color-primary); --el-button-text-color: var(--el-bg-color); --el-button-hover-bg-color: var(--el-text-color-regular); --el-button-hover-border-color: var(--el-text-color-regular); }
+.continue-button { --el-button-bg-color: var(--apple-blue); --el-button-border-color: var(--apple-blue); --el-button-text-color: var(--el-bg-color); --el-button-hover-bg-color: var(--apple-blue-hover); --el-button-hover-border-color: var(--apple-blue-hover); }
 </style>

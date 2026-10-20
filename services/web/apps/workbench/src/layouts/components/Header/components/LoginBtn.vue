@@ -14,16 +14,31 @@ function handleClickLogin() {
 
 <template>
   <div class="login-btn-wrapper">
-    <div
-      class="login-btn bg-#191c1f c-#fff font-size-14px rounded-8px flex-center text-overflow p-10px pl-12px pr-12px min-w-49px h-16px cursor-pointer hover:bg-#232629 select-none"
-      @click="handleClickLogin"
-    >
+    <button type="button" class="login-btn" @click="handleClickLogin">
       登录
-    </div>
+    </button>
 
     <!-- 登录弹框 -->
     <LoginDialog v-model:visible="isLoginDialogVisible" />
   </div>
 </template>
 
-<style scoped lang="scss"></style>
+<style scoped lang="scss">
+.login-btn {
+  height: 36px;
+  padding: 0 18px;
+  font-family: var(--apple-font);
+  font-size: 14px;
+  font-weight: 500;
+  color: #fff;
+  cursor: pointer;
+  background: var(--apple-blue);
+  border: 0;
+  border-radius: var(--apple-radius-pill);
+  transition: background-color 0.18s ease;
+}
+
+.login-btn:hover {
+  background: var(--apple-blue-hover);
+}
+</style>

@@ -51,7 +51,7 @@ export function useApplicationMarket() {
   let requestId = 0;
   let multiAgentRequestId = 0;
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
-  const agents = computed(() => agentStore.agentList.filter(agent => `${agent.name} ${agent.description ?? ''}`.toLowerCase().includes(appliedQuery.value.toLowerCase())));
+  const agents = computed(() => (agentStore.agentList ?? []).filter(agent => `${agent.name} ${agent.description ?? ''}`.toLowerCase().includes(appliedQuery.value.toLowerCase())));
   const applications = computed(() => [
     ...(filter.value === 'all' || filter.value === 'agent'
       ? agents.value.map(data => ({ type: 'agent' as const, data }))

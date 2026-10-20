@@ -157,8 +157,8 @@ onBeforeUnmount(() => {
         </template>
       </el-image>
 
-      <!-- 过期覆盖层 -->
-      <div v-if="isExpired" class="expired-overlay" @click.stop="handleRefresh">
+      <!-- 过期/不可用覆盖层：请求失败或未拿到二维码时也要给出可重试的明确状态 -->
+      <div v-if="isExpired || (!isLoading && !qrCodeUrl)" class="expired-overlay" @click.stop="handleRefresh">
         <div class="expired-content">
           <p class="expired-text">
             二维码失效
@@ -181,24 +181,24 @@ onBeforeUnmount(() => {
 .qr-wrapper {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   align-items: center;
 
   .tip {
-    font-size: 16px;
-    font-weight: 500;
-    color: #303133;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--apple-text);
   }
 
   .qr-img-wrapper {
     position: relative;
-    width: 180px;
-    height: 180px;
+    width: 200px;
+    height: 200px;
     padding: 12px;
     overflow: hidden;
-    border: 1px solid #f0f2f5;
-    border-radius: 16px;
-    box-shadow: 0 2px 12px 0 rgb(0 0 0 / 8%);
+    background: var(--apple-surface);
+    border: 1px solid var(--apple-separator);
+    border-radius: 18px;
 
     .loading-wrapper {
       display: flex;
@@ -208,12 +208,12 @@ onBeforeUnmount(() => {
       justify-content: center;
       width: 100%;
       height: 100%;
-      color: #909399;
-      font-size: 14px;
+      font-size: 13px;
+      color: var(--apple-secondary);
 
       .loading-icon {
-        font-size: 24px;
-        color: #409eff;
+        font-size: 22px;
+        color: var(--apple-blue);
       }
     }
 
@@ -224,24 +224,23 @@ onBeforeUnmount(() => {
       width: 100%;
       height: 100%;
 
-      .el-icon {
+      :deep(.el-icon) {
         font-size: 18px;
-        color: #909399;
+        color: var(--apple-tertiary);
       }
     }
 
     .expired-overlay {
       position: absolute;
-      top: 0;
-      left: 0;
+      inset: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 100%;
-      height: 100%;
       cursor: pointer;
-      background: hsl(0deg 0% 100% / 95%);
-      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      border-radius: 18px;
 
       .expired-content {
         display: flex;
@@ -250,8 +249,13 @@ onBeforeUnmount(() => {
         text-align: center;
 
         .expired-text {
-          font-size: 14px;
-          color: #909399;
+          font-size: 13px;
+          color: var(--apple-secondary);
+        }
+
+        .refresh-btn {
+          font-weight: 500;
+          color: var(--apple-blue);
         }
       }
     }
@@ -259,8 +263,12 @@ onBeforeUnmount(() => {
 
   .login-tips {
     font-size: 12px;
-    color: #909399;
+    color: var(--apple-tertiary);
     text-align: center;
+
+    p {
+      margin: 0;
+    }
   }
 }
 </style>

@@ -279,7 +279,7 @@ async function removeDept(row: SysDeptVo) {
       <ElAlert v-if="parentOptionsError" data-testid="dept-parent-error" :title="parentOptionsError" type="warning" :closable="false" class="mb-3" />
       <ElForm label-width="90px">
         <ElFormItem label="上级部门">
-          <ElSelect v-model="form.parentId" style="width: 100%" data-testid="dept-form-parent">
+          <ElSelect v-model="form.parentId" placeholder="请选择上级部门" style="width: 100%" data-testid="dept-form-parent">
             <ElOption label="顶级（无上级）" value="0" />
             <ElOption v-for="o in flatParents" :key="o.id" :label="o.label" :value="o.id" />
           </ElSelect>
@@ -305,27 +305,3 @@ async function removeDept(row: SysDeptVo) {
     </ElDialog>
   </div>
 </template>
-
-<style scoped>
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.card-header-meta,
-.hint {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.hint {
-  margin-top: 8px;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-</style>

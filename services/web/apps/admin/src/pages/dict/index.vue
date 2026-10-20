@@ -275,11 +275,14 @@ async function removeData(row: SysDictDataVo) {
         </div>
       </ElCard>
 
-      <ElRow :gutter="16">
-        <ElCol :span="10">
+      <ElRow :gutter="16" class="dict-grid">
+        <ElCol :xs="24" :md="10">
           <ElCard>
             <template #header>
-              <span class="card-header-meta">字典类型 · GET /system/dict/type/list · 共 {{ typeState.total }} 条</span>
+              <div class="card-header">
+                <span class="section-title">字典类型</span>
+                <span class="card-header-meta">GET /system/dict/type/list · 共 {{ typeState.total }} 条</span>
+              </div>
             </template>
             <ElAlert v-if="typePhase === 'error'" data-testid="dict-type-error" :title="typeState.error" type="error" :closable="false" class="mb-3" />
             <div v-if="typePhase === 'loading'" :data-testid="typeTestId('loading')" class="state-block">
@@ -333,12 +336,13 @@ async function removeData(row: SysDictDataVo) {
           </ElCard>
         </ElCol>
 
-        <ElCol :span="14">
+        <ElCol :xs="24" :md="14">
           <ElCard>
             <template #header>
               <div class="card-header">
+                <span class="section-title">字典数据</span>
                 <span class="card-header-meta">
-                  字典数据{{ selectedType ? ` · ${selectedType.dictType}` : ' · 未选择类型' }}
+                  {{ selectedType ? selectedType.dictType : '未选择类型' }}
                 </span>
                 <ElButton v-if="selectedType" size="small" :disabled="!canCreate" data-testid="dict-data-create" @click="openDataCreate">
                   新增数据
@@ -435,31 +439,7 @@ async function removeData(row: SysDictDataVo) {
 </template>
 
 <style scoped>
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.card-header-meta,
-.hint {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-
-.pager {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: flex-end;
-  margin-top: 12px;
-  color: var(--el-text-color-regular);
-  font-size: 12px;
+.dict-grid {
+  row-gap: 16px;
 }
 </style>

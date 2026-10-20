@@ -193,20 +193,22 @@ watch(
     />
 
     <template v-else>
-      <ElCard class="mb-4">
-        <div class="toolbar">
-          <span class="card-header-meta">
-            GET /api/ai/v1/knowledge-base/docs/{{ docId }}/chunks · kbId={{ kbId }} ·
-            current={{ page.current }} · size={{ page.size }} · 共 {{ total }} 条 ·
-            第 {{ appliedCurrent || page.current }}/{{ pageCount }} 页
-          </span>
-          <ElButton data-testid="chunks-reload" :loading="loading" @click="load()">
-            刷新
-          </ElButton>
-        </div>
-      </ElCard>
-
       <ElCard>
+        <template #header>
+          <div class="card-header">
+            <div>
+              <span class="section-title">文档分块</span>
+              <p class="card-header-meta">
+                GET /api/ai/v1/knowledge-base/docs/{{ docId }}/chunks · kbId={{ kbId }} ·
+                current={{ page.current }} · size={{ page.size }} · 共 {{ total }} 条 ·
+                第 {{ appliedCurrent || page.current }}/{{ pageCount }} 页
+              </p>
+            </div>
+            <ElButton data-testid="chunks-reload" :loading="loading" @click="load()">
+              刷新
+            </ElButton>
+          </div>
+        </template>
         <ElAlert
           v-if="phase === 'error'"
           :data-testid="testId('error')"
@@ -277,28 +279,3 @@ watch(
     </template>
   </div>
 </template>
-
-<style scoped>
-.toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.card-header-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-
-.pager {
-  margin-top: 12px;
-  justify-content: flex-end;
-}
-</style>

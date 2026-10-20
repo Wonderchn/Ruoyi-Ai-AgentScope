@@ -28,6 +28,7 @@ import org.ruoyi.common.tenant.core.TenantEntity;
 import org.ruoyi.common.tenant.helper.TenantHelper;
 import org.ruoyi.system.aiidentity.AiPolicyMutationGuard;
 import org.ruoyi.system.aiidentity.AiPolicyRevisionService;
+import org.ruoyi.system.aiidentity.AiTenantProvisioningService;
 import org.ruoyi.system.domain.*;
 import org.ruoyi.system.domain.bo.SysTenantBo;
 import org.ruoyi.system.domain.vo.SysTenantVo;
@@ -62,6 +63,7 @@ public class SysTenantServiceImpl implements ISysTenantService {
     private final SysConfigMapper configMapper;
     private final AiPolicyMutationGuard aiPolicyMutationGuard;
     private final AiPolicyRevisionService aiPolicyRevisionService;
+    private final AiTenantProvisioningService aiTenantProvisioningService;
 
     /**
      * 查询租户
@@ -223,6 +225,8 @@ public class SysTenantServiceImpl implements ISysTenantService {
         }
         // P1.2b：新租户在创建事务内同建 AI 策略版本行（version=1，不预置行口径下的唯一初始化点）
         aiPolicyRevisionService.initialize(tenantId);
+        // 0→1 可用性：同事务建 ACL epoch 与默认运行配置（否则租户能登录但所有 AI 接口 503）
+        aiTenantProvisioningService.initialize(tenantId, user.getUserId());
         return true;
     }
 

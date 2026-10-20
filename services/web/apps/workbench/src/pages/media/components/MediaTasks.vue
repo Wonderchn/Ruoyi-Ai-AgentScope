@@ -41,22 +41,22 @@ const timeFormat = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '
 <style scoped lang="scss">
 .task-section { margin-top: 28px; }
 .task-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
-.task-title { margin: 0; font-size: 15px; font-weight: 600; }
-.tasks-empty { padding: 26px; margin: 0; font-size: 13px; color: var(--el-text-color-secondary); text-align: center; border: 1px dashed var(--el-border-color); border-radius: 12px; }
+.task-title { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+.tasks-empty { padding: 32px; margin: 0; font-size: 13px; color: var(--apple-secondary); text-align: center; background: var(--apple-surface); border: 1px dashed var(--apple-separator-strong); border-radius: 18px; }
 .task-list { display: grid; gap: 8px; }
-.task-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 4px; background: var(--el-bg-color); border: 1px solid var(--el-border-color-light); border-radius: 10px; }
-.task-row.selected, .task-row:hover { border-color: var(--el-color-primary-light-5); }
-.task-select { display: flex; flex: 1; align-items: center; gap: 14px; min-width: 0; padding: 11px 14px; color: var(--el-text-color-primary); font-family: inherit; text-align: left; cursor: pointer; background: none; border: 0; }
-.task-kind { flex-shrink: 0; padding: 7px; font-size: 11px; color: var(--el-color-primary); background: var(--el-color-primary-light-9); border-radius: 5px; }
+.task-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 4px; background: var(--apple-surface); border: 1px solid var(--apple-separator); border-radius: 14px; transition: border-color 0.16s ease; }
+.task-row.selected, .task-row:hover { border-color: var(--apple-separator-strong); }
+.task-select { display: flex; flex: 1; align-items: center; gap: 14px; min-width: 0; padding: 12px 14px; color: var(--apple-text); font-family: inherit; text-align: left; cursor: pointer; background: none; border: 0; }
+.task-kind { flex-shrink: 0; padding: 5px 9px; font-size: 11px; color: var(--apple-secondary); background: var(--apple-bg); border-radius: 999px; }
 .task-content { display: grid; flex: 1; min-width: 0; gap: 7px; }
 .task-content strong { overflow: hidden; font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-.task-content > span { overflow: hidden; font-size: 11px; color: var(--el-text-color-secondary); text-overflow: ellipsis; white-space: nowrap; }
-.task-content .task-reason { color: var(--el-color-danger); white-space: normal; }
-.task-state { flex-shrink: 0; font-size: 11px; color: var(--el-text-color-secondary); }
-.task-state.success { color: var(--el-color-success); }
-.task-state.failed { color: var(--el-color-danger); }
-.task-state.waiting { color: var(--el-color-primary); }
-.task-time { flex-shrink: 0; font-size: 11px; color: var(--el-text-color-placeholder); }
-.task-retry { flex-shrink: 0; padding: 7px 12px; color: var(--el-color-primary); font-family: inherit; font-size: 12px; cursor: pointer; background: var(--el-color-primary-light-9); border: 0; border-radius: 6px; }
+.task-content > span { overflow: hidden; font-size: 12px; color: var(--apple-secondary); text-overflow: ellipsis; white-space: nowrap; }
+.task-content .task-reason { color: var(--apple-danger); white-space: normal; }
+.task-state { flex-shrink: 0; font-size: 12px; color: var(--apple-secondary); }
+.task-state.success { color: var(--apple-success); }
+.task-state.failed { color: var(--apple-danger); }
+.task-state.waiting { color: var(--apple-blue); }
+.task-time { flex-shrink: 0; font-size: 12px; color: var(--apple-tertiary); }
+.task-retry { flex-shrink: 0; height: 32px; padding: 0 14px; color: var(--apple-blue); font-family: inherit; font-size: 13px; font-weight: 500; cursor: pointer; background: transparent; border: 1px solid var(--apple-separator-strong); border-radius: 999px; }
 @media (max-width: 600px) { .task-select { gap: 10px; padding: 11px; } .task-time { display: none; } }
 </style>

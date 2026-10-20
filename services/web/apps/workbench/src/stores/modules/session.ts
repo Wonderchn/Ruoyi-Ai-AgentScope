@@ -61,10 +61,17 @@ export const useSessionStore = defineStore('session', () => {
    * 只在"创建成功 → 跳转 → 聊天页消费"这条链上存在。
    */
   const pendingFirstMessage = ref('');
+  /** 第一句话的知识库范围（与 pendingFirstMessage 同生命周期）。 */
+  const pendingFirstKbIds = ref<string[]>([]);
   const takePendingFirstMessage = () => {
     const text = pendingFirstMessage.value;
     pendingFirstMessage.value = '';
     return text;
+  };
+  const takePendingFirstKbIds = () => {
+    const ids = pendingFirstKbIds.value;
+    pendingFirstKbIds.value = [];
+    return ids;
   };
 
   const resetSessions = () => {
@@ -78,6 +85,7 @@ export const useSessionStore = defineStore('session', () => {
     searchKeyword.value = '';
     isSearching.value = false;
     pendingFirstMessage.value = '';
+    pendingFirstKbIds.value = [];
   };
 
   // 创建新对话（按钮点击）—— 只清空并回默认页，真正的创建发生在第一句话提交时（chatDefaul）
@@ -182,6 +190,7 @@ export const useSessionStore = defineStore('session', () => {
       setCurrentSession({ id, sessionTitle: input.title, createTime: new Date() });
       if (input.initialText)
         pendingFirstMessage.value = input.initialText;
+      pendingFirstKbIds.value = Array.isArray(input.kbIds) ? [...input.kbIds] : [];
       await router.replace({ name: 'chatWithId', params: { id } });
       return { ok: true, conversationId: id };
     }
@@ -337,6 +346,7 @@ export const useSessionStore = defineStore('session', () => {
     // 新建会话后的第一句话（一次性）
     pendingFirstMessage,
     takePendingFirstMessage,
+    takePendingFirstKbIds,
   };
 });
 

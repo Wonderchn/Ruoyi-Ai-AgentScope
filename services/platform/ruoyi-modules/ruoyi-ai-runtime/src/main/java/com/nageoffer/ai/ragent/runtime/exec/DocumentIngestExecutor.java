@@ -244,6 +244,15 @@ public class DocumentIngestExecutor implements RunExecutor {
                 embedded = embeddingGateway.embedBatchWithUsage(texts);
             } catch (RuntimeException e) {
                 guard.commitAtomic(()->{usageLedger.markUnknown(execution.tenantId(),callId);return null;});
+                // 失败路径必须释放 provider 边界 permit（同 RagChatExecutor.model 步）：
+                // 孤儿 ACTIVE permit（租约 300s）会让后续 REVOCATION 写的 drain 排不空
+                // → 屏障滞留 PENDING → 全租户 AI 接口 503，直到租约过期。
+                try {
+                    operation.close();
+                } catch (RuntimeException closeFailure) {
+                    log.warn("provider 边界 permit 释放失败 runId={} step={} cause={}",
+                            execution.runId(), stepId, closeFailure.toString());
+                }
                 throw e;
             }
             operation.close();

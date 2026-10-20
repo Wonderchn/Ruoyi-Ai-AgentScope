@@ -4,12 +4,26 @@
 export interface ToolCallInfo {
   /** 唯一标识 key */
   key?: number;
+  /**
+   * 服务端步骤 id（`run.step_started` / `run.step_completed` 的 `payload.stepId`）。
+   *
+   * 同一次步骤会先后收到 started 与 completed 两条事件，二者**是同一行**；
+   * 视图层按 `stepId` 原地更新状态，不再为每条事件新开一张卡。
+   */
+  stepId?: string;
   /** 工具名称 */
   name: string;
   /** 调用状态: pending-调用中, success-成功, error-失败 */
   status: 'pending' | 'success' | 'error';
-  /** 调用结果 */
-  result: string | null;
+  /**
+   * 服务端返回的原始结果（`run.step_completed` 的 payload），**原样保留**。
+   *
+   * 类型是 `unknown` 而非字符串：服务端给的是任意 JSON，类型声明不应比事实更窄；
+   * 展示时由 `ToolCallCard` 统一序列化（字符串原样、对象 `JSON.stringify`）。
+   * `run.step_started` 的 payload 只是 `{stepId, stepName, attemptId}`，不是结果，
+   * 因此 pending 阶段这里是 `null`，不会把"开始事件"伪装成执行结果。
+   */
+  result: unknown;
   /** 调用时间戳 */
   timestamp: number;
 }

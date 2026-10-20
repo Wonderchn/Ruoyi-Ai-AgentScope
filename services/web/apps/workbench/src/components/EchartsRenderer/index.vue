@@ -150,12 +150,13 @@ onUnmounted(() => {
       ref="refEle"
       :style="{
         width: width(),
+        maxWidth: '100%',
         height: height(),
-        minWidth: '800px',
+        minWidth: 0,
         minHeight: '300px',
-        borderRadius: '8px',
+        borderRadius: '14px',
         overflow: 'hidden',
-        backgroundColor: theme() === 'light' ? '#fff' : '#1a1a1a',
+        backgroundColor: theme() === 'light' ? '#ffffff' : '#1d1d1f',
         boxSizing: 'border-box',
       }"
     />
@@ -165,18 +166,15 @@ onUnmounted(() => {
 <style scoped lang="scss">
 .echarts-container {
   display: block;
-  width: 100%;
-  overflow: visible;
   box-sizing: border-box;
-  transform: scale(0.62);
-  transform-origin: top left;
-  margin-bottom: -228px;
+  width: 100%;
+  overflow: hidden;
 
   .echarts-title {
-    font-size: 14px;
-    color: rgba(0, 0, 0, 0.6);
-    font-weight: 500;
     margin-bottom: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--apple-secondary);
   }
 }
 </style>
