@@ -14,7 +14,7 @@
 | `services/web/packages/events` | run/SSE/RAG 协议与传输 |
 | `services/web/packages/platform-client` | 共享身份、请求、权限与错误处理 |
 | `services/ai` | Java 17 / Spring Boot 4 独立 AI 服务，保留兼容模式及冻结迁移、跨服务回归 |
-| `infra/docker` | platform 与双前端的两个镜像构建定义（`ai.Dockerfile` 已随独立 AI 镜像退役移除） |
+| `infra/docker` | 发布链的两个镜像构建定义（platform、web）；`ai.Dockerfile` 仅供 compat dev profile 本地构建 |
 | `scripts/ci` | 数据库、运行期、发布清单和镜像交付验证 |
 
 未装配的旧 `ruoyi-chat`、`ruoyi-aiflow`、`ruoyi-generator` 模块已退出源码与 Maven reactor。仍在使用的 `ruoyi-ai-*`、`com.nageoffer.ai.ragent.*`、业务 `ruoyi-workflow` 和原有迁移历史继续保留。原上游来源与许可证见 [upstreams.lock.json](docs/upstreams.lock.json)。
@@ -64,7 +64,7 @@ SPRING_PROFILES_ACTIVE=prod,embedded java -jar services/platform/ruoyi-admin/tar
 | [ruoyi-ai-agentscope-platform](https://github.com/Wonderchn/Ruoyi-Ai-AgentScope/pkgs/container/ruoyi-ai-agentscope-platform) | 当前平台；内嵌部署设置 `SPRING_PROFILES_ACTIVE=prod,embedded` |
 | [ruoyi-ai-agentscope-web](https://github.com/Wonderchn/Ruoyi-Ai-AgentScope/pkgs/container/ruoyi-ai-agentscope-web) | 工作台 `/` 与管理端 `/admin/`，同源代理到 `platform:6039` |
 
-独立 AI 兼容服务的镜像不再构建或发布；兼容模式需自行提供镜像并经 `DEV_AI_IMAGE` 注入 `infra/dev/compose.yaml`。
+独立 AI 兼容服务的镜像不在发布链。`infra/dev/compose.yaml` 默认起的就是内嵌形态（platform `dev,embedded` + web，单后端）；兼容模式退到 `compat` profile，本地从源码构建：`docker compose --profile compat up -d --build`。
 
 main 验证通过后发布 `ghcr.io/wonderchn/<镜像名>:sha-<完整提交SHA>`。release manifest 将两个不可变 digest、源码 SHA 和 [兼容性声明](docs/release-compatibility.json) 绑定；干净 runner 匿名拉取并验证来源标签、内嵌装配和双前端资源后，才将该版本晋升为 `latest`。旧提交的发布不会覆盖较新的 main。固定部署与回退应使用 manifest 中的 `@sha256:...`，不要用可变标签锁定版本。
 

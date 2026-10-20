@@ -13,6 +13,6 @@
 
 三个工件均在对应 GitHub Actions 发布运行页面下载。部署选定同一份 release manifest，使用其 `images` 值（`ghcr.io/wonderchn/...@sha256:...`），保留该 manifest 作为回退凭据。`latest` 用于发现已验证版本；不可替代不可变 digest。
 
-内嵌部署使用 platform + web，并明确设置 `SPRING_PROFILES_ACTIVE=prod,embedded`，配置统一数据库、Redis、对象目录、身份与提供方。platform 镜像默认仍为 prod，入口不再把 profile 锁死。独立 AI 兼容服务的镜像已不再构建或发布，兼容模式需自行提供镜像并经 `DEV_AI_IMAGE` 注入 `infra/dev/compose.yaml`，不需要与内嵌运行重复启动。web 依赖网络上的 `platform:6039`；管理端基路径 `/admin/`，公开 `VITE_CLIENT_ID` 在构建时配置且需与平台一致。
+内嵌部署使用 platform + web，并明确设置 `SPRING_PROFILES_ACTIVE=prod,embedded`，配置统一数据库、Redis、对象目录、身份与提供方。platform 镜像默认仍为 prod，入口不再把 profile 锁死。独立 AI 兼容服务的镜像不在发布链，也不需要与内嵌运行重复启动：`infra/dev/compose.yaml` 默认起内嵌形态，兼容模式退到 `compat` profile 并从源码本地构建。web 依赖网络上的 `platform:6039`；管理端基路径 `/admin/`，公开 `VITE_CLIENT_ID` 在构建时配置且需与平台一致。
 
 镜像资源/代理检查使用合成上游；业务身份、权限与执行行为由独立运行期 CI 及目标环境验收覆盖。发布成功不是自动部署，跨版本滚动升级和数据库降级未声明已验证。

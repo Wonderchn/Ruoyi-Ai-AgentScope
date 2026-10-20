@@ -124,9 +124,12 @@ services:
   platform:
     image: ${DEV_PLATFORM_IMAGE:-ghcr.io/wonderchn/ruoyi-ai-agentscope-platform:latest}
     # The shipped image pins --spring.profiles.active=prod on its command line,
-    # which outranks environment variables; a dev delivery must run the dev
-    # profile explicitly.
-    entrypoint: ["java", "-Djava.io.tmpdir=/app/tmp", "-jar", "/app/application.jar", "--spring.profiles.active=dev"]
+    # which outranks environment variables; a dev delivery must name its profiles
+    # explicitly. `dev,embedded` is the shipped single-process form: the AI runtime
+    # runs inside this JVM (ai.integration.transport=local), so the default stack has
+    # exactly one backend service. The separate AI service is the pre-migration
+    # `http` transport and only starts under --profile compat.
+    entrypoint: ["java", "-Djava.io.tmpdir=/app/tmp", "-jar", "/app/application.jar", "--spring.profiles.active=dev,embedded"]
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -135,7 +138,7 @@ services:
       delivery-keys:
         condition: service_completed_successfully
     environment:
-      SPRING_PROFILES_ACTIVE: dev
+      SPRING_PROFILES_ACTIVE: dev,embedded
       PLATFORM_DB_HOST: postgres
       PLATFORM_DB_PORT: "5432"
       PLATFORM_DB_NAME: ruoyi_agent
@@ -145,7 +148,9 @@ services:
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ${DEV_REDIS_PASSWORD}
       AI_INTEGRATION_ENABLED: "true"
-      AI_INTEGRATION_AI_BASE_URL: http://ai:9090/api/ragent
+      # No AI_INTEGRATION_AI_BASE_URL: the embedded profile sets
+      # ai.integration.transport=local, which is what keeps the http-only
+      # AiGatewayClient (and its mandatory ai-base-url) out of the context.
       AI_INTEGRATION_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL:?set DEV_SERVICE_CREDENTIAL in the env file}
       AI_INTEGRATION_AUTHORIZATION_SERVICE_CREDENTIAL: ${DEV_SERVICE_CREDENTIAL}
       AI_INTEGRATION_DELEGATION_PRIVATE_KEY_PATH: /keys/private.pem
@@ -157,8 +162,24 @@ services:
     volumes:
       - dev-delivery-keys:/keys:ro
 
+  # Pre-migration topology only: the standalone AI application reached over HTTP
+  # (ai.integration.transport=http). The shipped form runs the AI runtime inside the
+  # `platform` JVM, so this service is behind a profile and never starts by default.
+  #
+  # Its image is no longer published to GHCR, so it is built from source here with
+  # `docker compose --profile compat up -d --build`. The build context is services/ai
+  # (its own .dockerignore and self-contained `ragent` reactor), matching how
+  # release.yml gives each image its own service directory; the Dockerfile itself is
+  # read from outside that context. Note that under this profile the agent runtime
+  # lives in this container, so `sandbox-ticket` (which must share the agent's network
+  # namespace) has to be re-pointed from `service:platform` to `service:ai` for
+  # --profile p3 to work.
   ai:
-    image: ${DEV_AI_IMAGE:-ghcr.io/wonderchn/ruoyi-ai-agentscope-ai:latest}
+    profiles: ["compat"]
+    build:
+      context: ../../services/ai
+      dockerfile: ../../infra/docker/ai.Dockerfile
+    image: ${DEV_AI_IMAGE:-ruoyi-ai-agentscope-ai:dev}
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -225,19 +246,24 @@ services:
       - dev-delivery-keys:/keys:ro
 
   # Independent durable sandbox-ticket provider for P3 agent writes. It must share
-  # the AI container's network namespace: the frozen P3 contract hardcodes the
-  # ticket endpoint at http://127.0.0.1:19520 inside the product runtime.
+  # the network namespace of whichever container runs the agent runtime: the frozen
+  # P3 contract hardcodes the ticket endpoint at http://127.0.0.1:19520
+  # (SandboxTicketClient.TARGET), so loopback has to resolve inside that container.
+  #
+  # In the shipped form that container is `platform` (dev,embedded). Under
+  # --profile compat the agent moves to `ai`, so this must be re-pointed to
+  # `service:ai` there.
   sandbox-ticket:
     image: python@sha256:54c85f3c47607a77f32adec749d3c81d1348bf25833671f512b26a9b6d778cb3
     profiles: ["p3"]
-    network_mode: "service:ai"
+    network_mode: "service:platform"
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,size=16m
     mem_limit: 128m
     cpus: 0.5
     depends_on:
-      ai:
+      platform:
         condition: service_started
     environment:
       P3_SANDBOX_DB: /data/sandbox.sqlite

@@ -8,7 +8,7 @@
 
 统一 SQL 位于 `services/platform/docs/script/sql/postgres`，版本以 `scripts/ci/unified-schema-contract.json` 为准（非连续编号）。运行 `bash scripts/ci/verify-unified-migrations.sh` 验证新装和从 platform V6 + AI V12 升级，保留全部冻结迁移。不要把两套 Flyway 历史重放到统一链。
 
-下文 compose 与 V1–V6 / V1–V12 指独立 AI **兼容模式**，不是内嵌部署的一键生产配方。镜像发布与 digest 固定见 [image-release.md](image-release.md)。
+下文 compose 默认起的就是内嵌形态（`platform` 以 `dev,embedded` 运行，单后端 + web）。V1–V6 / V1–V12 的独立 AI **兼容模式**退到 `compat` profile：`docker compose --profile compat up -d --build`，它不是内嵌部署的一键生产配方。镜像发布与 digest 固定见 [image-release.md](image-release.md)。
 
 ## 1. 独立 AI 基础配置：能力默认关闭
 
@@ -42,7 +42,7 @@ P3_ENABLED=true            # Agent 运行时（独立沙箱服务需另行提供
 
 ## 4. 同源 dev 启动（单主机）
 
-`infra/dev/compose.yaml` 提供统一启动：pgvector + Redis（digest 锁定）→ bootstrap/迁移一次性任务 → platform/ai 镜像 → web 镜像（静态前端 + 受限反向代理）。
+`infra/dev/compose.yaml` 提供统一启动：pgvector + Redis（digest 锁定）→ bootstrap/迁移一次性任务 → platform 镜像（内嵌形态，AI 运行时在本进程内）→ web 镜像（静态前端 + 受限反向代理）。加 `--profile compat` 才会额外起独立 AI 服务与 `ai` schema。
 
 ```bash
 cd infra/dev
@@ -57,7 +57,7 @@ docker compose up -d --build
 ```
 
 - 浏览器只访问 web 暴露的单一端口（默认 8080）。`/api/`、`/auth/`、`/system/`、`/monitor/` 是允许的公开代理前缀；SSE 响应不缓冲；上传上限 50 MiB；其余路径只服务静态资源。
-- 交付镜像：`ghcr.io/wonderchn/ruoyi-ai-agentscope-{platform,web}`，两者共同出现在 release manifest，绑定同一 source commit 与镜像 digest。独立 AI 兼容服务的镜像不在发布链，走兼容模式时需自备并经 `DEV_AI_IMAGE` 注入。
+- 交付镜像：`ghcr.io/wonderchn/ruoyi-ai-agentscope-{platform,web}`，两者共同出现在 release manifest，绑定同一 source commit 与镜像 digest。独立 AI 兼容服务的镜像不在发布链，走 `--profile compat` 时由 `infra/docker/ai.Dockerfile` 从源码本地构建（可用 `DEV_AI_IMAGE` 覆盖成外部镜像）。
 - 所有真实值（数据库口令、服务凭证、外部化 `PROJECT_SERVICES_*` 占位符）通过 env 文件注入；env 文件不进仓库。
 
 ## 5. 回退
