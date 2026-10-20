@@ -32,11 +32,13 @@ import com.nageoffer.ai.ragent.framework.security.P04AiException;
 import com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.ConversationMessageMapper;
 import com.nageoffer.ai.ragent.rag.dao.mapper.RagTraceRunMapper;
+import com.nageoffer.ai.ragent.runtime.P2RuntimeProperties;
 import com.nageoffer.ai.ragent.user.dao.mapper.UserMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import java.util.Set;
 import static org.assertj.core.api.Assertions.*;
@@ -52,7 +54,9 @@ class AiEmbeddedDashboardConfigurationTest {
             .withBean(ConversationMapper.class, () -> mock(ConversationMapper.class))
             .withBean(ConversationMessageMapper.class, () -> mock(ConversationMessageMapper.class))
             .withBean(RagTraceRunMapper.class, () -> mock(RagTraceRunMapper.class))
-            .withBean(NamedParameterJdbcTemplate.class, () -> mock(NamedParameterJdbcTemplate.class));
+            .withBean(NamedParameterJdbcTemplate.class, () -> mock(NamedParameterJdbcTemplate.class))
+            .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))
+            .withBean(P2RuntimeProperties.class, P2RuntimeProperties::new);
 
     @AfterEach void clear() { PrincipalContext.clear(); }
 
