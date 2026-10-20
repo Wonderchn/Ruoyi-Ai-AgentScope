@@ -1669,4 +1669,102 @@ function sendMessageByKey(key: number) {
     max-width: 88%;
   }
 }
+
+/* ---------------------------------------------------------- HIG v2 chat */
+.chat-with-id-container {
+  background: transparent;
+}
+
+.chat-warp {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 980px;
+  padding: 16px clamp(16px, 3vw, 40px) 0;
+  margin: 0 auto;
+}
+
+.kb-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 14px;
+  margin: 8px 0 14px;
+  background: var(--apple-glass);
+  border: 1px solid var(--apple-hairline);
+  border-radius: 16px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.kb-picker :deep(.el-select) {
+  min-width: 220px;
+}
+
+.run-status {
+  height: 28px;
+  padding: 0 12px;
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 28px;
+  color: var(--apple-secondary);
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--apple-hairline);
+  border-radius: 999px;
+}
+
+.sender-wrapper {
+  position: sticky;
+  bottom: 0;
+  padding: 14px 0 20px;
+  background: linear-gradient(180deg, rgba(245, 245, 247, 0), #f5f5f7 34%);
+}
+
+.user-bubble {
+  padding: 12px 16px;
+  color: #fff;
+  background: var(--apple-blue);
+  border-radius: 20px 20px 6px 20px;
+  box-shadow: 0 10px 24px rgba(0, 113, 227, 0.18);
+}
+
+.user-bubble .user-content {
+  color: #fff;
+}
+
+.chat-empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  color: var(--apple-blue);
+  background: linear-gradient(150deg, rgba(0, 113, 227, 0.12), rgba(94, 92, 230, 0.12));
+  border-radius: 18px;
+}
+
+.chat-empty-title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.run-alert {
+  border-radius: 16px;
+}
+
+@media (max-width: 767px) {
+  .chat-warp {
+    padding: 8px 12px 0;
+  }
+
+  .sender-wrapper {
+    padding: 8px 0 12px;
+  }
+
+  .run-status {
+    margin-left: 0;
+  }
+}
 </style>

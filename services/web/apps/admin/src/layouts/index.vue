@@ -16,34 +16,39 @@ const { can } = usePermission();
 
 /** 静态菜单（权限串来自后端 `sys_menu.perms`；每项的 permission 与页面 meta 一致）。 */
 const staticMenus = [
-  { path: '/dashboard', title: '概览', icon: 'HomeFilled', permission: '' },
+  { path: '/dashboard', title: '概览', icon: 'HomeFilled', group: '', permission: '' },
   // AI 管理域放在平台系统管理之前：它们是本产品的主工作区，不能埋在长菜单底部。
   // 权限与路由 meta 逐字一致（防漂移断言见 tests/permission-page-pairs.test.ts）。
-  { path: '/ai/knowledge', title: '知识库', icon: 'Reading', permission: 'ai:kb:list' },
-  { path: '/ai/knowledge-graph', title: '知识图谱', icon: 'Share', permission: 'ai:kb:read' },
-  { path: '/ai/models', title: '模型与提供方', icon: 'Cpu', permission: 'ai:config:read' },
-  { path: '/ai/agents', title: 'Agent 定义', icon: 'ChatDotRound', permission: 'ai:agent:list' },
-  { path: '/ai/skills', title: 'Skills', icon: 'MagicStick', permission: 'ai:skill:list' },
-  { path: '/ai/mcp', title: 'MCP 工具目录', icon: 'SetUp', permission: 'ai:mcp:list' },
-  { path: '/ai/ingestion', title: '摄取流水线', icon: 'Box', permission: 'ai:config:read' },
-  { path: '/ai/settings', title: '系统设置', icon: 'Tools', permission: 'ai:config:read' },
-  { path: '/tenant', title: '租户管理', icon: 'OfficeBuilding', permission: 'system:tenant:list' },
-  { path: '/package', title: '租户套餐', icon: 'Box', permission: 'system:tenantPackage:list' },
-  { path: '/role', title: '角色管理', icon: 'Avatar', permission: 'system:role:list' },
-  { path: '/dept', title: '部门管理', icon: 'Share', permission: 'system:dept:list' },
-  { path: '/user', title: '用户管理', icon: 'User', permission: 'system:user:list' },
-  { path: '/post', title: '岗位管理', icon: 'Postcard', permission: 'system:post:list' },
-  { path: '/dict', title: '字典管理', icon: 'Collection', permission: 'system:dict:list' },
-  { path: '/config', title: '参数配置', icon: 'Setting', permission: 'system:config:list' },
-  { path: '/notice', title: '通知公告', icon: 'Bell', permission: 'system:notice:list' },
-  { path: '/client', title: '客户端管理', icon: 'Connection', permission: 'system:client:list' },
-  { path: '/menu', title: '菜单与权限', icon: 'Menu', permission: 'system:menu:list' },
+  // 分组按“日常使用 / 治理配置”拆分：工作区组回答“今天怎么用”，治理组回答“权限与额度怎么配”。
+  { path: '/ai', title: 'AI 工作区', icon: 'HomeFilled', group: 'AI 工作区', permission: 'ai:kb:list' },
+  { path: '/ai/knowledge', title: '知识库', icon: 'Reading', group: 'AI 工作区', permission: 'ai:kb:list' },
+  { path: '/ai/knowledge-graph', title: '知识图谱', icon: 'Share', group: 'AI 工作区', permission: 'ai:kb:read' },
+  { path: '/ai/agents', title: 'Agent 定义', icon: 'ChatDotRound', group: 'AI 工作区', permission: 'ai:agent:list' },
+  { path: '/ai/skills', title: 'Skills', icon: 'MagicStick', group: 'AI 工作区', permission: 'ai:skill:list' },
+  { path: '/ai/mcp', title: 'MCP 工具目录', icon: 'SetUp', group: 'AI 工作区', permission: 'ai:mcp:list' },
+  { path: '/ai/usage', title: '用量与余额', icon: 'DataAnalysis', group: 'AI 治理', permission: 'ai:run:read' },
+  { path: '/ai/permissions', title: 'AI 权限', icon: 'Key', group: 'AI 治理', permission: 'system:role:list' },
+  { path: '/ai/tenants', title: '租户 AI 总览', icon: 'OfficeBuilding', group: 'AI 治理', permission: 'system:tenant:list' },
+  { path: '/ai/models', title: '模型与提供方', icon: 'Cpu', group: 'AI 治理', permission: 'ai:config:read' },
+  { path: '/ai/ingestion', title: '摄取流水线', icon: 'Box', group: 'AI 治理', permission: 'ai:config:read' },
+  { path: '/ai/settings', title: '系统设置', icon: 'Tools', group: 'AI 治理', permission: 'ai:config:read' },
+  { path: '/tenant', title: '租户管理', icon: 'OfficeBuilding', group: '平台管理', permission: 'system:tenant:list' },
+  { path: '/package', title: '租户套餐', icon: 'Box', group: '平台管理', permission: 'system:tenantPackage:list' },
+  { path: '/role', title: '角色管理', icon: 'Avatar', group: '平台管理', permission: 'system:role:list' },
+  { path: '/dept', title: '部门管理', icon: 'Share', group: '平台管理', permission: 'system:dept:list' },
+  { path: '/user', title: '用户管理', icon: 'User', group: '平台管理', permission: 'system:user:list' },
+  { path: '/post', title: '岗位管理', icon: 'Postcard', group: '平台管理', permission: 'system:post:list' },
+  { path: '/dict', title: '字典管理', icon: 'Collection', group: '平台管理', permission: 'system:dict:list' },
+  { path: '/config', title: '参数配置', icon: 'Setting', group: '平台管理', permission: 'system:config:list' },
+  { path: '/notice', title: '通知公告', icon: 'Bell', group: '平台管理', permission: 'system:notice:list' },
+  { path: '/client', title: '客户端管理', icon: 'Connection', group: '平台管理', permission: 'system:client:list' },
+  { path: '/menu', title: '菜单与权限', icon: 'Menu', group: '平台管理', permission: 'system:menu:list' },
   // G-10：与迁移 V21 的 C 菜单行成对交付；permission 与 TraceController:36 逐字一致。
-  { path: '/traces', title: '链路追踪', icon: 'DataLine', permission: 'monitor:trace:list' },
-  { path: '/monitor/operlog', title: '操作日志', icon: 'Document', permission: 'monitor:operlog:list' },
-  { path: '/monitor/logininfor', title: '登录日志', icon: 'Key', permission: 'monitor:logininfor:list' },
-  { path: '/monitor/online', title: '在线用户', icon: 'Monitor', permission: 'monitor:online:list' },
-  { path: '/monitor/server', title: '服务监控', icon: 'Monitor', permission: 'monitor:admin:list' },
+  { path: '/traces', title: '链路追踪', icon: 'DataLine', group: '监控与日志', permission: 'monitor:trace:list' },
+  { path: '/monitor/operlog', title: '操作日志', icon: 'Document', group: '监控与日志', permission: 'monitor:operlog:list' },
+  { path: '/monitor/logininfor', title: '登录日志', icon: 'Key', group: '监控与日志', permission: 'monitor:logininfor:list' },
+  { path: '/monitor/online', title: '在线用户', icon: 'Monitor', group: '监控与日志', permission: 'monitor:online:list' },
+  { path: '/monitor/server', title: '服务监控', icon: 'Monitor', group: '监控与日志', permission: 'monitor:admin:list' },
 ];
 
 const collapsed = ref(false);
@@ -73,6 +78,24 @@ const menus = computed(() =>
 const serverMenuTree = computed(() => toMenuTree(routers.value));
 
 const pageTitle = computed(() => String(route.meta.title || '管理端'));
+
+const pageSubtitle = computed(() => {
+  if (route.path === '/dashboard')
+    return '当前身份、权限与工作区状态一览。';
+  if (route.path === '/ai')
+    return '本租户的模型、知识库、Agent、Skills、MCP、权限与用量入口。';
+  if (route.path === '/ai/tenants')
+    return '平台视角：各租户的 ACL、运行配置、默认助手、目录数量与 7 天用量。';
+  if (route.path.startsWith('/ai/'))
+    return '管理当前租户的 AI 能力与运行配置。';
+  if (route.path.startsWith('/monitor'))
+    return '查看运行日志、在线状态与平台健康度。';
+  return '管理当前租户的平台配置与成员权限。';
+});
+
+const userInitial = computed(() =>
+  String(displayName.value || identity.userId || 'A').trim().slice(0, 1).toUpperCase(),
+);
 
 /** 页签：只保存在本次会话内，用于在多个管理页之间快速切换。 */
 interface AdminTab { path: string; title: string }
@@ -144,6 +167,19 @@ async function handleSignOut() {
 
       <NavMenu :items="menus" :collapsed="collapsed" />
 
+      <div v-if="!collapsed" class="admin-user-card">
+        <span class="admin-avatar">{{ userInitial }}</span>
+        <div class="admin-user-meta">
+          <strong>{{ displayName || identity.userId || '未登录' }}</strong>
+          <small>租户 {{ identity.tenantId || '—' }}</small>
+        </div>
+        <button type="button" class="admin-user-signout" aria-label="退出登录" @click="handleSignOut">
+          <el-icon :size="16">
+            <SwitchButton />
+          </el-icon>
+        </button>
+      </div>
+
       <div class="admin-aside-footer">
         <button type="button" class="admin-collapse-btn" @click="collapsed = !collapsed">
           <el-icon :size="16">
@@ -186,7 +222,7 @@ async function handleSignOut() {
         </div>
       </ElHeader>
 
-      <nav class="admin-tabs" aria-label="已打开的页面">
+      <nav v-if="tabs.length > 1" class="admin-tabs" aria-label="已打开的页面">
         <div
           v-for="tab in tabs"
           :key="tab.path"
@@ -227,6 +263,9 @@ async function handleSignOut() {
           <h1 class="admin-page-title">
             {{ pageTitle }}
           </h1>
+          <p class="admin-page-sub">
+            {{ pageSubtitle }}
+          </p>
         </header>
 
         <div class="admin-page-body">
@@ -259,18 +298,24 @@ async function handleSignOut() {
   height: 100vh;
   height: 100dvh;
   overflow: hidden;
-  background: var(--apple-bg);
+  background: transparent;
 }
 
 .admin-aside {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: rgba(255, 255, 255, 0.78);
-  border-right: 1px solid var(--apple-separator);
+  margin: 12px 0 12px 12px;
+  overflow: hidden;
+  background: var(--apple-glass);
+  border: 1px solid var(--apple-hairline);
+  border-radius: 24px;
+  box-shadow: var(--apple-shadow-card);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
-  transition: width 0.22s ease;
+  transition:
+    width 0.22s var(--apple-ease),
+    margin 0.22s var(--apple-ease);
 }
 
 .admin-brand {
@@ -319,10 +364,81 @@ async function handleSignOut() {
   color: var(--apple-secondary);
 }
 
+.admin-user-card {
+  display: flex;
+  flex-shrink: 0;
+  gap: 10px;
+  align-items: center;
+  margin: 8px 10px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--apple-hairline);
+  border-radius: 16px;
+}
+
+.admin-avatar {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(160deg, #0071e3, #5e5ce6);
+  border-radius: 50%;
+}
+
+.admin-user-meta {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.admin-user-meta strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--apple-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-user-meta small {
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--apple-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-user-signout {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: var(--apple-secondary);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+}
+
+.admin-user-signout:hover {
+  color: var(--apple-danger);
+  background: var(--apple-danger-soft);
+}
+
 .admin-aside-footer {
   flex-shrink: 0;
-  padding: 10px;
-  border-top: 1px solid var(--apple-separator);
+  padding: 4px 10px 10px;
+  border-top: 1px solid var(--apple-hairline);
 }
 
 .admin-collapse-btn {
@@ -349,6 +465,7 @@ async function handleSignOut() {
 .admin-body {
   min-width: 0;
   min-height: 0;
+  background: transparent;
 }
 
 .admin-header {
@@ -356,10 +473,10 @@ async function handleSignOut() {
   flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
-  height: 56px;
+  height: 64px;
   padding: 0 24px;
-  background: rgba(255, 255, 255, 0.74);
-  border-bottom: 1px solid var(--apple-separator);
+  background: var(--apple-glass);
+  border-bottom: 1px solid var(--apple-hairline);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
 }
@@ -406,11 +523,18 @@ async function handleSignOut() {
 .admin-tabs {
   display: flex;
   flex-shrink: 0;
-  gap: 2px;
-  padding: 8px 20px;
+  gap: 4px;
+  box-sizing: border-box;
+  width: calc(100% - 48px);
+  max-width: 1376px;
+  padding: 5px;
+  margin: 14px auto 0;
   overflow-x: auto;
-  background: var(--apple-bg);
-  border-bottom: 1px solid var(--apple-separator);
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid var(--apple-hairline);
+  border-radius: 16px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   scrollbar-width: none;
 }
 
@@ -423,17 +547,20 @@ async function handleSignOut() {
   flex: none;
   gap: 6px;
   align-items: center;
-  height: 30px;
-  padding: 0 12px;
+  height: 32px;
+  padding: 0 14px;
   font-family: var(--apple-font);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--apple-secondary);
   cursor: pointer;
   background: transparent;
   border: 0;
-  border-radius: 8px;
-  transition: background-color 0.16s ease, color 0.16s ease;
+  border-radius: 11px;
+  transition:
+    background-color 0.18s var(--apple-ease),
+    color 0.18s var(--apple-ease),
+    box-shadow 0.18s var(--apple-ease);
 }
 
 .admin-tab:hover {
@@ -444,7 +571,7 @@ async function handleSignOut() {
 .admin-tab.is-active {
   color: var(--apple-text);
   background: var(--apple-surface);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 6px 18px rgba(0, 0, 0, 0.04);
 }
 
 .admin-tab-close {
@@ -473,7 +600,7 @@ async function handleSignOut() {
   box-sizing: border-box;
   padding: 0;
   overflow: auto;
-  background: var(--apple-bg);
+  background: transparent;
 }
 
 .admin-load-error {
@@ -481,34 +608,42 @@ async function handleSignOut() {
 }
 
 .admin-page-head {
-  max-width: 1440px;
-  padding: 36px 32px 0;
+  max-width: 1376px;
+  padding: 42px 32px 0;
   margin: 0 auto;
 }
 
 .admin-page-eyebrow {
-  margin: 0 0 8px;
-  font-size: 12px;
+  margin: 0 0 10px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.12em;
   color: var(--apple-secondary);
   text-transform: uppercase;
 }
 
 .admin-page-title {
   margin: 0;
-  font-size: 32px;
+  font-size: 40px;
   font-weight: 600;
-  line-height: 1.15;
-  letter-spacing: -0.015em;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
   color: var(--apple-text);
+}
+
+.admin-page-sub {
+  max-width: 60ch;
+  margin: 12px 0 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--apple-secondary);
 }
 
 .admin-page-body {
   box-sizing: border-box;
   width: 100%;
-  max-width: 1440px;
-  padding: 24px 32px 56px;
+  max-width: 1376px;
+  padding: 28px 32px 64px;
   margin: 0 auto;
 }
 
@@ -535,15 +670,20 @@ async function handleSignOut() {
   }
 
   .admin-tabs {
-    padding: 8px 12px;
+    width: calc(100% - 24px);
+    margin-top: 10px;
   }
 
   .admin-page-head {
-    padding: 24px 16px 0;
+    padding: 28px 16px 0;
+  }
+
+  .admin-page-title {
+    font-size: 32px;
   }
 
   .admin-page-body {
-    padding: 18px 16px 40px;
+    padding: 20px 16px 44px;
   }
 
   .admin-load-error {

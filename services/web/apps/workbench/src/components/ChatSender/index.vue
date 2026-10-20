@@ -157,11 +157,13 @@ defineExpose({
 <style scoped lang="scss">
 .chat-sender {
   width: 100%;
-  border: 1px solid var(--apple-separator-strong);
-  border-radius: 20px;
   background: var(--apple-surface);
-  box-shadow: none;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+  border: 1px solid var(--apple-hairline);
+  border-radius: 26px;
+  box-shadow: var(--apple-shadow-card);
+  transition:
+    border-color 0.18s var(--apple-ease),
+    box-shadow 0.18s var(--apple-ease);
 }
 
 .chat-sender :deep(textarea),
@@ -173,8 +175,8 @@ defineExpose({
 }
 
 .chat-sender:focus-within {
-  border-color: var(--apple-blue);
-  box-shadow: var(--apple-focus-ring);
+  border-color: rgba(0, 113, 227, 0.45);
+  box-shadow: var(--apple-focus-ring), var(--apple-shadow-card);
 }
 
 // 关键：让 prefix 区域扩展占满整行

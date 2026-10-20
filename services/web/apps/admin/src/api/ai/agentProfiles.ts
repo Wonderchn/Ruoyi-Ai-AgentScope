@@ -188,6 +188,9 @@ export function createAgentProfilesApi(client: PlatformClient) {
       client.get<string>(AGENT_CATALOG_EXPORT_PATH, keyword ? { query: { keyword } } : undefined),
     /** `POST /agents` → `ApiEnvelope<String>`（新 id；agent.write / ai:agent:write）。 */
     create: (body: AgentProfileSaveBody) => client.post<string>(base, { body }),
+
+    /** 把平台模板租户的默认 Agent（含 Prompt）复制到当前租户；幂等。 */
+    importDefault: () => client.post<{ agentId: string; created: boolean; promptCount: number }>(`${base}/import-default`),
     /** `PUT /agents/{id}` → `ApiEnvelope<null>`（agent.write）。 */
     update: (id: string, body: AgentProfileSaveBody) =>
       client.put<void>(`${base}/${encodeURIComponent(id)}`, { body }),

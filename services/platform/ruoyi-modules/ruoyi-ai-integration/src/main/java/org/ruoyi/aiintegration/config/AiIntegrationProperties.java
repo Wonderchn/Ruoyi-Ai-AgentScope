@@ -72,6 +72,24 @@ public class AiIntegrationProperties {
      */
     private String transport = "http";
 
+    /**
+     * 租户目录自服务：为 {@code true} 时，Agent / Skills / MCP 目录动作不再要求
+     * “平台管理身份”第二道门；仍要求身份显式持有对应 scope，且目录表按 {@code tenant_id}
+     * 由租户行级过滤保护（平台模板行不会出现在租户上下文里）。
+     *
+     * <p>默认 {@code false} 保持既有平台目录语义；内嵌 profile 显式开启，让每个租户
+     * 管理自己的目录副本。平台级模板管理应在后续迁移中拆成独立权限，不复用本开关。
+     */
+    private boolean tenantCatalogSelfService = false;
+
+    public boolean isTenantCatalogSelfService() {
+        return tenantCatalogSelfService;
+    }
+
+    public void setTenantCatalogSelfService(boolean tenantCatalogSelfService) {
+        this.tenantCatalogSelfService = tenantCatalogSelfService;
+    }
+
     public boolean isLocalTransport() {
         return "local".equalsIgnoreCase(transport);
     }

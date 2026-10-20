@@ -58,6 +58,34 @@ export interface PermissionPagePair {
  * （PAIR-GAP，交付说明里点名，等待 T0 分配迁移号补行）。
  */
 export const AI_ADMIN_PAIRS: readonly PermissionPagePair[] = [
+  // ---- T1：租户 AI 工作区的两个只读入口 ----
+  {
+    permission: 'ai:run:read',
+    rowSource: 'V4__ai_policy_revision.sql 菜单 7112',
+    route: '/ai/usage',
+    page: '用量与余额',
+    status: 'live',
+    endpoint: 'live',
+    note: 'GET /api/ai/v1/dashboard/**、/rag/traces/runs、/runtime-config/spend（只读）',
+  },
+  {
+    permission: 'system:tenant:list',
+    rowSource: 'V2__seed_system.sql（租户管理页面权限）',
+    route: '/ai/tenants',
+    page: '租户 AI 总览',
+    status: 'live',
+    endpoint: 'live',
+    note: 'GET /system/tenant/ai-overview（平台管理员只读汇总）',
+  },
+  {
+    permission: 'system:role:list',
+    rowSource: 'V2__seed_system.sql（角色管理页面权限）',
+    route: '/ai/permissions',
+    page: 'AI 权限说明',
+    status: 'live',
+    endpoint: 'live',
+    note: '只读说明页；实际授权入口是角色管理 → 分配菜单（system:role:list 只控制本页可见）',
+  },
   // ---- 知识库族（有行有页，端点活——本波唯一可真实联调族）----
   {
     permission: 'ai:kb:list',

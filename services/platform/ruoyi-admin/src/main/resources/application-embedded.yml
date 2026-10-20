@@ -44,6 +44,8 @@ ai:
     enabled: true
     # local = 内嵌同进程转送；http = 转发到独立 AI 应用（迁移前形态，默认）
     transport: local
+    # T1：每个租户管理自己的 Agent/Skills/MCP 目录副本；平台模板行按 tenant_id 隔离。
+    tenant-catalog-self-service: true
     # 高危写路径（KB 创建/ACL 授予等）仍按既有开关门控，按需显式开启：
     # high-risk:
     #   enabled: true

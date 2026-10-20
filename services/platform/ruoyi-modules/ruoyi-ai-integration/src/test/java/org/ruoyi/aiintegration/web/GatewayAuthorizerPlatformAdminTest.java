@@ -100,6 +100,18 @@ class GatewayAuthorizerPlatformAdminTest {
     }
 
     @Test
+    void tenantCatalogSelfServiceLetsScopedTenantAdminThroughWithoutPlatformIdentity() {
+        identityWith("skill.write");
+        when(properties.isTenantCatalogSelfService()).thenReturn(true);
+        GatewayAuthorizer authorizer = authorizer(false);
+
+        GatewayAuthorizer.Authorized authorized = authorizer.authorize(request(), "skill.write");
+
+        assertThat(authorized.action()).isEqualTo("skill.write");
+        assertThat(authorized.member().membershipId()).isEqualTo(MEMBER);
+    }
+
+    @Test
     void nonPlatformActionIsNotGatedByPlatformAdmin() {
         identityWith("document.upload");
         GatewayAuthorizer authorizer = authorizer(false);

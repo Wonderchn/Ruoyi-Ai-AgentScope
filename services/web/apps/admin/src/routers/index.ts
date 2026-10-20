@@ -98,13 +98,6 @@ export const layoutRouter: RouteRecordRaw[] = [
         meta: { title: '服务监控', icon: 'Cpu', permission: 'monitor:admin:list' },
       },
       {
-        // RW-15：F01 op1 租户管理（写面：新增/编辑/删除/启停/套餐-字典-配置同步）。
-        path: 'tenant',
-        name: 'tenantList',
-        component: () => import('@/pages/tenant/index.vue'),
-        meta: { title: '租户管理', icon: 'OfficeBuilding', permission: 'system:tenant:list' },
-      },
-      {
         // RW-15：F01 op2 租户套餐（V2 出厂套餐行；权限 system:tenantPackage:*）。
         path: 'package',
         name: 'tenantPackageList',
@@ -152,6 +145,31 @@ export const layoutRouter: RouteRecordRaw[] = [
         name: 'traceList',
         component: () => import('@/pages/traces/index.vue'),
         meta: { title: '链路追踪', icon: 'DataLine', permission: 'monitor:trace:list' },
+      },
+      {
+        // T1：租户 AI 工作区入口。所有数字来自现有网关端点，不新增后端。
+        path: 'ai',
+        name: 'aiWorkspace',
+        component: () => import('@/pages/ai/workspace/index.vue'),
+        meta: { title: 'AI 工作区', icon: 'HomeFilled', permission: 'ai:kb:list' },
+      },
+      {
+        path: 'ai/permissions',
+        name: 'aiPermissions',
+        component: () => import('@/pages/ai/permissions/index.vue'),
+        meta: { title: 'AI 权限', icon: 'Key', permission: 'system:role:list' },
+      },
+      {
+        path: 'ai/tenants',
+        name: 'aiTenants',
+        component: () => import('@/pages/ai/tenants/index.vue'),
+        meta: { title: '租户 AI 总览', icon: 'OfficeBuilding', permission: 'system:tenant:list' },
+      },
+      {
+        path: 'ai/usage',
+        name: 'aiUsage',
+        component: () => import('@/pages/ai/usage/index.vue'),
+        meta: { title: '用量与余额', icon: 'DataAnalysis', permission: 'ai:run:read' },
       },
       {
         // W3-5：AI 管理域页面族（成对核对表见 src/config/permission-page-pairs.ts）。

@@ -293,6 +293,7 @@ public class AiGatewayController {
             new Route("GET", "/agent-catalog/agents/export", "agent.read"),
             new Route("GET", "/agent-catalog/agents/{id}", "agent.read"),
             new Route("POST", "/agent-catalog/agents", "agent.write"),
+            new Route("POST", "/agent-catalog/agents/import-default", "agent.write"),
             new Route("PUT", "/agent-catalog/agents/{id}", "agent.write"),
             new Route("DELETE", "/agent-catalog/agents/{id}", "agent.delete"),
             new Route("POST", "/agent-catalog/agents/{id}/activate", "agent.activate"),
@@ -448,6 +449,7 @@ public class AiGatewayController {
             new Route("POST", "/ingestion/tasks/{id}/cancel", "run.cancel"),
             new Route("POST", "/ingestion/tasks/{id}/retry", "run.submit"),
             new Route("GET", "/dashboard/overview", "run.get"),
+            new Route("GET", "/usage/summary", "run.get"),
             new Route("GET", "/dashboard/performance", "run.get"),
             new Route("GET", "/dashboard/trends", "run.get"),
             new Route("GET", "/rag/traces/runs", "run.get"),
@@ -789,13 +791,12 @@ public class AiGatewayController {
             throw new P04Exception(P04ErrorCode.FORBIDDEN);
         }
 
-        // 4b. 平台管理身份（维护者裁决 A2-ter）：Agent 目录是<b>平台级</b>资源
-        //     （ai_agent_* 三表没有 tenant_id、uk_agent_name 全局唯一），因此这些动作
-        //     要求"scope + 平台管理身份"两个<b>独立</b>条件同时成立。
-        //     只持有 scope 的租户管理员/成员在这里被拒 —— 即使它被误授了该 scope。
-        //     resolver 的默认实现返回 false（fail-closed）：漏实现只会更严。
+        // 4b. 平台管理身份（维护者裁决 A2-ter）：默认仍要求“scope + 平台管理身份”两个
+        //     独立条件同时成立。T1 租户目录自服务开启后，租户管理员可凭 scope 管理
+        //     本租户目录行；行级 tenant_id 过滤保证平台模板不可见、不可改。
         if (AiActionRegistry.requiresPlatformAdmin(route.action())
-                && !principalResolver.isPlatformAdmin()) {
+                && !principalResolver.isPlatformAdmin()
+                && !properties.isTenantCatalogSelfService()) {
             throw new P04Exception(P04ErrorCode.FORBIDDEN);
         }
 

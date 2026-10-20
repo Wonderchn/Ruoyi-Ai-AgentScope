@@ -73,7 +73,7 @@ useWindowWidthObserver();
   height: 100vh;
   height: 100dvh;
   overflow: hidden;
-  background: var(--apple-bg);
+  background: transparent;
 
   .layout-header {
     height: var(--header-container-default-heigth);
@@ -96,7 +96,7 @@ useWindowWidthObserver();
     min-height: 0;
     margin-left: var(--sidebar-left-container-default-width, 0);
     transition: margin-left 0.3s ease;
-    background: var(--apple-bg);
+    background: transparent;
   }
 }
 

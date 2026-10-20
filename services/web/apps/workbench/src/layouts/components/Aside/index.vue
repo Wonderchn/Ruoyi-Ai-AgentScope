@@ -17,6 +17,20 @@ const designStore = useDesignStore();
 const sessionStore = useSessionStore();
 const userStore = useUserStore();
 
+const userInitial = computed(() =>
+  String(userStore.userInfo?.nickName || userStore.userInfo?.username || 'U').trim().slice(0, 1).toUpperCase(),
+);
+
+const displayName = computed(() =>
+  String(userStore.userInfo?.nickName || userStore.userInfo?.username || '当前账号'),
+);
+
+const tenantLabel = computed(() => String(userStore.userInfo?.tenantId || ''));
+
+function handleLogout() {
+  void userStore.logout();
+}
+
 const sessionId = computed(() => route.params?.id);
 const conversationsList = computed(() => sessionStore.sessionList);
 const loadMoreLoading = computed(() => sessionStore.isLoadingMore);
@@ -225,6 +239,10 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
           <span>新对话</span>
         </div>
 
+        <p class="aside-section-label">
+          工作区
+        </p>
+
         <div class="workbench-entry" :class="{ active: isAppMarketActive }" @click="handleOpenAppMarket">
           <el-icon>
             <Grid />
@@ -341,6 +359,19 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
             </p>
           </div>
         </div>
+
+        <div v-if="userStore.token && !designStore.isCollapse" class="aside-user-card">
+          <span class="aside-avatar">{{ userInitial }}</span>
+          <div class="aside-user-meta">
+            <strong>{{ displayName }}</strong>
+            <small>{{ tenantLabel ? `租户 ${tenantLabel}` : '个人工作区' }}</small>
+          </div>
+          <button type="button" class="aside-signout" aria-label="退出登录" @click="handleLogout">
+            <el-icon :size="15">
+              <SwitchButton />
+            </el-icon>
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -365,6 +396,77 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
   color: var(--apple-secondary);
 }
 
+.aside-user-card {
+  display: flex;
+  flex-shrink: 0;
+  gap: 10px;
+  align-items: center;
+  margin: 8px 10px 10px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--apple-hairline);
+  border-radius: 16px;
+}
+
+.aside-avatar {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(150deg, #0071e3, #5e5ce6);
+  border-radius: 50%;
+}
+
+.aside-user-meta {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.aside-user-meta strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--apple-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aside-user-meta small {
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--apple-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aside-signout {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--apple-secondary);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+}
+
+.aside-signout:hover {
+  color: var(--apple-danger);
+  background: var(--apple-danger-soft);
+}
+
 // 基础样式
 .aside-container {
   position: absolute;
@@ -375,8 +477,8 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
   width: var(--sidebar-default-width);
   height: 100%;
   pointer-events: auto;
-  background: rgba(255, 255, 255, 0.78);
-  border-right: 1px solid var(--apple-separator);
+  background: var(--apple-glass);
+  border-right: 1px solid var(--apple-hairline);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
 
@@ -493,19 +595,45 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
       }
 
       .new-chat-entry {
-        @extend %entry-btn;
-
-        justify-content: flex-start;
-        margin-bottom: 2px;
+        display: flex;
+        flex-shrink: 0;
+        gap: 10px;
+        align-items: center;
+        height: 42px;
+        padding: 0 14px;
+        margin: 4px 12px 10px;
+        font-size: 14px;
         font-weight: 600;
+        color: #fff;
+        cursor: pointer;
+        background: var(--apple-blue);
+        border-radius: 14px;
+        box-shadow: 0 10px 24px rgba(0, 113, 227, 0.22);
+        transition:
+          background-color 0.18s var(--apple-ease),
+          transform 0.14s var(--apple-ease);
 
         .el-icon {
-          color: var(--apple-blue);
+          color: #fff;
         }
 
         &:hover {
-          background: var(--apple-fill);
+          background: var(--apple-blue-hover);
         }
+
+        &:active {
+          transform: scale(0.985);
+        }
+      }
+
+      .aside-section-label {
+        flex-shrink: 0;
+        margin: 8px 22px 4px;
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        color: var(--apple-tertiary);
+        text-transform: uppercase;
       }
 
       .workbench-entry {
