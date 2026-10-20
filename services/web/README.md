@@ -31,3 +31,7 @@ pnpm --filter @ruoyi/admin dev    # 管理端开发服务器
 `infra/dev/nginx.conf` 为双 SPA 提供深链接回退；只代理平台公开 `/api/`、`/auth/`、`/system/`、`/monitor/`，SSE 不缓冲，私有对象经授权网关交付。`/internal/` 与 `/actuator` 拒绝访问。API 不通过 `admin` 页面基路径寻址。
 
 管理页存在不代表所有后端能力均已迁移。旧模型/MCP/设置接口和 Skills 的范围限制见根 README；后端权限与平台管理身份是最终授权依据。发布容器的资源和代理检查使用合成上游，不代替目标环境的业务验收。
+
+管理端 AI 入口：`/admin/ai`（租户工作区）、`/admin/ai/permissions`（AI 权限目录）、
+`/admin/ai/usage`（用量与运行配额）、`/admin/ai/tenants`（平台租户总览）。四个页面的读者、数据口径与
+权限判定见根目录 [租户 AI 工作区](../../docs/tenant-ai-workspace.md)。
