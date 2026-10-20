@@ -6,6 +6,7 @@ import { Sender } from 'vue-element-plus-x';
 import AgentSelect from '@/components/AgentSelect/index.vue';
 import FilesSelect from '@/components/FilesSelect/index.vue';
 import ModelSelect from '@/components/ModelSelect/index.vue';
+import SpendBalance from '@/components/SpendBalance/index.vue';
 import { useAgentStore } from '@/stores/modules/agent';
 import { useChatStore } from '@/stores/modules/chat';
 import { useFilesStore } from '@/stores/modules/files';
@@ -112,7 +113,7 @@ defineExpose({
           <template #prev-button="{ show, onScrollLeft }">
             <div
               v-if="show"
-              class="prev-next-btn left-8px flex-center w-22px h-22px rounded-8px border-1px border-solid border-[rgba(0,0,0,0.08)] c-[rgba(0,0,0,.4)] hover:bg-#f3f4f6 bg-#fff font-size-10px"
+              class="prev-next-btn left-8px flex-center w-22px h-22px rounded-8px font-size-10px"
               @click="onScrollLeft"
             >
               <el-icon>
@@ -123,7 +124,7 @@ defineExpose({
           <template #next-button="{ show, onScrollRight }">
             <div
               v-if="show"
-              class="prev-next-btn right-8px flex-center w-22px h-22px rounded-8px border-1px border-solid border-[rgba(0,0,0,0.08)] c-[rgba(0,0,0,.4)] hover:bg-#f3f4f6 bg-#fff font-size-10px"
+              class="prev-next-btn right-8px flex-center w-22px h-22px rounded-8px font-size-10px"
               @click="onScrollRight"
             >
               <el-icon>
@@ -139,7 +140,11 @@ defineExpose({
         <!-- 左侧按钮组 -->
         <div class="left-buttons">
           <AgentSelect v-if="isApplicationMode" />
-          <ModelSelect v-else />
+          <template v-else>
+            <ModelSelect />
+            <!-- 余额是只读事实：服务端 remainingCny，取不到就不显示 -->
+            <SpendBalance />
+          </template>
         </div>
 
         <!-- 右侧上传按钮 -->
@@ -152,12 +157,31 @@ defineExpose({
 <style scoped lang="scss">
 .chat-sender {
   width: 100%;
+  border: 1px solid var(--apple-separator-strong);
+  border-radius: 20px;
+  background: var(--apple-surface);
+  box-shadow: none;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.chat-sender :deep(textarea),
+.chat-sender :deep(input) {
+  font-family: var(--apple-font);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--apple-text);
+}
+
+.chat-sender:focus-within {
+  border-color: var(--apple-blue);
+  box-shadow: var(--apple-focus-ring);
 }
 
 // 关键：让 prefix 区域扩展占满整行
 :deep(.el-sender-prefix) {
   flex: 1;
   width: 100%;
+  min-width: 0;
 }
 
 // prefix 容器
@@ -165,6 +189,7 @@ defineExpose({
   display: flex;
   align-items: center;
   width: 100%;
+  min-width: 0;
   gap: 8px;
 }
 
@@ -173,5 +198,20 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 8px;
+  // 允许内部（模型名等长文本）收缩并省略，不要把它挤出输入框
+  min-width: 0;
+}
+
+.prev-next-btn {
+  color: var(--apple-secondary);
+  cursor: pointer;
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator-strong);
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+.prev-next-btn:hover {
+  color: var(--apple-text);
+  background: var(--apple-bg);
 }
 </style>

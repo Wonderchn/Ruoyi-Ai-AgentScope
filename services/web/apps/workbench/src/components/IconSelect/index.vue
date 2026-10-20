@@ -86,7 +86,8 @@ function selectedIcon(name: string) {
     cursor: pointer;
   }
   .icon-item:hover {
-    box-shadow: 1px 1px 10px 0 #a1a1a1;
+    background: var(--apple-bg);
+    border-radius: 10px;
   }
   .el-tab-pane {
     height: 200px;
@@ -114,8 +115,8 @@ function selectedIcon(name: string) {
     height: 500px;
     margin-top: 12px;
     overflow: hidden auto;
-    border-top: 1px solid #eeeeee;
-    border-left: 1px solid #eeeeee;
+    border-top: 1px solid var(--apple-separator);
+    border-left: 1px solid var(--apple-separator);
   }
   .icon-item {
     width: 100% !important;
@@ -124,8 +125,8 @@ function selectedIcon(name: string) {
     margin-right: -1px;
     margin-bottom: -1px;
     text-align: center;
-    border-right: 1px solid #eeeeee;
-    border-bottom: 1px solid #eeeeee;
+    border-right: 1px solid var(--apple-separator);
+    border-bottom: 1px solid var(--apple-separator);
   }
   span {
     display: block;
@@ -136,14 +137,14 @@ function selectedIcon(name: string) {
     pointer-events: none;
   }
   .grid {
-    border-top: 1px solid #eeeeee;
+    border-top: 1px solid var(--apple-separator);
   }
 }
 .icons-container svg {
   span,
   svg {
     font-size: 24px !important;
-    color: #606266;
+    color: var(--apple-secondary);
   }
 }
 </style>

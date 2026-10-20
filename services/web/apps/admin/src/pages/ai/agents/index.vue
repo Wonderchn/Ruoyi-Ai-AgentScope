@@ -662,11 +662,14 @@ function nameOf(row: AgentProfileRow): string {
 
     <template v-else>
       <ElCard class="mb-4">
-        <div class="toolbar">
-          <span data-testid="agents-contract" class="card-header-meta">
-            GET /api/ai/v1/agent-catalog/agents · 架构模式 {{ mode || '未知' }} ·
-            生效槽位 {{ effectiveSlotTotal }} · 共 {{ rows.length }} 条
-          </span>
+        <div class="card-header">
+          <div>
+            <span class="section-title">智能体目录</span>
+            <p data-testid="agents-contract" class="card-header-meta">
+              GET /api/ai/v1/agent-catalog/agents · 架构模式 {{ mode || '未知' }} ·
+              生效槽位 {{ effectiveSlotTotal }} · 共 {{ rows.length }} 条
+            </p>
+          </div>
           <div class="toolbar-actions">
             <ElInput
               v-model="keyword"
@@ -907,7 +910,7 @@ function nameOf(row: AgentProfileRow): string {
             </ElSelect>
           </ElFormItem>
           <ElFormItem label="技能（SKILL）">
-            <ElSelect v-model="skillBindingIds" multiple clearable data-testid="agents-binding-skill">
+            <ElSelect v-model="skillBindingIds" multiple clearable placeholder="绑定技能" data-testid="agents-binding-skill">
               <ElOption
                 v-for="o in skillOptions"
                 :key="o.skillCode"
@@ -917,7 +920,7 @@ function nameOf(row: AgentProfileRow): string {
             </ElSelect>
           </ElFormItem>
           <ElFormItem label="MCP 工具（MCP）">
-            <ElSelect v-if="mcpListAvailable" v-model="mcpBindingIds" multiple clearable data-testid="agents-binding-mcp">
+            <ElSelect v-if="mcpListAvailable" v-model="mcpBindingIds" multiple clearable placeholder="绑定 MCP 工具" data-testid="agents-binding-mcp">
               <ElOption v-for="o in mcpOptions" :key="o.toolId" :label="o.name || o.toolId" :value="o.toolId" />
             </ElSelect>
             <template v-else>
@@ -932,7 +935,7 @@ function nameOf(row: AgentProfileRow): string {
             </template>
           </ElFormItem>
           <ElFormItem label="编排模式（ORCHESTRATION）">
-            <ElSelect v-model="orchestrationMode" clearable data-testid="agents-binding-orchestration">
+            <ElSelect v-model="orchestrationMode" clearable placeholder="编排方式" data-testid="agents-binding-orchestration">
               <ElOption v-for="m in ORCHESTRATION_MODES" :key="m" :label="m" :value="m" />
             </ElSelect>
           </ElFormItem>
@@ -1100,32 +1103,9 @@ function nameOf(row: AgentProfileRow): string {
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.toolbar-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.card-header-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-
 .slot-block {
   padding: 12px 0;
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  border-bottom: 1px solid var(--apple-separator);
 }
 
 .slot-head {
@@ -1151,6 +1131,6 @@ function nameOf(row: AgentProfileRow): string {
 
 .agents-pagination {
   justify-content: flex-end;
-  margin-top: 12px;
+  margin-top: 16px;
 }
 </style>

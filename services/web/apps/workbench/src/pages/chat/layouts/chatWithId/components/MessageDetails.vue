@@ -109,16 +109,17 @@ const expandedChunks = ref(false);
 
 <style scoped lang="scss">
 .message-details {
+  padding: 12px 14px;
   margin-top: 8px;
-  padding: 8px 10px;
   font-size: 12px;
-  color: rgb(0 0 0 / 65%);
-  background-color: rgb(0 0 0 / 2%);
-  border-radius: 8px;
+  line-height: 1.6;
+  color: var(--apple-secondary);
+  background: var(--apple-bg);
+  border-radius: 12px;
 }
 
 .detail-block + .detail-block {
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
 .detail-title {
@@ -126,59 +127,62 @@ const expandedChunks = ref(false);
   gap: 8px;
   align-items: center;
   font-weight: 600;
-  color: rgb(0 0 0 / 78%);
+  color: var(--apple-text);
 }
 
 .detail-meta {
   font-weight: 400;
-  color: rgb(0 0 0 / 45%);
+  color: var(--apple-secondary);
 }
 
 .detail-thinking,
 .detail-raw {
   max-height: 220px;
-  margin: 4px 0 0;
-  padding: 6px 8px;
+  padding: 10px 12px;
+  margin: 6px 0 0;
   overflow: auto;
   font-family: inherit;
   font-size: 12px;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
-  background-color: rgb(255 255 255 / 70%);
-  border-radius: 6px;
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator);
+  border-radius: 10px;
 }
 
 .detail-list {
-  margin: 4px 0 0;
+  margin: 6px 0 0;
   padding-left: 18px;
 
   li + li {
-    margin-top: 4px;
+    margin-top: 5px;
   }
 }
 
 .citation-title {
-  color: rgb(0 0 0 / 78%);
+  color: var(--apple-text);
 }
 
 .detail-chunk-content {
-  margin-top: 4px;
-  padding: 6px 8px;
+  padding: 10px 12px;
+  margin-top: 6px;
   white-space: pre-wrap;
   word-break: break-word;
-  background-color: rgb(255 255 255 / 70%);
-  border-radius: 6px;
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator);
+  border-radius: 10px;
 }
 
 .detail-recommended {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 4px;
+  margin-top: 6px;
 }
 
 .detail-usage {
   margin-top: 8px;
-  color: rgb(0 0 0 / 45%);
+  color: var(--apple-tertiary);
 }
 </style>

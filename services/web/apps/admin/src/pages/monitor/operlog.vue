@@ -237,36 +237,3 @@ async function doClean() {
     </ElDialog>
   </div>
 </template>
-
-<style scoped>
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.card-header-meta,
-.hint {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.hint {
-  margin-top: 8px;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-
-.pager {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: flex-end;
-  margin-top: 12px;
-  color: var(--el-text-color-regular);
-}
-</style>

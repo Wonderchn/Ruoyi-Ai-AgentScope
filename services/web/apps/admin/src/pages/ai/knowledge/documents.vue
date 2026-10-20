@@ -42,6 +42,16 @@ const rows = ref<Record<string, unknown>[]>([]);
 const loading = ref(false);
 const error = ref('');
 const loaded = ref(false);
+/**
+ * 被隐藏的已删除文档数。
+ *
+ * 服务端 `GET /knowledge-bases/{id}/documents` **不排除 tombstone**：
+ * `UploadService.listDocuments` 遍历 `DocumentDao.listDocuments`（SQL 无 `tombstoned_at IS NULL`），
+ * 只把 `tombstoned` 标记放进返回体，过滤责任因此在调用方。
+ * 不过滤的后果是删除后文档仍列在表里，同名文档越删越多（本次环境实测 13 条里 7 条是 tombstoned）。
+ * 这里按标记过滤，并把数量显式说明——**不静默隐藏**。
+ */
+const tombstonedCount = ref(0);
 
 const phase = computed(() => {
   if (error.value)
@@ -65,13 +75,18 @@ async function load() {
     const list = await aiApi.knowledgeBases.documents(kbId.value);
     if (!identity.isCurrent(capturedAuth))
       return;
-    rows.value = Array.isArray(list) ? list : [];
+    const all = Array.isArray(list) ? list : [];
+    // tombstone 过滤：服务端只给标记，不过滤；删除后不应继续出现在列表里
+    const active = all.filter(row => row?.tombstoned !== true && !row?.tombstonedAt);
+    tombstonedCount.value = all.length - active.length;
+    rows.value = active;
     loaded.value = true;
   }
   catch (e) {
     if (identity.isCurrent(capturedAuth)) {
       error.value = errorMessageOf(e);
       loaded.value = false;
+      tombstonedCount.value = 0;
     }
   }
   finally {
@@ -128,19 +143,22 @@ function scheduleOf(row: Record<string, unknown>): { enabled: boolean; cron: str
     />
 
     <template v-else>
-      <ElCard class="mb-4">
-        <div class="toolbar">
-          <span class="card-header-meta">
-            GET /api/ai/v1/knowledge-bases/{{ kbId }}/documents · 共 {{ rows.length }} 条 ·
-            计划任务=文档级 schedule（无独立 SysJob 端点，02-api-map 实测 0 条）
-          </span>
-          <ElButton data-testid="kdoc-reload" :loading="loading" @click="load()">
-            刷新
-          </ElButton>
-        </div>
-      </ElCard>
-
       <ElCard>
+        <template #header>
+          <div class="card-header">
+            <div>
+              <span class="section-title">文档列表</span>
+              <p class="card-header-meta">
+                GET /api/ai/v1/knowledge-bases/{{ kbId }}/documents · 共 {{ rows.length }} 条 ·
+                <span v-if="tombstonedCount > 0" data-testid="kdoc-tombstoned-note">已隐藏 {{ tombstonedCount }} 条已删除文档 · </span>
+                计划任务=文档级 schedule（无独立 SysJob 端点，02-api-map 实测 0 条）
+              </p>
+            </div>
+            <ElButton data-testid="kdoc-reload" :loading="loading" @click="load()">
+              刷新
+            </ElButton>
+          </div>
+        </template>
         <ElAlert
           v-if="phase === 'error'"
           :data-testid="testId('error')"
@@ -207,27 +225,9 @@ function scheduleOf(row: Record<string, unknown>): { enabled: boolean; cron: str
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.card-header-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-
 .cron-text {
   margin-left: 6px;
-  color: var(--el-text-color-regular);
+  color: var(--apple-secondary);
   font-size: 12px;
 }
 </style>

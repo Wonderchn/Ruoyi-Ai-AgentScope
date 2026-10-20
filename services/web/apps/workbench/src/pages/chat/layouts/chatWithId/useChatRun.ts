@@ -33,6 +33,28 @@ import { computed, ref, shallowRef, watch } from 'vue';
 // 相对路径而不是 `@/…`：`apps/workbench/tests/ts-loader.mjs` 只解析相对路径与真实依赖，
 // 用别名会让这个"页面行为层"无法被 node:test 直接覆盖（本模块的可测性是刻意保证的）。
 import { createRunChatClient, RunChatFailure, runFailureMessage } from '../../../../api/chat/run-chat';
+import { userFacingErrorMessage } from '../../../../utils/user-facing-error';
+
+/**
+ * 终态符号码 → 可执行的下一步。
+ *
+ * 符号码本身**原样保留**（排障与验收都要核对），这里只追加用户能采取的动作，
+ * 避免页面只显示 `DEPENDENCY_UNAVAILABLE` 这类英文码。
+ */
+export function terminalFailureHint(errorCode: string): string {
+  switch (errorCode) {
+    case 'NO_AUTHORIZED_SCOPE':
+      return '（没有可用的知识库授权：本次未检索、未外发模型）';
+    case 'DEPENDENCY_UNAVAILABLE':
+      return '（模型提供方不可用：请管理员检查模型 Key 与额度，或稍后重试）';
+    case 'AUTHORIZATION_UNAVAILABLE':
+      return '（授权/运行配置暂不可用：若刚发布知识库，请等待约 5 分钟后重试）';
+    case 'CONFIG_AUTHORITY_UNAVAILABLE':
+      return '（当前租户还没有已发布的运行配置，请联系管理员发布）';
+    default:
+      return '';
+  }
+}
 
 export interface ChatRunHooks {
   /** 受理成功（`runId` 可作为运行面板的锚点）。 */
@@ -202,7 +224,7 @@ export function useChatRun(options: UseChatRunOptions) {
         options.hooks?.onTerminal?.(update);
         if (update.status === 'FAILED' || update.status === 'CANCELLED') {
           error.value = update.errorCode
-            ? `服务端终态失败：${update.errorCode}${update.errorCode === 'NO_AUTHORIZED_SCOPE' ? '（没有可用的知识库授权：本次未检索、未外发模型）' : ''}`
+            ? `服务端终态失败：${update.errorCode}${terminalFailureHint(update.errorCode)}`
             : `服务端终态失败：${update.status}`;
         }
         break;
@@ -282,7 +304,7 @@ export function useChatRun(options: UseChatRunOptions) {
         error.value = failureText(err.failure);
         return false;
       }
-      error.value = err instanceof Error ? err.message : '运行失败';
+      error.value = userFacingErrorMessage(err, '运行失败');
       return false;
     }
     finally {
@@ -312,7 +334,7 @@ export function useChatRun(options: UseChatRunOptions) {
     }
     catch (err) {
       const failure = (err as { failure?: RunFailure })?.failure;
-      error.value = failure ? failureText(failure) : (err instanceof Error ? err.message : '取消失败');
+      error.value = failure ? failureText(failure) : userFacingErrorMessage(err, '取消失败');
       return false;
     }
   }

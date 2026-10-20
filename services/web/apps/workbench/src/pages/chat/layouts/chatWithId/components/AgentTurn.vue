@@ -144,14 +144,14 @@ function isTool(row: TraceRow): row is TraceRow & { block: AgentBlock } {
 
   .agent-turn-head {
     display: flex;
-    align-items: center;
     gap: 8px;
-    color: #909399;
+    align-items: center;
     font-size: 12px;
+    color: var(--apple-tertiary);
 
     .agent-turn-no {
       font-weight: 600;
-      letter-spacing: 0.4px;
+      letter-spacing: 0.04em;
     }
   }
 
@@ -160,13 +160,13 @@ function isTool(row: TraceRow): row is TraceRow & { block: AgentBlock } {
 
     .agent-row-meta {
       display: flex;
-      align-items: center;
       gap: 8px;
-      color: #909399;
+      align-items: center;
       font-size: 12px;
+      color: var(--apple-tertiary);
 
       .agent-channel {
-        color: #a3a6ad;
+        color: var(--apple-tertiary);
       }
 
       .agent-row-ts {
@@ -176,36 +176,43 @@ function isTool(row: TraceRow): row is TraceRow & { block: AgentBlock } {
     }
 
     .agent-batch-note {
-      color: #909399;
+      color: var(--apple-secondary);
     }
 
     .agent-row-dur {
-      color: #909399;
+      color: var(--apple-tertiary);
     }
 
     .agent-row-text {
       margin-top: 2px;
-      color: #303133;
       font-size: 13px;
+      line-height: 1.6;
+      color: var(--apple-text);
       white-space: pre-wrap;
       word-break: break-word;
 
       &[data-streaming='true'] {
-        color: #606266;
+        color: var(--apple-secondary);
       }
     }
 
     .agent-reasoning-toggle {
       display: flex;
+      gap: 5px;
       align-items: center;
-      gap: 4px;
-      padding: 0;
-      border: none;
-      background: transparent;
-      color: #909399;
+      padding: 2px 0;
+      font-family: var(--apple-font);
       font-size: 12px;
+      color: var(--apple-secondary);
       text-align: left;
       cursor: pointer;
+      background: transparent;
+      border: none;
+      border-radius: 8px;
+
+      &:hover {
+        color: var(--apple-text);
+      }
 
       .agent-reasoning-peek {
         max-width: 520px;
@@ -216,18 +223,18 @@ function isTool(row: TraceRow): row is TraceRow & { block: AgentBlock } {
     }
 
     .agent-reasoning-body {
-      margin: 4px 0 0;
-      padding: 8px 10px;
-      border-radius: 6px;
-      background: #f7f8fa;
-      color: #606266;
-      font-family: inherit;
+      max-height: 240px;
+      padding: 12px 14px;
+      margin: 6px 0 0;
+      overflow: auto;
+      font-family: var(--apple-font);
       font-size: 12px;
       line-height: 1.6;
+      color: var(--apple-secondary);
       white-space: pre-wrap;
       word-break: break-word;
-      max-height: 240px;
-      overflow: auto;
+      background: var(--apple-bg);
+      border-radius: 12px;
     }
   }
 }

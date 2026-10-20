@@ -146,10 +146,13 @@ watch([() => readAllowed.value, () => identity.authEpoch], ([allowed]) => {
 
       <ElCard>
         <template #header>
-          <div class="toolbar">
-            <span data-testid="settings-contract" class="card-header-meta">
-              GET /api/ai/v1/runtime-config/settings（config.read）· 权威表 {{ settings.authority || '—' }}
-            </span>
+          <div class="card-header">
+            <div>
+              <span class="section-title">运行配置</span>
+              <p data-testid="settings-contract" class="card-header-meta">
+                GET /api/ai/v1/runtime-config/settings（config.read）· 权威表 {{ settings.authority || '—' }}
+              </p>
+            </div>
             <ElButton data-testid="settings-reload" :loading="loading" @click="load()">
               刷新
             </ElButton>
@@ -300,32 +303,3 @@ watch([() => readAllowed.value, () => identity.authEpoch], ([allowed]) => {
     </template>
   </div>
 </template>
-
-<style scoped>
-.toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.card-header-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.section-title {
-  margin-bottom: 8px;
-  font-weight: 600;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-
-.mt-4 {
-  margin-top: 16px;
-}
-</style>

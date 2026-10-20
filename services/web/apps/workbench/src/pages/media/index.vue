@@ -76,22 +76,22 @@ const modes = [
 </template>
 
 <style scoped lang="scss">
-.media-workbench { box-sizing: border-box; width: 100%; min-height: 100%; padding: var(--workspace-top-gap) var(--workspace-padding) 28px; font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; color: var(--el-text-color-primary); }
+.media-workbench { box-sizing: border-box; width: 100%; min-height: 100%; padding: var(--workspace-top-gap) var(--workspace-padding) 40px; font-family: var(--apple-font); color: var(--apple-text); }
 .workbench-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: var(--workspace-section-gap); }
-.eyebrow { margin: 0 0 10px; font: 600 10px/1.4 monospace; letter-spacing: 0.2em; color: var(--el-color-primary); }
-.workbench-title { margin: 0; font-size: clamp(22px, 2vw, 28px); font-weight: 650; letter-spacing: -0.04em; }
-.workbench-description { margin: 8px 0 0; font-size: 13px; line-height: 1.6; color: var(--el-text-color-secondary); }
-.media-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: var(--workspace-section-gap); }
-.mode-button { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 12px 16px; font-family: inherit; text-align: left; cursor: pointer; background: var(--el-bg-color); border: 1px solid var(--el-border-color-light); border-radius: 10px; transition: border-color 0.15s ease, background 0.15s ease; }
-.mode-button:hover { border-color: var(--el-color-primary-light-5); }
-.mode-button.active { background: var(--el-color-primary-light-9); border-color: var(--el-color-primary); }
-.mode-icon { font-size: 23px; color: var(--el-text-color-secondary); }
-.mode-button.active .mode-icon { color: var(--el-color-primary); }
-.mode-button strong { display: block; margin-bottom: 4px; font-size: 14px; font-weight: 600; color: var(--el-text-color-primary); }
-.mode-button small { font-size: 11px; color: var(--el-text-color-secondary); }
+.eyebrow { margin: 0 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; color: var(--apple-secondary); }
+.workbench-title { margin: 0; font-size: 34px; font-weight: 600; line-height: 1.15; letter-spacing: -0.015em; }
+.workbench-description { margin: 10px 0 0; font-size: 15px; line-height: 1.6; color: var(--apple-secondary); }
+.media-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; max-width: 720px; margin-bottom: var(--workspace-section-gap); }
+.mode-button { display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 64px; padding: 12px 16px; font-family: inherit; text-align: left; cursor: pointer; background: var(--apple-surface); border: 1px solid var(--apple-separator); border-radius: 14px; transition: border-color 0.15s ease, background 0.15s ease; }
+.mode-button:hover { border-color: var(--apple-separator-strong); }
+.mode-button.active { background: var(--apple-blue-soft); border-color: var(--apple-blue); }
+.mode-icon { font-size: 21px; color: var(--apple-secondary); }
+.mode-button.active .mode-icon { color: var(--apple-blue); }
+.mode-button strong { display: block; margin-bottom: 3px; font-size: 14px; font-weight: 600; color: var(--apple-text); }
+.mode-button small { font-size: 12px; color: var(--apple-secondary); }
 .workbench-grid { display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); align-items: start; gap: 20px; }
 @container workspace (max-width: 1000px) { .workbench-grid { grid-template-columns: minmax(300px, .9fr) minmax(0, 1.1fr); gap: 16px; } }
 @container workspace (max-width: 780px) { .workbench-grid { grid-template-columns: minmax(0, 1fr); } }
-@container workspace (max-width: 560px) { .media-modes { gap: 6px; } .mode-button { flex-direction: column; gap: 8px; padding: 12px 6px; text-align: center; } .mode-button small { display: none; } .mode-button strong { margin: 0; font-size: 12px; } }
+@container workspace (max-width: 560px) { .media-modes { gap: 8px; } .mode-button { flex-direction: column; gap: 6px; min-height: 78px; padding: 12px 6px; text-align: center; } .mode-button small { display: none; } .mode-button strong { margin: 0; font-size: 12px; } }
 @media (prefers-reduced-motion: reduce) { .mode-button { transition: none; } }
 </style>

@@ -5,6 +5,7 @@ import type { ChatSessionVo } from '@/api/session/types';
 import { useRoute, useRouter } from 'vue-router';
 import { get_session } from '@/api';
 import logo from '@/assets/images/logo.png';
+import { buildSessionLabelRows } from '@/layouts/components/Aside/session-labels';
 import Collapse from '@/layouts/components/Header/components/Collapse.vue';
 import { useDesignStore } from '@/stores';
 import { useSessionStore } from '@/stores/modules/session';
@@ -21,7 +22,15 @@ const conversationsList = computed(() => sessionStore.sessionList);
 const loadMoreLoading = computed(() => sessionStore.isLoadingMore);
 const isAppMarketActive = computed(() => route.name === 'appMarket');
 const isMediaActive = computed(() => route.name === 'mediaWorkbench');
+const isActiveRoute = (name: string) => route.name === name;
 const active = ref<string | undefined>();
+
+/**
+ * 侧栏“最近对话”展示行：标题唯一时保持原样；同名会话用**服务端真实时间**补区分后缀
+ * （重复提问会产生完全同名会话，实测出现三条“一级类目 基准佣金率”）。
+ * 口径与边界见 `./session-labels.ts`（纯函数，可直接断言，不读时钟/不伪造数据）。
+ */
+const conversationsView = computed(() => buildSessionLabelRows(conversationsList.value));
 
 const searchKeyword = computed({
   get: () => sessionStore.searchKeyword,
@@ -223,19 +232,49 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
           <span>应用市场</span>
         </div>
 
-        <router-link v-if="userStore.token" :to="{ name: 'ragConsole' }" class="workbench-entry">
+        <router-link
+          v-if="userStore.token"
+          :to="{ name: 'ragConsole' }"
+          class="workbench-entry"
+          :class="{ active: isActiveRoute('ragConsole') }"
+        >
+          <el-icon><Reading /></el-icon>
           <span>知识库问答</span>
         </router-link>
-        <router-link v-if="userStore.token" :to="{ name: 'ragRetrievalDebug' }" class="workbench-entry">
+        <router-link
+          v-if="userStore.token"
+          :to="{ name: 'ragRetrievalDebug' }"
+          class="workbench-entry"
+          :class="{ active: isActiveRoute('ragRetrievalDebug') }"
+        >
+          <el-icon><Search /></el-icon>
           <span>检索调试</span>
         </router-link>
-        <router-link v-if="userStore.token" :to="{ name: 'agentConsole' }" class="workbench-entry">
+        <router-link
+          v-if="userStore.token"
+          :to="{ name: 'agentConsole' }"
+          class="workbench-entry"
+          :class="{ active: isActiveRoute('agentConsole') }"
+        >
+          <el-icon><Cpu /></el-icon>
           <span>Agent 任务</span>
         </router-link>
-        <router-link v-if="userStore.token" :to="{ name: 'conversationHistory' }" class="workbench-entry">
+        <router-link
+          v-if="userStore.token"
+          :to="{ name: 'conversationHistory' }"
+          class="workbench-entry"
+          :class="{ active: isActiveRoute('conversationHistory') }"
+        >
+          <el-icon><Clock /></el-icon>
           <span>会话历史</span>
         </router-link>
-        <router-link v-if="userStore.token" :to="{ name: 'memoryConsole' }" class="workbench-entry">
+        <router-link
+          v-if="userStore.token"
+          :to="{ name: 'memoryConsole' }"
+          class="workbench-entry"
+          :class="{ active: isActiveRoute('memoryConsole') }"
+        >
+          <el-icon><Collection /></el-icon>
           <span>上下文记忆</span>
         </router-link>
         <router-link :to="{ name: 'mediaWorkbench' }" class="workbench-entry media-entry" :class="{ active: isMediaActive }">
@@ -249,7 +288,7 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
           <div v-if="conversationsList.length > 0" class="conversations-wrap overflow-hidden">
             <Conversations
               v-model:active="active"
-              :items="conversationsList"
+              :items="conversationsView"
               :label-max-width="200"
               :show-tooltip="true"
               :tooltip-offset="60"
@@ -267,19 +306,40 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
                 padding: '8px 12px',
               }"
               :items-active-style="{
-                backgroundColor: '#fff',
-                boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
-                color: 'rgba(0, 0, 0, 0.85)',
+                backgroundColor: 'var(--apple-blue-soft)',
+                boxShadow: 'none',
+                color: 'var(--apple-blue)',
               }"
               :items-hover-style="{
-                backgroundColor: 'rgba(0, 0, 0, 0.04)',
+                backgroundColor: 'var(--apple-fill)',
               }"
               @menu-command="handleMenuCommand"
               @change="handleChange"
-            />
+            >
+              <!--
+                自定义 #label：组件默认渲染（前缀图标 + 省略标题 + tooltip）无法表达
+                “同名会话”的区分信息，这里重建同一结构并补一个时间后缀。
+              -->
+              <template #label="{ item }">
+                <span class="conv-label">
+                  <span v-if="item.prefixIcon" class="conv-prefix">
+                    <el-icon><component :is="item.prefixIcon" /></el-icon>
+                  </span>
+                  <span class="conv-title" :title="item.label">{{ item.displayTitle || item.label }}</span>
+                  <span v-if="item.disambiguation" class="conv-stamp" data-testid="session-stamp">{{ item.disambiguation }}</span>
+                </span>
+              </template>
+            </Conversations>
           </div>
 
-          <el-empty v-else class="h-full flex-center" description="暂无对话记录" />
+          <div v-else class="aside-empty">
+            <p class="aside-empty-title">
+              还没有对话
+            </p>
+            <p class="aside-empty-note">
+              从上方“新对话”开始，记录会保存在服务端。
+            </p>
+          </div>
         </div>
       </div>
     </div>
@@ -287,38 +347,61 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
 </template>
 
 <style scoped lang="scss">
-// 鍩虹鏍峰紡
+.aside-empty {
+  padding: 20px;
+}
+
+.aside-empty-title {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--apple-text);
+}
+
+.aside-empty-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--apple-secondary);
+}
+
+// 基础样式
 .aside-container {
-  box-sizing: border-box;
   position: absolute;
   top: 0;
   left: 0;
   z-index: 11;
+  box-sizing: border-box;
   width: var(--sidebar-default-width);
   height: 100%;
   pointer-events: auto;
-  background-color: var(--sidebar-background-color);
-  border-right: 0.5px solid var(--s-color-border-tertiary, rgb(0 0 0 / 8%));
+  background: rgba(255, 255, 255, 0.78);
+  border-right: 1px solid var(--apple-separator);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+
   .aside-wrapper {
     display: flex;
     flex-direction: column;
     height: 100%;
 
-    // 渚ц竟鏍忓ご閮ㄦ牱寮?
     .aside-header {
       display: flex;
       flex-shrink: 0;
       align-items: center;
-      height: 36px;
-      margin: 10px 12px 0;
+      height: 56px;
+      margin: 0 16px;
+
       .logo-img {
         box-sizing: border-box;
-        width: 36px;
-        height: 36px;
-        padding: 4px;
+        width: 32px;
+        height: 32px;
+        padding: 3px;
         overflow: hidden;
-        background-color: #ffffff;
-        border-radius: 50%;
+        background: var(--apple-surface);
+        border: 1px solid var(--apple-separator);
+        border-radius: 9px;
+
         img {
           display: flex;
           align-items: center;
@@ -327,119 +410,175 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
           height: 100%;
         }
       }
+
       .logo-text {
-        font-size: 16px;
-        font-weight: 700;
-        color: rgb(0 0 0 / 85%);
-        transform: skewX(-2deg);
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        color: var(--apple-text);
+        transform: none;
       }
     }
 
-    // 渚ц竟鏍忓唴瀹规牱寮?
     .aside-body {
       display: flex;
       flex: 1;
       flex-direction: column;
       min-height: 0;
-      // 鎼滅储妗嗘牱寮?
+
       .search-wrapper {
         flex-shrink: 0;
-        padding: 16px 12px 12px;
+        padding: 8px 12px 12px;
+
         .search-input {
           :deep(.el-input__wrapper) {
-            padding: 8px 12px;
-            background-color: rgb(0 0 0 / 4%);
+            height: 38px;
+            padding: 0 12px;
+            background: var(--apple-fill);
             border-radius: 10px;
             box-shadow: none;
-            transition: all 0.2s ease;
+
             &:hover {
-              background-color: rgb(0 0 0 / 6%);
+              background: var(--apple-fill);
             }
+
             &.is-focus {
-              background-color: #ffffff;
-              box-shadow: 0 0 0 1px rgb(0 87 255 / 20%);
+              background: var(--apple-surface);
+              box-shadow: 0 0 0 1px var(--apple-blue) inset, var(--apple-focus-ring);
             }
           }
+
           :deep(.el-input__inner) {
             font-size: 14px;
-            color: rgb(0 0 0 / 85%);
+            color: var(--apple-text);
+
             &::placeholder {
-              color: rgb(0 0 0 / 45%);
+              color: var(--apple-tertiary);
             }
           }
+
           :deep(.el-input__prefix) {
-            color: rgb(0 0 0 / 45%);
+            color: var(--apple-tertiary);
           }
         }
       }
 
-      // 鍒嗗壊绾?
       .divider {
         flex-shrink: 0;
         height: 1px;
-        margin: 12px;
-        background-color: rgb(0 0 0 / 6%);
+        margin: 10px 16px;
+        background: var(--apple-separator);
       }
 
-      // 入口按钮组基类：共享基线，组内紧凑、组外留白，形成视觉分组
       %entry-btn {
         display: flex;
         flex-shrink: 0;
-        gap: 8px;
+        gap: 10px;
         align-items: center;
         height: 38px;
         padding: 0 12px;
-        margin: 0 12px;
+        margin: 1px 10px;
         font-size: 14px;
-        font-weight: 600;
+        font-weight: 500;
+        color: var(--apple-text);
+        text-decoration: none;
         cursor: pointer;
         border-radius: 10px;
-        transition: all 0.2s ease;
+        transition: background-color 0.16s ease, color 0.16s ease;
+
         .el-icon {
-          font-size: 16px;
+          font-size: 17px;
+          color: var(--apple-secondary);
         }
       }
 
-      // 新对话：与应用市场一致的幽灵态，hover 灰底
       .new-chat-entry {
         @extend %entry-btn;
 
         justify-content: flex-start;
-        margin-bottom: 6px; // 组内间距：紧凑
-        color: rgb(0 0 0 / 78%);
+        margin-bottom: 2px;
+        font-weight: 600;
+
+        .el-icon {
+          color: var(--apple-blue);
+        }
+
         &:hover {
-          background-color: rgb(0 0 0 / 4%);
+          background: var(--apple-fill);
         }
       }
 
-      // 应用市场：次要入口，幽灵态，hover 轻提示
       .workbench-entry {
         @extend %entry-btn;
 
-        color: rgb(0 0 0 / 78%);
-        &.media-entry { text-decoration: none; }
-        &:hover {
-          background-color: rgb(0 0 0 / 4%);
+        &.media-entry {
+          text-decoration: none;
         }
+
+        &:hover {
+          background: var(--apple-fill);
+
+          .el-icon {
+            color: var(--apple-text);
+          }
+        }
+
         &.active {
-          color: var(--el-color-primary, #409eff);
-          background: var(--el-color-primary-light-9, rgb(235.9 245.3 255));
+          color: var(--apple-blue);
+          background: var(--apple-blue-soft);
+
+          .el-icon {
+            color: var(--apple-blue);
+          }
         }
       }
+
       .aside-content {
         display: flex;
         flex: 1;
         flex-direction: column;
         min-height: 0;
 
-        // 浼氳瘽鍒楄〃楂樺害-鍩虹鏍峰紡
         .conversations-wrap {
           flex: 1;
           min-height: 0;
-          .label {
+
+          // 自定义 #label 的骨架：前缀图标 + 可省略标题 + 同名区分后缀。
+          .conv-label {
             display: flex;
+            gap: 8px;
             align-items: center;
+            box-sizing: border-box;
+            width: 100%;
+            min-width: 0;
             height: 100%;
+            overflow: hidden;
+          }
+
+          .conv-prefix {
+            display: flex;
+            flex-shrink: 0;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            color: var(--apple-secondary);
+          }
+
+          .conv-title {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            font-size: 14px;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+          }
+
+          // 同名会话的时间后缀：小一号、次要色，不与标题抢注意力。
+          .conv-stamp {
+            flex-shrink: 0;
+            font-size: 11px;
+            font-variant-numeric: tabular-nums;
+            color: var(--apple-tertiary);
           }
         }
       }
@@ -447,72 +586,54 @@ function handleMenuCommand(command: string, item: ConversationItem<ChatSessionVo
   }
 }
 
-// 鎶樺彔鏍峰紡
+// 折叠样式
 .aside-container-collapse {
   position: absolute;
-  top: 54px;
+  top: 62px;
   z-index: 22;
-  height: calc(100% - 110px);
-  max-height: calc(100% - 110px);
+  height: calc(100% - 74px);
+  max-height: calc(100% - 74px);
   padding-bottom: 12px;
   overflow: hidden;
-
-  /* 绂佺敤鎮仠浜嬩欢 */
   pointer-events: none;
-  border: 1px solid rgb(0 0 0 / 8%);
-  border-radius: 15px;
-  box-shadow:
-    0 10px 20px 0 rgb(0 0 0 / 10%),
-    0 0 1px 0 rgb(0 0 0 / 15%);
   opacity: 0;
-
-  // 鍚戝乏鍋忕Щ涓€涓搴?
+  border: 1px solid var(--apple-separator);
+  border-radius: 16px;
+  box-shadow: var(--apple-shadow-overlay);
   transform: translateX(-100%);
   transition: opacity 0.3s ease 0.3s, transform 0.3s ease 0.3s;
 
-  /* 鏂板锛氭湭婵€娲绘偓鍋滄椂瑕嗙洊寤惰繜 */
   &.no-delay {
     transition-delay: 0s, 0s;
   }
 }
 
-// 鎮仠鏍峰紡
 .aside-container-collapse:hover,
 .aside-container-collapse.aside-container-suspended {
-  height: calc(100% - 110px);
-  max-height: calc(100% - 110px);
+  height: calc(100% - 74px);
+  max-height: calc(100% - 74px);
   padding-bottom: 12px;
   overflow: hidden;
   pointer-events: auto;
-  border: 1px solid rgb(0 0 0 / 8%);
-  border-radius: 15px;
-  box-shadow:
-    0 10px 20px 0 rgb(0 0 0 / 10%),
-    0 0 1px 0 rgb(0 0 0 / 15%);
-
-  // 鐩存帴鍦ㄨ繖閲屽啓鎮仠鏃剁殑鏍峰紡锛堜笌 aside-container-suspended 涓€鑷达級
   opacity: 1;
-
-  // 杩囨浮鍔ㄧ敾娌跨敤鍘熸湁璁剧疆
+  border: 1px solid var(--apple-separator);
+  border-radius: 16px;
+  box-shadow: var(--apple-shadow-overlay);
   transform: translateX(15px);
   transition: opacity 0.3s ease 0s, transform 0.3s ease 0s;
-
-  // 浼氳瘽鍒楄〃楂樺害-鎮仠鏍峰紡
 }
 
-// 鏍峰紡绌块€?
 :deep() {
-  // 浼氳瘽鍒楄〃鑳屾櫙鑹?
   .conversations-list {
     background-color: transparent !important;
   }
 
-  // 缇ょ粍鏍囬鏍峰紡 鍜?渚ц竟鏍忚彍鍗曡儗鏅壊涓€鑷?
   .conversation-group-title {
-    padding-left: 12px !important;
-    font-weight: 700 !important;
-    color: rgb(0 0 0 / 85%) !important;
-    background-color: var(--sidebar-background-color) !important;
+    padding-left: 18px !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    color: var(--apple-secondary) !important;
+    background-color: rgba(255, 255, 255, 0.78) !important;
   }
 }
 </style>

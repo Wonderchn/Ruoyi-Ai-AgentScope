@@ -21,6 +21,7 @@ import ts from 'typescript';
 import * as vue from 'vue';
 import * as agentRunApi from '../src/api/ai/agent-run.ts';
 import * as toolAction from '../src/api/ai/tool-action.ts';
+import { userFacingErrorMessage } from '../src/utils/user-facing-error.ts';
 
 const require = createRequire(import.meta.url);
 const vueDir = dirname(require.resolve('vue/package.json'));
@@ -158,6 +159,7 @@ function mountPage(options: MountOptions = {}) {
     },
     '@/components/rag/PrivatePdf.vue': { default: { name: 'PrivatePdf' } },
     '@/stores': { useUserStore: () => user },
+    '@/utils/user-facing-error': { userFacingErrorMessage },
     '@/utils/sse/RunStreamClient': {
       openRunStream: stream.openRunStream,
       // 真实错误类：页面用 instanceof 分支，桩必须给出同一批构造器。

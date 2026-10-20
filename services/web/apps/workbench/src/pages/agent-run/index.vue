@@ -41,6 +41,7 @@ import { downloadSource, listKnowledgeBases, terminalSummary } from '@/api/rag';
 import PrivatePdf from '@/components/rag/PrivatePdf.vue';
 import { useUserStore } from '@/stores';
 import { CursorExpiredError, openRunStream, RunEventStreamIncompleteError, RunEventStreamProtocolError, toWireInteger } from '@/utils/sse/RunStreamClient';
+import { userFacingErrorMessage } from '@/utils/user-facing-error';
 
 const user = useUserStore();
 
@@ -80,8 +81,8 @@ async function loadEngineMeta() {
     const failure = classifyAgentFailure(error);
     engineMeta.value = null;
     engineNote.value = failure.kind === 'unavailable'
-      ? '引擎未启用（BLOCKED-BY-ENGINE-GATE）：网关返回 503，引擎链属 WP-032/033 装配范围。'
-      : `引擎探活失败：${failure.kind}${failure.errorCode ? `（${failure.errorCode}）` : ''}`;
+      ? 'Agent 引擎暂不可用（服务端返回 503）。请先确认当前租户已发布模型运行配置；仍不可用时联系平台管理员。'
+      : `引擎探活失败：${userFacingErrorMessage(error)}`;
   }
 }
 
@@ -139,7 +140,7 @@ async function viewSource(citation: Citation) {
   }
   catch (error) {
     if (valid(captured) && sourceController === controller)
-      ElMessage.error(error instanceof Error ? error.message : '引用不可访问');
+      ElMessage.error(userFacingErrorMessage(error, '引用不可访问'));
   }
 }
 
@@ -188,7 +189,7 @@ async function load() {
   }
   catch (error) {
     if (valid(captured))
-      note.value = error instanceof Error ? error.message : '知识库不可访问';
+      showFailure(error);
   }
 }
 
@@ -515,109 +516,250 @@ const canResume = computed(() => resumeVersionOf(snapshot.value) !== null && sna
 </script>
 
 <template>
-  <div class="p-4 space-y-4">
-    <h2>Agent 任务</h2>
+  <div class="agent-page">
+    <header class="agent-head">
+      <div class="agent-head-copy">
+        <p class="agent-eyebrow">
+          Agent
+        </p>
+        <h1 class="agent-title">
+          Agent 任务
+        </h1>
+        <p class="agent-sub">
+          在知识库范围内执行只读查询，或把一组操作交给专属沙箱。每个动作都需要明确审批，失败与未知状态都会如实显示。
+        </p>
+      </div>
+      <span v-if="snapshot" class="agent-status-pill" :data-status="snapshot.status" data-testid="agent-status">
+        {{ snapshot.status }} · seq {{ seq }}
+      </span>
+    </header>
+
     <!-- C13 引擎探活：真数据或如实说明未启用；不显示伪造的能力清单 -->
-    <ElCard v-if="engineMeta" class="engine-meta">
-      <p>
-        引擎：{{ engineMeta.framework || '（未声明）' }} · 模型 {{ engineMeta.model || '（未声明，来自数据库发布版本）' }}
-        <span v-if="engineMeta.maxIters !== null"> · 迭代上限 {{ engineMeta.maxIters }}</span>
-      </p>
-      <p>工具提供方：{{ engineMeta.toolProvider || '（未声明）' }} · MCP {{ engineMeta.mcpConfigured ? '已配置' : '未配置' }}</p>
-      <p>能力：{{ engineMeta.capabilities.length ? engineMeta.capabilities.join('、') : '（清单为空）' }}</p>
-    </ElCard>
+    <section v-if="engineMeta" class="agent-panel agent-engine">
+      <div class="panel-head">
+        <h2>运行引擎</h2>
+        <span class="panel-meta">{{ engineMeta.framework || '框架未声明' }}</span>
+      </div>
+      <dl class="engine-list">
+        <div>
+          <dt>模型</dt>
+          <dd>{{ engineMeta.model || '未声明（来自数据库发布版本）' }}</dd>
+        </div>
+        <div>
+          <dt>迭代上限</dt>
+          <dd>{{ engineMeta.maxIters !== null ? engineMeta.maxIters : '未声明' }}</dd>
+        </div>
+        <div>
+          <dt>工具提供方</dt>
+          <dd>{{ engineMeta.toolProvider || '未声明' }} · MCP {{ engineMeta.mcpConfigured ? '已配置' : '未配置' }}</dd>
+        </div>
+        <div>
+          <dt>能力</dt>
+          <dd>{{ engineMeta.capabilities.length ? engineMeta.capabilities.join('、') : '（清单为空）' }}</dd>
+        </div>
+      </dl>
+    </section>
     <ElAlert v-else-if="engineNote" :title="engineNote" type="warning" :closable="false" data-testid="engine-unavailable" />
-    <ElCard>
-      <ElSelect v-model="kbId" placeholder="知识库" :disabled="busy">
-        <ElOption v-for="base in bases" :key="base.kbId" :label="base.name" :value="base.kbId" />
-      </ElSelect>
-      <ElRadioGroup v-model="mode" class="ml-4">
-        <ElRadioButton value="read">
-          只读查询
-        </ElRadioButton>
-        <ElRadioButton value="sandbox">
-          测试工单
-        </ElRadioButton>
-      </ElRadioGroup>
-      <ElInput v-model="question" class="mt-4" type="textarea" maxlength="4096" placeholder="依据知识库处理的任务" />
-      <template v-if="mode === 'sandbox'">
-        <ElInput v-model="title" class="mt-4" maxlength="120" placeholder="测试工单标题" />
-        <ElInput v-model="details" class="mt-4" type="textarea" maxlength="1024" placeholder="测试工单内容" />
-        <p>创建前会显示具体参数，确认后才提交到专属沙箱（需发起人审批开关；关闭时受理即 409 SANDBOX_POLICY_CLOSED）。</p>
+
+    <ElAlert
+      v-if="!bases.length"
+      type="info"
+      :closable="false"
+      class="kb-empty-alert"
+      data-testid="agent-kb-empty"
+    >
+      <template #title>
+        当前账号没有可用知识库，Agent 任务无法选择检索范围。先到
+        <RouterLink to="/rag">
+          知识库问答
+        </RouterLink>
+        创建知识库并上传 PDF。
       </template>
-      <ElButton class="mt-4" type="primary" :loading="busy" :disabled="!kbId || !question.trim() || (mode === 'sandbox' && (!title.trim() || !details.trim()))" @click="startTask()">
-        启动任务
-      </ElButton>
-    </ElCard>
+    </ElAlert>
+
+    <div class="agent-grid">
+      <section class="agent-panel">
+        <div class="panel-head">
+          <h2>发起任务</h2>
+          <span class="panel-meta">{{ mode === 'read' ? '只读查询' : '测试工单' }}</span>
+        </div>
+
+        <div class="field">
+          <span class="field-label">知识库</span>
+          <ElSelect v-model="kbId" placeholder="选择知识库" :disabled="busy" class="field-control">
+            <ElOption v-for="base in bases" :key="base.kbId" :label="base.name" :value="base.kbId" />
+          </ElSelect>
+        </div>
+
+        <div class="field">
+          <span class="field-label">任务类型</span>
+          <ElRadioGroup v-model="mode" class="mode-switch">
+            <ElRadioButton value="read">
+              只读查询
+            </ElRadioButton>
+            <ElRadioButton value="sandbox">
+              测试工单
+            </ElRadioButton>
+          </ElRadioGroup>
+        </div>
+
+        <div class="field">
+          <span class="field-label">任务描述</span>
+          <ElInput v-model="question" type="textarea" :rows="4" maxlength="4096" placeholder="依据知识库处理的任务" />
+        </div>
+
+        <template v-if="mode === 'sandbox'">
+          <div class="field">
+            <span class="field-label">工单标题</span>
+            <ElInput v-model="title" maxlength="120" placeholder="测试工单标题" />
+          </div>
+          <div class="field">
+            <span class="field-label">工单内容</span>
+            <ElInput v-model="details" type="textarea" :rows="3" maxlength="1024" placeholder="测试工单内容" />
+          </div>
+          <p class="field-note">
+            创建前会显示具体参数，确认后才提交到专属沙箱（需发起人审批开关；关闭时受理即 409 SANDBOX_POLICY_CLOSED）。
+          </p>
+        </template>
+
+        <ElButton
+          type="primary"
+          size="large"
+          class="start-button"
+          :loading="busy"
+          :disabled="!kbId || !question.trim() || (mode === 'sandbox' && (!title.trim() || !details.trim()))"
+          @click="startTask()"
+        >
+          启动任务
+        </ElButton>
+      </section>
+
+      <aside class="agent-panel agent-guide">
+        <div class="panel-head">
+          <h2>任务如何执行</h2>
+        </div>
+        <ol class="guide-list">
+          <li>
+            <span class="guide-index">01</span>
+            <div><strong>选择范围</strong><p>只读取你有权限的知识库；不会自动扩到全库。</p></div>
+          </li>
+          <li>
+            <span class="guide-index">02</span>
+            <div><strong>逐步审批</strong><p>写操作先提出参数，确认后才真正创建。</p></div>
+          </li>
+          <li>
+            <span class="guide-index">03</span>
+            <div><strong>可核对</strong><p>每次外部调用都带幂等标识和结果证据。</p></div>
+          </li>
+        </ol>
+        <p class="guide-note">
+          任务状态由服务端事件流驱动；刷新页面不会伪造进度。
+        </p>
+      </aside>
+    </div>
 
     <!-- 失败/提示：**必须可见**（错误按 errorCode（必要时再看 msg 符号）给文案） -->
-    <ElAlert v-if="note" :title="note" type="error" :closable="false" show-icon data-testid="agent-note" />
-    <ElAlert v-if="terminalNote" :title="terminalNote" type="error" :closable="false" show-icon data-testid="agent-terminal-error" />
-    <ElAlert v-if="recoveryNote" :title="recoveryNote" type="info" :closable="false" data-testid="agent-recovery-note" />
+    <div class="agent-alerts">
+      <ElAlert v-if="note" :title="note" type="error" :closable="false" show-icon data-testid="agent-note" />
+      <ElAlert v-if="terminalNote" :title="terminalNote" type="error" :closable="false" show-icon data-testid="agent-terminal-error" />
+      <ElAlert v-if="recoveryNote" :title="recoveryNote" type="info" :closable="false" data-testid="agent-recovery-note" />
+    </div>
 
-    <ElCard v-if="snapshot">
-      <p data-testid="agent-status">
-        {{ snapshot.runId }} · {{ snapshot.status }} · seq={{ seq }}
-        <span v-if="snapshot.version !== undefined && snapshot.version !== null"> · version={{ snapshot.version }}</span>
+    <section v-if="snapshot" class="agent-panel agent-run">
+      <div class="panel-head run-head">
+        <div>
+          <h2>本次运行</h2>
+          <p class="run-id">
+            {{ snapshot.runId }}
+            <span v-if="snapshot.version !== undefined && snapshot.version !== null"> · version {{ snapshot.version }}</span>
+          </p>
+        </div>
+        <div class="run-actions">
+          <ElButton size="small" :disabled="busy" @click="command(() => refresh(snapshot!.runId))">
+            刷新状态
+          </ElButton>
+          <ElButton size="small" :disabled="busy || !['QUEUED', 'RUNNING', 'WAITING_APPROVAL', 'NEEDS_RECONCILIATION'].includes(snapshot.status)" @click="command(() => api.cancel(snapshot!.runId, snapshot!.version))">
+            取消
+          </ElButton>
+          <ElButton v-if="snapshot.status === 'NEEDS_RECONCILIATION'" size="small" type="primary" :disabled="busy || !canResume" data-testid="agent-resume" @click="resumeAfterReconciliation()">
+            核对后恢复
+          </ElButton>
+          <ElButton v-if="['FAILED', 'CANCELLED', 'SUCCEEDED'].includes(snapshot.status)" size="small" :disabled="busy" @click="startTask(snapshot!.runId)">
+            新任务重试
+          </ElButton>
+        </div>
+      </div>
+
+      <p v-if="snapshot.errorCode" class="run-error-code" data-testid="agent-error-code">
+        服务端错误码：{{ snapshot.errorCode }}
       </p>
-      <p v-if="snapshot.errorCode" data-testid="agent-error-code">
-        {{ snapshot.errorCode }}
-      </p>
-      <ol v-if="snapshot.steps?.length">
+
+      <ol v-if="snapshot.steps?.length" class="run-steps">
         <li v-for="step in snapshot.steps" :key="step.stepId">
-          {{ step.stepName }} · {{ step.state }} · {{ step.at }}
+          <span class="step-name">{{ step.stepName }}</span>
+          <span class="step-state">{{ step.state }}</span>
+          <time class="step-time">{{ step.at }}</time>
         </li>
       </ol>
-      <ElButton :disabled="busy" @click="command(() => refresh(snapshot!.runId))">
-        刷新状态
-      </ElButton>
-      <ElButton :disabled="busy || !['QUEUED', 'RUNNING', 'WAITING_APPROVAL', 'NEEDS_RECONCILIATION'].includes(snapshot.status)" @click="command(() => api.cancel(snapshot!.runId, snapshot!.version))">
-        取消
-      </ElButton>
-      <ElButton v-if="snapshot.status === 'NEEDS_RECONCILIATION'" :disabled="busy || !canResume" data-testid="agent-resume" @click="resumeAfterReconciliation()">
-        核对后恢复
-      </ElButton>
-      <ElButton v-if="['FAILED', 'CANCELLED', 'SUCCEEDED'].includes(snapshot.status)" :disabled="busy" @click="startTask(snapshot!.runId)">
-        新任务重试
-      </ElButton>
-      <p class="whitespace-pre-wrap">
-        {{ answer }}
-      </p>
-      <p v-if="inheritedFrom">
+
+      <div v-if="answer" class="run-answer">
+        <p class="block-label">
+          回答
+        </p>
+        <p class="answer-text">
+          {{ answer }}
+        </p>
+      </div>
+
+      <p v-if="inheritedFrom" class="field-note">
         已复用来源任务 {{ inheritedFrom.runId }} 的工单 {{ inheritedFrom.externalId }}，本任务未再次创建。
       </p>
-      <p v-for="(citation, index) in citations" :key="citation.chunkKey">
-        [{{ index + 1 }}] {{ citation.docId }}<span v-if="citation.pageFrom"> · 第 {{ citation.pageFrom }} 页</span>
-        <ElButton link type="primary" @click="viewSource(citation)">
-          查看当前来源
-        </ElButton>
-      </p>
-      <div v-for="action in actions" :key="action.actionId" class="mt-4 border p-3" :data-testid="`tool-action-${action.state}`">
-        <p>{{ action.tool }} · {{ action.state }} · {{ action.externalId }}</p>
-        <p>目标 {{ action.target }} · 工具版本 {{ action.toolVersion }} · 审批版本 {{ action.approvalVersion }}</p>
-        <p v-if="actionView(action).version !== null" class="text-12px c-gray-500">
-          动作版本 {{ actionView(action).version }}
-          <span v-if="actionView(action).approvalVersion !== null"> · 审批版本 {{ actionView(action).approvalVersion }}</span>
+
+      <div v-if="citations.length" class="run-citations">
+        <p class="block-label">
+          引用
         </p>
-        <p class="break-all">
-          参数 hash：{{ action.argsHash }}
+        <p v-for="(citation, index) in citations" :key="citation.chunkKey" class="citation-row">
+          <span>[{{ index + 1 }}] {{ citation.docId }}<span v-if="citation.pageFrom"> · 第 {{ citation.pageFrom }} 页</span></span>
+          <ElButton link type="primary" @click="viewSource(citation)">
+            查看当前来源
+          </ElButton>
         </p>
-        <pre class="whitespace-pre-wrap">{{ JSON.stringify(action.args, null, 2) }}</pre>
+      </div>
+
+      <div v-for="action in actions" :key="action.actionId" class="tool-card" :data-testid="`tool-action-${action.state}`">
+        <div class="tool-head">
+          <span class="tool-name">{{ action.tool }}</span>
+          <span class="tool-state" :data-state="action.state">{{ action.state }}</span>
+          <span class="tool-external">{{ action.externalId }}</span>
+        </div>
+        <dl class="tool-meta">
+          <div><dt>目标</dt><dd>{{ action.target }}</dd></div>
+          <div><dt>工具版本</dt><dd>{{ action.toolVersion }}</dd></div>
+          <div><dt>审批版本</dt><dd>{{ action.approvalVersion }}</dd></div>
+          <div v-if="actionView(action).version !== null">
+            <dt>动作版本</dt><dd>{{ actionView(action).version }}<span v-if="actionView(action).approvalVersion !== null"> · 审批 {{ actionView(action).approvalVersion }}</span></dd>
+          </div>
+        </dl>
+        <p class="tool-hash">
+          参数 hash：<code>{{ action.argsHash }}</code>
+        </p>
+        <pre class="code-block">{{ JSON.stringify(action.args, null, 2) }}</pre>
 
         <!-- WP-037A 的 `result`：**"尚无结果"与"结果是空对象"分开显示** -->
-        <div class="tool-result mt-2">
-          <p class="text-12px c-gray-500">
+        <div class="tool-result">
+          <p class="block-label">
             {{ toolResultLabel(actionView(action).result) }}
           </p>
           <pre
             v-if="actionView(action).result.kind !== 'none'"
-            class="whitespace-pre-wrap break-all"
+            class="code-block"
             :data-testid="`tool-result-${actionView(action).result.kind}`"
           >{{ toolResultText(actionView(action).result) }}</pre>
         </div>
 
-        <p v-if="actionView(action).operationKey" class="break-all text-12px c-gray-500" data-testid="tool-operation-key">
-          幂等标识：{{ actionView(action).operationKey }}
+        <p v-if="actionView(action).operationKey" class="tool-hash" data-testid="tool-operation-key">
+          幂等标识：<code>{{ actionView(action).operationKey }}</code>
         </p>
 
         <!-- UNKNOWN：只给"先查询核对"，UI 不自动重发/重批（C7） -->
@@ -631,42 +773,557 @@ const canResume = computed(() => resumeVersionOf(snapshot.value) !== null && sna
         />
 
         <!-- 审批：body 恰好六字段；同一审批版本不可翻转（服务端 409 VERSION_CONFLICT） -->
-        <template v-if="action.state === 'PROPOSED' && snapshot.status === 'WAITING_APPROVAL'">
-          <ElButton type="primary" :disabled="busy" data-testid="agent-approve" @click="approve(action, 'ALLOW')">
-            确认这些参数并创建
+        <div class="tool-actions">
+          <template v-if="action.state === 'PROPOSED' && snapshot.status === 'WAITING_APPROVAL'">
+            <ElButton type="primary" :disabled="busy" data-testid="agent-approve" @click="approve(action, 'ALLOW')">
+              确认这些参数并创建
+            </ElButton>
+            <ElButton :disabled="busy" data-testid="agent-deny" @click="approve(action, 'DENY')">
+              拒绝创建
+            </ElButton>
+          </template>
+          <ElButton v-if="action.tool === 'sandbox_ticket'" :disabled="busy" data-testid="agent-evidence" @click="inspectReconciliation(action)">
+            查看核对证据
           </ElButton>
-          <ElButton :disabled="busy" data-testid="agent-deny" @click="approve(action, 'DENY')">
-            拒绝创建
+          <!-- UNKNOWN 恢复：两步（query → 取 version → resume）由契约层编排 -->
+          <ElButton
+            v-if="action.tool === 'sandbox_ticket' && ['STARTED', 'UNKNOWN', 'SUCCEEDED'].includes(action.state)"
+            :disabled="busy"
+            data-testid="agent-query-external"
+            @click="recoverUnknown(action)"
+          >
+            查询外部结果并核对
           </ElButton>
-        </template>
-        <ElButton v-if="action.tool === 'sandbox_ticket'" :disabled="busy" data-testid="agent-evidence" @click="inspectReconciliation(action)">
-          查看核对证据
-        </ElButton>
-        <!-- UNKNOWN 恢复：两步（query → 取 version → resume）由契约层编排 -->
-        <ElButton
-          v-if="action.tool === 'sandbox_ticket' && ['STARTED', 'UNKNOWN', 'SUCCEEDED'].includes(action.state)"
-          :disabled="busy"
-          data-testid="agent-query-external"
-          @click="recoverUnknown(action)"
-        >
-          查询外部结果并核对
-        </ElButton>
-        <ElButton v-if="action.tool === 'sandbox_ticket' && action.state === 'SUCCEEDED' && ['FAILED', 'CANCELLED', 'SUCCEEDED'].includes(snapshot.status)" :disabled="busy" @click="startTask(snapshot!.runId, action)">
-          新任务继承此结果
-        </ElButton>
+          <ElButton v-if="action.tool === 'sandbox_ticket' && action.state === 'SUCCEEDED' && ['FAILED', 'CANCELLED', 'SUCCEEDED'].includes(snapshot.status)" :disabled="busy" @click="startTask(snapshot!.runId, action)">
+            新任务继承此结果
+          </ElButton>
+        </div>
       </div>
+
       <ElAlert v-if="actions.some(action => action.state === 'UNKNOWN')" title="外部结果未知，请先查询并核对；不要重复创建。" type="warning" :closable="false" class="mt-4" />
-      <ElCard v-if="reconciliation" class="mt-4" data-testid="agent-reconciliation">
-        <p>核对动作：{{ reconciliation.action.actionId }}</p>
-        <pre class="whitespace-pre-wrap break-all">{{ JSON.stringify(reconciliation.evidence, null, 2) }}</pre>
-      </ElCard>
-      <details class="mt-4">
+
+      <div v-if="reconciliation" class="agent-panel reconciliation" data-testid="agent-reconciliation">
+        <p class="block-label">
+          核对证据 · {{ reconciliation.action.actionId }}
+        </p>
+        <pre class="code-block">{{ JSON.stringify(reconciliation.evidence, null, 2) }}</pre>
+      </div>
+
+      <details class="raw-log">
         <summary>原始事件日志（最近 200 条；agent.run 事件集合不含步骤事件）</summary>
-        <pre v-for="(entry, index) in rawLog" :key="index" class="whitespace-pre-wrap break-all">{{ entry }}</pre>
+        <pre v-for="(entry, index) in rawLog" :key="index" class="code-block">{{ entry }}</pre>
       </details>
-    </ElCard>
+    </section>
+
     <ElDialog :model-value="!!sourceUrl" title="私有 PDF 来源" width="80%" @close="closeSource">
       <PrivatePdf v-if="sourceUrl" :source-url="sourceUrl" :initial-page="sourcePage" />
     </ElDialog>
   </div>
 </template>
+
+<style scoped lang="scss">
+.agent-page {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 48px 32px 64px;
+  font-family: var(--apple-font);
+  color: var(--apple-text);
+}
+
+.agent-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 28px;
+}
+
+.agent-eyebrow {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--apple-secondary);
+  text-transform: uppercase;
+}
+
+.agent-title {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+}
+
+.agent-sub {
+  max-width: 64ch;
+  margin: 10px 0 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--apple-secondary);
+}
+
+.agent-status-pill {
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--apple-blue);
+  background: var(--apple-blue-soft);
+  border-radius: 999px;
+}
+
+.agent-status-pill[data-status='FAILED'],
+.agent-status-pill[data-status='CANCELLED'] {
+  color: var(--apple-danger);
+  background: var(--apple-danger-surface);
+}
+
+.agent-status-pill[data-status='SUCCEEDED'] {
+  color: var(--apple-success);
+  background: var(--apple-success-surface);
+}
+
+.kb-empty-alert {
+  margin-bottom: 16px;
+}
+
+.agent-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+  margin-top: 20px;
+}
+
+.agent-panel {
+  box-sizing: border-box;
+  padding: 24px;
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator);
+  border-radius: 18px;
+}
+
+.agent-engine {
+  margin-bottom: 20px;
+}
+
+.panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.panel-head h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.panel-meta {
+  font-size: 12px;
+  color: var(--apple-secondary);
+}
+
+.engine-list,
+.tool-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 24px;
+  margin: 0;
+}
+
+.engine-list > div,
+.tool-meta > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--apple-separator);
+}
+
+.engine-list > div:nth-child(-n + 2),
+.tool-meta > div:nth-child(-n + 2) {
+  border-top: 0;
+}
+
+.engine-list dt,
+.tool-meta dt {
+  flex: none;
+  font-size: 13px;
+  color: var(--apple-secondary);
+}
+
+.engine-list dd,
+.tool-meta dd {
+  margin: 0;
+  font-size: 13px;
+  text-align: right;
+  word-break: break-word;
+}
+
+.field {
+  margin-bottom: 18px;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--apple-secondary);
+}
+
+.field-control {
+  width: 100%;
+}
+
+.mode-switch {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--apple-fill);
+  border-radius: 12px;
+}
+
+.mode-switch :deep(.el-radio-button__inner) {
+  height: 34px;
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 34px;
+  color: var(--apple-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  box-shadow: none;
+}
+
+.mode-switch :deep(.el-radio-button.is-active .el-radio-button__inner),
+.mode-switch :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
+  color: var(--apple-text);
+  background: var(--apple-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.field-note {
+  margin: 0 0 18px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--apple-secondary);
+}
+
+.start-button {
+  width: 100%;
+  height: 46px;
+  margin-top: 4px;
+}
+
+.guide-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.guide-list li {
+  display: flex;
+  gap: 14px;
+}
+
+.guide-index {
+  flex: none;
+  font-family: var(--apple-font-mono);
+  font-size: 12px;
+  color: var(--apple-tertiary);
+}
+
+.guide-list strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.guide-list p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--apple-secondary);
+}
+
+.guide-note {
+  padding-top: 18px;
+  margin: 20px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--apple-tertiary);
+  border-top: 1px solid var(--apple-separator);
+}
+
+.agent-alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.agent-run {
+  margin-top: 20px;
+}
+
+.run-head {
+  margin-bottom: 14px;
+}
+
+.run-id {
+  margin: 6px 0 0;
+  font-family: var(--apple-font-mono);
+  font-size: 12px;
+  color: var(--apple-secondary);
+  word-break: break-all;
+}
+
+.run-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.run-error-code {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  font-family: var(--apple-font-mono);
+  font-size: 12px;
+  color: var(--apple-danger);
+  background: var(--apple-danger-surface);
+  border-radius: 10px;
+}
+
+.run-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 20px;
+  padding: 0;
+  list-style: none;
+}
+
+.run-steps li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  font-size: 13px;
+  border-top: 1px solid var(--apple-separator);
+}
+
+.run-steps li:first-child {
+  border-top: 0;
+}
+
+.step-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+}
+
+.step-state {
+  flex: none;
+  padding: 2px 9px;
+  font-size: 11px;
+  color: var(--apple-secondary);
+  background: var(--apple-bg);
+  border-radius: 999px;
+}
+
+.step-time {
+  flex: none;
+  font-family: var(--apple-font-mono);
+  font-size: 11px;
+  color: var(--apple-tertiary);
+}
+
+.block-label {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--apple-secondary);
+  text-transform: uppercase;
+}
+
+.run-answer {
+  padding: 18px;
+  margin-bottom: 18px;
+  background: var(--apple-bg);
+  border-radius: 14px;
+}
+
+.answer-text {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.run-citations {
+  margin-bottom: 18px;
+}
+
+.citation-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 0;
+  font-size: 13px;
+  border-top: 1px solid var(--apple-separator);
+}
+
+.tool-card {
+  padding: 18px;
+  margin-top: 14px;
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator);
+  border-radius: 16px;
+}
+
+.tool-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.tool-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.tool-state {
+  padding: 2px 9px;
+  font-size: 11px;
+  color: var(--apple-secondary);
+  background: var(--apple-bg);
+  border-radius: 999px;
+}
+
+.tool-state[data-state='UNKNOWN'] {
+  color: var(--apple-warning);
+  background: var(--apple-warning-surface);
+}
+
+.tool-external {
+  margin-left: auto;
+  font-family: var(--apple-font-mono);
+  font-size: 11px;
+  color: var(--apple-tertiary);
+  word-break: break-all;
+}
+
+.tool-meta {
+  margin-bottom: 12px;
+}
+
+.tool-hash {
+  margin: 8px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--apple-secondary);
+  word-break: break-all;
+}
+
+.tool-hash code {
+  font-family: var(--apple-font-mono);
+  color: var(--apple-text);
+}
+
+.code-block {
+  max-height: 320px;
+  padding: 12px 14px;
+  margin: 8px 0;
+  overflow: auto;
+  font-family: var(--apple-font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--apple-text);
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--apple-bg);
+  border-radius: 12px;
+}
+
+.tool-result {
+  margin-top: 12px;
+}
+
+.tool-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.reconciliation {
+  margin-top: 14px;
+  background: var(--apple-bg);
+  border-style: dashed;
+}
+
+.raw-log {
+  margin-top: 20px;
+  font-size: 13px;
+  color: var(--apple-secondary);
+}
+
+.raw-log summary {
+  cursor: pointer;
+}
+
+@media (max-width: 900px) {
+  .agent-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .agent-page {
+    padding: 28px 16px 40px;
+  }
+
+  .agent-title {
+    font-size: 28px;
+  }
+
+  .agent-panel {
+    padding: 18px;
+  }
+
+  .engine-list,
+  .tool-meta {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .engine-list > div:nth-child(2),
+  .tool-meta > div:nth-child(2) {
+    border-top: 1px solid var(--apple-separator);
+  }
+
+  .run-actions {
+    width: 100%;
+  }
+}
+</style>

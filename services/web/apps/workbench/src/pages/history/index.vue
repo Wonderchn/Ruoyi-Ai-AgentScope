@@ -5,6 +5,7 @@ import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { classifyFeedbackFailure, createFeedbackApi, feedbackFailureMessage } from '@/api/ai/message-feedback';
 import { exportConversation, listConversationMessages, listConversations } from '@/api/rag';
 import { useUserStore } from '@/stores';
+import { userFacingErrorMessage } from '@/utils/user-facing-error';
 
 const user = useUserStore();
 
@@ -143,7 +144,7 @@ async function load(pageOffset = 0) {
   }
   catch (error) {
     if (current(captured))
-      note.value = error instanceof Error ? error.message : '历史会话不可访问';
+      note.value = userFacingErrorMessage(error, '历史会话不可访问');
   }
   finally {
     if (current(captured))
@@ -171,7 +172,7 @@ async function select(id: string, pageOffset = 0) {
   }
   catch (error) {
     if (current(captured))
-      note.value = error instanceof Error ? error.message : '消息不可访问';
+      note.value = userFacingErrorMessage(error, '消息不可访问');
   }
   finally {
     if (current(captured))
@@ -198,7 +199,7 @@ async function save() {
   }
   catch (error) {
     if (current(captured))
-      note.value = error instanceof Error ? error.message : '导出失败';
+      note.value = userFacingErrorMessage(error, '导出失败');
   }
   finally {
     if (current(captured))
@@ -218,44 +219,93 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="p-4 space-y-4">
-    <h2>会话历史</h2>
-    <ElAlert v-if="note" :title="note" type="warning" :closable="false" />
-    <ElCard>
-      <ElButton :disabled="busy" @click="load(offset)">
-        刷新
-      </ElButton>
-      <ElButton :disabled="busy || offset === 0" @click="load(Math.max(0, offset - pageSize))">
-        上一页
-      </ElButton>
-      <ElButton :disabled="busy" @click="load(offset + pageSize)">
-        下一页
-      </ElButton>
-      <p>偏移 {{ offset }} · {{ conversations.length }} 条可见会话</p>
-      <p v-if="!busy && !conversations.length">
+  <div class="history-page">
+    <header class="history-head">
+      <p class="history-eyebrow">
+        对话
+      </p>
+      <h1>会话历史</h1>
+      <p class="history-meta">
+        共 {{ conversations.length }} 条可见会话 · 偏移 {{ offset }}
+      </p>
+    </header>
+
+    <ElAlert v-if="note" :title="note" type="warning" :closable="false" class="history-alert" />
+
+    <section class="history-panel">
+      <div class="history-toolbar">
+        <div class="history-actions">
+          <ElButton :disabled="busy" @click="load(offset)">
+            刷新
+          </ElButton>
+          <ElButton :disabled="busy || offset === 0" @click="load(Math.max(0, offset - pageSize))">
+            上一页
+          </ElButton>
+          <ElButton :disabled="busy" @click="load(offset + pageSize)">
+            下一页
+          </ElButton>
+        </div>
+        <span class="history-range">偏移 {{ offset }} · {{ conversations.length }} 条可见会话</span>
+      </div>
+
+      <p v-if="!busy && !conversations.length" class="history-empty">
         当前页没有可见会话
       </p>
-      <p v-for="conversation in conversations" :key="conversation.conversationId">
-        <ElButton link :disabled="busy" @click="select(conversation.conversationId)">
-          {{ conversation.title || conversation.conversationId }}
+      <ul v-else class="conversation-list">
+        <li v-for="conversation in conversations" :key="conversation.conversationId">
+          <button
+            type="button"
+            class="conversation-row"
+            :class="{ active: selected === conversation.conversationId }"
+            :disabled="busy"
+            @click="select(conversation.conversationId)"
+          >
+            <span class="conversation-main">
+              <span class="conversation-title">{{ conversation.title || conversation.conversationId }}</span>
+              <span class="conversation-time">{{ conversation.lastTime }}</span>
+            </span>
+            <span class="conversation-chevron" aria-hidden="true">›</span>
+          </button>
+        </li>
+      </ul>
+    </section>
+
+    <section v-if="selected" class="history-panel">
+      <div class="history-panel-head">
+        <div class="history-panel-copy">
+          <h2>对话详情</h2>
+          <p class="history-range">
+            {{ selected }}
+          </p>
+        </div>
+        <ElButton :disabled="busy" @click="save">
+          授权导出
         </ElButton>
-        <span>{{ conversation.lastTime }}</span>
-      </p>
-    </ElCard>
-    <ElCard v-if="selected">
-      <p>{{ selected }}</p>
-      <ElButton :disabled="busy" @click="save">
-        授权导出
-      </ElButton>
-      <ElButton :disabled="busy || messageOffset === 0" @click="select(selected, Math.max(0, messageOffset - pageSize))">
-        上一页消息
-      </ElButton>
-      <ElButton :disabled="busy || messages.length < pageSize" @click="select(selected, messageOffset + pageSize)">
-        下一页消息
-      </ElButton>
-      <p v-for="message in messages" :key="message.id" class="whitespace-pre-wrap" :data-testid="`history-message-${message.role}`">
-        {{ message.role }} · {{ message.messageStatus }} · {{ message.createTime }}
-        <br>{{ message.content }}
+      </div>
+
+      <div class="message-pager">
+        <ElButton :disabled="busy || messageOffset === 0" @click="select(selected, Math.max(0, messageOffset - pageSize))">
+          上一页消息
+        </ElButton>
+        <ElButton :disabled="busy || messages.length < pageSize" @click="select(selected, messageOffset + pageSize)">
+          下一页消息
+        </ElButton>
+      </div>
+
+      <article
+        v-for="message in messages"
+        :key="message.id"
+        class="message-row"
+        :data-testid="`history-message-${message.role}`"
+      >
+        <header class="message-head">
+          <span class="message-role" :data-role="message.role">{{ message.role }}</span>
+          <span class="message-status">{{ message.messageStatus }}</span>
+          <time class="message-time">{{ message.createTime }}</time>
+        </header>
+        <p class="message-content">
+          {{ message.content }}
+        </p>
         <!-- 反馈控件只出现在助手消息上（后端仅支持对助手消息反馈：
              MessageFeedbackServiceImpl.loadAssistantMessage:138）。 -->
         <span
@@ -294,35 +344,298 @@ onBeforeUnmount(() => {
           >
             取消反馈
           </ElButton>
-          <span v-if="isPendingState(feedbackStateOf(message.id))" class="text-12px c-gray-500" data-testid="feedback-state-pending">
+          <span v-if="isPendingState(feedbackStateOf(message.id))" class="feedback-state" data-testid="feedback-state-pending">
             提交中…
           </span>
           <span
             v-else-if="feedbackStateOf(message.id).kind === 'submitted'"
-            class="text-12px"
+            class="feedback-state"
             data-testid="feedback-state-submitted"
           >
             已反馈（{{ submittedVoteLabel(feedbackStateOf(message.id)) }}）
           </span>
           <span
             v-else-if="feedbackStateOf(message.id).kind === 'cancelled'"
-            class="text-12px c-gray-500"
+            class="feedback-state"
             data-testid="feedback-state-cancelled"
           >
             已取消反馈
           </span>
           <span
             v-else-if="failedKind(feedbackStateOf(message.id))"
-            class="text-12px c-red-6"
+            class="feedback-state feedback-state--error"
             :data-testid="`feedback-state-${failedKind(feedbackStateOf(message.id))}`"
           >
             {{ failedMessage(feedbackStateOf(message.id)) }}
           </span>
         </span>
-      </p>
-      <p v-if="feedbackNote" class="text-12px c-red-6" data-testid="feedback-note">
+      </article>
+      <p v-if="feedbackNote" class="feedback-note" data-testid="feedback-note">
         {{ feedbackNote }}
       </p>
-    </ElCard>
+    </section>
   </div>
 </template>
+
+<style scoped lang="scss">
+.history-page {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 920px;
+  min-height: 100%;
+  margin: 0 auto;
+  padding: 48px 32px 64px;
+  font-family: var(--apple-font);
+  color: var(--apple-text);
+}
+
+.history-head {
+  margin-bottom: 24px;
+}
+
+.history-eyebrow {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--apple-secondary);
+  text-transform: uppercase;
+}
+
+.history-head h1 {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+}
+
+.history-meta {
+  margin: 10px 0 0;
+  font-size: 14px;
+  color: var(--apple-secondary);
+}
+
+.history-alert {
+  margin-bottom: 16px;
+}
+
+.history-panel {
+  padding: 20px 24px;
+  margin-bottom: 20px;
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator);
+  border-radius: 18px;
+}
+
+.history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--apple-separator);
+}
+
+.history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.history-range {
+  margin: 0;
+  font-size: 12px;
+  color: var(--apple-secondary);
+}
+
+.history-empty {
+  padding: 36px 16px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--apple-secondary);
+  text-align: center;
+}
+
+.conversation-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.conversation-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 14px 8px;
+  font-family: var(--apple-font);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--apple-separator);
+  transition: background-color 0.16s ease;
+}
+
+.conversation-list li:last-child .conversation-row {
+  border-bottom: 0;
+}
+
+.conversation-row:hover {
+  background: var(--apple-bg);
+}
+
+.conversation-row.active {
+  background: var(--apple-blue-soft);
+}
+
+.conversation-row:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.conversation-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.conversation-title {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--apple-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-time {
+  font-size: 12px;
+  color: var(--apple-secondary);
+}
+
+.conversation-chevron {
+  flex: none;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--apple-tertiary);
+}
+
+.history-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--apple-separator);
+}
+
+.history-panel-copy {
+  min-width: 0;
+}
+
+.history-panel-head h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.message-pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 0 4px;
+}
+
+.message-row {
+  padding: 18px 0;
+  border-bottom: 1px solid var(--apple-separator);
+}
+
+.message-row:last-of-type {
+  border-bottom: 0;
+}
+
+.message-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.message-role {
+  padding: 2px 9px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--apple-secondary);
+  background: var(--apple-bg);
+  border-radius: 999px;
+}
+
+.message-role[data-role='user'] {
+  color: var(--apple-blue);
+  background: var(--apple-blue-soft);
+}
+
+.message-status,
+.message-time {
+  font-size: 11px;
+  color: var(--apple-tertiary);
+}
+
+.message-content {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--apple-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.feedback-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.feedback-state {
+  font-size: 12px;
+  color: var(--apple-secondary);
+}
+
+.feedback-state--error,
+.feedback-note {
+  font-size: 12px;
+  color: var(--apple-danger);
+}
+
+.feedback-note {
+  margin: 12px 0 0;
+}
+
+@media (max-width: 768px) {
+  .history-page {
+    padding: 28px 16px 40px;
+  }
+
+  .history-head h1 {
+    font-size: 28px;
+  }
+
+  .history-panel {
+    padding: 16px 18px;
+  }
+}
+</style>

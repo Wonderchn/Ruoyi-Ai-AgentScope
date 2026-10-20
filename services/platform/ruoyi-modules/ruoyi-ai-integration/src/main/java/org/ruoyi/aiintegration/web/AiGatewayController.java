@@ -312,6 +312,11 @@ public class AiGatewayController {
             new Route("GET", "/runtime-config/catalog", "config.read"),
             new Route("GET", "/runtime-config/settings", "config.read"),
             new Route("GET", "/runtime-config/revisions", "config.read"),
+            // Provider 花费信封余额（只读）。内层 handler = RuntimeCatalogController.spend()
+            // （类级 /internal/ai/v1/runtime-config，方法 GET /spend）。
+            // **刻意不单开 /spend/balance**：那会走字节分支并被要求交付 permit 头，
+            // 实测 503 "delivery receipt missing"（AiGatewayClient:145-156）。
+            new Route("GET", "/runtime-config/spend", "config.read"),
             new Route("POST", "/runtime-config/revisions/{revisionId}/catalog", "config.publish"),
             // RW-04-R1（T3 交付，T0 集成）：知识管理**分块面**的内层 handler
             // = KnowledgeChunkController（类级 /internal/ai/v1，公开前缀 /api/ai/v1）。

@@ -173,6 +173,40 @@ public class RuntimeCatalogController {
         this.yamlCatalog = yamlCatalog;
     }
 
+    private com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope spendEnvelope;
+
+    /** 花费信封可选装配：缺席时 {@code /spend} 明确 503，不返回伪造的余额。 */
+    @Autowired(required = false)
+    public void configureSpendEnvelope(com.nageoffer.ai.ragent.runtime.usage.ProviderSpendEnvelope spendEnvelope) {
+        this.spendEnvelope = spendEnvelope;
+    }
+
+    /**
+     * Provider 花费信封余额（只读）。
+     *
+     * <p><b>为什么挂在 {@code /runtime-config/**} 下而不是单独开 {@code /spend/balance}：</b>
+     * 网关对非 JSON 分支的 200 响应强制要求 {@code X-AI-Delivery-Permit}/
+     * {@code X-AI-Delivery-Operation}（{@code AiGatewayClient:145-156}），
+     * 单独开路由会被判 {@code delivery receipt missing} → 对外 503（2026-10-20 实测）。
+     * 复用本类既有前缀即可走已跑通的 JSON 转发分支，且不碰 permit 生命周期。
+     */
+    @GetMapping("/spend")
+    public ResponseEntity<ApiEnvelope<Map<String, Object>>> spend() {
+        requireAction(ACTION_READ);
+        if (spendEnvelope == null) {
+            throw new ConfigAuthorityUnavailable("spend envelope unavailable");
+        }
+        try {
+            // 先结算历史超预占，再报余额：否则把虚高的占用当余额报出去
+            spendEnvelope.reconcile(200);
+        } catch (RuntimeException ignore) {
+            // 对账是旁路：失败仍返回当前快照
+        }
+        return ResponseEntity.ok()
+                .header("Cache-Control", "no-store")
+                .body(ApiEnvelope.ok(spendEnvelope.snapshot()));
+    }
+
     // ------------------------------------------------------------------ 读取面
 
     /**

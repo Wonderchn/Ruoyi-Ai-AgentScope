@@ -51,7 +51,7 @@ export function useApplicationMarket() {
   let requestId = 0;
   let multiAgentRequestId = 0;
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
-  const agents = computed(() => agentStore.agentList.filter(agent => `${agent.name} ${agent.description ?? ''}`.toLowerCase().includes(appliedQuery.value.toLowerCase())));
+  const agents = computed(() => (agentStore.agentList ?? []).filter(agent => `${agent.name} ${agent.description ?? ''}`.toLowerCase().includes(appliedQuery.value.toLowerCase())));
   const applications = computed(() => [
     ...(filter.value === 'all' || filter.value === 'agent'
       ? agents.value.map(data => ({ type: 'agent' as const, data }))
@@ -260,12 +260,40 @@ export function useApplicationMarket() {
   }
 
   return {
-    applications, agents, multiAgentTotal, loading, multiAgentLoading, error, multiAgentError,
-    openError, agentError, query, filter, page, pageSize, total, opening, pendingWorkflow,
-    pendingDefs, formVisible, formLoading, loadWorkflows, changePage, openWorkflow, selectAgent,
-    submitInputs, multiAgentDetail, multiAgentDialog, multiAgentDetailLoading, multiAgentPending,
-    multiAgentUsing: multiAgentRun.using, multiAgentAnswer: multiAgentRun.answer,
-    multiAgentUseError: multiAgentRun.error, multiAgentRunId: multiAgentRun.runId,
-    openMultiAgent, useMultiAgentApp, submitMultiAgentUse,
+    applications,
+    agents,
+    multiAgentTotal,
+    loading,
+    multiAgentLoading,
+    error,
+    multiAgentError,
+    openError,
+    agentError,
+    query,
+    filter,
+    page,
+    pageSize,
+    total,
+    opening,
+    pendingWorkflow,
+    pendingDefs,
+    formVisible,
+    formLoading,
+    loadWorkflows,
+    changePage,
+    openWorkflow,
+    selectAgent,
+    submitInputs,
+    multiAgentDetail,
+    multiAgentDialog,
+    multiAgentDetailLoading,
+    multiAgentPending,
+    multiAgentUsing: multiAgentRun.using,
+    multiAgentAnswer: multiAgentRun.answer,
+    multiAgentUseError: multiAgentRun.error,
+    multiAgentRunId: multiAgentRun.runId,
+    openMultiAgent,
+    useMultiAgentApp,
+    submitMultiAgentUse,
   };
 }

@@ -2,6 +2,8 @@
 <script setup lang="ts">
 import { useSessionStore } from '@/stores/modules/session';
 
+defineProps<{ compact?: boolean }>();
+
 const sessionStore = useSessionStore();
 
 /* 创建会话 开始 */
@@ -18,13 +20,48 @@ function handleCreatChat() {
 </script>
 
 <template>
-  <div
-    class="create-chat-container flex-center flex-none p-6px pl-8px pr-8px c-#0057ff b-#0057ff b-rounded-12px border-1px hover:bg-#0057ff hover:c-#fff hover:b-#fff hover:cursor-pointer border-solid select-none"
+  <button
+    type="button"
+    class="create-chat"
+    :class="{ 'create-chat--compact': compact }"
+    :aria-label="compact ? '新对话' : undefined"
     @click="handleCreatChat"
   >
-    <el-icon size="12" class="flex-center flex-none w-14px h-14px">
+    <el-icon :size="compact ? 18 : 14">
       <Plus />
     </el-icon>
-    <span class="ml-4px font-size-14px font-700">新对话</span>
-  </div>
+    <span v-if="!compact">新对话</span>
+  </button>
 </template>
+
+<style scoped lang="scss">
+.create-chat {
+  display: inline-flex;
+  flex: none;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  padding: 0 18px;
+  font-family: var(--apple-font);
+  font-size: 14px;
+  font-weight: 500;
+  color: #fff;
+  cursor: pointer;
+  background: var(--apple-blue);
+  border: 0;
+  border-radius: var(--apple-radius-pill);
+  transition: background-color 0.18s ease;
+}
+
+.create-chat:hover {
+  background: var(--apple-blue-hover);
+}
+
+.create-chat--compact {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 12px;
+}
+</style>

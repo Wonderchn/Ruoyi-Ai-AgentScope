@@ -180,14 +180,21 @@ async function submit() {
     if (editingId.value) {
       await updateUser({ ...body, userId: editingId.value });
       form.value.password = '';
+      dialogVisible.value = false;
+      actionNotice.value = '用户已更新。';
+      await load(1);
     }
     else {
       await createUser(body);
+      dialogVisible.value = false;
+      actionNotice.value = '用户已创建，请继续为该用户分配角色（未分配角色时无法使用工作台功能）。';
+      await load(1);
+      // 创建后直接打开“分配角色”，避免操作者还要去列表里找这个新用户。
+      const created = state.value.rows.find(row => String(row.userName ?? '') === String(body.userName));
+      if (created)
+        void openAuthRole(created);
     }
-    dialogVisible.value = false;
     form.value.password = '';
-    actionNotice.value = editingId.value ? '用户已更新。' : '用户已创建。';
-    await load(1);
   }
   catch (error) {
     actionError.value = errorMessageOf(error);
@@ -356,12 +363,12 @@ onMounted(() => {
             <ElInput v-model="filters.phonenumber" clearable data-testid="user-filter-phone" />
           </ElFormItem>
           <ElFormItem label="部门">
-            <ElSelect v-model="filters.deptId" clearable filterable style="width: 180px" data-testid="user-filter-dept">
+            <ElSelect v-model="filters.deptId" clearable filterable placeholder="全部部门" style="width: 180px" data-testid="user-filter-dept">
               <ElOption v-for="item in deptOptions" :key="item.deptId" :label="item.label" :value="item.deptId" />
             </ElSelect>
           </ElFormItem>
           <ElFormItem label="状态">
-            <ElSelect v-model="filters.status" clearable style="width: 120px" data-testid="user-filter-status">
+            <ElSelect v-model="filters.status" clearable placeholder="全部状态" style="width: 120px" data-testid="user-filter-status">
               <ElOption label="正常" value="0" />
               <ElOption label="停用" value="1" />
             </ElSelect>
@@ -445,7 +452,7 @@ onMounted(() => {
           <ElInput v-model="form.nickName" data-testid="user-form-nickname" />
         </ElFormItem>
         <ElFormItem label="部门">
-          <ElSelect v-model="form.deptId" clearable filterable style="width: 100%" data-testid="user-form-dept">
+          <ElSelect v-model="form.deptId" clearable filterable placeholder="请选择部门" style="width: 100%" data-testid="user-form-dept">
             <ElOption v-for="item in deptOptions" :key="item.deptId" :label="item.label" :value="item.deptId" />
           </ElSelect>
         </ElFormItem>
@@ -464,7 +471,7 @@ onMounted(() => {
           <ElInput v-model="form.email" data-testid="user-form-email" />
         </ElFormItem>
         <ElFormItem label="状态">
-          <ElSelect v-model="form.status" style="width: 140px" data-testid="user-form-status">
+          <ElSelect v-model="form.status" placeholder="请选择状态" style="width: 140px" data-testid="user-form-status">
             <ElOption label="正常" value="0" />
             <ElOption label="停用" value="1" />
           </ElSelect>
@@ -536,25 +543,3 @@ onMounted(() => {
     </ElDialog>
   </div>
 </template>
-
-<style scoped>
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.card-header-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.pager {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: flex-end;
-  margin-top: 12px;
-  color: var(--el-text-color-regular);
-}
-</style>

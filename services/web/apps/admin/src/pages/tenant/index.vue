@@ -104,6 +104,10 @@ function openCreate() {
     intro: '',
     remark: '',
     status: '0',
+    // 服务端 AddGroup 强制要求：创建租户时同事务创建该租户的管理员账号。
+    // 缺这两项时后端直接 400（用户名不能为空 / 密码不能为空），旧表单没有暴露它们。
+    username: '',
+    password: '',
   };
   void loadPackages();
   dialogVisible.value = true;
@@ -163,6 +167,10 @@ function numericOrUndefined(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+/** 创建成功后展示租户编号与管理员账号（不展示口令）。 */
+const resultVisible = ref(false);
+const createResult = ref<{ tenantId: string; userName: string; companyName: string } | null>(null);
+
 async function submit() {
   actionError.value = '';
   actionNotice.value = '';
@@ -172,6 +180,22 @@ async function submit() {
   }
   if (!editingId.value && !form.value.packageId) {
     actionError.value = '新增租户必须选择套餐（服务端按套餐建角色与菜单交集）';
+    return;
+  }
+  if (!form.value.contactUserName?.trim()) {
+    actionError.value = '联系人不能为空（服务端新增租户必填）';
+    return;
+  }
+  if (!form.value.contactPhone?.trim()) {
+    actionError.value = '联系电话不能为空（服务端新增租户必填）';
+    return;
+  }
+  if (!editingId.value && !form.value.username?.trim()) {
+    actionError.value = '管理员账号不能为空（用于登录管理端与工作台）';
+    return;
+  }
+  if (!editingId.value && !form.value.password) {
+    actionError.value = '初始密码不能为空';
     return;
   }
   const body: Record<string, unknown> = {
@@ -185,6 +209,10 @@ async function submit() {
     remark: (form.value.remark ?? '').trim(),
     status: form.value.status || '0',
   };
+  if (!editingId.value) {
+    body.username = form.value.username.trim();
+    body.password = form.value.password;
+  }
   const accountCount = numericOrUndefined(form.value.accountCount ?? '');
   if (accountCount !== undefined)
     body.accountCount = accountCount;
@@ -192,13 +220,29 @@ async function submit() {
     body.expireTime = form.value.expireTime;
   saving.value = true;
   try {
-    if (editingId.value)
+    if (editingId.value) {
       await updateTenant({ ...body, tenantId: editingId.value });
-    else
+      actionNotice.value = '租户已更新。';
+      await load(1);
+    }
+    else {
       await createTenant(body);
+      // 服务端返回 R<Void>，不返回生成的 tenantId。重新拉列表，按企业名称找到
+      // 刚创建的行，把租户编号和登录账号显示给操作者。
+      await load(1);
+      const created = [...state.value.rows]
+        .filter(row => String(row.companyName ?? '') === body.companyName)
+        .sort((a, b) => Number(b.id ?? 0) - Number(a.id ?? 0))[0];
+      createResult.value = {
+        tenantId: String(created?.tenantId ?? '（列表刷新后可见）'),
+        userName: form.value.username.trim(),
+        companyName: String(body.companyName),
+      };
+      resultVisible.value = true;
+      actionNotice.value = '租户已创建（服务端同事务完成管理员、角色、菜单、部门与 AI 策略初始化）。';
+    }
     dialogVisible.value = false;
-    actionNotice.value = editingId.value ? '租户已更新。' : '租户已创建（服务端同事务完成 provisioning）。';
-    await load(1);
+    form.value.password = '';
   }
   catch (error) {
     actionError.value = errorMessageOf(error);
@@ -367,14 +411,14 @@ onMounted(() => {
         <ElAlert v-if="state.error" data-testid="tenant-error" :title="state.error" type="error" :closable="false" class="mb-4" />
 
         <ElTable v-loading="state.loading" data-testid="tenant-rows" :data="state.rows" border size="small">
-          <ElTableColumn prop="tenantId" label="租户 ID" width="120" />
-          <ElTableColumn prop="companyName" label="企业名称" min-width="160" />
-          <ElTableColumn prop="contactUserName" label="联系人" width="110" />
-          <ElTableColumn prop="contactPhone" label="联系电话" width="130" />
-          <ElTableColumn prop="packageId" label="套餐" width="170" />
-          <ElTableColumn prop="accountCount" label="账号数" width="90" />
-          <ElTableColumn prop="expireTime" label="过期时间" width="170" />
-          <ElTableColumn label="状态" width="90">
+          <ElTableColumn prop="tenantId" label="租户 ID" width="110" />
+          <ElTableColumn prop="companyName" label="企业名称" min-width="140" />
+          <ElTableColumn prop="contactUserName" label="联系人" width="90" />
+          <ElTableColumn prop="contactPhone" label="联系电话" width="120" show-overflow-tooltip />
+          <ElTableColumn prop="packageId" label="套餐" width="100" />
+          <ElTableColumn prop="accountCount" label="账号数" width="70" />
+          <ElTableColumn prop="expireTime" label="过期时间" width="120" />
+          <ElTableColumn label="状态" width="70">
             <template #default="{ row }">
               <ElTag :type="statusTagType(row.status)" size="small">
                 {{ row.status === '0' ? '正常' : row.status === '1' ? '停用' : (row.status ?? '—') }}
@@ -444,7 +488,7 @@ onMounted(() => {
           <ElInput v-model="form.companyName" data-testid="tenant-form-company" />
         </ElFormItem>
         <ElFormItem label="套餐">
-          <ElSelect v-model="form.packageId" style="width: 100%" data-testid="tenant-form-package">
+          <ElSelect v-model="form.packageId" placeholder="请选择套餐" style="width: 100%" data-testid="tenant-form-package">
             <ElOption
               v-for="item in packages"
               :key="String(item.packageId)"
@@ -453,11 +497,17 @@ onMounted(() => {
             />
           </ElSelect>
         </ElFormItem>
-        <ElFormItem label="联系人">
-          <ElInput v-model="form.contactUserName" data-testid="tenant-form-contact" />
+        <ElFormItem v-if="!editingId" label="管理员账号" required>
+          <ElInput v-model="form.username" placeholder="该租户管理端的登录账号（同时可用于工作台）" data-testid="tenant-form-username" />
         </ElFormItem>
-        <ElFormItem label="联系电话">
-          <ElInput v-model="form.contactPhone" data-testid="tenant-form-phone" />
+        <ElFormItem v-if="!editingId" label="初始密码" required>
+          <ElInput v-model="form.password" type="password" show-password placeholder="创建后请让该管理员首次登录时修改" data-testid="tenant-form-password" />
+        </ElFormItem>
+        <ElFormItem label="联系人" required>
+          <ElInput v-model="form.contactUserName" placeholder="服务端新增租户必填" data-testid="tenant-form-contact" />
+        </ElFormItem>
+        <ElFormItem label="联系电话" required>
+          <ElInput v-model="form.contactPhone" placeholder="服务端新增租户必填" data-testid="tenant-form-phone" />
         </ElFormItem>
         <ElFormItem label="账号额度">
           <ElInput v-model="form.accountCount" data-testid="tenant-form-account-count" />
@@ -466,7 +516,7 @@ onMounted(() => {
           <ElInput v-model="form.expireTime" placeholder="YYYY-MM-DD HH:mm:ss" data-testid="tenant-form-expire" />
         </ElFormItem>
         <ElFormItem label="状态">
-          <ElSelect v-model="form.status" style="width: 140px" data-testid="tenant-form-status">
+          <ElSelect v-model="form.status" placeholder="请选择状态" style="width: 140px" data-testid="tenant-form-status">
             <ElOption label="正常" value="0" />
             <ElOption label="停用" value="1" />
           </ElSelect>
@@ -482,11 +532,40 @@ onMounted(() => {
         <ElButton
           type="primary"
           :loading="saving"
-          :disabled="!form.companyName?.trim() || (!editingId && !form.packageId)"
+          :disabled="!form.companyName?.trim() || (!editingId && (!form.packageId || !form.contactUserName?.trim() || !form.contactPhone?.trim() || !form.username?.trim() || !form.password))"
           data-testid="tenant-form-submit"
           @click="submit"
         >
           保存
+        </ElButton>
+      </template>
+    </ElDialog>
+
+    <ElDialog v-model="resultVisible" title="租户创建成功" width="520px">
+      <ElAlert
+        v-if="createResult"
+        type="success"
+        :closable="false"
+        class="mb-4"
+        :title="`${createResult.companyName} 已开通`"
+      />
+      <ElDescriptions v-if="createResult" :column="1" border>
+        <ElDescriptionsItem label="租户编号">
+          <span data-testid="tenant-created-id">{{ createResult.tenantId }}</span>
+        </ElDescriptionsItem>
+        <ElDescriptionsItem label="管理员账号">
+          <span data-testid="tenant-created-username">{{ createResult.userName }}</span>
+        </ElDescriptionsItem>
+        <ElDescriptionsItem label="登录入口">
+          管理端 /admin/ · 工作台 /
+        </ElDescriptionsItem>
+        <ElDescriptionsItem label="下一步">
+          用该账号选择对应租户登录；工作台首次使用前，先在“AI → 模型与提供方”确认运行配置已发布。
+        </ElDescriptionsItem>
+      </ElDescriptions>
+      <template #footer>
+        <ElButton type="primary" @click="resultVisible = false">
+          知道了
         </ElButton>
       </template>
     </ElDialog>
@@ -496,25 +575,3 @@ onMounted(() => {
     </ElButton>
   </div>
 </template>
-
-<style scoped>
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.card-header-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.pager {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: flex-end;
-  margin-top: 12px;
-  color: var(--el-text-color-regular);
-}
-</style>

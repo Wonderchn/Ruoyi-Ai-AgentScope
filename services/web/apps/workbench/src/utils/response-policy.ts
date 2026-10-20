@@ -1,6 +1,7 @@
 import type { PlatformEnvelope } from '@ruoyi/platform-client/http';
 import type { HookFetchPlugin } from 'hook-fetch';
 import { envelopeErrorCode, envelopeMsg, envelopePolicyForUrl, joinUrl, PlatformApiError, unwrapData } from '@ruoyi/platform-client/http';
+import { userFacingErrorMessage } from './user-facing-error';
 
 export interface EnvelopeResponseEffects {
   onAuthExpired: () => void;
@@ -14,12 +15,14 @@ export function createHookFetchEnvelopePlugin<T>(effects: EnvelopeResponseEffect
   // then remove it in onError; concurrent requests cannot inherit another request's policy/error.
   const failures = new WeakMap<object, PlatformApiError>();
   function notify(error: PlatformApiError) {
+    // 界面上不直接渲染 `HTTP 503` / `AUTHORIZATION_UNAVAILABLE` 这类符号；
+    // 原始 errorCode/msg 仍保留在 PlatformApiError 上供排障。
     if (error.kind === 'auth-expired')
       effects.onAuthExpired();
     else if (error.kind === 'forbidden')
-      effects.onForbidden(error.message);
+      effects.onForbidden(userFacingErrorMessage(error));
     else
-      effects.onFailure(error.message);
+      effects.onFailure(userFacingErrorMessage(error));
   }
   return {
     name: 'platform-envelope',

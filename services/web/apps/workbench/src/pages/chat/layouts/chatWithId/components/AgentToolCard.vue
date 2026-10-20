@@ -124,72 +124,80 @@ defineExpose({ statusLabel, summary, durationText, expandable });
 
   .agent-tool-head {
     display: flex;
-    align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
+    align-items: center;
 
     .agent-tool-name {
       font-weight: 500;
-      color: #303133;
+      color: var(--apple-text);
       word-break: break-all;
     }
 
     .agent-tool-dur {
-      color: #909399;
       font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      color: var(--apple-tertiary);
     }
   }
 
   .agent-chip {
     display: inline-flex;
+    flex-shrink: 0;
     align-items: center;
-    padding: 1px 8px;
-    border-radius: 10px;
+    padding: 1px 9px;
     font-size: 12px;
     line-height: 18px;
-    flex-shrink: 0;
+    border-radius: 999px;
 
     &--idle {
-      background: rgba(144, 147, 153, 0.12);
-      color: #909399;
+      color: var(--apple-secondary);
+      background: var(--apple-info-soft);
     }
 
     &--run {
-      background: rgba(230, 162, 60, 0.14);
-      color: #b88230;
+      color: var(--apple-warning);
+      background: var(--apple-warning-soft);
     }
 
     &--ok {
-      background: rgba(103, 194, 58, 0.14);
-      color: #529b2e;
+      color: var(--apple-success);
+      background: var(--apple-success-soft);
     }
 
     &--err {
-      background: rgba(245, 108, 108, 0.14);
-      color: #c45656;
+      color: var(--apple-danger);
+      background: var(--apple-danger-soft);
     }
   }
 
   .agent-tool-running {
     margin-top: 4px;
-    color: #909399;
     font-size: 12px;
+    color: var(--apple-secondary);
   }
 
   .agent-tool-summary {
     display: flex;
+    gap: 5px;
     align-items: flex-start;
-    gap: 4px;
-    margin-top: 4px;
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: #606266;
+    margin-top: 5px;
+    padding: 2px 0;
+    font-family: var(--apple-font);
     font-size: 12px;
+    color: var(--apple-secondary);
     text-align: left;
     cursor: pointer;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+
+    &:hover {
+      color: var(--apple-text);
+    }
 
     &[data-failed='true'] {
-      color: #c45656;
+      color: var(--apple-danger);
     }
 
     .agent-caret {
@@ -202,18 +210,18 @@ defineExpose({ statusLabel, summary, durationText, expandable });
   }
 
   .agent-pre {
-    margin: 4px 0 0;
-    padding: 8px 10px;
-    border-radius: 6px;
-    background: #f5f7fa;
-    color: #303133;
-    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    max-height: 300px;
+    padding: 12px 14px;
+    margin: 6px 0 0;
+    overflow: auto;
+    font-family: var(--apple-font-mono);
     font-size: 12px;
-    line-height: 1.5;
+    line-height: 1.6;
+    color: var(--apple-text);
     white-space: pre-wrap;
     word-break: break-word;
-    max-height: 300px;
-    overflow: auto;
+    background: var(--apple-bg);
+    border-radius: 12px;
   }
 }
 </style>

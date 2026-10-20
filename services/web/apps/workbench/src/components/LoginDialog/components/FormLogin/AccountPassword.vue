@@ -8,6 +8,7 @@ import { login } from '@/api';
 import { useUserStore } from '@/stores';
 import { useLoginFormStore } from '@/stores/modules/loginForm';
 import { useSessionStore } from '@/stores/modules/session';
+import { userFacingErrorMessage } from '@/utils/user-facing-error';
 
 const userStore = useUserStore();
 const sessionStore = useSessionStore();
@@ -40,8 +41,12 @@ async function handleSubmit() {
     const res = await login({ ...formModel, tenantId: loginFromStore.requireTenant() });
     const loginData = res?.data ?? res;
     const token = loginData?.access_token || loginData?.token;
-    if (!token)
-      throw new Error('登录响应中缺少访问令牌');
+    if (!token) {
+      // 后端认证失败时可能返回 200 信封 + 空 data；把服务端 msg 带出来，
+      // 不要用“缺少访问令牌”掩盖真正的 401 原因（账号/密码/租户错误）。
+      const backendMessage = loginData?.msg || res?.msg;
+      throw new Error(backendMessage || '登录失败：后端未返回访问令牌');
+    }
     userStore.setToken(token);
     // res.data.userInfo && userStore.setUserInfo(res.data.userInfo);
     userStore.resetAuthExpiredHandling();
@@ -54,7 +59,7 @@ async function handleSubmit() {
   }
   catch (error) {
     console.error('请求错误:', error);
-    ElMessage.error(error instanceof Error ? error.message : '登录失败，请稍后重试');
+    ElMessage.error(userFacingErrorMessage(error, '登录失败，请稍后重试'));
   }
   finally {
     isSubmitting.value = false;
@@ -69,6 +74,7 @@ async function handleSubmit() {
       :model="formModel"
       :rules="rules"
       class="login-form"
+      label-position="top"
       @submit.prevent="handleSubmit"
     >
       <el-form-item v-if="loginFromStore.tenantEnabled" label="所属租户">
@@ -81,7 +87,7 @@ async function handleSubmit() {
           重新加载
         </el-button>
       </el-alert>
-      <el-form-item prop="username">
+      <el-form-item prop="username" label="账号">
         <el-input v-model="formModel.username" placeholder="请输入账号">
           <template #prefix>
             <el-icon>
@@ -90,7 +96,7 @@ async function handleSubmit() {
           </template>
         </el-input>
       </el-form-item>
-      <el-form-item prop="password">
+      <el-form-item prop="password" label="登录密码">
         <el-input
           v-model="formModel.password"
           placeholder="请输入登录密码"
@@ -143,44 +149,58 @@ async function handleSubmit() {
 
 .submit-btn {
   width: 100%;
-  height: 40px;
+  height: 44px;
   font-size: 14px;
-  font-weight: 600;
-  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  font-weight: 500;
+  background: var(--apple-blue);
   border: none;
-  border-radius: 10px;
-  box-shadow: 0 10px 20px rgb(37 99 235 / 18%);
+  border-radius: 999px;
+  box-shadow: none;
+  font-family: var(--apple-font);
+}
+
+.submit-btn:hover {
+  background: var(--apple-blue-hover);
 }
 
 .link-action {
-  color: #2563eb;
+  color: var(--apple-blue);
   cursor: pointer;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .security-tip {
   margin: 0;
-  color: #94a3b8;
-  font-size: 11px;
+  color: var(--apple-secondary);
+  font-size: 12px;
   line-height: 1.6;
 }
 
-:deep(.el-input__wrapper) {
+:deep(.el-input__wrapper),
+:deep(.el-select__wrapper) {
   min-height: 44px;
-  border-radius: 10px;
-  box-shadow: 0 0 0 1px rgb(148 163 184 / 18%);
+  border-radius: 12px;
+  box-shadow: 0 0 0 1px var(--apple-separator-strong);
 }
 
 :deep(.el-input__inner) {
-  font-size: 13px;
+  font-size: 14px;
 }
 
-:deep(.el-input__wrapper.is-focus) {
-  box-shadow: 0 0 0 1px rgb(37 99 235 / 48%);
+:deep(.el-input__wrapper.is-focus),
+:deep(.el-select__wrapper.is-focused) {
+  box-shadow: 0 0 0 1px var(--apple-blue), var(--apple-focus-ring);
+}
+
+:deep(.el-form-item__label) {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--apple-secondary);
+  padding-bottom: 6px;
 }
 
 :deep(.el-form-item) {
-  margin-bottom: 20px;
+  margin-bottom: 18px;
 }
 
 :deep(.el-form-item:last-child) {

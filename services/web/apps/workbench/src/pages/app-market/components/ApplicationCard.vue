@@ -28,15 +28,15 @@ function typeLabel(type: 'agent' | 'workflow' | 'multi-agent'): string {
 </template>
 
 <style scoped lang="scss">
-.application-card { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 18px; text-align: left; font: inherit; color: var(--el-text-color-primary); background: var(--el-bg-color); border: 1px solid var(--el-border-color-lighter); border-radius: 14px; cursor: pointer; transition: border-color 160ms, box-shadow 160ms; }
-.application-card:hover, .application-card:focus-visible { outline: none; border-color: var(--el-text-color-placeholder); box-shadow: 0 3px 14px rgb(0 0 0 / 4%); }
-.application-card:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 3px; }
+.application-card { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 22px; text-align: left; font-family: var(--apple-font); color: var(--apple-text); background: var(--apple-surface); border: 1px solid var(--apple-separator); border-radius: 18px; cursor: pointer; transition: border-color 160ms ease, transform 160ms ease; }
+.application-card:hover, .application-card:focus-visible { outline: none; border-color: var(--apple-separator-strong); }
+.application-card:focus-visible { outline: 2px solid var(--apple-blue); outline-offset: 3px; }
 .application-card:disabled { cursor: wait; opacity: .65; }
 .card-top, .card-footer, .card-action { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.app-icon { display: grid; place-items: center; width: 38px; height: 38px; border: 1px solid var(--el-border-color-lighter); border-radius: 10px; background: var(--el-fill-color-light); font-size: 22px; }
-.type-label { font-size: 11px; color: var(--el-text-color-secondary); }
-.card-title { font-size: 16px; font-weight: 600; line-height: 1.6; overflow-wrap: anywhere; }
-.card-description { flex: 1; min-height: 44px; color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.7; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.card-footer { padding-top: 12px; border-top: 1px solid var(--el-border-color-extra-light); font-size: 11px; color: var(--el-text-color-secondary); }
-.card-action { color: var(--el-text-color-primary); font-size: 12px; white-space: nowrap; }
+.app-icon { display: grid; place-items: center; width: 42px; height: 42px; color: var(--apple-text); background: var(--apple-bg); border-radius: 12px; font-size: 21px; }
+.type-label { font-size: 12px; color: var(--apple-secondary); }
+.card-title { font-size: 17px; font-weight: 600; line-height: 1.45; letter-spacing: -.01em; overflow-wrap: anywhere; }
+.card-description { display: -webkit-box; flex: 1; min-height: 44px; overflow: hidden; color: var(--apple-secondary); font-size: 14px; line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.card-footer { padding-top: 14px; border-top: 1px solid var(--apple-separator); font-size: 12px; color: var(--apple-secondary); }
+.card-action { color: var(--apple-blue); font-size: 13px; font-weight: 500; white-space: nowrap; }
 </style>

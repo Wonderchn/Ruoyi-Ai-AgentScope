@@ -195,9 +195,14 @@ async function removeConfig(row: SysOssConfigVo) {
 
     <ElCard class="mb-4">
       <template #header>
-        <span data-testid="oss-contract" class="card-header-meta">
-          GET /resource/oss/list（system:oss:list）· 共 {{ state.total }} 条
-        </span>
+        <div class="card-header">
+          <div>
+            <span class="section-title">文件列表</span>
+            <p data-testid="oss-contract" class="card-header-meta">
+              GET /resource/oss/list（system:oss:list）· 共 {{ state.total }} 条
+            </p>
+          </div>
+        </div>
       </template>
 
       <ElAlert
@@ -266,10 +271,13 @@ async function removeConfig(row: SysOssConfigVo) {
 
     <ElCard>
       <template #header>
-        <div class="toolbar">
-          <span data-testid="oss-config-contract" class="card-header-meta">
-            GET /resource/oss/config/list（system:ossConfig:list）
-          </span>
+        <div class="card-header">
+          <div>
+            <span class="section-title">存储配置</span>
+            <p data-testid="oss-config-contract" class="card-header-meta">
+              GET /resource/oss/config/list（system:ossConfig:list）
+            </p>
+          </div>
           <ElButton v-if="canConfigAdd" type="primary" data-testid="oss-config-create-open" @click="openCreate()">
             新增配置
           </ElButton>
@@ -367,7 +375,7 @@ async function removeConfig(row: SysOssConfigVo) {
           <ElInput v-model="form.prefix" data-testid="oss-config-form-prefix" />
         </ElFormItem>
         <ElFormItem label="状态">
-          <ElSelect v-model="form.status" style="width: 140px" data-testid="oss-config-form-status">
+          <ElSelect v-model="form.status" placeholder="请选择状态" style="width: 140px" data-testid="oss-config-form-status">
             <ElOption label="正常" value="0" />
             <ElOption label="停用" value="1" />
           </ElSelect>
@@ -387,27 +395,3 @@ async function removeConfig(row: SysOssConfigVo) {
     </ElDialog>
   </div>
 </template>
-
-<style scoped>
-.toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.card-header-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-
-.mt-4 {
-  margin-top: 16px;
-}
-</style>

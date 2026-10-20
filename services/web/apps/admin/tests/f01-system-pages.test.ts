@@ -263,7 +263,8 @@ describe('op2 租户套餐页', () => {
       fake.take('listMenus').resolve([{ menuId: '7100', menuName: 'AI', children: [{ menuId: '7132', menuName: '智能体目录' }] }]);
       await opening;
       await settle();
-      assert.equal(page.menuOptions.value.length, 2, 'treeselect/树被展平成多选');
+      assert.equal(page.menuTree.value.length, 1, 'treeselect 返回树根');
+      assert.equal(page.menuTree.value[0].children.length, 1, '子树保留');
 
       page.form.value.packageName = ' 标准 ';
       page.form.value.menuIds = ['7100', '7132'];
@@ -411,24 +412,37 @@ describe('op1 租户页', () => {
       assert.match(page.actionError.value, /套餐/);
 
       page.form.value.packageId = '2001';
+      // 服务端 AddGroup 还要求联系人/电话/管理员账号/初始密码；页面与测试同口径。
+      page.form.value.contactUserName = '张三';
+      page.form.value.contactPhone = '13800000000';
+      page.form.value.username = 'acme-admin';
+      page.form.value.password = 'Acme@123456';
       const saving = page.submit();
       await settle();
       assert.deepEqual(fake.lastArgs('createTenant'), [{
         companyName: 'acme',
-        contactUserName: '',
-        contactPhone: '',
+        contactUserName: '张三',
+        contactPhone: '13800000000',
         packageId: '2001',
         address: '',
         domain: '',
         intro: '',
         remark: '',
         status: '0',
+        username: 'acme-admin',
+        password: 'Acme@123456',
       }]);
       fake.take('createTenant').resolve(null);
       await settle();
-      fake.take('listTenants').resolve({ rows: [], total: 0 });
+      fake.take('listTenants').resolve({
+        rows: [{ id: '9', tenantId: '123456', companyName: 'acme', packageId: '2001' }],
+        total: 1,
+      });
       await saving;
       await settle();
+      assert.equal(page.resultVisible.value, true, '创建成功后展示租户编号');
+      assert.equal(page.createResult.value?.tenantId, '123456');
+      assert.equal(page.createResult.value?.userName, 'acme-admin');
       assert.equal(page.dialogVisible.value, false);
     }
     finally {

@@ -18,6 +18,7 @@
 package com.nageoffer.ai.ragent.agent.controller;
 
 import com.nageoffer.ai.ragent.framework.security.ApiEnvelope;
+import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -133,7 +134,7 @@ class AgentEngineSurfaceRouteTest {
         // 网关 AiGatewayClient.requireSingleJsonObject 要求"单 JSON 对象 + 整数 code 等于状态"。
         // AI 侧旧 Result 的 code 是字符串 "0" —— 会被判为 "missing envelope code" 并收敛为 503，
         // WP-034B 已经因为同一形态丢过一次公开面。所以 JSON 两条的返回类型必须是 ApiEnvelope。
-        assertThat(AgentMetaController.class.getMethod("meta").getReturnType())
+        assertThat(AgentMetaController.class.getMethod("meta", HttpServletResponse.class).getReturnType())
                 .isEqualTo(ApiEnvelope.class);
         assertThat(AgentChatController.class.getMethod("stop", String.class).getReturnType())
                 .isEqualTo(ApiEnvelope.class);

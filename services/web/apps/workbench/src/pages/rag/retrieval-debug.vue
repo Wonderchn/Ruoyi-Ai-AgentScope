@@ -19,6 +19,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { createRetrievalApi, RETRIEVAL_TOP_K_MAX, RETRIEVAL_TOP_K_MIN, toRetrievalDebugState } from '@/api/ai/retrieval-debug';
 import { listKnowledgeBases } from '@/api/rag';
 import { useUserStore } from '@/stores';
+import { userFacingErrorMessage } from '@/utils/user-facing-error';
 
 const user = useUserStore();
 
@@ -60,7 +61,7 @@ async function loadKbs() {
   catch (error) {
     if (!valid() || controller.signal.aborted)
       return;
-    kbsNote.value = error instanceof Error ? `知识库列表不可访问：${error.message}` : '知识库列表不可访问';
+    kbsNote.value = `知识库列表不可访问：${userFacingErrorMessage(error)}`;
   }
 }
 
@@ -115,52 +116,75 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="p-4 space-y-4">
-    <div class="flex items-center justify-between">
-      <h2>检索调试</h2>
-      <span class="text-12px c-gray-500">POST /api/ai/v1/knowledge-bases/retrievals（kb.retrieve）</span>
-    </div>
+  <div class="debug-page">
+    <header class="debug-head">
+      <div>
+        <p class="debug-eyebrow">
+          知识库
+        </p>
+        <h1 class="debug-title">
+          检索调试
+        </h1>
+        <p class="debug-sub">
+          直接调用授权检索接口，查看服务端返回的分块与分数。前端不重排、不补造结果。
+        </p>
+      </div>
+      <span class="debug-endpoint">POST /api/ai/v1/knowledge-bases/retrievals（kb.retrieve）</span>
+    </header>
 
-    <ElCard>
-      <template #header>
-        <div class="flex items-center justify-between">
-          <span>检索请求</span>
-          <ElButton size="small" :disabled="running" @click="loadKbs()">
-            刷新知识库
-          </ElButton>
-        </div>
-      </template>
+    <section class="debug-panel">
+      <div class="panel-head">
+        <h2>检索请求</h2>
+        <ElButton size="small" :disabled="running" @click="loadKbs()">
+          刷新知识库
+        </ElButton>
+      </div>
+
       <ElAlert v-if="kbsNote" :title="kbsNote" type="warning" :closable="false" data-testid="retrieval-kbs-error" />
-      <ElSelect v-model="selectedKbIds" multiple filterable placeholder="选择要检索的知识库（可多选）" style="width: 100%" data-testid="retrieval-kb-select">
-        <ElOption v-for="kb in knowledgeBases" :key="kb.kbId" :label="kb.name" :value="kb.kbId" />
-      </ElSelect>
-      <div class="mt-3 flex items-start gap-2">
+
+      <div class="field">
+        <span class="field-label">知识库</span>
+        <ElSelect v-model="selectedKbIds" multiple filterable placeholder="选择要检索的知识库（可多选）" style="width: 100%" data-testid="retrieval-kb-select">
+          <ElOption v-for="kb in knowledgeBases" :key="kb.kbId" :label="kb.name" :value="kb.kbId" />
+        </ElSelect>
+      </div>
+
+      <div class="field">
+        <span class="field-label">查询</span>
         <ElInput
           v-model="query"
           type="textarea"
-          :rows="2"
+          :rows="3"
           maxlength="4096"
           show-word-limit
           placeholder="输入检索查询（服务端 ≤4096 字符，超限 400）"
           data-testid="retrieval-query"
         />
       </div>
-      <div class="mt-3 flex items-center gap-3">
-        <span class="text-12px c-gray-500">topK（{{ RETRIEVAL_TOP_K_MIN }}..{{ RETRIEVAL_TOP_K_MAX }}）</span>
+
+      <div class="run-row">
+        <span class="field-label">topK（{{ RETRIEVAL_TOP_K_MIN }}..{{ RETRIEVAL_TOP_K_MAX }}）</span>
         <ElInputNumber v-model="topK" :min="RETRIEVAL_TOP_K_MIN" :max="RETRIEVAL_TOP_K_MAX" :step="1" step-strictly data-testid="retrieval-topk" />
         <ElButton type="primary" :loading="running" :disabled="!query.trim() || !selectedKbIds.length" data-testid="retrieval-run" @click="run">
           检索
         </ElButton>
       </div>
-    </ElCard>
+    </section>
 
     <ElAlert
-      v-if="state.kind === 'loading'"
+      v-if="state.kind === 'loading' && running"
       title="正在检索…"
       type="info"
       :closable="false"
       data-testid="retrieval-loading"
     />
+    <div
+      v-else-if="state.kind === 'loading'"
+      class="state-block"
+      data-testid="retrieval-idle"
+    >
+      填写查询并选择知识库后开始检索。
+    </div>
 
     <!-- 成功态（命中或空）：只可能由 envelope code === 200 到达。
          ⚠️ 条件必须内联（`state.kind === 'rows' || state.kind === 'empty'`）而不能调用
@@ -169,49 +193,218 @@ onBeforeUnmount(() => {
     <template v-else-if="state.kind === 'rows' || state.kind === 'empty'">
       <ElEmpty
         v-if="state.kind === 'empty'"
+        class="debug-empty"
         description="授权范围内没有已发布分块命中（服务端返回 200 且列表为空）"
         data-testid="retrieval-empty"
       />
       <template v-else>
         <div data-testid="retrieval-rows" />
-        <p class="text-12px c-gray-500">
+        <p class="result-meta">
           命中 {{ hits.length }} 条 · {{ resultMeta }}（服务端已按相关性降序，前端不重排）
         </p>
-        <ElCard v-for="(hit, index) in hits" :key="`${hit.id}-${index}`" class="retrieval-card">
-          <p class="whitespace-pre-wrap">
-            {{ hit.text }}
-          </p>
-          <p class="text-12px c-gray-500 break-all">
-            #{{ index + 1 }} · score={{ hit.score ?? '—' }}
-            <span v-if="hit.rerankScore !== null"> · 精排 {{ hit.rerankScore }}</span>
-            <span v-else> · 未精排</span>
-            <span v-if="hit.docName"> · {{ hit.docName }}</span>
-            <span v-if="hit.chunkIndex !== null"> · 分块 {{ hit.chunkIndex }}</span>
-            <span v-if="hit.collectionName"> · {{ hit.collectionName }}</span>
-          </p>
-        </ElCard>
+        <div class="hit-list">
+          <article v-for="(hit, index) in hits" :key="`${hit.id}-${index}`" class="hit-card">
+            <p class="hit-text">
+              {{ hit.text }}
+            </p>
+            <p class="hit-meta">
+              <span class="hit-index">#{{ index + 1 }}</span>
+              score={{ hit.score ?? '—' }}
+              <span v-if="hit.rerankScore !== null"> · 精排 {{ hit.rerankScore }}</span>
+              <span v-else> · 未精排</span>
+              <span v-if="hit.docName"> · {{ hit.docName }}</span>
+              <span v-if="hit.chunkIndex !== null"> · 分块 {{ hit.chunkIndex }}</span>
+              <span v-if="hit.collectionName"> · {{ hit.collectionName }}</span>
+            </p>
+          </article>
+        </div>
       </template>
     </template>
 
     <!-- 失败态：结构上不带 hits；500 点明装配口径 -->
     <template v-else>
-      <ElAlert
-        :title="state.message"
-        :description="state.hint"
-        :type="state.kind === 'auth-expired' ? 'warning' : 'error'"
-        :closable="false"
-        show-icon
-        :data-testid="`retrieval-${state.kind}`"
-      />
-      <ElButton v-if="state.kind === 'error'" size="small" :disabled="running" @click="run">
-        重试
-      </ElButton>
+      <div class="debug-failure">
+        <ElAlert
+          :title="state.message"
+          :description="state.hint"
+          :type="state.kind === 'auth-expired' ? 'warning' : 'error'"
+          :closable="false"
+          show-icon
+          :data-testid="`retrieval-${state.kind}`"
+        />
+        <ElButton v-if="state.kind === 'error'" size="small" :disabled="running" @click="run">
+          重试
+        </ElButton>
+      </div>
     </template>
   </div>
 </template>
 
-<style scoped>
-.retrieval-card {
-  margin-bottom: 8px;
+<style scoped lang="scss">
+.debug-page {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 48px 32px 64px;
+  font-family: var(--apple-font);
+  color: var(--apple-text);
+}
+
+.debug-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 28px;
+}
+
+.debug-eyebrow {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--apple-secondary);
+  text-transform: uppercase;
+}
+
+.debug-title {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+}
+
+.debug-sub {
+  max-width: 60ch;
+  margin: 10px 0 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--apple-secondary);
+}
+
+.debug-endpoint {
+  font-family: var(--apple-font-mono);
+  font-size: 11px;
+  color: var(--apple-secondary);
+  word-break: break-all;
+}
+
+.debug-panel {
+  box-sizing: border-box;
+  padding: 24px;
+  margin-bottom: 20px;
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator);
+  border-radius: 18px;
+}
+
+.panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.panel-head h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.field {
+  margin-bottom: 18px;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--apple-secondary);
+}
+
+.run-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.run-row .field-label {
+  margin-bottom: 0;
+}
+
+.result-meta {
+  margin: 0 0 14px;
+  font-size: 12px;
+  color: var(--apple-secondary);
+}
+
+.hit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hit-card {
+  padding: 18px 20px;
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator);
+  border-radius: 16px;
+}
+
+.hit-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.hit-meta {
+  margin: 12px 0 0;
+  font-family: var(--apple-font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--apple-secondary);
+  word-break: break-all;
+}
+
+.hit-index {
+  font-weight: 600;
+  color: var(--apple-text);
+}
+
+.debug-empty {
+  background: var(--apple-surface);
+  border: 1px dashed var(--apple-separator-strong);
+  border-radius: 18px;
+}
+
+.debug-failure {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+@media (max-width: 768px) {
+  .debug-page {
+    padding: 28px 16px 40px;
+  }
+
+  .debug-title {
+    font-size: 28px;
+  }
+
+  .debug-panel {
+    padding: 18px;
+  }
 }
 </style>

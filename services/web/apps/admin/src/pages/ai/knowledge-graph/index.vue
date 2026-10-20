@@ -8,7 +8,7 @@
   - 重建按钮仅 `ai:kb:write` 可见；409/503 由共享客户端抛 PlatformApiError，页面按 msg 原样提示。
 -->
 <script setup lang="ts">
-import type { GraphEdgeRow, GraphNodeRow, GraphStatusPayload, GraphSourceRow } from '@/api/ai/knowledgeGraph';
+import type { GraphEdgeRow, GraphNodeRow, GraphSourceRow, GraphStatusPayload } from '@/api/ai/knowledgeGraph';
 import { computed, onScopeDispose, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { aiApi } from '@/api';

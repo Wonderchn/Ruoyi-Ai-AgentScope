@@ -55,15 +55,15 @@ function submit() {
 </template>
 
 <style scoped>
-.app-description { margin: 0 0 16px; color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.8; }
-.agent-roster { margin-bottom: 16px; padding: 12px 14px; border-radius: 8px; background: var(--el-fill-color-light); }
-.roster-label { font-size: 11px; color: var(--el-text-color-secondary); letter-spacing: .08em; }
+.app-description { margin: 0 0 16px; color: var(--apple-secondary); font-size: 13px; line-height: 1.8; }
+.agent-roster { margin-bottom: 16px; padding: 14px 16px; border-radius: 14px; background: var(--apple-bg); }
+.roster-label { font-size: 11px; color: var(--apple-secondary); letter-spacing: .08em; }
 .agent-roster ul { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 0; padding: 0; list-style: none; }
 .agent-roster li { display: flex; gap: 10px; font-size: 12px; line-height: 1.6; }
-.agent-roster strong { min-width: 64px; color: var(--el-text-color-primary); font-weight: 550; }
-.agent-roster span { color: var(--el-text-color-regular); }
-.run-answer, .run-error { margin-top: 14px; padding: 12px 14px; border-radius: 8px; font-size: 13px; line-height: 1.8; white-space: pre-wrap; }
-.run-answer { background: var(--el-fill-color-light); color: var(--el-text-color-primary); }
-.run-error { color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
-.use-button { --el-button-bg-color: var(--el-text-color-primary); --el-button-border-color: var(--el-text-color-primary); --el-button-text-color: var(--el-bg-color); --el-button-hover-bg-color: var(--el-text-color-regular); --el-button-hover-border-color: var(--el-text-color-regular); }
+.agent-roster strong { min-width: 64px; color: var(--apple-text); font-weight: 550; }
+.agent-roster span { color: var(--apple-text); }
+.run-answer, .run-error { margin-top: 14px; padding: 14px 16px; border-radius: 14px; font-size: 13px; line-height: 1.8; white-space: pre-wrap; }
+.run-answer { background: var(--apple-bg); color: var(--apple-text); }
+.run-error { color: var(--apple-danger); background: var(--apple-danger-surface); }
+.use-button { --el-button-bg-color: var(--apple-blue); --el-button-border-color: var(--apple-blue); --el-button-text-color: var(--el-bg-color); --el-button-hover-bg-color: var(--apple-blue-hover); --el-button-hover-border-color: var(--apple-blue-hover); }
 </style>

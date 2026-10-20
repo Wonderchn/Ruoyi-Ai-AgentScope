@@ -1,5 +1,7 @@
 import type { MediaDraft, TaskState } from './types';
 import type { MediaGenerationResponse, MediaType } from '@/api/media/types';
+// 相对路径：`tests/media-server-tasks.test.ts` 直接 import 本文件，ts-loader 不解析 `@/` 别名。
+import { isMachineSymbol, userFacingErrorMessage } from '../../utils/user-facing-error';
 
 export const mediaLabels: Record<MediaType, string> = { image: '图片', audio: '语音', video: '视频' };
 export const taskLabels: Record<TaskState, string> = {
@@ -87,8 +89,12 @@ export function validateDraft(draft: MediaDraft, kind: MediaType): string {
 export function requestError(error: unknown): string {
   if (error && typeof error === 'object' && 'result' in error) {
     const result = error.result;
-    if (result && typeof result === 'object' && 'msg' in result && typeof result.msg === 'string')
-      return result.msg.slice(0, 240);
+    if (result && typeof result === 'object' && 'msg' in result && typeof result.msg === 'string') {
+      const msg = result.msg.trim();
+      // 服务端有时把符号码放在 msg 里；符号码给用户看没有意义。
+      if (msg && !isMachineSymbol(msg))
+        return msg.slice(0, 240);
+    }
   }
-  return error instanceof Error ? error.message.slice(0, 240) : '请求未完成，请检查网络、模型配置和服务端日志。';
+  return userFacingErrorMessage(error, '请求未完成，请检查网络、模型配置和服务端日志。').slice(0, 240);
 }

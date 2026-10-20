@@ -301,7 +301,9 @@ class BarrierLeaseSelfHealTest {
                         null, null, null, "ACTIVE", 1L)));
         AiResourceWriteService writeService = writeService();
 
-        writeService.grantAclRule("kb-1",
+        // 撤销 ACL 是 REVOCATION：prepare/CLOSED 的 SQL 形态仍在这里被断言
+        // （grant 已改为 ADDITIVE，不再置屏障）
+        writeService.revokeAclRule("kb-1",
                 new AiResourceWriteService.AclGrant("member", MEMBER, "kb.read", null));
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);

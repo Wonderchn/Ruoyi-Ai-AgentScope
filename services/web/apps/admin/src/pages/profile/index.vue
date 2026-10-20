@@ -245,10 +245,13 @@ void loadSocials();
 
     <ElCard class="mb-4">
       <template #header>
-        <div class="toolbar">
-          <span data-testid="profile-contract" class="card-header-meta">
-            GET /system/user/profile（只读本人，无 @SaCheckPermission）
-          </span>
+        <div class="card-header">
+          <div>
+            <span class="section-title">个人资料</span>
+            <p data-testid="profile-contract" class="card-header-meta">
+              GET /system/user/profile（只读本人，无 @SaCheckPermission）
+            </p>
+          </div>
           <div class="toolbar-actions">
             <ElButton data-testid="profile-reload" :loading="loading" @click="load().then(syncForm)">
               刷新
@@ -339,7 +342,7 @@ void loadSocials();
             <ElInput v-model="form.phonenumber" data-testid="profile-form-phone" />
           </ElFormItem>
           <ElFormItem label="性别">
-            <ElSelect v-model="form.sex" style="width: 140px" data-testid="profile-form-sex">
+            <ElSelect v-model="form.sex" placeholder="请选择性别" style="width: 140px" data-testid="profile-form-sex">
               <ElOption label="男" value="0" />
               <ElOption label="女" value="1" />
               <ElOption label="未知" value="2" />
@@ -354,9 +357,14 @@ void loadSocials();
 
     <ElCard>
       <template #header>
-        <span data-testid="social-contract" class="card-header-meta">
-          GET /system/social/list（无 @SaCheckPermission）· 共 {{ socials.length }} 条
-        </span>
+        <div class="card-header">
+          <div>
+            <span class="section-title">社交关系</span>
+            <p data-testid="social-contract" class="card-header-meta">
+              GET /system/social/list（无 @SaCheckPermission）· 共 {{ socials.length }} 条
+            </p>
+          </div>
+        </div>
       </template>
       <ElAlert
         v-if="socialError"
@@ -416,29 +424,6 @@ void loadSocials();
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.toolbar-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.card-header-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-
 .avatar-row {
   display: flex;
   gap: 12px;

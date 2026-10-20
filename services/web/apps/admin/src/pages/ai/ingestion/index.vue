@@ -353,9 +353,14 @@ function str(row: Record<string, unknown>, key: string): string {
     <ElCard class="mb-4">
       <template #header>
         <div class="toolbar">
-          <span>
-            流水线（GET /api/ai/v1/ingestion/pipelines）<template v-if="pipelineLoaded"> · 共 {{ pipelineTotal }} 条</template>
-          </span>
+          <div>
+            <span class="section-title">流水线</span>
+            <p class="card-header-meta">
+              GET /api/ai/v1/ingestion/pipelines<template v-if="pipelineLoaded">
+                · 共 {{ pipelineTotal }} 条
+              </template>
+            </p>
+          </div>
           <ElButton data-testid="ingestion-pipeline-reload" :loading="pipelineLoading" @click="loadPipelines()">
             加载
           </ElButton>
@@ -404,9 +409,14 @@ function str(row: Record<string, unknown>, key: string): string {
     <ElCard>
       <template #header>
         <div class="toolbar">
-          <span>
-            任务（GET /api/ai/v1/ingestion/tasks）<template v-if="taskLoaded"> · 共 {{ taskTotal }} 条</template>
-          </span>
+          <div>
+            <span class="section-title">任务</span>
+            <p class="card-header-meta">
+              GET /api/ai/v1/ingestion/tasks<template v-if="taskLoaded">
+                · 共 {{ taskTotal }} 条
+              </template>
+            </p>
+          </div>
           <div class="toolbar-actions">
             <ElInput
               v-model="taskStatus"
@@ -547,19 +557,6 @@ function str(row: Record<string, unknown>, key: string): string {
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.toolbar-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
 .status-filter {
   width: 200px;
 }
@@ -571,9 +568,14 @@ function str(row: Record<string, unknown>, key: string): string {
   margin-bottom: 16px;
 }
 
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
+@media (max-width: 640px) {
+  .status-filter {
+    width: 100%;
+  }
+
+  .task-submit {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 </style>

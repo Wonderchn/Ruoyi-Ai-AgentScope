@@ -7,6 +7,7 @@ import { useSessionStore } from '@/stores/modules/session';
 
 const userStore = useUserStore();
 const sessionStore = useSessionStore();
+const avatarFailed = ref(false);
 const src = computed(
   () => userStore.userInfo?.avatar ?? 'https://avatars.githubusercontent.com/u/32251822?s=96&v=4',
 );
@@ -102,7 +103,12 @@ function handleClick(item: any) {
     >
       <!-- 触发元素插槽 -->
       <template #trigger>
-        <el-avatar :src="src" :size="28" fit="fit" shape="circle" />
+        <el-avatar v-if="!avatarFailed" :src="src" :size="30" fit="cover" shape="circle" @error="avatarFailed = true" />
+        <el-avatar v-else :size="30" class="avatar-fallback">
+          <el-icon :size="16">
+            <UserFilled />
+          </el-icon>
+        </el-avatar>
       </template>
 
       <div class="popover-content-box shadow-lg">
@@ -132,9 +138,14 @@ function handleClick(item: any) {
 }
 .popover-content-box {
   padding: 8px;
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgb(0 0 0 / 8%);
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator);
+  border-radius: 14px;
+  box-shadow: var(--apple-shadow-popover);
+}
+
+.avatar-fallback {
+  color: var(--apple-secondary);
+  background: var(--apple-bg);
 }
 </style>

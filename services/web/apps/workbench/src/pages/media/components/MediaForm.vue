@@ -173,27 +173,27 @@ function update<K extends keyof MediaDraft>(key: K, value: MediaDraft[K]) {
 </template>
 
 <style scoped lang="scss">
-.media-form { min-width: 0; padding: var(--workspace-panel-padding); background: var(--el-bg-color); border: 1px solid var(--el-border-color-light); border-radius: 16px; }
+.media-form { box-sizing: border-box; min-width: 0; padding: var(--workspace-panel-padding); background: var(--apple-surface); border: 1px solid var(--apple-separator); border-radius: 18px; }
 .section-heading { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
-.step { font: 600 11px/24px monospace; color: var(--el-color-primary); }
-.section-title { margin: 0; font-size: 16px; font-weight: 600; }
+.step { font-size: 12px; font-weight: 600; line-height: 24px; letter-spacing: 0.06em; color: var(--apple-secondary); }
+.section-title { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
 .full-width { width: 100%; }
-.provider-option { margin-left: 14px; font-size: 11px; color: var(--el-text-color-secondary); }
-.model-caption { margin: 7px 0 0; overflow-wrap: anywhere; font-size: 11px; line-height: 1.6; color: var(--el-text-color-secondary); }
-.example-button { padding: 5px 0 0; margin-top: 4px; font-size: 12px; color: var(--el-color-primary); cursor: pointer; background: none; border: 0; }
+.provider-option { margin-left: 14px; font-size: 12px; color: var(--apple-secondary); }
+.model-caption { margin: 8px 0 0; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; color: var(--apple-secondary); }
+.example-button { padding: 6px 0 0; margin-top: 6px; font-size: 13px; color: var(--apple-blue); cursor: pointer; background: none; border: 0; }
 .example-button:disabled { cursor: default; opacity: 0.5; }
-.advanced-options, .existing-task { padding: 12px 0; border-top: 1px solid var(--el-border-color-lighter); }
-.advanced-options summary, .existing-task summary { font-size: 13px; font-weight: 600; cursor: pointer; }
-.muted { margin-left: 4px; font-weight: 400; color: var(--el-text-color-secondary); }
-.field-help { margin: 8px 0; font-size: 12px; line-height: 1.7; color: var(--el-text-color-secondary); }
+.advanced-options, .existing-task { padding: 14px 0; border-top: 1px solid var(--apple-separator); }
+.advanced-options summary, .existing-task summary { font-size: 14px; font-weight: 600; color: var(--apple-text); cursor: pointer; }
+.muted { margin-left: 4px; font-weight: 400; color: var(--apple-secondary); }
+.field-help { margin: 8px 0; font-size: 12px; line-height: 1.7; color: var(--apple-secondary); }
 .field-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .field-pair > * { min-width: 0; }
-.generate-button { width: 100%; margin-top: 4px; font-weight: 600; }
+.generate-button { width: 100%; height: 46px; margin-top: 4px; font-weight: 500; }
 .existing-task { padding-bottom: 0; margin-top: 12px; }
 .query-button { width: 100%; margin-top: 12px; }
-.form-error { margin-bottom: 12px; font-size: 13px; line-height: 1.7; color: var(--el-color-danger); }
-.form-notice { padding: 14px; margin-bottom: 20px; font-size: 13px; line-height: 1.7; background: var(--el-fill-color-light); border-radius: 10px; }
+.form-error { margin-bottom: 12px; font-size: 13px; line-height: 1.7; color: var(--apple-danger); }
+.form-notice { padding: 16px; margin-bottom: 20px; font-size: 13px; line-height: 1.7; background: var(--apple-bg); border-radius: 14px; }
 .form-notice p { margin: 0 0 10px; overflow-wrap: anywhere; }
-:deep(.el-form-item__label) { font-size: 13px; font-weight: 500; }
+:deep(.el-form-item__label) { font-size: 13px; font-weight: 500; color: var(--apple-secondary); }
 :deep(.el-form-item) { margin-bottom: 16px; }
 </style>

@@ -22,6 +22,7 @@ import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import ts from 'typescript';
 import * as vue from 'vue';
+import { userFacingErrorMessage } from '../src/utils/user-facing-error.ts';
 
 const require = createRequire(import.meta.url);
 // `@vue/compiler-sfc` 是 `vue` 的依赖，pnpm 的严格布局下不能从本包直接解析；
@@ -52,6 +53,8 @@ interface FakeRun {
   emitTerminal: (update: any) => void;
   emitStep: (update: any) => void;
   emitDelta: (text: string, dropped: boolean) => void;
+  /** 普通聊天分支：`useChatRun` 返回本对象后才拿到页面 hooks，需要事后补挂。 */
+  attachHooks: (hooks: Record<string, (...args: any[]) => void>) => void;
 }
 
 function fakeRun(options: { hooks?: Record<string, (...args: any[]) => void> } = {}): FakeRun {
@@ -91,6 +94,9 @@ function fakeRun(options: { hooks?: Record<string, (...args: any[]) => void> } =
     },
     emitDelta(text: string, dropped: boolean) {
       hooks.onDelta?.(text, dropped);
+    },
+    attachHooks(next: Record<string, (...args: any[]) => void>) {
+      Object.assign(hooks, next);
     },
   };
   return state as FakeRun;
@@ -224,6 +230,7 @@ function mountPage(options: MountOptions = {}) {
     '@/api/session/conversations': { createConversationApi: () => conversations },
     '@/stores/modules/user': { useUserStore: () => user },
     '@/utils/markdownRenderers': { codeXRender: () => '' },
+    '@/utils/user-facing-error': { userFacingErrorMessage },
     // 页面按「无 client」/「带 client」区分普通聊天与工作流两条编排。
     './useChatRun': {
       useChatRun: (options: { client?: unknown; hooks?: Record<string, (...args: any[]) => void> } = {}) => {
@@ -231,6 +238,9 @@ function mountPage(options: MountOptions = {}) {
           flowRun = fakeRun({ hooks: options.hooks });
           return flowRun;
         }
+        // 普通聊天这一支同样要把页面挂上的 hooks 接上：否则 `run.emitStep/emitDelta/emitTerminal`
+        // 打不到页面，相关行为（步骤卡合并、终态回显）在测试里根本无法被驱动。
+        run.attachHooks(options.hooks);
         return run;
       },
     },
@@ -526,6 +536,87 @@ describe('工作流模式走 flow.run（替代旧“如实拒绝”）', () => {
   });
 });
 
+describe('步骤卡不再重复（实测缺陷：三个阶段渲染成 6 张卡）', () => {
+  // vm 上下文里的数组与宿主 realm 原型不同，`deepEqual` 会因"结构相同但引用不同"误判；
+  // 与本文件其它用例一致，断言统一走"长度 + 逐项取值"。
+  const statusesOf = (cards: any[]) => cards.map(c => String(c.status));
+  const stepIdsOf = (cards: any[]) => cards.map(c => String(c.stepId));
+  const namesOf = (cards: any[]) => cards.map(c => String(c.name));
+
+  it('同一 stepId 的 started + completed 原地更新同一张卡（3 阶段 ⇒ 3 张卡）', async () => {
+    const { page, scope, run } = mountPage();
+    try {
+      await settle();
+      page.selectedKbIds.value = ['kb-1'];
+      await page.submitMessage('基准佣金率是什么');
+      await settle();
+
+      // 复现实测协议：authorize / retrieve / model 三阶段，每阶段先 started 后 completed。
+      const stages = ['authorize', 'retrieve', 'model'];
+      for (const stepId of stages)
+        run.emitStep({ event: 'run.step_started', stepId, stepName: stepId, payload: { stepId, stepName: stepId, attemptId: `a-${stepId}` } });
+      await settle();
+
+      let cards = page.toolCallEvents.value as any[];
+      assert.equal(cards.length, 3, '三个阶段各一张卡（旧实现此处已是 3 张"调用中"）');
+      assert.equal(statusesOf(cards).join(','), 'pending,pending,pending');
+
+      for (const stepId of stages)
+        run.emitStep({ event: 'run.step_completed', stepId, stepName: '', payload: { stepId, state: 'COMPLETED', ref: `ref-${stepId}` } });
+      await settle();
+
+      cards = page.toolCallEvents.value as any[];
+      // 核心断言：旧实现是 6 张（每阶段"调用中"+"成功"各一行）；现在必须是 3 张。
+      assert.equal(cards.length, 3, 'completed 不能新增卡片（旧实现会变成 6 张）');
+      assert.equal(statusesOf(cards).join(','), 'success,success,success');
+      assert.equal(stepIdsOf(cards).join(','), stages.join(','), '原地更新，不改变原有顺序');
+      // completed 事件不带 stepName，名字必须沿用 started 那次（不能变成空/unknown）。
+      assert.equal(namesOf(cards).join(','), stages.join(','), 'completed 不得把名字清空');
+      // 结果只来自 completed 的 payload，started 的 payload 不得被当成结果。
+      assert.equal((cards[0].result as any).ref, 'ref-authorize');
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  it('重复的 started（重试）不会堆出多张卡', async () => {
+    const { page, scope, run } = mountPage();
+    try {
+      await settle();
+      await page.submitMessage('你好');
+      await settle();
+
+      run.emitStep({ event: 'run.step_started', stepId: 'retrieve', stepName: 'retrieve', payload: {} });
+      run.emitStep({ event: 'run.step_started', stepId: 'retrieve', stepName: 'retrieve', payload: {} });
+      await settle();
+      assert.equal((page.toolCallEvents.value as any[]).length, 1, '同一 stepId 只应有一张卡');
+    }
+    finally {
+      scope.stop();
+    }
+  });
+
+  it('started 的 payload 不被当成执行结果展示', async () => {
+    const { page, scope, run } = mountPage();
+    try {
+      await settle();
+      await page.submitMessage('你好');
+      await settle();
+
+      run.emitStep({ event: 'run.step_started', stepId: 'authorize', stepName: 'authorize', payload: { stepId: 'authorize', stepName: 'authorize', attemptId: 'a-1' } });
+      await settle();
+
+      const [card] = page.toolCallEvents.value as any[];
+      assert.equal(card.status, 'pending');
+      assert.equal(card.result, null, '开始事件不是结果，不能填进 result');
+    }
+    finally {
+      scope.stop();
+    }
+  });
+});
+
 describe('权限失效清空（页面级）', () => {
   it('authEpoch 变化 → run.reset() 被调用且气泡/工具事件/输入被清空', async () => {
     const { page, scope, run, user } = mountPage();
@@ -632,6 +723,8 @@ describe('F04 附件流：上传 → 提交引用 / 失败阻断 / 身份变化�
     const { page, scope, run } = mountPage({ attachmentClient });
     try {
       await settle();
+      // `rag.chat` 必须先有检索范围；页面在未选知识库时会阻止空跑。
+      page.selectedKbIds.value = ['kb-1'];
       const selection = page.selectAttachments(fileEvent([fakeFile('报告.pdf', 'application/pdf')]));
       assert.equal(attachmentClient.uploads.length, 1, '选择后立即进入上传');
       assert.equal(page.pendingAttachments.value[0].status, 'uploading');
@@ -663,6 +756,7 @@ describe('F04 附件流：上传 → 提交引用 / 失败阻断 / 身份变化�
     const { page, scope, run, realmError } = mountPage({ attachmentClient });
     try {
       await settle();
+      page.selectedKbIds.value = ['kb-1'];
       const selection = page.selectAttachments(fileEvent([fakeFile('图.png', 'image/png')]));
       attachmentClient.uploads[0].reject(new realmError('连接超时'));
       await selection;

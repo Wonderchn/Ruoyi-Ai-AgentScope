@@ -337,8 +337,11 @@ class P1PersistentAclTest {
                 "kb-name", "embedding-x", "collection-x"));
 
         assertThat(kbId).isNotBlank();
+        // ADDITIVE（创建 KB 不撤权、不降权）：不置租户屏障、不 drain ⇒ 事件里没有
+        // barrier-prepare/barrier-close，也没有 prepare 那一笔独立事务；
+        // epoch 复核与业务写合并成**一个**事务。
         assertThat(events).containsExactly(
-                "tx-begin", "barrier-prepare", "tx-commit", "tx-begin", "kb-insert", "registry-insert", "acl-insert", "epoch-bump", "barrier-close", "tx-commit");
+                "tx-begin", "kb-insert", "registry-insert", "acl-insert", "epoch-bump", "tx-commit");
 
         // 归属只来自主体：kb 元数据与 registry 行都必须写 canonical membershipId
         ArgumentCaptor<AiResourceRow> registry = ArgumentCaptor.forClass(AiResourceRow.class);
@@ -365,8 +368,11 @@ class P1PersistentAclTest {
                 .hasMessageContaining("refusing to default");
 
         assertThat(events).as("epoch 缺失必须让整个事务回滚（无 tx-commit）")
-                .endsWith("acl-insert").doesNotContain("epoch-bump", "barrier-close");
-        assertThat(events.stream().filter("tx-commit"::equals).count()).as("only prepare commits; resource facts roll back").isEqualTo(1);
+                .endsWith("acl-insert").doesNotContain("epoch-bump", "barrier-close", "barrier-prepare");
+        // ADDITIVE 只有一笔事务（epoch 复核 + 业务写），失败即整体回滚 ⇒ 没有任何 tx-commit；
+        // 旧实现里那一笔 commit 属于屏障 prepare 的独立事务，分类后已不存在。
+        assertThat(events.stream().filter("tx-commit"::equals).count())
+                .as("ADDITIVE 单事务失败：不得提交").isZero();
     }
 
     @Test
@@ -381,7 +387,8 @@ class P1PersistentAclTest {
         writeService.grantAclRule("kb-1",
                 new AiResourceWriteService.AclGrant("member", MEMBER_C, "kb.read", NOW_SECONDS + 60));
 
-        assertThat(events).containsExactly("tx-begin", "barrier-prepare", "tx-commit", "tx-begin", "acl-insert", "epoch-bump", "barrier-close", "tx-commit");
+        // 授予是纯增量：ADDITIVE ⇒ 无屏障事件、单事务
+        assertThat(events).containsExactly("tx-begin", "acl-insert", "epoch-bump", "tx-commit");
         inOrder(aclMapper, epochMapper).verify(aclMapper).insert(any(AclRow.class));
         inOrder(aclMapper, epochMapper).verify(epochMapper).bump(TENANT_A);
 

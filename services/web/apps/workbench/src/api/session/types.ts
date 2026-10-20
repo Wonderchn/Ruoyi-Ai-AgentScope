@@ -41,4 +41,10 @@ export interface CreateSessionInput {
   title: string;
   /** 建会话后要立刻发出的第一句话（由聊天页在跳转后消费） */
   initialText?: string;
+  /**
+   * 第一句话要使用的知识库范围（`rag.chat` 的 `resourceRefs`）。
+   * 首页创建会话时选定，聊天页消费第一句话前写回 `selectedKbIds`；
+   * 为空则保持聊天页当前选择（仍由服务端以 NO_AUTHORIZED_SCOPE 如实终止）。
+   */
+  kbIds?: string[];
 }

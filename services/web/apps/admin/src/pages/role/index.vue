@@ -21,8 +21,9 @@
   空态只在"成功响应且 0 行"时出现（`utils/view-state.ts` 规则 2）。
 -->
 <script setup lang="ts">
-import type { PlatformStatus, SysRoleVo } from '@/api';
-import { computed, ref, watch } from 'vue';
+import type { PlatformStatus, RoleMenuTreeNode, SysRoleBody, SysRoleVo } from '@/api';
+import { ElMessage } from 'element-plus';
+import { computed, nextTick, ref, watch } from 'vue';
 import { systemApi } from '@/api';
 import { usePermission } from '@/composables/usePermission';
 import { useIdentityStore } from '@/stores/identity';
@@ -49,6 +50,7 @@ const PERM_ADD = 'system:role:add';
 const PERM_EDIT = 'system:role:edit';
 const PERM_REMOVE = 'system:role:remove';
 const PERM_EXPORT = 'system:role:export';
+const PERM_MENU_QUERY = 'system:menu:query';
 
 const filters = ref({ roleName: '', roleKey: '', status: '' });
 const state = ref(createListState<SysRoleVo>());
@@ -86,10 +88,31 @@ const scopeError = ref('');
 const scopeSaving = ref(false);
 const scope = ref({ roleId: '', dataScope: '1', deptIds: [] as string[] });
 
+/** 分配菜单对话框（独立入口，避免把角色编辑表单和菜单树耦合）。 */
+const menuVisible = ref(false);
+const menuLoading = ref(false);
+const menuSaving = ref(false);
+const menuError = ref('');
+const menuRole = ref<SysRoleVo | null>(null);
+const menuTree = ref<RoleMenuTreeNode[]>([]);
+const checkedMenuIds = ref<Array<string | number>>([]);
+const menuTreeRef = ref<{
+  setCheckedKeys: (keys: Array<string | number>) => void;
+  getCheckedKeys: () => Array<string | number>;
+  getHalfCheckedKeys: () => Array<string | number>;
+}>();
+
 const canCreate = computed(() => can(PERM_ADD));
 const canEdit = computed(() => can(PERM_EDIT));
 const canRemove = computed(() => can(PERM_REMOVE));
 const canExport = computed(() => can(PERM_EXPORT));
+const canAssignMenu = computed(() => canEdit.value && can(PERM_MENU_QUERY));
+/** 超级管理员角色由后端 `checkRoleAllowed` 保护，所有写操作都不能从 UI 发起。 */
+function isProtectedRole(row: SysRoleVo): boolean {
+  return row.roleId === '1' || row.roleKey === 'superadmin';
+}
+/** 超级管理员角色由后端 `checkRoleAllowed` 保护，UI 只读展示，避免触发 403/策略屏障。 */
+const menuReadOnly = computed(() => menuRole.value?.roleId === '1' || menuRole.value?.roleKey === 'superadmin');
 
 async function load(pageNum = state.value.page.pageNum) {
   const captured = epoch.begin();
@@ -131,6 +154,8 @@ function openCreate() {
 }
 
 async function openEdit(row: SysRoleVo) {
+  if (isProtectedRole(row))
+    return;
   formMode.value = 'edit';
   formError.value = '';
   form.value = {
@@ -198,7 +223,7 @@ async function submitForm() {
 /** 状态切换：**独立端点**，不改其它字段。 */
 async function toggleStatus(row: SysRoleVo) {
   const roleId = row.roleId;
-  if (!roleId || !canEdit.value)
+  if (!roleId || !canEdit.value || isProtectedRole(row))
     return;
   const next: PlatformStatus = row.status === '0' ? '1' : '0';
   try {
@@ -213,7 +238,7 @@ async function toggleStatus(row: SysRoleVo) {
 
 /** 删除：逗号分隔 roleIds（与 dept 的单 id 删除不同形）。 */
 async function removeRole(row: SysRoleVo) {
-  if (!row.roleId || !canRemove.value)
+  if (!row.roleId || !canRemove.value || isProtectedRole(row))
     return;
   try {
     await systemApi.roles.remove([row.roleId]);
@@ -225,7 +250,7 @@ async function removeRole(row: SysRoleVo) {
 }
 
 function openScope(row: SysRoleVo) {
-  if (!row.roleId)
+  if (!row.roleId || isProtectedRole(row))
     return;
   scope.value = { roleId: row.roleId, dataScope: row.dataScope ?? '1', deptIds: [] };
   scopeError.value = '';
@@ -252,12 +277,74 @@ async function submitScope() {
   }
 }
 
+async function openMenu(row: SysRoleVo) {
+  if (!row.roleId)
+    return;
+  menuRole.value = row;
+  menuTree.value = [];
+  checkedMenuIds.value = [];
+  menuError.value = '';
+  menuVisible.value = true;
+  menuLoading.value = true;
+  try {
+    // 取最新角色字段，避免保存菜单时把角色本身的其他字段覆盖成列表快照。
+    const [fresh, tree] = await Promise.all([
+      systemApi.roles.get(row.roleId),
+      systemApi.roles.menuTreeSelect(row.roleId),
+    ]);
+    menuRole.value = { ...row, ...fresh };
+    menuTree.value = tree?.menus ?? [];
+    checkedMenuIds.value = tree?.checkedKeys ?? [];
+    await nextTick();
+    menuTreeRef.value?.setCheckedKeys(checkedMenuIds.value);
+  }
+  catch (error) {
+    menuError.value = errorMessageOf(error);
+  }
+  finally {
+    menuLoading.value = false;
+  }
+}
+
+async function submitMenu() {
+  const row = menuRole.value;
+  if (!row?.roleId || menuSaving.value || menuReadOnly.value)
+    return;
+  const checked = menuTreeRef.value?.getCheckedKeys() ?? [];
+  const halfChecked = menuTreeRef.value?.getHalfCheckedKeys() ?? [];
+  const body: SysRoleBody = {
+    roleId: row.roleId,
+    roleName: row.roleName ?? '',
+    roleKey: row.roleKey ?? '',
+    roleSort: row.roleSort ?? 1,
+    dataScope: row.dataScope,
+    status: row.status,
+    remark: row.remark,
+    menuIds: [...checked, ...halfChecked].map(String),
+  };
+  menuSaving.value = true;
+  menuError.value = '';
+  try {
+    await systemApi.roles.update(body);
+    ElMessage.success('菜单权限已保存');
+    menuVisible.value = false;
+    await load();
+  }
+  catch (error) {
+    menuError.value = errorMessageOf(error);
+  }
+  finally {
+    menuSaving.value = false;
+  }
+}
+
 /** 导出是 xlsx 二进制，**不经 JSON 解包**，因此只把路径暴露出来。 */
 const exportPath = computed(() => systemApi.roles.exportUrl());
 
 /**
  * 首次加载等权限到齐（与 traces 页同一原因）：权限集合不持久化，刷新页面后
- * permissions 先空、靠efreshProfile() 异步回填。在 onMounted 里就判 can(...)
+ * permissions 先空、靠
+efreshProfile() 异步回填。在 onMounted 里就判 can(...)
  * 会让**有权限的用户刷新后看到"无权限"且不发请求** —— 那是前端没等，不是后端拒绝。
  */
 const permissionReady = computed(() => can(PERM_LIST));
@@ -349,18 +436,21 @@ watch(permissionReady, (ready) => {
             </template>
           </ElTableColumn>
           <ElTableColumn prop="createTime" label="创建时间" width="180" />
-          <ElTableColumn label="操作" width="260">
+          <ElTableColumn label="操作" width="380">
             <template #default="{ row }">
-              <ElButton link size="small" :disabled="!canEdit" data-testid="role-edit" @click="openEdit(row)">
+              <ElButton link size="small" :disabled="!canEdit || isProtectedRole(row)" data-testid="role-edit" :title="isProtectedRole(row) ? '超级管理员角色由系统保护，不能编辑' : ''" @click="openEdit(row)">
                 编辑
               </ElButton>
-              <ElButton link size="small" :disabled="!canEdit" data-testid="role-change-status" @click="toggleStatus(row)">
+              <ElButton link size="small" :disabled="!canEdit || isProtectedRole(row)" data-testid="role-change-status" :title="isProtectedRole(row) ? '超级管理员角色由系统保护，不能停用' : ''" @click="toggleStatus(row)">
                 {{ row.status === '0' ? '停用' : '启用' }}
               </ElButton>
-              <ElButton link size="small" :disabled="!canEdit" data-testid="role-data-scope" @click="openScope(row)">
+              <ElButton link size="small" :disabled="!canEdit || isProtectedRole(row)" data-testid="role-data-scope" :title="isProtectedRole(row) ? '超级管理员角色由系统保护，不能改数据权限' : ''" @click="openScope(row)">
                 数据权限
               </ElButton>
-              <ElButton link size="small" type="danger" :disabled="!canRemove" data-testid="role-remove" @click="removeRole(row)">
+              <ElButton link size="small" :disabled="!canAssignMenu" data-testid="role-menu" @click="openMenu(row)">
+                分配菜单
+              </ElButton>
+              <ElButton link size="small" type="danger" :disabled="!canRemove || isProtectedRole(row)" data-testid="role-remove" :title="isProtectedRole(row) ? '超级管理员角色由系统保护，不能删除' : ''" @click="removeRole(row)">
                 删除
               </ElButton>
             </template>
@@ -416,7 +506,7 @@ watch(permissionReady, (ready) => {
       <ElAlert v-if="scopeError" data-testid="role-scope-error" :title="scopeError" type="error" :closable="false" class="mb-3" />
       <ElForm label-width="90px">
         <ElFormItem label="范围">
-          <ElSelect v-model="scope.dataScope" style="width: 100%" data-testid="role-scope-select">
+          <ElSelect v-model="scope.dataScope" placeholder="请选择数据范围" style="width: 100%" data-testid="role-scope-select">
             <ElOption label="全部数据" value="1" />
             <ElOption label="自定义数据" value="2" />
             <ElOption label="本部门数据" value="3" />
@@ -434,33 +524,46 @@ watch(permissionReady, (ready) => {
         </ElButton>
       </template>
     </ElDialog>
+
+    <ElDialog v-model="menuVisible" :title="`分配菜单 · ${menuRole?.roleName ?? ''}`" width="640px">
+      <ElAlert v-if="menuError" data-testid="role-menu-error" :title="menuError" type="error" :closable="false" class="mb-3" />
+      <ElAlert
+        v-if="menuReadOnly"
+        data-testid="role-menu-readonly"
+        type="warning"
+        :closable="false"
+        title="超级管理员角色由系统维护，菜单权限在这里只读展示，不能保存。"
+        class="mb-3"
+      />
+      <div v-if="menuLoading" class="state-block">
+        正在加载菜单…
+      </div>
+      <ElTree
+        v-else
+        ref="menuTreeRef"
+        :data="menuTree"
+        :show-checkbox="!menuReadOnly"
+        node-key="id"
+        default-expand-all
+        :props="{ label: 'label', children: 'children' }"
+        class="role-menu-tree"
+      />
+      <template #footer>
+        <ElButton @click="menuVisible = false">
+          取消
+        </ElButton>
+        <ElButton type="primary" :loading="menuSaving" :disabled="menuLoading || menuReadOnly" data-testid="role-menu-submit" @click="submitMenu">
+          保存
+        </ElButton>
+      </template>
+    </ElDialog>
   </div>
 </template>
 
 <style scoped>
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.card-header-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-
-.pager {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: flex-end;
-  margin-top: 12px;
-  color: var(--el-text-color-regular);
+.role-menu-tree {
+  max-height: 60vh;
+  overflow: auto;
+  padding-right: 8px;
 }
 </style>

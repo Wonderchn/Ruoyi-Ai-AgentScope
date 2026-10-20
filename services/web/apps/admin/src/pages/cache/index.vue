@@ -92,10 +92,13 @@ if (permitted.value)
 
     <ElCard class="mb-4">
       <template #header>
-        <div class="toolbar">
-          <span data-testid="cache-contract" class="card-header-meta">
-            GET /monitor/cache（monitor:cache:list）· 只读：本仓无 /getNames、/getKeys、/clearCache*
-          </span>
+        <div class="card-header">
+          <div>
+            <span class="section-title">缓存监控</span>
+            <p data-testid="cache-contract" class="card-header-meta">
+              GET /monitor/cache（monitor:cache:list）· 只读：本仓无 /getNames、/getKeys、/clearCache*
+            </p>
+          </div>
           <ElButton data-testid="cache-reload" :loading="loading" @click="load()">
             刷新
           </ElButton>
@@ -154,28 +157,3 @@ if (permitted.value)
     </ElCard>
   </div>
 </template>
-
-<style scoped>
-.toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.card-header-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.section-title {
-  margin-bottom: 8px;
-  font-weight: 600;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-</style>

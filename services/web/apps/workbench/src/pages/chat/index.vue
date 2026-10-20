@@ -8,7 +8,7 @@ const sessionId = computed(() => route.params?.id);
 </script>
 
 <template>
-  <div class="chat-container">
+  <div class="chat-container" :class="{ 'chat-container--default': !sessionId }">
     <!-- 默认聊天页面 -->
     <ChatDefaul v-if="!sessionId" />
     <!-- 带id的聊天页面 -->
@@ -19,6 +19,7 @@ const sessionId = computed(() => route.params?.id);
 <style lang="scss" scoped>
 .chat-container {
   position: relative;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -27,5 +28,13 @@ const sessionId = computed(() => route.params?.id);
   height: 100%;
   padding: 0 16px;
   overflow-anchor: none;
+}
+
+.chat-container--default {
+  align-items: stretch;
+  justify-content: flex-start;
+  width: 100%;
+  padding: 0;
+  overflow-y: auto;
 }
 </style>

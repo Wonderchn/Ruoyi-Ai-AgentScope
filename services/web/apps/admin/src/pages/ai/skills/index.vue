@@ -277,8 +277,13 @@ function toolsOf(row: SkillRow): string {
   <div>
     <ElCard>
       <template #header>
-        <div class="toolbar">
-          <span>Skills（GET /api/ai/v1/agent-catalog/agent-skills）</span>
+        <div class="card-header">
+          <div>
+            <span class="section-title">Skills</span>
+            <p class="card-header-meta">
+              GET /api/ai/v1/agent-catalog/agent-skills
+            </p>
+          </div>
           <div class="toolbar-actions">
             <ElButton data-testid="skills-reload" :loading="loading" @click="load()">
               加载
@@ -433,7 +438,7 @@ function toolsOf(row: SkillRow): string {
           <ElInput v-model="createForm.content" type="textarea" :rows="6" data-testid="skills-create-content" />
         </ElFormItem>
         <ElFormItem label="工具引用">
-          <ElSelect v-model="createForm.toolIds" multiple clearable data-testid="skills-create-tools">
+          <ElSelect v-model="createForm.toolIds" multiple clearable placeholder="请选择工具" data-testid="skills-create-tools">
             <ElOption v-for="option in toolOptions" :key="option.toolId" :label="option.name" :value="option.toolId" />
           </ElSelect>
         </ElFormItem>
@@ -464,7 +469,7 @@ function toolsOf(row: SkillRow): string {
           <ElInput v-model="editForm.content" type="textarea" :rows="6" data-testid="skills-edit-content" />
         </ElFormItem>
         <ElFormItem label="工具引用">
-          <ElSelect v-model="editForm.toolIds" multiple clearable data-testid="skills-edit-tools">
+          <ElSelect v-model="editForm.toolIds" multiple clearable placeholder="请选择工具" data-testid="skills-edit-tools">
             <ElOption v-for="option in toolOptions" :key="option.toolId" :label="option.name" :value="option.toolId" />
           </ElSelect>
         </ElFormItem>
@@ -482,24 +487,6 @@ function toolsOf(row: SkillRow): string {
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.toolbar-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
-}
-
 .content {
   margin: 0;
   white-space: pre-wrap;

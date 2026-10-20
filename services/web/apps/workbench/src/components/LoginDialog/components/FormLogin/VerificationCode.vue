@@ -27,18 +27,68 @@
   flex-direction: column;
   gap: 16px;
 }
+
 .form-group {
   display: flex;
-  gap: 8px;
-  align-items: center;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
 }
-.login-btn {
-  padding: 12px;
-  margin-top: 24px;
-  color: white;
+
+.form-group label {
+  font-family: var(--apple-font);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--apple-secondary);
+}
+
+.form-group input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 44px;
+  padding: 0 13px;
+  font-family: var(--apple-font);
+  font-size: 14px;
+  color: var(--apple-text);
+  background: var(--apple-surface);
+  border: 1px solid var(--apple-separator-strong);
+  border-radius: 12px;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: var(--apple-blue);
+  box-shadow: var(--apple-focus-ring);
+}
+
+.form-group button {
+  height: 36px;
+  padding: 0 14px;
+  font-family: var(--apple-font);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--apple-blue);
   cursor: pointer;
-  background: #409eff;
+  background: var(--apple-blue-soft);
   border: none;
-  border-radius: 4px;
+  border-radius: 980px;
+}
+
+.login-btn {
+  height: 44px;
+  padding: 0 20px;
+  margin-top: 24px;
+  font-family: var(--apple-font);
+  font-size: 14px;
+  font-weight: 500;
+  color: #fff;
+  cursor: pointer;
+  background: var(--apple-blue);
+  border: none;
+  border-radius: 980px;
+}
+
+.login-btn:hover {
+  background: var(--apple-blue-hover);
 }
 </style>

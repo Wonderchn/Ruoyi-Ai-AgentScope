@@ -454,17 +454,18 @@ const selectable = computed(() => selectableModels(catalog.value.models));
 
       <ElCard class="mb-4">
         <template #header>
-          <div class="toolbar">
-            <span data-testid="config-contract" class="card-header-meta">
-              GET /api/ai/v1/runtime-config/catalog（config.read）·
-              当前版本 revisionNo={{ revisionNumberLabel(currentRevision) }} ·
-              state={{ currentRevision?.state || '—' }}
-            </span>
-            <div class="toolbar-actions">
-              <ElButton data-testid="config-reload" :loading="catalogLoading" @click="reloadAll()">
-                刷新
-              </ElButton>
+          <div class="card-header">
+            <div>
+              <span class="section-title">运行配置目录</span>
+              <p data-testid="config-contract" class="card-header-meta">
+                GET /api/ai/v1/runtime-config/catalog（config.read）·
+                当前版本 revisionNo={{ revisionNumberLabel(currentRevision) }} ·
+                state={{ currentRevision?.state || '—' }}
+              </p>
             </div>
+            <ElButton data-testid="config-reload" :loading="catalogLoading" @click="reloadAll()">
+              刷新
+            </ElButton>
           </div>
         </template>
 
@@ -605,8 +606,13 @@ const selectable = computed(() => selectableModels(catalog.value.models));
 
       <ElCard class="mb-4">
         <template #header>
-          <div class="toolbar">
-            <span class="card-header-meta">GET /api/ai/v1/runtime-config/revisions（config.read，limit 1..100）</span>
+          <div class="card-header">
+            <div>
+              <span class="section-title">版本历史</span>
+              <p class="card-header-meta">
+                GET /api/ai/v1/runtime-config/revisions（config.read，limit 1..100）
+              </p>
+            </div>
             <div class="toolbar-actions">
               <ElInputNumber
                 v-model="revisionLimit"
@@ -717,7 +723,12 @@ const selectable = computed(() => selectableModels(catalog.value.models));
 
       <ElCard v-if="publishAllowed" class="mb-4">
         <template #header>
-          <span class="card-header-meta">POST /api/ai/v1/runtime-config/revisions（config.publish；**追加**不可变版本，不是改行）</span>
+          <div>
+            <span class="section-title">发布新版本</span>
+            <p class="card-header-meta">
+              POST /api/ai/v1/runtime-config/revisions（config.publish；追加不可变版本，不是改行）
+            </p>
+          </div>
         </template>
 
         <ElAlert
@@ -742,7 +753,7 @@ const selectable = computed(() => selectableModels(catalog.value.models));
             <ElInput v-model="publishForm.providerId" data-testid="config-publish-provider" />
           </ElFormItem>
           <ElFormItem label="modelId">
-            <ElSelect v-model="publishForm.modelId" data-testid="config-publish-model" class="full-width">
+            <ElSelect v-model="publishForm.modelId" placeholder="请选择模型" data-testid="config-publish-model" class="full-width">
               <ElOption
                 v-for="model in selectable"
                 :key="String(model.id)"
@@ -798,9 +809,12 @@ const selectable = computed(() => selectableModels(catalog.value.models));
 
       <ElCard v-if="publishAllowed">
         <template #header>
-          <span class="card-header-meta">
-            POST /api/ai/v1/runtime-config/revisions/{revisionId}/catalog（config.publish；档位 write-once，**不等于发布**）
-          </span>
+          <div>
+            <span class="section-title">档位挂载</span>
+            <p class="card-header-meta">
+              POST /api/ai/v1/runtime-config/revisions/{revisionId}/catalog（config.publish；档位 write-once，不等于发布）
+            </p>
+          </div>
         </template>
 
         <ElAlert
@@ -833,7 +847,7 @@ const selectable = computed(() => selectableModels(catalog.value.models));
             <ElInput v-model="tierForm.tierCode" placeholder="fast" data-testid="config-attach-tier-code" />
           </ElFormItem>
           <ElFormItem label="candidateIds">
-            <ElSelect v-model="tierForm.candidateIds" multiple data-testid="config-attach-candidates" class="full-width">
+            <ElSelect v-model="tierForm.candidateIds" multiple placeholder="请选择候选模型" data-testid="config-attach-candidates" class="full-width">
               <ElOption
                 v-for="model in selectable"
                 :key="String(model.id)"
@@ -885,40 +899,11 @@ const selectable = computed(() => selectableModels(catalog.value.models));
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.toolbar-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
 .inline-row {
   display: flex;
   gap: 8px;
   align-items: center;
   width: 100%;
-}
-
-.card-header-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.section-title {
-  margin-bottom: 8px;
-  font-weight: 600;
-}
-
-.state-block {
-  padding: 24px;
-  color: var(--el-text-color-secondary);
-  text-align: center;
 }
 
 .full-width {

@@ -28,6 +28,7 @@ import type { AgentEvent, AgentTimelineContext, AgentTimelineState, PendingConfi
 import type { AgentRawFrame, AgentTurn } from './types';
 import { computed, ref, shallowRef, watch } from 'vue';
 import { AGENT_RAW_FRAME_LIMIT, AgentChatFailure, createAgentChatClient, frameToRawEntry, parseAgentFrame } from '../../../../api/ai/agent-chat';
+import { userFacingErrorMessage } from '../../../../utils/user-facing-error';
 import { applyAgentEvent, buildTimelineRows, createAgentTimeline, projectReplayMessages } from './agentTimeline';
 
 /** 工厂拿到的选项（不含工厂本身，避免自引用）。 */
@@ -255,7 +256,7 @@ function createChat(options: UseAgentChatBaseOptions) {
         return;
       const failure = err instanceof AgentChatFailure
         ? err
-        : new AgentChatFailure(err instanceof Error ? err.message : '请求失败', -1);
+        : new AgentChatFailure(userFacingErrorMessage(err, '请求失败'), -1);
       if (cancelRequested) {
         notice.value = '已停止生成。';
         return;
@@ -435,7 +436,7 @@ function createChat(options: UseAgentChatBaseOptions) {
       notice.value = '已停止生成。';
     }
     catch (err) {
-      error.value = err instanceof Error ? err.message : '停止请求失败';
+      error.value = userFacingErrorMessage(err, '停止请求失败');
     }
   }
 

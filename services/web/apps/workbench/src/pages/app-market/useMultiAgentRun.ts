@@ -1,6 +1,6 @@
+import type { RequestIdentity, RunSubmitBody } from '@ruoyi/events/rag';
 import type { AgentRunApi } from '@/api/ai/agent-run';
 import type { MultiAgentApp } from '@/api/chat/multi-agent-market';
-import type { RequestIdentity, RunSubmitBody } from '@ruoyi/events/rag';
 import { newRequestId } from '@ruoyi/events/rag';
 import { shallowRef } from 'vue';
 import { createAgentRunApi } from '@/api/ai/agent-run';
@@ -40,8 +40,9 @@ export function readSupervisorAnswer(result: unknown): string {
     return record.answer;
   const nested = record.result;
   if (nested !== null && typeof nested === 'object'
-    && typeof (nested as Record<string, unknown>).answer === 'string')
+    && typeof (nested as Record<string, unknown>).answer === 'string') {
     return (nested as Record<string, unknown>).answer as string;
+  }
   return '';
 }
 

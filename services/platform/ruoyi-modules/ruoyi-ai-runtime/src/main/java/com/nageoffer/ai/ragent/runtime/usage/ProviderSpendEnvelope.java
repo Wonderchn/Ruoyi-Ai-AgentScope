@@ -20,6 +20,7 @@ package com.nageoffer.ai.ragent.runtime.usage;
 import com.nageoffer.ai.ragent.runtime.CanonicalJson;
 import com.nageoffer.ai.ragent.runtime.RunApiException;
 import com.nageoffer.ai.ragent.runtime.RunErrorCode;
+import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -27,10 +28,12 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/** Durable worst-case reservation. Unknown calls never replenish the authorized envelope. */
+/** Durable worst-case reservation. Known usage settles down; unknown calls never replenish the authorized envelope. */
 @Service
 public class ProviderSpendEnvelope {
     private final JdbcTemplate jdbc;
@@ -141,6 +144,9 @@ public class ProviderSpendEnvelope {
     }
 
     private String reserveAmount(String provider,String model,BigDecimal amount) {
+        // 棘轮修复：每次预占前先把「已有 usage 的历史预占」按实际成本结掉，否则 worst-case
+        // 预占只增不减，¥1 额度约 8 次对话就会被永久占满（实测 reserved 顶到 cap）。
+        reconcile(50);
         String callId="spend-"+UUID.randomUUID();
         return transaction.execute(status -> {
             jdbc.update("INSERT INTO ai_provider_envelope(execution_id,cap_cny) VALUES (?,?) ON CONFLICT DO NOTHING",executionId,cap);
@@ -150,6 +156,122 @@ public class ProviderSpendEnvelope {
             jdbc.update("INSERT INTO ai_provider_spend(call_id,execution_id,provider,model,reserved_cny,state) VALUES (?,?,?,?,?,'STARTED')",callId,executionId,provider,model,amount);
             return callId;
         });
+    }
+
+    // ------------------------------------------------------------------ 对账结算（棘轮修复）
+
+    /** 每 1e6 token 的 CNY 上限费率，与 {@link #estimate} 同源；未知 provider 返回 -1。 */
+    private static long inputRate(String provider) {
+        return switch (provider) { case "deepseek" -> 10; case "dashscope" -> 2; default -> -1; };
+    }
+
+    private static long outputRate(String provider) {
+        return "deepseek".equals(provider) ? 20 : 0;
+    }
+
+    /**
+     * 由 provider 返回的 usage 推导**实际成本**；拿不到 token 数就返回 {@code null}（未知）。
+     *
+     * <p>红线不变：**未知不退**。只有 provider 明确回报 {@code prompt_tokens} 时才结算，
+     * 像 {@code {"httpStatus":401}} 这种没有计费事实的行保持原预占不动。
+     */
+    static BigDecimal actualCost(String provider, String usageJson) {
+        if (usageJson == null || usageJson.isBlank()) return null;
+        if (inputRate(provider) < 0) return null;
+        JsonNode node;
+        try { node = CanonicalJson.strictMapper().readTree(usageJson); }
+        catch (Exception e) { return null; }
+        if (node == null || !node.isObject()) return null;
+        JsonNode prompt = node.get("prompt_tokens");
+        if (prompt == null || !prompt.isIntegralNumber()) return null;
+        long promptTokens = prompt.asLong();
+        JsonNode completion = node.get("completion_tokens");
+        long completionTokens = (completion != null && completion.isIntegralNumber()) ? completion.asLong() : 0L;
+        if (promptTokens < 0 || completionTokens < 0) return null;
+        BigDecimal amount = BigDecimal.valueOf(
+                        Math.addExact(Math.multiplyExact(promptTokens, inputRate(provider)),
+                                Math.multiplyExact(completionTokens, outputRate(provider))))
+                .divide(BigDecimal.valueOf(1000000), 6, RoundingMode.CEILING);
+        return amount.max(new BigDecimal("0.000001"));
+    }
+
+    /**
+     * 对账：把已有 provider usage 的预占下调到实际成本，退回差额（幂等、无 DDL 变更）。
+     *
+     * <p>为什么用"对账"而不是在每个调用点插 settle：聊天是流式的，usage 在流末尾才拿到，
+     * 把 callId 从 {@code EnvelopeChatEgressPort} 一路传回执行器要穿透 5 层；而
+     * {@code ai_provider_spend} 已经落了 usage，按行对账能用同一个实现覆盖聊天/嵌入/媒体全路径。
+     *
+     * <p>幂等与并发：先按 {@code reserved_cny > actual} 认领该行（只有一方能更新成功），
+     * 认领成功才减信封 —— 重复对账与并发对账都不会重复退款。退款额恒 ≤ 该 call 的预占，
+     * 因此不会把别的 call 的预占退掉。
+     *
+     * @return 本次退回总额
+     */
+    public BigDecimal reconcile(int limit) {
+        if (!enabled) return BigDecimal.ZERO;
+        int bounded = Math.max(1, Math.min(200, limit));
+        List<Map<String, Object>> rows;
+        try {
+            rows = jdbc.queryForList(
+                    "SELECT call_id,provider,reserved_cny,COALESCE(usage_raw::text,'') AS usage_json"
+                            + " FROM ai_provider_spend WHERE execution_id=? AND state='RESPONSE_RECEIVED'"
+                            + " AND reserved_cny>? ORDER BY created_at LIMIT ?",
+                    executionId, new BigDecimal("0.000001"), bounded);
+        } catch (RuntimeException e) {
+            return BigDecimal.ZERO; // 对账是旁路：失败不得影响预占主流程
+        }
+        BigDecimal refunded = BigDecimal.ZERO;
+        for (Map<String, Object> row : rows) {
+            String callId = (String) row.get("call_id");
+            String provider = (String) row.get("provider");
+            BigDecimal reserved = (BigDecimal) row.get("reserved_cny");
+            BigDecimal actual = actualCost(provider, (String) row.get("usage_json"));
+            if (actual == null || reserved == null || actual.compareTo(reserved) >= 0) continue;
+            BigDecimal delta = reserved.subtract(actual);
+            Boolean claimed;
+            try {
+                claimed = transaction.execute(status -> {
+                    int owned = jdbc.update(
+                            "UPDATE ai_provider_spend SET reserved_cny=?,"
+                                    + " usage_raw=COALESCE(usage_raw,'{}'::jsonb)||?::jsonb"
+                                    + " WHERE call_id=? AND reserved_cny>? AND state='RESPONSE_RECEIVED'",
+                            actual, "{\"settledCny\":" + actual.toPlainString() + "}", callId, actual);
+                    if (owned != 1) return Boolean.FALSE;
+                    jdbc.update("UPDATE ai_provider_envelope SET reserved_cny=reserved_cny-?"
+                                    + " WHERE execution_id=? AND reserved_cny>=?",
+                            delta, executionId, delta);
+                    return Boolean.TRUE;
+                });
+            } catch (RuntimeException e) {
+                continue;
+            }
+            if (Boolean.TRUE.equals(claimed)) refunded = refunded.add(delta);
+        }
+        return refunded;
+    }
+
+    /** 余额快照（给 {@code GET /spend/balance}；只读）。 */
+    public Map<String, Object> snapshot() {
+        BigDecimal reserved = BigDecimal.ZERO;
+        if (enabled) {
+            try {
+                BigDecimal value = jdbc.queryForObject(
+                        "SELECT reserved_cny FROM ai_provider_envelope WHERE execution_id=?",
+                        BigDecimal.class, executionId);
+                if (value != null) reserved = value;
+            } catch (RuntimeException ignore) {
+                // 未产生过任何调用时信封行不存在：余额即全额
+            }
+        }
+        BigDecimal capValue = cap == null ? BigDecimal.ZERO : cap;
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("enabled", enabled);
+        out.put("executionId", enabled ? executionId : null);
+        out.put("capCny", capValue.setScale(6, RoundingMode.CEILING));
+        out.put("reservedCny", reserved.setScale(6, RoundingMode.CEILING));
+        out.put("remainingCny", capValue.subtract(reserved).max(BigDecimal.ZERO).setScale(6, RoundingMode.CEILING));
+        return out;
     }
 
     public void received(String callId,String providerId,Map<String,Object> usage) {

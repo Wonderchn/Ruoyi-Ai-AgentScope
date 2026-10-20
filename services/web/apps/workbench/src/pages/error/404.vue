@@ -11,50 +11,67 @@ function handleHomePage() {
 </script>
 
 <template>
-  <div id="box">
-    <div id="banner" class="elx-top" />
-    <div class="elx-bottom">
-      <div class="elx-text1">
-        404
-      </div>
-      <div class="elx-text2">
-        您想看的页面不存在哟
-      </div>
-      <div class="h-20px" />
-      <el-button type="primary" plain @click="handleHomePage">
-        返回首页
-      </el-button>
-    </div>
+  <div class="error-page">
+    <p class="error-code">
+      404
+    </p>
+    <h1 class="error-title">
+      页面不存在
+    </h1>
+    <p class="error-copy">
+      这个地址可能已经移动或被删除。回到工作台继续你的对话。
+    </p>
+    <button type="button" class="apple-pill-button apple-pill-button--primary" @click="handleHomePage">
+      返回首页
+    </button>
   </div>
 </template>
 
 <style lang="scss" scoped>
-#box {
-  overflow: hidden;
-}
-#banner {
-  margin-top: 60px;
-  background: url("@/assets/images/error/404.png") no-repeat;
-  background-size: 100%;
-}
-.elx-top {
-  width: 600px;
-  height: 400px;
-  margin: 0 auto;
-}
-.elx-bottom {
-  height: 300px;
-  margin-top: 20px;
+.error-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-height: 100%;
+  padding: 64px 24px;
+  font-family: var(--apple-font);
   text-align: center;
 }
-.elx-text1 {
-  font-size: 46px;
-  font-weight: bold;
-}
-.elx-text2 {
-  padding-top: 30px;
-  font-family: YouYuan;
-  font-size: 24px;
+
+.error-code {
+  margin: 0;
+  font-size: clamp(72px, 12vw, 120px);
   font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--apple-separator-strong);
+}
+
+.error-title {
+  margin: 20px 0 0;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--apple-text);
+}
+
+.error-copy {
+  max-width: 42ch;
+  margin: 12px 0 28px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--apple-secondary);
+}
+
+@media (max-width: 768px) {
+  .error-page {
+    padding: 48px 20px;
+  }
+
+  .error-title {
+    font-size: 26px;
+  }
 }
 </style>
