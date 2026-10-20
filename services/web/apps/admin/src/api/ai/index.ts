@@ -82,11 +82,13 @@ import { createIngestionTaskRunsApi } from './ingestionTaskRuns';
 import { createKnowledgeChunksApi } from './knowledgeChunks';
 import { createKnowledgeGraphApi } from './knowledgeGraph';
 import { createRuntimeConfigApi } from './runtimeConfig';
+import { createUsageApi } from './usage';
 
 export * from './agentProfiles';
 export * from './knowledgeChunks';
 export * from './knowledgeGraph';
 export * from './runtimeConfig';
+export * from './usage';
 
 /** ragent 旧信封形状（`framework/convention/Result`：code 是**字符串**）。 */
 export interface RagResultEnvelope<T> {
@@ -386,6 +388,9 @@ export function createAiApi(client: PlatformClient) {
      * 档位附加（config.publish）。发布 = 追加不可变版本，不是改行或改 YAML。
      */
     runtimeConfig: createRuntimeConfigApi(client),
+
+    /** 租户 AI 用量、质量与花费信封（run.get / config.read）。 */
+    usage: createUsageApi(client),
 
     /**
      * 知识库族 —— **本形态唯一活着的一族**（M19/M20：200/400/404 分布健康）。

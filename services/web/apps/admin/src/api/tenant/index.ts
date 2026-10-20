@@ -49,6 +49,24 @@ export interface SysTenantQuery extends PageParams {
   status?: string;
 }
 
+export interface TenantAiOverviewRow {
+  tenantId?: string;
+  companyName?: string;
+  status?: string;
+  aclVersion?: number;
+  revisionNo?: number;
+  runtimeState?: string;
+  providerId?: string;
+  modelId?: string;
+  agents?: number;
+  skills?: number;
+  mcpTools?: number;
+  knowledgeBases?: number;
+  calls7d?: number;
+  tokens7d?: number;
+  defaultAgents?: number;
+}
+
 export interface SysTenantPackageVo {
   packageId?: string;
   packageName?: string;
@@ -118,6 +136,9 @@ export function createTenantApi(client: PlatformClient) {
       client.put<unknown>('/system/tenant/package/changeStatus', { body: { packageId, status } }),
     packageRemove: (packageIds: readonly string[]) =>
       client.del<unknown>(`/system/tenant/package/${packageIds.map(encodeURIComponent).join(',')}`),
+
+    /** 平台管理员只读：所有租户的 AI 工作区状态与 7 天用量。 */
+    aiOverview: () => client.get<TenantAiOverviewRow[]>('/system/tenant/ai-overview'),
   };
 }
 

@@ -47,6 +47,7 @@ export const createTenantPackage = tenantApi.packageCreate;
 export const updateTenantPackage = tenantApi.packageUpdate;
 export const changeTenantPackageStatus = tenantApi.packageChangeStatus;
 export const removeTenantPackages = tenantApi.packageRemove;
+export const tenantAiOverview = tenantApi.aiOverview;
 
 export const listUsers = userApi.list;
 export const listUsersByDept = userApi.listByDept;
