@@ -648,8 +648,21 @@ class P1TableTenantAttributionTest {
     private static Path locate(Path relative) {
         Path dir = Path.of("").toAbsolutePath();
         for (int i = 0; i < 8 && dir != null; i++) {
+            // E8：独立 AI 服务已退出仓库。冻结迁移的仓库内唯一副本在 legacy-ai 档案下；
+            // 测试资源（逐表账）随代码搬到 platform 的 ruoyi-ai-rag 模块。
+            Path viaFrozenArchive = dir.resolve("services").resolve("platform").resolve("docs")
+                    .resolve("script").resolve("sql").resolve("legacy-ai").resolve("migrations")
+                    .resolve(relative.getFileName());
+            Path viaPlatformRag = dir.resolve("services").resolve("platform").resolve("ruoyi-modules")
+                    .resolve("ruoyi-ai-rag").resolve(relative);
             Path viaRag = dir.resolve("services").resolve("ai").resolve("rag").resolve(relative);
             Path viaAi = dir.resolve("services").resolve("ai").resolve(relative);
+            if (Files.isRegularFile(viaFrozenArchive)) {
+                return viaFrozenArchive;
+            }
+            if (Files.isRegularFile(viaPlatformRag)) {
+                return viaPlatformRag;
+            }
             if (Files.isRegularFile(viaRag)) {
                 return viaRag;
             }

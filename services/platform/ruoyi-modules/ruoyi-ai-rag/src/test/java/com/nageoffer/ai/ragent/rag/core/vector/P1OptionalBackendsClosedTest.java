@@ -78,7 +78,7 @@ class P1OptionalBackendsClosedTest {
     @Test
     @DisplayName("随仓库分发的默认姿态：PG 向量 + ES 关闭")
     void shippedDefaultsArePgAndNone() throws IOException {
-        String yaml = Files.readString(locateBootstrapYaml(), StandardCharsets.UTF_8);
+        String yaml = Files.readString(locateEmbeddedConfig(), StandardCharsets.UTF_8);
         assertThat(Pattern.compile("(?m)^\\s{2}vector:\\s*$\\n\\s{4}type:\\s*pg(\\s*#.*)?$")
                 .matcher(yaml).find())
                 .as("默认 rag.vector.type 必须是 pg（共享物理表的首期已验证后端）")
@@ -87,10 +87,16 @@ class P1OptionalBackendsClosedTest {
                 .matcher(yaml).find())
                 .as("默认 rag.keyword.type 必须是 none（ES 无共享实例集成证据）")
                 .isTrue();
-        assertThat(Pattern.compile("(?m)^\\s{6}keyword:\\s*$\\n\\s{8}enabled:\\s*false(\\s*#.*)?$")
-                .matcher(yaml).find())
-                .as("关键词检索通道默认关闭")
-                .isTrue();
+        // 内嵌配置不再重复写通道开关：`rag.search.channels.keyword.enabled` 由代码默认值
+        // 关闭，显式打开才参与召回（E8 后随仓库分发的形态是 platform，不是旧 AI 服务）。
+        String channelProperties = read("config", "SearchChannelProperties.java");
+        int keywordClass = channelProperties.indexOf("class Keyword");
+        int graphClass = channelProperties.indexOf("class Graph");
+        assertThat(keywordClass).as("SearchChannelProperties 必须声明 Keyword 通道配置").isGreaterThanOrEqualTo(0);
+        assertThat(graphClass).isGreaterThan(keywordClass);
+        assertThat(channelProperties.substring(keywordClass, graphClass))
+                .as("关键词检索通道默认关闭（enabled 缺省 false）")
+                .contains("private boolean enabled = false;");
     }
 
     @Test
@@ -121,12 +127,14 @@ class P1OptionalBackendsClosedTest {
                 .contains("havingValue = \"es\"");
     }
 
-    // ---------- 定位与读取（rag 模块相对仓库根向上查找） ----------
+    // ---------- 定位与读取（platform 搬迁副本相对仓库根向上查找） ----------
 
     private static Path locate(String... segments) {
         Path dir = Path.of("").toAbsolutePath();
         for (int i = 0; i < 8 && dir != null; i++) {
-            Path p = dir.resolve("services").resolve("ai").resolve("rag").resolve("src")
+            // E3 搬迁后 rag 源码的仓库内唯一副本在 platform 的 ruoyi-ai-rag 模块。
+            Path p = dir.resolve("services").resolve("platform").resolve("ruoyi-modules")
+                    .resolve("ruoyi-ai-rag").resolve("src")
                     .resolve("main").resolve("java").resolve("com").resolve("nageoffer")
                     .resolve("ai").resolve("ragent").resolve("rag");
             for (String s : segments) {
@@ -140,17 +148,18 @@ class P1OptionalBackendsClosedTest {
         throw new IllegalStateException("cannot locate " + String.join("/", segments));
     }
 
-    private static Path locateBootstrapYaml() {
+    /** 内嵌形态随仓库分发的默认配置（原独立 AI 服务的 application.yaml 已随 E8 退出）。 */
+    private static Path locateEmbeddedConfig() {
         Path dir = Path.of("").toAbsolutePath();
         for (int i = 0; i < 8 && dir != null; i++) {
-            Path p = dir.resolve("services").resolve("ai").resolve("bootstrap")
-                    .resolve("src").resolve("main").resolve("resources").resolve("application.yaml");
+            Path p = dir.resolve("services").resolve("platform").resolve("ruoyi-admin")
+                    .resolve("src").resolve("main").resolve("resources").resolve("application-embedded.yml");
             if (Files.isRegularFile(p)) {
                 return p;
             }
             dir = dir.getParent();
         }
-        throw new IllegalStateException("cannot locate bootstrap application.yaml");
+        throw new IllegalStateException("cannot locate application-embedded.yml");
     }
 
     private static String read(String... segments) throws IOException {
