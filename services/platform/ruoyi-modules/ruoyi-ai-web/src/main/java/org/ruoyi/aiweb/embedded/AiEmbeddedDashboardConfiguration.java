@@ -18,6 +18,7 @@
 package org.ruoyi.aiweb.embedded;
 
 import com.nageoffer.ai.ragent.admin.controller.DashboardController;
+import com.nageoffer.ai.ragent.rag.controller.UsageSummaryController;
 import com.nageoffer.ai.ragent.admin.service.impl.DashboardServiceImpl;
 import com.nageoffer.ai.ragent.agent.admin.AgentDashboardReader;
 import com.nageoffer.ai.ragent.agent.admin.AgentDashboardService;
@@ -31,7 +32,7 @@ import org.springframework.context.annotation.Import;
 @AutoConfiguration
 @ConditionalOnEmbeddedLocal
 @ConditionalOnProperty(name = "p2.enabled", havingValue = "true")
-@Import(DashboardController.class)
+@Import({DashboardController.class, UsageSummaryController.class})
 public class AiEmbeddedDashboardConfiguration {
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnEmbeddedLocal
