@@ -83,7 +83,7 @@ async function handleSubmit() {
         </el-select>
       </el-form-item>
       <el-alert v-if="loginFromStore.tenantError" :title="loginFromStore.tenantError" type="error" :closable="false">
-        <el-button link @click="loginFromStore.loadTenants()">
+        <el-button link @click="loginFromStore.loadTenants(true)">
           重新加载
         </el-button>
       </el-alert>

@@ -115,7 +115,9 @@ class LocalFlowPublicInputsDispatchTest {
     private static final AiFlowComponentMapper componentMapper = mock(AiFlowComponentMapper.class);
     private static final RevocationGuard revocations = mock(RevocationGuard.class);
     private static final List<String> permits = new ArrayList<>();
-    private static final List<String> acknowledgements = new ArrayList<>();
+    private static final List<RevocationGuard.Operation> operations = new ArrayList<>();
+    // 回执在响应提交之后由服务端线程异步送达: 必须容忍上一条用例的迟到回执。
+    private static final List<String> acknowledgements = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     @BeforeAll
     static void startContainer() throws Exception {
@@ -166,12 +168,15 @@ class LocalFlowPublicInputsDispatchTest {
     void resetFixtures() {
         reset(workflowMapper, nodeMapper, edgeMapper, componentMapper, revocations);
         permits.clear();
+        operations.clear();
         acknowledgements.clear();
         CURRENT_PERMISSIONS.set(ALL_PERMISSIONS);
         when(revocations.enter(any(), anyString(), anyString())).thenAnswer(invocation -> {
             permits.add(invocation.getArgument(1) + "/" + invocation.getArgument(2));
-            return new RevocationGuard.Operation(revocations,
+            RevocationGuard.Operation operation = new RevocationGuard.Operation(revocations,
                     java.util.UUID.randomUUID().toString(), java.util.UUID.randomUUID().toString());
+            operations.add(operation);
+            return operation;
         });
         when(workflowMapper.selectOne(any())).thenReturn(workflow());
         when(nodeMapper.selectList(any())).thenReturn(List.of(startNode(), llmNode(), endNode()));
@@ -252,10 +257,18 @@ class LocalFlowPublicInputsDispatchTest {
         assertThat(permits)
                 .as("动作必须是 flow.read（不是 flow.list/flow.run）")
                 .containsExactly("flow.read/flow:public:inputs:" + WORKFLOW_UUID);
-        awaitAcknowledgements(permits.size());
+        assertThat(operations).as("一次 200 恰铸一张交付许可").hasSize(1);
+        RevocationGuard.Operation operation = operations.get(0);
+        awaitAcknowledgement(operation);
+        String expectedAcknowledgement = operation.permitId() + ":" + operation.operationId();
         assertThat(acknowledgements)
                 .as("字节分支的每个 200 必须恰有一次本地回执")
-                .hasSize(permits.size());
+                .contains(expectedAcknowledgement);
+        assertThat(acknowledgements.stream()
+                .filter(ack -> ack.startsWith(operation.permitId() + ":"))
+                .count())
+                .as("同一许可不得重复回执（上一条用例的迟到回执按 permitId 隔离）")
+                .isEqualTo(1);
     }
 
     @Test
@@ -306,9 +319,10 @@ class LocalFlowPublicInputsDispatchTest {
 
     // ------------------------------------------------------------------ helpers
 
-    private static void awaitAcknowledgements(int expected) throws InterruptedException {
+    private static void awaitAcknowledgement(RevocationGuard.Operation operation) throws InterruptedException {
+        String expected = operation.permitId() + ":" + operation.operationId();
         long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
-        while (acknowledgements.size() < expected && System.nanoTime() < deadline) {
+        while (!acknowledgements.contains(expected) && System.nanoTime() < deadline) {
             Thread.sleep(20);
         }
     }

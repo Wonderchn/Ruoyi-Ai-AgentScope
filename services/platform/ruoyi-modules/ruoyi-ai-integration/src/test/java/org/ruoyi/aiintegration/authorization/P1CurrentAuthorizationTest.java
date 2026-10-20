@@ -272,9 +272,15 @@ class P1CurrentAuthorizationTest {
         // coding.use / coding.write / coding.approve / coding.command → ai:coding:*。
         // 权限行由 V41__coding_harness_permissions.sql 注册（7204-7207，默认不分配）。
         // 资源是租户级工作区/会话（带 tenant+user 属主），**不进** PLATFORM_ADMIN_ACTIONS。
-        // 合并口径：50 + 2 + 4 = 56。
+        // F21（2026-10-19，维护者 2026-10-18「授权 B+C+D 全部」D 批）：短剧 LLM-only 面再增
+        // **恰好 3 条**：drama.read / drama.write / drama.generate → ai:drama:*。
+        // 权限行由 V45__short_drama_permissions.sql 注册（7210-7212，默认不分配）。
+        // 资源是 tenant_id + 属主 user_id 双重限定的短剧项目/脚本/资产，**不进** PLATFORM_ADMIN_ACTIONS。
+        // 合并口径：50 + 2 + 4 + 3 = 59。
         Set<String> approvedF20Increment = Set.of(
                 "coding.use", "coding.write", "coding.approve", "coding.command");
+        Set<String> approvedF21Increment = Set.of(
+                "drama.read", "drama.write", "drama.generate");
         Set<String> approvedAllIncrements = new LinkedHashSet<>(approvedIncrement);
         approvedAllIncrements.addAll(approvedA1Increment);
         approvedAllIncrements.addAll(approvedF11Increment);
@@ -283,6 +289,7 @@ class P1CurrentAuthorizationTest {
         approvedAllIncrements.addAll(approvedF13M1Increment);
         approvedAllIncrements.addAll(approvedF13RunIncrement);
         approvedAllIncrements.addAll(approvedF20Increment);
+        approvedAllIncrements.addAll(approvedF21Increment);
         Set<String> fullList = new LinkedHashSet<>(oldFrozen);
         fullList.addAll(approvedAllIncrements);
 
@@ -295,7 +302,7 @@ class P1CurrentAuthorizationTest {
         // ② 批准增量逐项集合相等：多的、少的、改名的都要红
         assertEquals(approvedAllIncrements, diff(new LinkedHashSet<>(actual), oldFrozen),
                 "approved increments must equal the union of F13-SLICE-1 + F13-A1 + F11-A1 + "
-                        + "F06:1/2-A + F12-M1 + F13-M1 + F20-A sets exactly");
+                        + "F06:1/2-A + F12-M1 + F13-M1 + F20-A + F21 sets exactly");
         // ③ 总数等于完整清单（作为 ①② 的推论，仍显式断言）
         assertEquals(fullList.size(), actual.size(),
                 "total must equal the complete list, not merely be >= 34");
@@ -304,9 +311,10 @@ class P1CurrentAuthorizationTest {
         // ④ (动作 -> 权限) 逐项相等。Spec §5.1 第 1 条要求的是"映射"逐项相等，不只是动作名集合相等。
         // 只比名字会漏掉"值替换"这一类变异：例如把 kb.read 的权限改成 ai:kb:list，
         // 动作名集合不变、总数不变，①②③ 全绿，P1AiPermissionContractTest 也拦不住
-        // （新值同样在 sys_menu 里有行）。所以这里把全部 56 条映射钉死
+        // （新值同样在 sys_menu 里有行）。所以这里把全部 59 条映射钉死
         //（合并口径 = 34 + flow.*4 + flow.node.write 1 + F11-A1 skill.*4 + F06:1/2-A 1
-        //  + F12-M1 mcp.*5 + F13-M1 flow.publish 1 + F13:2 flow.run/read 2 + F20-A coding.*4）：
+        //  + F12-M1 mcp.*5 + F13-M1 flow.publish 1 + F13:2 flow.run/read 2 + F20-A coding.*4
+        //  + F21 drama.*3）：
         // 任何一条的值被改动，都必须显式修改本清单，否则本判据红。
         Map<String, String> expectedPairs = new LinkedHashMap<>();
         expectedPairs.put("agent.activate", "ai:agent:activate");
@@ -332,6 +340,10 @@ class P1CurrentAuthorizationTest {
         expectedPairs.put("document.list", "ai:document:read");
         expectedPairs.put("document.read", "ai:document:read");
         expectedPairs.put("document.upload", "ai:document:upload");
+        // F21（2026-10-19，短剧 LLM-only 面）：3 条新动作 → ai:drama:*（权限行由 V45 注册，7210-7212）。
+        expectedPairs.put("drama.generate", "ai:drama:generate");
+        expectedPairs.put("drama.read", "ai:drama:read");
+        expectedPairs.put("drama.write", "ai:drama:write");
         expectedPairs.put("flow.delete", "ai:flow:delete");
         expectedPairs.put("flow.list", "ai:flow:list");
         expectedPairs.put("flow.node.write", "ai:flow:design");

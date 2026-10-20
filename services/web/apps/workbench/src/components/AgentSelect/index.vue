@@ -169,6 +169,15 @@ async function handleUseModel() {
   cursor: not-allowed;
 }
 
+.popover-content-box-items.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.popover-content-box-items.is-disabled .popover-content-box-item {
+  cursor: not-allowed;
+}
+
 .popover-content-box {
   display: flex;
   flex-direction: column;
