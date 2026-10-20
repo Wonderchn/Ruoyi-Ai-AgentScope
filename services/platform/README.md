@@ -1,8 +1,8 @@
 # RuoYi AI
 
 > **本目录是 `Wonderchn/Ruoyi-Ai-AgentScope` 的后端**（模块化单体，`ruoyi-admin` 是唯一入口）。
-> 构建、部署、迁移与权限以仓库根 [README](../../README.md) 和
-> [租户 AI 工作区](../../docs/tenant-ai-workspace.md) 为准。
+> 构建、部署、迁移与权限以仓库根 [README](../../README.md)、
+> [部署说明](../../docs/deployment.md) 和 [使用说明](../../docs/usage-guide.md) 为准。
 > 下面关于 Docker Compose、端口、Live Demo 与 MySQL 的段落来自上游 RuoYi AI 项目，
 > **不描述本仓库的发布链**：本仓库使用 PostgreSQL + 内嵌 AI 运行时，产物与镜像见根 README。
 
