@@ -72,8 +72,15 @@ SPRING_PROFILES_ACTIVE=prod,embedded \
 cd services/web
 pnpm install --frozen-lockfile
 pnpm build
-WEB_ADMIN_BASE_PATH=/admin/ pnpm --filter @ruoyi/admin build
+# 管理端必须同时带子路径与公开客户端标识；漏掉 VITE_CLIENT_ID 会导致登录返回
+# “请求参数校验失败”（请求体 clientId 为空）
+WEB_ADMIN_BASE_PATH=/admin/ \
+VITE_CLIENT_ID=<public-client-id> \
+pnpm --filter @ruoyi/admin build
 ```
+
+`VITE_CLIENT_ID` 是公开客户端标识，不是密钥，必须与平台 `sys_client` 中 `grantType=password`
+的那条客户端一致。工作台也同样需要它（构建工作台时同样注入）。
 
 `services/web` 的构建产物：工作台 dist 部署到 `/`，管理端 dist 部署到 `/admin/`。
 `infra/dev/nginx.conf` 可直接作为同源反代模板：白名单前缀、SSE 不缓冲、上传上限与产品限制一致。
