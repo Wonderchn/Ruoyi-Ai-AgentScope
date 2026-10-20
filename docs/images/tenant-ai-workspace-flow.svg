@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="760" viewBox="0 0 1120 760" role="img" aria-labelledby="title desc">
+  <title id="title">租户 AI 工作区端到端流程</title>
+  <desc id="desc">从平台管理员创建租户、服务端同事务下发，到租户管理员发布模型、建知识库、定义 Agent、对话计量的八个步骤。</desc>
+  <rect width="1120" height="760" fill="#ffffff"/>
+  <text x="40" y="46" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="26" font-weight="700" fill="#0f172a">租户 AI 工作区：端到端流程</text>
+  <text x="40" y="74" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13" fill="#64748b">八个步骤，从开租户到可计量的一次真实对话；每一步都标注角色、入口与关键端点。</text>
+
+  <!-- legend -->
+  <circle cx="812" cy="40" r="6" fill="#2563eb"/>
+  <text x="824" y="45" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">平台管理员</text>
+  <circle cx="892" cy="40" r="6" fill="#d97706"/>
+  <text x="904" y="45" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">服务端事务</text>
+  <circle cx="972" cy="40" r="6" fill="#15803d"/>
+  <text x="984" y="45" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">租户管理员</text>
+  <circle cx="1044" cy="40" r="6" fill="#6d28d9"/>
+  <text x="1056" y="45" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">运行时</text>
+
+  <!-- row 1 -->
+  <!-- card 1 -->
+  <rect x="40" y="110" width="240" height="146" rx="14" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+  <circle cx="66" cy="136" r="13" fill="#2563eb"/>
+  <text x="66" y="141" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700" fill="#ffffff">1</text>
+  <text x="88" y="141" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#0f172a">创建租户</text>
+  <text x="60" y="168" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">平台管理员在 /admin/tenant</text>
+  <text x="60" y="188" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">填企业信息、套餐与管理员账号</text>
+  <text x="60" y="214" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#1d4ed8">POST /system/tenant</text>
+  <text x="60" y="236" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#64748b">套餐决定角色与菜单交集</text>
+
+  <!-- card 2 -->
+  <rect x="300" y="110" width="240" height="146" rx="14" fill="#fffbeb" stroke="#fde68a" stroke-width="1.5"/>
+  <circle cx="326" cy="136" r="13" fill="#d97706"/>
+  <text x="326" y="141" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700" fill="#ffffff">2</text>
+  <text x="348" y="141" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#0f172a">同事务下发</text>
+  <text x="320" y="168" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">一个事务内建好身份面与 AI 面，</text>
+  <text x="320" y="188" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">任一步失败整体回滚</text>
+  <text x="320" y="214" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#92400e">ACL epoch · 运行配置 · 默认 Agent</text>
+  <text x="320" y="236" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#64748b">租户不会有“半开通”状态</text>
+
+  <!-- card 3 -->
+  <rect x="560" y="110" width="240" height="146" rx="14" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="1.5"/>
+  <circle cx="586" cy="136" r="13" fill="#15803d"/>
+  <text x="586" y="141" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700" fill="#ffffff">3</text>
+  <text x="608" y="141" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#0f172a">首次登录</text>
+  <text x="580" y="168" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">用下发的账号选择租户登录</text>
+  <text x="580" y="188" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">工作台与管理端同源</text>
+  <text x="580" y="214" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#166534">POST /auth/login</text>
+  <text x="580" y="236" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#64748b">ACL 已就绪，不再 403 空页</text>
+
+  <!-- card 4 -->
+  <rect x="820" y="110" width="240" height="146" rx="14" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="1.5"/>
+  <circle cx="846" cy="136" r="13" fill="#15803d"/>
+  <text x="846" y="141" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700" fill="#ffffff">4</text>
+  <text x="868" y="141" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#0f172a">AI 工作区</text>
+  <text x="840" y="168" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">/admin/ai 一屏回答四个问题：</text>
+  <text x="840" y="188" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">模型、配额、能力入口、权限</text>
+  <text x="840" y="214" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#166534">usage/summary · catalog</text>
+  <text x="840" y="236" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#64748b">50 条 ai:* 权限 · 12 个能力域</text>
+
+  <!-- wrap arrow row1 -> row2 -->
+  <path d="M940 258 L940 286 L160 286 L160 306" fill="none" stroke="#94a3b8" stroke-width="1.6" stroke-dasharray="5 4"/>
+  <polygon points="160,310 154,298 166,298" fill="#94a3b8"/>
+  <text x="556" y="281" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#94a3b8">租户开始在自有副本上配置能力</text>
+
+  <!-- row 2 -->
+  <!-- card 5 -->
+  <rect x="40" y="316" width="240" height="146" rx="14" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="1.5"/>
+  <circle cx="66" cy="342" r="13" fill="#15803d"/>
+  <text x="66" y="347" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700" fill="#ffffff">5</text>
+  <text x="88" y="347" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#0f172a">发布模型版本</text>
+  <text x="60" y="374" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">/admin/ai/models 追加不可变</text>
+  <text x="60" y="394" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">revision；PUBLISHED 生效</text>
+  <text x="60" y="420" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#166534">POST /runtime-config/revisions</text>
+  <text x="60" y="442" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#64748b">可回滚 / 撤销；凭据仍是部署级</text>
+
+  <!-- card 6 -->
+  <rect x="300" y="316" width="240" height="146" rx="14" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="1.5"/>
+  <circle cx="326" cy="342" r="13" fill="#15803d"/>
+  <text x="326" y="347" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700" fill="#ffffff">6</text>
+  <text x="348" y="347" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#0f172a">建知识库并摄取</text>
+  <text x="320" y="374" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">/admin/ai/knowledge 建库 →</text>
+  <text x="320" y="394" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">上传 → 解析切分 → 发布检索</text>
+  <text x="320" y="420" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#166534">POST /documents/uploads</text>
+  <text x="320" y="442" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#64748b">文档与库都按 tenant_id 隔离</text>
+
+  <!-- card 7 -->
+  <rect x="560" y="316" width="240" height="146" rx="14" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="1.5"/>
+  <circle cx="586" cy="342" r="13" fill="#15803d"/>
+  <text x="586" y="347" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700" fill="#ffffff">7</text>
+  <text x="608" y="347" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#0f172a">定义 Agent</text>
+  <text x="580" y="374" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">/admin/ai/agents 配提示词槽位，</text>
+  <text x="580" y="394" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">绑定知识库与 MCP 工具</text>
+  <text x="580" y="420" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#166534">POST /agent-catalog/agents</text>
+  <text x="580" y="442" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#64748b">“导入默认 Agent” 幂等，不覆盖</text>
+
+  <!-- card 8 -->
+  <rect x="820" y="316" width="240" height="146" rx="14" fill="#f5f3ff" stroke="#ddd6fe" stroke-width="1.5"/>
+  <circle cx="846" cy="342" r="13" fill="#6d28d9"/>
+  <text x="846" y="347" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" font-weight="700" fill="#ffffff">8</text>
+  <text x="868" y="347" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#0f172a">对话与计量</text>
+  <text x="840" y="374" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">工作台发起 run：准入 → 预算</text>
+  <text x="840" y="394" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#475569">预占 → 执行 → 按实际结算</text>
+  <text x="840" y="420" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#5b21b6">POST /runs · GET /usage/summary</text>
+  <text x="840" y="442" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#64748b">用量页按模型 / 按天汇总</text>
+
+  <!-- provisioning detail strip -->
+  <rect x="40" y="492" width="1040" height="200" rx="16" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1.5"/>
+  <text x="64" y="522" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="14" font-weight="700" fill="#0f172a">步骤 2 实际写入的内容（同一事务，失败整体回滚）</text>
+  <text x="64" y="544" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#64748b">租户管理员首次登录前，这些行已经存在；缺任何一项都不会留下“半开通”的租户。</text>
+
+  <rect x="64" y="562" width="312" height="52" rx="10" fill="#ffffff" stroke="#e2e8f0"/>
+  <text x="80" y="584" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" font-weight="600" fill="#0f172a">ACL epoch = 1</text>
+  <text x="80" y="602" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="10.5" fill="#64748b">缺行时网关拒绝，不默认放行</text>
+
+  <rect x="392" y="562" width="312" height="52" rx="10" fill="#ffffff" stroke="#e2e8f0"/>
+  <text x="408" y="584" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" font-weight="600" fill="#0f172a">运行配置 revision 1 · PUBLISHED</text>
+  <text x="408" y="602" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="10.5" fill="#64748b">从默认租户最新发布版复制</text>
+
+  <rect x="720" y="562" width="336" height="52" rx="10" fill="#ffffff" stroke="#e2e8f0"/>
+  <text x="736" y="584" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" font-weight="600" fill="#0f172a">默认 Agent「默认助手」+ Prompt</text>
+  <text x="736" y="602" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="10.5" fill="#64748b">来自 __public_template__；无 active 时置 active</text>
+
+  <rect x="64" y="624" width="312" height="52" rx="10" fill="#ffffff" stroke="#e2e8f0"/>
+  <text x="80" y="646" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" font-weight="600" fill="#0f172a">角色 + 菜单交集</text>
+  <text x="80" y="664" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="10.5" fill="#64748b">按套餐生成，决定可见页面</text>
+
+  <rect x="392" y="624" width="312" height="52" rx="10" fill="#ffffff" stroke="#e2e8f0"/>
+  <text x="408" y="646" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" font-weight="600" fill="#0f172a">部门 + 管理员用户</text>
+  <text x="408" y="664" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="10.5" fill="#64748b">账号可同时登录管理端与工作台</text>
+
+  <rect x="720" y="624" width="336" height="52" rx="10" fill="#ffffff" stroke="#e2e8f0"/>
+  <text x="736" y="646" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" font-weight="600" fill="#0f172a">字典 / 配置副本</text>
+  <text x="736" y="664" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="10.5" fill="#64748b">后续可用“字典同步 / 配置同步”显式刷新</text>
+
+  <text x="40" y="726" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#64748b">所有读写按 tenant_id 行级过滤；平台模板租户 __public_template__ 对租户只读。配额单位为准入层合成单位，不是人民币金额。</text>
+</svg>
