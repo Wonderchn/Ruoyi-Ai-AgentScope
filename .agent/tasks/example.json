@@ -5,8 +5,8 @@
   "specPath": "docs/architecture/README.md",
   "specSha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "baseSha": "0000000000000000000000000000000000000000",
-  "allowedPaths": ["services/ai/rag/"],
-  "validation": ["ai"],
+  "allowedPaths": ["services/platform/ruoyi-modules/"],
+  "validation": ["platform"],
   "approval": {
     "status": "pending",
     "approvedBy": "",

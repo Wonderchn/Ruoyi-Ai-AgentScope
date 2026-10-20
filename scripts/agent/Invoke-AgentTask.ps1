@@ -184,18 +184,18 @@ try {
                 & mvn -B -ntp -Pdev -f (Join-Path $repo 'services/platform/pom.xml') clean verify
                 if ($LASTEXITCODE -ne 0) { throw 'Platform verification failed.' }
             }
-            'ai' {
-                & mvn -B -ntp -Pci -f (Join-Path $repo 'services/ai/pom.xml') clean verify
-                if ($LASTEXITCODE -ne 0) { throw 'AI verification failed.' }
-            }
             'frontend' {
-                Push-Location (Join-Path $repo 'services/ai/frontend')
+                Push-Location (Join-Path $repo 'services/web')
                 try {
-                    & npm ci
-                    if ($LASTEXITCODE -ne 0) { throw 'Frontend npm ci failed.' }
-                    & npm run lint
+                    & pnpm install --frozen-lockfile
+                    if ($LASTEXITCODE -ne 0) { throw 'Frontend install failed.' }
+                    & pnpm typecheck
+                    if ($LASTEXITCODE -ne 0) { throw 'Frontend typecheck failed.' }
+                    & pnpm test
+                    if ($LASTEXITCODE -ne 0) { throw 'Frontend tests failed.' }
+                    & pnpm lint
                     if ($LASTEXITCODE -ne 0) { throw 'Frontend lint failed.' }
-                    & npm run build
+                    & pnpm build
                     if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed.' }
                 } finally { Pop-Location }
             }

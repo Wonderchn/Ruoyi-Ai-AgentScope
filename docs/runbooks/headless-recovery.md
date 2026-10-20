@@ -44,8 +44,7 @@ pwsh -NoProfile -File scripts/agent/Invoke-AgentTask.ps1 `
 | 配置项 | 与包装器一致的命令 |
 | --- | --- |
 | `platform` | 根目录：`mvn -B -ntp -Pdev -f services/platform/pom.xml clean verify` |
-| `ai` | 根目录：`mvn -B -ntp -Pci -f services/ai/pom.xml clean verify` |
-| `frontend` | 在 `services/ai/frontend` 依次执行 `npm ci`、`npm run lint`、`npm run build` |
+| `frontend` | 在 `services/web` 依次执行 `pnpm install --frozen-lockfile`、`pnpm typecheck`、`pnpm test`、`pnpm lint`、`pnpm build` |
 
 验证失败时先区分代码问题和工具、网络、沙箱拒绝；记录失败命令及退出信息。只修复批准范围内的问题，不修改权限、配置或 CI 来绕过失败。可信包装器仍须完成任务配置的全部验证。
 

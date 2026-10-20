@@ -25,10 +25,10 @@ without checking the endpoint and the product deadline first.
 The independent migration contract in `scripts/ci/unified-schema-contract.json`
 lists supported platform and AI versions plus required domain tables. Missing,
 duplicate or extra versions fail. Update that reviewed contract with any intended
-new migration. The legacy database and native-runtime checks continue to stage
-platform V1–V6 only; the required unified check covers both fresh installation and
-upgrade, retained rows, archived history, runtime privileges and default-denied
-agent catalog grants.
+new migration. The legacy database checks continue to stage platform V1–V6 (and
+the frozen AI V1–V12 archive) only; the required unified check covers both fresh
+installation and upgrade, retained rows, archived history, runtime privileges and
+default-denied agent catalog grants.
 
 The unified check also compiles the platform's production P2 projection and
 vector queries and executes them on both database paths using rollback-only

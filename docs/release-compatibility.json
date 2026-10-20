@@ -2,7 +2,7 @@
   "document": "release-compatibility",
   "version": 2,
   "updated": "2026-10-11",
-  "basis": "Versions below are read from the shipped migration files and the product contracts that tests and the native-runtime matrix verify. Nothing here promises an unverified upgrade or downgrade path.",
+  "basis": "Versions below are read from the shipped migration files and the product contracts that the platform test suite and the @ruoyi/events protocol tests verify. Nothing here promises an unverified upgrade or downgrade path.",
   "schema": {
     "platform": {
       "migrations": 6,
@@ -88,12 +88,12 @@
     "runRequest": {
       "version": "schemaVersion=1",
       "scope": "POST /api/ai/v1/runs body contract (rag.chat / document.ingest / agent.run), idempotency-key replay and request-hash conflict semantics",
-      "verifiedBy": "R1 admission cases in scripts/ci/verify-native-runtime.sh; @ruoyi/events node protocol tests (services/web/packages/events)"
+      "verifiedBy": "RunAdmissionBindingJudgmentTest and IdempotentSubmitAspectTest (services/platform); @ruoyi/events node protocol tests (services/web/packages/events)"
     },
     "runEventStream": {
       "version": "sse-envelope-v1",
       "scope": "GET /api/ai/v1/runs/{id}/events frames: id:<seq>, event:<type>, data with schemaVersion=1; afterSeq/Last-Event-ID replay cursor; terminal withheld behind sequence holes",
-      "verifiedBy": "N3 cross-instance replay in scripts/ci/verify-native-runtime.sh; RunStreamClient/SseSyntax node tests"
+      "verifiedBy": "RunEventStreamDeliveryTest and OutboxRelayTransportSeamTest (services/platform); RunStreamClient/SseSyntax node tests"
     },
     "agentExecution": {
       "version": "p3-core-v1",
@@ -106,7 +106,7 @@
     "gatewayDelegation": {
       "version": "p04-delegation-v1",
       "scope": "platform->AI delegated identity (RS256, X-P04-Service-Credential service credential), authorization check contract POST /internal/platform/v1/authorization/check",
-      "verifiedBy": "P04RunAcceptanceTest; AI/platform integration cases in the native matrix"
+      "verifiedBy": "P04RunAcceptanceTest; P1CurrentAuthorizationTest and P1IdentityAssemblyTest (platform embedded delegation)"
     }
   },
   "compatibility": {
@@ -137,6 +137,6 @@
   },
   "runtimeModes": {
     "embedded": "platform with prod,embedded (or dev,embedded) profiles; unified platform schema; feature flags and provider configuration required",
-    "compatibility": "platform and separate AI service; frozen platform v6 + AI v12 migration checks remain supported"
+    "compatibility": "frozen legacy upgrade path only: platform v6 + AI v12 databases remain migratable to the unified schema and that path stays verified; the separate AI service is no longer shipped"
   }
 }
