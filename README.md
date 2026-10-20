@@ -10,6 +10,8 @@
 
 管理端 `/admin/ai` 是租户自服务入口，`/admin/ai/tenants` 是平台视角。两边的数字都来自现有端点，不新增第二套权限：
 
+![租户 AI 工作区端到端流程](docs/images/tenant-ai-workspace-flow.svg)
+
 | 页面 | 读者 | 内容 |
 | --- | --- | --- |
 | `/admin/ai` | 租户管理员 | 当前模型与版本、运行配额、24h 调用/token、能力入口（知识库/Agent/Skills/MCP）、AI 权限域、快捷动作（含导入默认 Agent） |
@@ -17,9 +19,15 @@
 | `/admin/ai/usage` | 租户管理员 | 24h/7d 会话/消息/活跃/成功率、运行配额（已结算/在途/剩余）、按模型/按天调用与 token、最近运行 |
 | `/admin/ai/tenants` | 平台管理员 | 各租户 ACL、已发布运行配置、默认助手、Agent/Skills/MCP/知识库数量、7 天调用/token |
 
+<img src="docs/images/admin-ai-workspace.png" width="49%" alt="AI 工作区"> <img src="docs/images/admin-ai-usage.png" width="49%" alt="用量与配额">
+
+<img src="docs/images/admin-ai-tenants.png" width="49%" alt="租户 AI 总览">
+
 运行配额来自准入层真实扣减的 `ai_tenant_budget` 与 `ai_budget_reservation`：`SETTLED` 计入消耗、`RESERVED` 计入在途、`RELEASED` 不消耗；没有预算行的租户回落部署默认值。它是**合成单位**，回答“本租户还能不能继续跑”，不是人民币计费金额；部署级花费信封是另一套口径，页面分开标注，不互相换算。
 
 新租户创建时在同一事务内初始化 ACL、默认运行配置，并从平台模板 `__public_template__` 复制“默认助手”和 Prompt 槽位；租户也可以在 AI 工作区手动执行“导入默认 Agent”（幂等，不覆盖已有改动）。租户目录自服务由 `ai.integration.tenant-catalog-self-service` 控制，默认关闭。
+
+逐步说明（每一步做什么、权限如何判定、部署与验收）见 [租户 AI 工作区：流程、权限与部署](docs/tenant-ai-workspace.md)。
 
 ## 架构与目录
 
@@ -55,6 +63,22 @@ pnpm build
 ```
 
 需要外部组件或模型服务的测试范围见 [external-tests.md](docs/runbooks/external-tests.md)。PR 必须通过现有 `ci-required` 门禁；涉及镜像交付的 PR 还要通过实际容器内的双前端、资源文件与代理边界检查。
+
+## 部署
+
+三种部署方式，按环境选择：
+
+| 方式 | 适用 | 关键点 |
+| --- | --- | --- |
+| 容器镜像（推荐） | 目标环境 | 两个镜像均按 release manifest 的 `@sha256:` 固定；platform 必须 `SPRING_PROFILES_ACTIVE=prod,embedded`；web 同源提供 `/` 与 `/admin/` 并代理 `/api`、`/auth`、`/system`、`/resource`、`/monitor` |
+| 源码构建 | 私有构建或需要改代码 | `mvn -Pdev clean verify` 产出 `ruoyi-admin.jar`；前端 `pnpm build`，管理端构建必须带 `WEB_ADMIN_BASE_PATH=/admin/` |
+| 本地开发栈 | 开发自测 | `infra/dev/compose.yaml` 起 postgres → bootstrap → migrate → platform → web；需提供 `DEV_PG_PASSWORD`、`DEV_REDIS_PASSWORD`、`DEV_SERVICE_CREDENTIAL` |
+
+后端强制项：`PLATFORM_DB_PASSWORD` 与 `REDIS_PASSWORD` 没有默认值，缺失时启动失败；数据库与 Redis 的其余连接项有默认值。模型提供方 key 按实际使用选填，缺失只会让对应模型不可调用。
+
+上线前按顺序执行：应用统一迁移链 → 启动 platform → 探针 `GET /auth/tenant/list` 返回 200 → 部署前端 → 打开 `/admin/` 登录。回退时恢复上一版 JAR/镜像与静态目录并重启，**不要**重跑或改写迁移历史；迁移只向前，回退版本必须兼容已应用的 schema。
+
+环境变量、逐步流程、验收清单与回退步骤见 [租户 AI 工作区：流程、权限与部署](docs/tenant-ai-workspace.md)；镜像发布与 manifest 规则见 [image-release.md](docs/runbooks/image-release.md)。
 
 ## 运行与数据库
 
