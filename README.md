@@ -27,7 +27,7 @@
 
 新租户创建时在同一事务内初始化 ACL、默认运行配置，并从平台模板 `__public_template__` 复制“默认助手”和 Prompt 槽位；租户也可以在 AI 工作区手动执行“导入默认 Agent”（幂等，不覆盖已有改动）。租户目录自服务由 `ai.integration.tenant-catalog-self-service` 控制，默认关闭。
 
-逐步说明（每一步做什么、权限如何判定、部署与验收）见 [租户 AI 工作区：流程、权限与部署](docs/tenant-ai-workspace.md)。
+每个功能怎么操作（开通租户、分配 AI 权限、发布模型、建 Agent、知识库问答、看配额、失败排查）见 [使用说明：每个功能怎么做](docs/usage-guide.md)。
 
 ## 架构与目录
 
@@ -78,7 +78,7 @@ pnpm build
 
 上线前按顺序执行：应用统一迁移链 → 启动 platform → 探针 `GET /auth/tenant/list` 返回 200 → 部署前端 → 打开 `/admin/` 登录。回退时恢复上一版 JAR/镜像与静态目录并重启，**不要**重跑或改写迁移历史；迁移只向前，回退版本必须兼容已应用的 schema。
 
-环境变量、逐步流程、验收清单与回退步骤见 [租户 AI 工作区：流程、权限与部署](docs/tenant-ai-workspace.md)；镜像发布与 manifest 规则见 [image-release.md](docs/runbooks/image-release.md)。
+环境变量、三种部署路径、迁移顺序、健康检查与回退步骤见 [部署说明](docs/deployment.md)；功能操作见 [使用说明](docs/usage-guide.md)；镜像发布与 manifest 规则见 [image-release.md](docs/runbooks/image-release.md)。
 
 ## 运行与数据库
 

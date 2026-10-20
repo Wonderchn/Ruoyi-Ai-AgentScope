@@ -34,4 +34,4 @@ pnpm --filter @ruoyi/admin dev    # 管理端开发服务器
 
 管理端 AI 入口：`/admin/ai`（租户工作区）、`/admin/ai/permissions`（AI 权限目录）、
 `/admin/ai/usage`（用量与运行配额）、`/admin/ai/tenants`（平台租户总览）。四个页面的读者、数据口径与
-权限判定见根目录 [租户 AI 工作区](../../docs/tenant-ai-workspace.md)。
+权限判定与每个功能的操作步骤见 [使用说明](../../docs/usage-guide.md)。
